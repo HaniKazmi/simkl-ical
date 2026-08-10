@@ -26,7 +26,10 @@ Events are all-day and transparent, so they never mark you busy. Episode titles 
 out of `SUMMARY` and put in `DESCRIPTION` — a calendar shouldn't surface a spoiler you
 didn't choose to read.
 
-Only upcoming entries appear; the backlog stays in SIMKL.
+Recently aired episodes linger for `GRACE_DAYS` (default 14) so nothing disappears the
+moment it airs. This is deliberately **not** filtered by watch state — the feed is a record
+of what aired, not a to-do list. Anything older than the window drops off; a deep backlog
+stays in SIMKL where it belongs.
 
 ## Setup
 
@@ -83,8 +86,13 @@ Then point a Cloudflare Tunnel hostname at Caddy the same way as your other serv
   `2026-12-18`). The correct dates live in `release_dates`, per country and per release
   type — set `RELEASE_COUNTRY` and the theatrical date for that territory is used, falling
   back to US. A `type: 1` premiere screening is only used if nothing else is listed.
-- **33-day horizon applies to episodes only.** The TV and anime calendars are a rolling
-  33-day window; films are unbounded.
+- **Episode horizon is roughly −`GRACE_DAYS`/+34 days.** The rolling CDN file only spans
+  about −2/+34, so any grace window longer than 2 days additionally pulls the monthly
+  archives at `data.simkl.in/calendar/v2/{YEAR}/{MONTH}/{type}.json` and merges them, with
+  the rolling file taking precedence on overlap. **The month in that path is not
+  zero-padded** — `/2026/8/` works, `/2026/08/` returns 404. Films are unbounded.
+- **Cache size.** Each monthly archive is 0.3–4 MB per type and is cached on disk under
+  `DATA_DIR/cache`; a 14-day window keeps about 8 MB. Warm fetches are all `304`s.
 - **Refresh.** CDN calendars every 3h (conditional GET; the CDN ignores query strings, so
   there's no other way to detect a regeneration). `/sync/activities` every 15m, which gates
   the five library calls. Requests never trigger a fetch.

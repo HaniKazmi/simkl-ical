@@ -10,6 +10,7 @@ services:
       # produces a feed that is off by one day for late-evening US airings.
       TZ: ${TZ:-Europe/London}
       RELEASE_COUNTRY: ${RELEASE_COUNTRY:-GB}
+      GRACE_DAYS: ${GRACE_DAYS:-14}
     volumes:
       - simkl-ical-data:/data
     # No `ports:` on purpose — the container is reachable only on Caddy's

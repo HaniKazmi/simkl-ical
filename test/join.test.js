@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { localDate, releaseDate, extractItems, itemSimklId, idSet, episodeCode, join } from '../src/join.js';
+import { localDate, releaseDate, shiftDate, extractItems, itemSimklId, idSet, episodeCode, join } from '../src/join.js';
 
 // A 9pm Tuesday ET broadcast is stamped 01:00Z Wednesday. Slicing the ISO string
 // would put it on Wednesday for everyone, which is wrong for the US audience.
@@ -89,13 +89,72 @@ test('shows not in any list are excluded', () => {
   assert.equal(events.length, 0);
 });
 
-test('past episodes are dropped, today is kept', () => {
+test('with no grace, past episodes are dropped and today is kept', () => {
   const events = join(
     calendars([tvEntry(100, 1, 1, '2026-08-01T20:00:00Z'), tvEntry(100, 1, 2, '2026-08-10T20:00:00Z')]),
     library,
-    { timezone: 'Europe/London', now: NOW },
+    { timezone: 'Europe/London', now: NOW, graceDays: 0 },
   );
   assert.deepEqual(events.map((e) => e.date), ['2026-08-10']);
+});
+
+test('a recently aired episode lingers for the grace window', () => {
+  const events = join(
+    calendars([tvEntry(100, 1, 1, '2026-08-05T20:00:00Z')]), // 5 days ago
+    library,
+    { timezone: 'Europe/London', now: NOW, graceDays: 14 },
+  );
+  assert.deepEqual(events.map((e) => e.date), ['2026-08-05']);
+});
+
+test('an episode older than the grace window is dropped', () => {
+  const events = join(
+    calendars([tvEntry(100, 1, 1, '2026-07-21T20:00:00Z')]), // 20 days ago
+    library,
+    { timezone: 'Europe/London', now: NOW, graceDays: 14 },
+  );
+  assert.equal(events.length, 0);
+});
+
+test('the grace boundary is inclusive on its oldest day', () => {
+  const onBoundary = join(calendars([tvEntry(100, 1, 1, '2026-07-27T20:00:00Z')]), library, { timezone: 'Europe/London', now: NOW, graceDays: 14 });
+  const dayBefore = join(calendars([tvEntry(100, 1, 1, '2026-07-26T20:00:00Z')]), library, { timezone: 'Europe/London', now: NOW, graceDays: 14 });
+  assert.equal(onBoundary.length, 1);
+  assert.equal(dayBefore.length, 0);
+});
+
+// The grace window is deliberately independent of watch state: the feed is a
+// record of what aired, not a to-do list. This guards that decision.
+test('an already-watched episode still lingers', () => {
+  const watchedUpToDate = {
+    ...library,
+    shows_watching: { shows: [{ show: { ids: { simkl: 100 } }, last_watched: 'S01E09', next_to_watch: null, watched_episodes_count: 9, total_episodes_count: 9 }] },
+  };
+  const events = join(
+    calendars([tvEntry(100, 1, 1, '2026-08-05T20:00:00Z')]),
+    watchedUpToDate,
+    { timezone: 'Europe/London', now: NOW, graceDays: 14 },
+  );
+  assert.equal(events.length, 1, 'watch state must not affect the grace window');
+});
+
+test('a recently released film lingers too', () => {
+  const events = join(calendars(), library, { timezone: 'Europe/London', now: NOW, graceDays: 14, movieReleases: filmReleases('2026-08-05') });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].date, '2026-08-05');
+});
+
+test('shiftDate crosses month and year boundaries', () => {
+  assert.equal(shiftDate('2026-08-10', -14), '2026-07-27');
+  assert.equal(shiftDate('2026-01-05', -14), '2025-12-22');
+  assert.equal(shiftDate('2026-03-01', -1), '2026-02-28');
+  assert.equal(shiftDate('2026-08-10', 0), '2026-08-10');
+});
+
+test('shiftDate is unaffected by DST transitions', () => {
+  // BST ends 25 Oct 2026; midnight arithmetic would be at risk here, noon is not.
+  assert.equal(shiftDate('2026-10-26', -1), '2026-10-25');
+  assert.equal(shiftDate('2026-03-30', -1), '2026-03-29');
 });
 
 test('finale type decorates the summary', () => {

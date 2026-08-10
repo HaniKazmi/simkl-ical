@@ -25,6 +25,10 @@ export const config = {
   releaseCountry: process.env.RELEASE_COUNTRY || 'GB',
   port: int(process.env.PORT, 3000),
   horizonDays: int(process.env.HORIZON_DAYS, 33),
+  // How long a recently-aired episode lingers in the feed. Deliberately not
+  // filtered by watch state: the calendar is a record of what aired, so nothing
+  // should vanish the moment it airs.
+  graceDays: int(process.env.GRACE_DAYS, 14),
 
   appName: 'simkl-ical',
   appVersion: '0.1.0',

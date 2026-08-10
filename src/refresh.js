@@ -49,6 +49,7 @@ export class FeedState {
     this.events = join(this.calendars, this.library, {
       timezone: config.timezone,
       movieReleases: this.movieReleases,
+      graceDays: config.graceDays,
     });
     this.ics = renderIcs(this.events, { name: 'SIMKL – Upcoming' });
     this.renderedAt = new Date().toISOString();
@@ -80,7 +81,7 @@ export class FeedState {
       // No snapshot yet — first run.
     }
     try {
-      this.calendars = await fetchAllCalendars();
+      this.calendars = await fetchAllCalendars({ graceDays: config.graceDays });
       this.calendarsAt = new Date().toISOString();
     } catch (err) {
       this.log.warn?.(`calendar hydrate failed: ${err.message}`);
@@ -90,7 +91,7 @@ export class FeedState {
 
   async refreshCalendars() {
     try {
-      this.calendars = await fetchAllCalendars();
+      this.calendars = await fetchAllCalendars({ graceDays: config.graceDays });
       this.calendarsAt = new Date().toISOString();
       this.lastError = null;
       this.render();

@@ -27,6 +27,17 @@ export function releaseDate(value) {
   return String(value).slice(0, 10);
 }
 
+/**
+ * Shift a YYYY-MM-DD date by whole days. Arithmetic is done at UTC noon so a
+ * DST transition can never push the result onto the neighbouring day.
+ */
+export function shiftDate(ymd, days) {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const shifted = new Date(Date.UTC(y, m - 1, d, 12));
+  shifted.setUTCDate(shifted.getUTCDate() + days);
+  return shifted.toISOString().slice(0, 10);
+}
+
 /** Library responses nest under the type key, and come back as {} when empty. */
 export function extractItems(response) {
   if (!response || typeof response !== 'object') return [];
@@ -94,8 +105,16 @@ const isPremiere = (entry) => entry.episode?.season === 1 && entry.episode?.epis
  * Watching lists contribute every upcoming airing. Plan-to-watch contributes
  * premieres only — including every episode of an unstarted show would bury the
  * calendar in things the user has not begun.
+ *
+ * Entries stay for `graceDays` after airing. This is deliberately independent of
+ * watch state: the feed is a record of what aired, so an episode should not
+ * disappear the moment it does.
  */
-export function join(calendars, library, { timezone = config.timezone, now = new Date(), movieReleases = new Map() } = {}) {
+export function join(
+  calendars,
+  library,
+  { timezone = config.timezone, now = new Date(), movieReleases = new Map(), graceDays = config.graceDays } = {},
+) {
   const sets = {
     showsWatching: idSet(library.shows_watching),
     showsPlanned: idSet(library.shows_plantowatch),
@@ -105,6 +124,7 @@ export function join(calendars, library, { timezone = config.timezone, now = new
   };
 
   const today = localDate(now.toISOString(), timezone);
+  const cutoff = shiftDate(today, -graceDays);
   const events = new Map();
 
   const addEpisodes = (calendar, watching, planned, kind) => {
@@ -115,7 +135,7 @@ export function join(calendars, library, { timezone = config.timezone, now = new
       if (!inWatching && !inPlanned) continue;
 
       const date = localDate(entry.date, timezone);
-      if (date < today) continue; // upcoming only
+      if (date < cutoff) continue;
 
       const event = buildEvent({ entry, meta: calendar.metadata?.[String(id)], kind, date });
       events.set(event.uid, event);
@@ -133,7 +153,7 @@ export function join(calendars, library, { timezone = config.timezone, now = new
     if (!release) continue;
 
     const date = releaseDate(release.date);
-    if (date < today) continue;
+    if (date < cutoff) continue;
 
     events.set(`simkl-movie-${id}@simkl-ical`, {
       uid: `simkl-movie-${id}@simkl-ical`,
