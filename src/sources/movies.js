@@ -24,14 +24,24 @@ function datesFor(movie, country) {
  * for titles with no per-country data at all.
  */
 export function pickReleaseDate(movie, country = config.releaseCountry) {
-  for (const source of [datesFor(movie, country), datesFor(movie, 'US')]) {
+  const territories = [
+    { code: country, results: datesFor(movie, country) },
+    { code: 'US', results: datesFor(movie, 'US') },
+  ];
+
+  // A real release anywhere in the preference order beats a premiere anywhere,
+  // so both territories are exhausted before premieres are considered at all.
+  for (const territory of territories) {
     for (const type of PREFERENCE) {
-      const hit = source.find((r) => r.type === type && r.release_date);
-      if (hit) return { date: hit.release_date.slice(0, 10), type, country: source === datesFor(movie, country) ? country : 'US' };
+      const hit = territory.results.find((r) => r.type === type && r.release_date);
+      if (hit) return { date: hit.release_date.slice(0, 10), type, country: territory.code };
     }
-    // Nothing but a premiere listed — better than falling through to `released`.
-    const premiere = source.find((r) => r.release_date);
-    if (premiere) return { date: premiere.release_date.slice(0, 10), type: premiere.type, country };
+  }
+
+  // Nothing but a premiere listed — still better than the unreliable `released`.
+  for (const territory of territories) {
+    const premiere = territory.results.find((r) => r.release_date);
+    if (premiere) return { date: premiere.release_date.slice(0, 10), type: premiere.type, country: territory.code };
   }
 
   if (movie.released) return { date: movie.released.slice(0, 10), type: null, country: null };

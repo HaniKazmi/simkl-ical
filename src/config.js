@@ -41,6 +41,22 @@ export const config = {
   activitiesPollMs: int(process.env.ACTIVITIES_POLL_MS, 2 * 60 * 60 * 1000),
 };
 
+/**
+ * Fail loudly at boot on an unusable timezone.
+ *
+ * Without this a bad TZ only surfaces once a library snapshot exists, so a
+ * fresh install starts fine and then crash-loops on its next restart with a
+ * bare RangeError from deep inside the join.
+ */
+export function requireValidTimezone(timeZone = config.timezone) {
+  try {
+    new Intl.DateTimeFormat('en-CA', { timeZone }).format(new Date());
+  } catch {
+    throw new Error(`TZ is not a valid IANA timezone: ${timeZone}. Try e.g. Europe/London or America/New_York.`);
+  }
+  return timeZone;
+}
+
 export function requireClientId() {
   if (!config.clientId) {
     throw new Error('SIMKL_CLIENT_ID is not set. Copy .env.example to .env and fill it in.');

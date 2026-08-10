@@ -69,8 +69,15 @@ const FINALE_LABEL = { 1: 'Mid-season finale', 2: 'Season finale', 3: 'Series fi
 
 const pad = (n) => String(n).padStart(2, '0');
 
-/** "S04E03", or "E08" for anime that SIMKL numbers without a season. */
+/**
+ * "S04E03", or "E08" for anime, which SIMKL numbers without a season.
+ *
+ * Returns null when there is no episode number at all — the anime calendar
+ * carries occasional entries with no `episode` object, and formatting those
+ * produced "Eundefined" in both the summary and the UID.
+ */
 export function episodeCode(season, episode) {
+  if (episode == null) return null;
   if (season == null) return `E${pad(episode)}`;
   return `S${pad(season)}E${pad(episode)}`;
 }
@@ -82,14 +89,17 @@ function buildEvent({ entry, meta, kind, date }) {
 
   const code = episodeCode(entry.episode?.season, entry.episode?.episode);
   const finale = FINALE_LABEL[entry.finale_type] ?? null;
+  // Entries with no episode number still describe a real airing, so they keep
+  // their slot — keyed on the date, which is the only thing distinguishing them.
+  const suffix = code ? code.toLowerCase() : date.replace(/-/g, '');
 
   return {
     // Derived, never random: a fresh UID on every render makes clients duplicate
     // events instead of updating them.
-    uid: `simkl-${id}-${code.toLowerCase()}@simkl-ical`,
+    uid: `simkl-${id}-${suffix}@simkl-ical`,
     kind,
     date,
-    summary: `${title} – ${code}${finale ? ` (${finale})` : ''}`,
+    summary: `${title}${code ? ` – ${code}` : ''}${finale ? ` (${finale})` : ''}`,
     showTitle: title,
     episodeTitle: entry.episode?.title ?? null,
     network: meta?.network ?? null,
@@ -99,7 +109,18 @@ function buildEvent({ entry, meta, kind, date }) {
   };
 }
 
-const isPremiere = (entry) => entry.episode?.season === 1 && entry.episode?.episode === 1;
+/**
+ * First episode of a show.
+ *
+ * The season must be 1 *or absent*: SIMKL's anime calendar carries no season
+ * field at all — 0 of 572 live entries have one — so requiring `season === 1`
+ * meant anime plan-to-watch could never match anything.
+ */
+const isPremiere = (entry) => {
+  const ep = entry.episode;
+  if (!ep || ep.episode !== 1) return false;
+  return ep.season == null || ep.season === 1;
+};
 
 /**
  * Join the CDN calendars against the user's library.

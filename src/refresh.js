@@ -88,7 +88,14 @@ export class FeedState {
     } catch (err) {
       this.log.warn?.(`calendar hydrate failed: ${err.message}`);
     }
-    this.render();
+    // Guarded like the other two call sites: a render failure must degrade the
+    // feed, not take the process down during startup.
+    try {
+      this.render();
+    } catch (err) {
+      this.lastError = `render: ${err.message}`;
+      this.log.error?.(`render failed during hydrate: ${err.message}`);
+    }
   }
 
   async refreshCalendars() {
@@ -127,18 +134,35 @@ export class FeedState {
       // Release dates only need re-reading when the film list itself changed;
       // they are stable and the lookups are CDN-cached by id. Marking an episode
       // watched must not drag eleven film lookups along with it.
+      let filmsComplete = true;
       if (stale.some((l) => l.key === 'movies_plantowatch')) {
         const filmIds = [...idSet(this.library.movies_plantowatch)];
         if (filmIds.length) {
           const releases = await fetchMovieReleases(filmIds);
-          if (releases.size) this.movieReleases = releases;
+          // Carry over anything that failed this time rather than dropping it,
+          // and drop anything no longer on the list.
+          const merged = new Map();
+          for (const id of filmIds) {
+            const release = releases.get(id) ?? this.movieReleases.get(id);
+            if (release) merged.set(id, release);
+          }
+          this.movieReleases = merged;
+          filmsComplete = releases.size === filmIds.length;
           this.log.info?.(`resolved ${releases.size}/${filmIds.length} film release dates`);
         } else {
           this.movieReleases = new Map();
         }
       }
 
-      this.listSignatures = listSignatures(activities);
+      const signatures = listSignatures(activities);
+      if (!filmsComplete) {
+        // Recording the current signature here would mark the film list current
+        // despite unresolved lookups, and nothing would retry until the user
+        // next added or removed a title. Leave it stale instead.
+        signatures.movies_plantowatch = this.listSignatures.movies_plantowatch;
+        this.log.warn?.('some film lookups failed; will retry on the next poll');
+      }
+      this.listSignatures = signatures;
       this.libraryAt = new Date().toISOString();
       this.lastError = null;
       await this.persist();

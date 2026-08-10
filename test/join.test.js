@@ -44,6 +44,13 @@ test('episodeCode pads, and omits the season for unseasoned anime', () => {
   assert.equal(episodeCode(null, 8), 'E08');
 });
 
+test('episodeCode returns null rather than formatting a missing episode', () => {
+  // The anime calendar carries occasional entries with no `episode` object;
+  // formatting those produced "Eundefined" in the summary and the UID.
+  assert.equal(episodeCode(null, null), null);
+  assert.equal(episodeCode(undefined, undefined), null);
+});
+
 // --- join ---------------------------------------------------------------
 
 const NOW = new Date('2026-08-10T12:00:00Z');
@@ -109,6 +116,47 @@ test('completed shows are not limited to premieres the way plan-to-watch is', ()
     { timezone: 'Europe/London', now: NOW },
   );
   assert.equal(events.length, 2);
+});
+
+// SIMKL's anime calendar carries no season field at all, so a premiere rule
+// requiring season === 1 could never match anything anime.
+test('anime plan-to-watch premieres match despite having no season', () => {
+  const animeLibrary = { ...library, anime_plantowatch: { anime: [{ show: { ids: { simkl: 500 } } }] } };
+  const cals = {
+    tv: { calendar: [], metadata: {} },
+    anime: {
+      calendar: [
+        { simkl_id: 500, date: '2026-08-15T15:00:00Z', finale_type: null, episode: { season: null, episode: 1, title: 'a' } },
+        { simkl_id: 500, date: '2026-08-22T15:00:00Z', finale_type: null, episode: { season: null, episode: 2, title: 'b' } },
+      ],
+      metadata: { 500: { title: 'Some Anime' } },
+    },
+  };
+  const events = join(cals, animeLibrary, { timezone: 'Europe/London', now: NOW });
+  assert.equal(events.length, 1, 'only the premiere');
+  assert.equal(events[0].summary, 'Some Anime – E01');
+});
+
+test('an entry with no episode object gets a date-keyed uid, not "Eundefined"', () => {
+  const animeLibrary = { ...library, anime_watching: { anime: [{ show: { ids: { simkl: 600 } } }] } };
+  const cals = {
+    tv: { calendar: [], metadata: {} },
+    anime: {
+      calendar: [
+        { simkl_id: 600, date: '2026-08-27T15:00:00Z', finale_type: null },
+        { simkl_id: 600, date: '2026-08-28T15:00:00Z', finale_type: null },
+      ],
+      metadata: { 600: { title: 'Some Anime' } },
+    },
+  };
+  const events = join(cals, animeLibrary, { timezone: 'Europe/London', now: NOW });
+  assert.equal(events.length, 2, 'two episode-less entries must not collapse onto one uid');
+  for (const event of events) {
+    assert.ok(!event.uid.includes('undefined'), event.uid);
+    assert.ok(!event.summary.includes('undefined'), event.summary);
+  }
+  assert.equal(events[0].summary, 'Some Anime');
+  assert.equal(events[0].uid, 'simkl-600-20260827@simkl-ical');
 });
 
 test('shows not in any list are excluded', () => {
