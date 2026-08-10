@@ -1,6 +1,6 @@
 # simkl-ical
 
-[![CI](https://github.com/hanikazmi/simkl-ical/actions/workflows/ci.yml/badge.svg)](https://github.com/hanikazmi/simkl-ical/actions/workflows/ci.yml)
+[![CI](https://github.com/HaniKazmi/simkl-ical/actions/workflows/ci.yml/badge.svg)](https://github.com/HaniKazmi/simkl-ical/actions/workflows/ci.yml)
 
 Turn your [SIMKL](https://simkl.com) watchlist into a calendar feed you can subscribe to.
 
