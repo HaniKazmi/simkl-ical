@@ -1,0 +1,24 @@
+services:
+  simkl-ical:
+    build: .
+    container_name: simkl-ical
+    restart: unless-stopped
+    environment:
+      SIMKL_CLIENT_ID: ${SIMKL_CLIENT_ID:?set in .env}
+      FEED_TOKEN: ${FEED_TOKEN:?set in .env}
+      # Set explicitly. A container that inherits nothing defaults to UTC and
+      # produces a feed that is off by one day for late-evening US airings.
+      TZ: ${TZ:-Europe/London}
+    volumes:
+      - simkl-ical-data:/data
+    # No `ports:` on purpose — the container is reachable only on Caddy's
+    # network, so there is no path to it that bypasses the proxy.
+    networks:
+      - caddy
+
+volumes:
+  simkl-ical-data:
+
+networks:
+  caddy:
+    external: true
