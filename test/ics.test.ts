@@ -41,6 +41,18 @@ test('episode title is in the description, never the summary', () => {
   assert.match(ics, /Our Flag Means Medical Coverage/);
 });
 
+// The link belongs to the URL property; repeating it in DESCRIPTION just makes
+// every event's body longer for no added information.
+test('the simkl link is a URL property, not duplicated into the description', () => {
+  const ics = renderIcs([event]).replace(/\r\n /g, '');
+  assert.match(ics, /URL;VALUE=URI:https:\/\/simkl\.com\/tv\/3407/);
+
+  const body = ics.match(/DESCRIPTION:(.*)/)![1]!;
+  assert.ok(!body.includes('simkl.com'), `description still carries the link: ${body}`);
+  assert.match(body, /Our Flag Means Medical Coverage/);
+  assert.match(body, /FOX · 23m/);
+});
+
 test('lines are folded to 75 octets and terminated with CRLF', () => {
   const ics = renderIcs([{ ...event, episodeTitle: 'A'.repeat(300) }]);
   assert.ok(ics.includes('\r\n'));

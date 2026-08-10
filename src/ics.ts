@@ -12,6 +12,9 @@ const dateOnly = (ymd: string, addDays = 0): Date => {
  * Episode titles are deliberately kept out of SUMMARY — a calendar surfaces
  * them without the user choosing to look, and they occasionally spoil. The
  * title lives here, where clients only show it on tap.
+ *
+ * The simkl.com link is not repeated here: it is already carried by the event's
+ * URL property, which clients render as their own link affordance.
  */
 const description = (event: FeedEvent): string => {
   const lines: string[] = [];
@@ -19,7 +22,6 @@ const description = (event: FeedEvent): string => {
 
   const facts = [event.detail, event.runtime].filter(Boolean);
   if (facts.length) lines.push(facts.join(' · '));
-  if (event.url) lines.push(event.url);
 
   return lines.join('\n');
 };
