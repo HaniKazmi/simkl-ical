@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "esnext",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+
+    "strict": true,
+
+    // Node strips types itself, so nothing is ever emitted. tsc is a checker.
+    "noEmit": true,
+    // Node requires the real extension in specifiers: import './config.ts'.
+    "allowImportingTsExtensions": true,
+    // Rejects anything Node cannot strip — enums, namespaces, parameter
+    // properties, decorators. Makes "this won't run" a compile error.
+    "erasableSyntaxOnly": true,
+    // Type-only imports must say so, matching what stripping actually does.
+    "verbatimModuleSyntax": true,
+
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}
