@@ -1,26 +1,34 @@
 import { mkdir, readFile, writeFile, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
-import { config } from '../config.js';
-import { apiGet } from './client.js';
+import { config } from '../config.ts';
+import { apiGet } from './client.ts';
+import type { PinResponse } from './types.ts';
 
-const tokenPath = () => join(config.dataDir, 'token.json');
+const tokenPath = (): string => join(config.dataDir, 'token.json');
 
-export async function readToken() {
+export const readToken = async (): Promise<string | null> => {
   try {
     const raw = await readFile(tokenPath(), 'utf8');
-    return JSON.parse(raw).access_token ?? null;
+    return (JSON.parse(raw) as { access_token?: string }).access_token ?? null;
   } catch (err) {
-    if (err.code === 'ENOENT') return null;
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw err;
   }
-}
+};
 
-export async function writeToken(accessToken) {
+export const writeToken = async (accessToken: string): Promise<string> => {
   await mkdir(config.dataDir, { recursive: true });
   const path = tokenPath();
   await writeFile(path, JSON.stringify({ access_token: accessToken, saved_at: new Date().toISOString() }, null, 2));
   await chmod(path, 0o600);
   return path;
+};
+
+export interface Pin {
+  userCode: string;
+  verificationUrl: string;
+  expiresIn: number;
+  intervalSeconds: number;
 }
 
 /**
@@ -30,8 +38,8 @@ export async function writeToken(accessToken) {
  * it is a placeholder, not a real code. Polling is keyed on `user_code`,
  * which is the value shown to the user. Verified against the live API.
  */
-export async function requestPin() {
-  const res = await apiGet('/oauth/pin');
+export const requestPin = async (): Promise<Pin> => {
+  const res = await apiGet<PinResponse>('/oauth/pin');
   if (res.result && res.result !== 'OK') {
     throw new Error(`Could not start PIN flow: ${res.message ?? JSON.stringify(res)}`);
   }
@@ -41,20 +49,25 @@ export async function requestPin() {
     expiresIn: res.expires_in ?? 900,
     intervalSeconds: res.interval ?? 5,
   };
-}
+};
 
 /** One poll. Returns an access token, or null while the user hasn't approved yet. */
-export async function pollPin(userCode) {
-  const res = await apiGet(`/oauth/pin/${encodeURIComponent(userCode)}`);
+export const pollPin = async (userCode: string): Promise<string | null> => {
+  const res = await apiGet<PinResponse>(`/oauth/pin/${encodeURIComponent(userCode)}`);
   if (res.result === 'OK' && res.access_token) return res.access_token;
   return null;
+};
+
+export interface LoginHooks {
+  onPrompt?: (pin: Pin) => void;
+  onTick?: (secondsLeft: number) => void;
 }
 
 /**
  * Full device flow. `onPrompt` receives the code to display; polling runs
  * until the user approves or the code expires.
  */
-export async function login({ onPrompt = () => {}, onTick = () => {} } = {}) {
+export const login = async ({ onPrompt = () => {}, onTick = () => {} }: LoginHooks = {}): Promise<string> => {
   const pin = await requestPin();
   onPrompt(pin);
 
@@ -69,4 +82,4 @@ export async function login({ onPrompt = () => {}, onTick = () => {} } = {}) {
   }
 
   throw new Error(`Code ${pin.userCode} expired before it was approved. Run the login again.`);
-}
+};

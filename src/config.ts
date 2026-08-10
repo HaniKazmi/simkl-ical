@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 
-// Node 20.6+ loads .env with --env-file, but doing it here keeps `node src/x.js`
+// Node 20.6+ loads .env with --env-file, but doing it here keeps `node src/x.ts`
 // working without callers remembering the flag.
 if (!process.env.SIMKL_CLIENT_ID) {
   try {
@@ -10,12 +10,26 @@ if (!process.env.SIMKL_CLIENT_ID) {
   }
 }
 
-const int = (value, fallback) => {
+const int = (value: string | undefined, fallback: number): number => {
   const n = Number.parseInt(value ?? '', 10);
   return Number.isFinite(n) ? n : fallback;
 };
 
-export const config = {
+export interface Config {
+  clientId: string | undefined;
+  feedToken: string | undefined;
+  timezone: string;
+  dataDir: string;
+  releaseCountry: string;
+  port: number;
+  graceDays: number;
+  appName: string;
+  appVersion: string;
+  calendarRefreshMs: number;
+  activitiesPollMs: number;
+}
+
+export const config: Config = {
   clientId: process.env.SIMKL_CLIENT_ID,
   feedToken: process.env.FEED_TOKEN,
   timezone: process.env.TZ || 'Europe/London',
@@ -48,18 +62,18 @@ export const config = {
  * fresh install starts fine and then crash-loops on its next restart with a
  * bare RangeError from deep inside the join.
  */
-export function requireValidTimezone(timeZone = config.timezone) {
+export const requireValidTimezone = (timeZone: string = config.timezone): string => {
   try {
     new Intl.DateTimeFormat('en-CA', { timeZone }).format(new Date());
   } catch {
     throw new Error(`TZ is not a valid IANA timezone: ${timeZone}. Try e.g. Europe/London or America/New_York.`);
   }
   return timeZone;
-}
+};
 
-export function requireClientId() {
+export const requireClientId = (): string => {
   if (!config.clientId) {
     throw new Error('SIMKL_CLIENT_ID is not set. Copy .env.example to .env and fill it in.');
   }
   return config.clientId;
-}
+};

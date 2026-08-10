@@ -1,6 +1,8 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { config } from '../config.js';
+import { config } from '../config.ts';
+import { errorMessage } from '../errors.ts';
+import type { CalendarFile, CalendarType, MergedCalendar } from '../simkl/types.ts';
 
 const CDN_BASE = 'https://data.simkl.in/calendar/v2/';
 
@@ -9,9 +11,9 @@ const CDN_BASE = 'https://data.simkl.in/calendar/v2/';
  *
  * movie_release.json is deliberately absent: it only covers a rolling 33-day
  * window and carries a date-only 04:00Z placeholder, so films are resolved
- * per-title through /movies/{id} instead — see sources/movies.js.
+ * per-title through /movies/{id} instead — see sources/movies.ts.
  */
-export const CALENDAR_FILES = {
+export const CALENDAR_FILES: Record<CalendarType, string> = {
   tv: 'tv.json',
   anime: 'anime.json',
 };
@@ -22,20 +24,31 @@ const ROLLING_PAST_DAYS = 2;
 /** Archives run to several MB, so this is generous rather than tight. */
 const FETCH_TIMEOUT_MS = 60_000;
 
-const cachePath = (key) => join(config.dataDir, 'cache', `${key}.json`);
+interface CachedFile {
+  lastModified: string | null;
+  data: CalendarFile;
+  cachedAt?: string;
+}
 
-async function readCache(key) {
+interface FetchedFile {
+  data: CalendarFile;
+  lastModified: string | null;
+}
+
+const cachePath = (key: string): string => join(config.dataDir, 'cache', `${key}.json`);
+
+const readCache = async (key: string): Promise<CachedFile | null> => {
   try {
-    return JSON.parse(await readFile(cachePath(key), 'utf8'));
+    return JSON.parse(await readFile(cachePath(key), 'utf8')) as CachedFile;
   } catch {
     return null;
   }
-}
+};
 
-async function writeCache(key, entry) {
+const writeCache = async (key: string, entry: CachedFile): Promise<void> => {
   await mkdir(join(config.dataDir, 'cache'), { recursive: true });
   await writeFile(cachePath(key), JSON.stringify(entry));
-}
+};
 
 /**
  * Fetch a calendar JSON file, using the cached copy when the CDN says it hasn't changed.
@@ -44,43 +57,43 @@ async function writeCache(key, entry) {
  * GET against the stored Last-Modified is the only way to tell whether a
  * regeneration has actually happened.
  */
-async function fetchCached(url, key, { signal } = {}) {
+const fetchCached = async (url: string, key: string, { signal }: { signal?: AbortSignal } = {}): Promise<FetchedFile> => {
   const cached = await readCache(key);
-  const headers = { 'User-Agent': `${config.appName}/${config.appVersion}` };
+  const headers: Record<string, string> = { 'User-Agent': `${config.appName}/${config.appVersion}` };
   if (cached?.lastModified) headers['If-Modified-Since'] = cached.lastModified;
 
   // Without a timeout a hung connection blocks a refresh cycle until undici's
   // 300s default.
   const res = await fetch(url, { headers, signal: signal ?? AbortSignal.timeout(FETCH_TIMEOUT_MS) });
 
-  const fallback = () =>
+  const fallback = (): FetchedFile | null =>
     cached ? { data: cached.data, lastModified: cached.lastModified } : null;
 
-  if (res.status === 304 && cached) return fallback();
+  if (res.status === 304 && cached) return fallback() as FetchedFile;
   if (!res.ok) {
     // A stale calendar beats no calendar. Only fail if there is nothing to fall back to.
-    return fallback() ?? Promise.reject(new Error(`Calendar ${url} returned ${res.status}`));
+    const stale = fallback();
+    if (stale) return stale;
+    throw new Error(`Calendar ${url} returned ${res.status}`);
   }
 
-  let data;
+  let data: CalendarFile;
   try {
-    data = await res.json();
+    data = (await res.json()) as CalendarFile;
   } catch (err) {
     // A 200 carrying an HTML interstitial would otherwise discard a good cache.
     const stale = fallback();
     if (stale) return stale;
-    throw new Error(`Calendar ${url} returned unparseable JSON: ${err.message}`);
+    throw new Error(`Calendar ${url} returned unparseable JSON: ${errorMessage(err)}`);
   }
 
   const lastModified = res.headers.get('last-modified');
   await writeCache(key, { lastModified, data, cachedAt: new Date().toISOString() });
 
   return { data, lastModified };
-}
+};
 
-export function rollingUrl(type) {
-  return CDN_BASE + CALENDAR_FILES[type];
-}
+export const rollingUrl = (type: CalendarType): string => CDN_BASE + CALENDAR_FILES[type];
 
 /**
  * Monthly archive URL.
@@ -88,21 +101,27 @@ export function rollingUrl(type) {
  * The month is NOT zero-padded: /2026/8/tv.json returns 200 while /2026/08/tv.json
  * returns 404. This is the one trap in the archive API.
  */
-export function archiveUrl(type, year, month) {
-  return `${CDN_BASE}${year}/${month}/${CALENDAR_FILES[type]}`;
-}
+export const archiveUrl = (type: CalendarType, year: number, month: number): string =>
+  `${CDN_BASE}${year}/${month}/${CALENDAR_FILES[type]}`;
 
-export function fetchRolling(type, { signal } = {}) {
-  return fetchCached(rollingUrl(type), `calendar-${type}`, { signal });
-}
+export const fetchRolling = (type: CalendarType, { signal }: { signal?: AbortSignal } = {}): Promise<FetchedFile> =>
+  fetchCached(rollingUrl(type), `calendar-${type}`, { signal });
 
-export function fetchArchive(type, year, month, { signal } = {}) {
-  return fetchCached(archiveUrl(type, year, month), `calendar-${type}-${year}-${month}`, { signal });
+export const fetchArchive = (
+  type: CalendarType,
+  year: number,
+  month: number,
+  { signal }: { signal?: AbortSignal } = {},
+): Promise<FetchedFile> => fetchCached(archiveUrl(type, year, month), `calendar-${type}-${year}-${month}`, { signal });
+
+export interface YearMonth {
+  year: number;
+  month: number;
 }
 
 /** Distinct {year, month} pairs spanned by the last `days` days, oldest first. */
-export function monthsBack(days, now = new Date()) {
-  const months = new Map();
+export const monthsBack = (days: number, now: Date = new Date()): YearMonth[] => {
+  const months = new Map<string, YearMonth>();
   for (let i = days; i >= 0; i -= 1) {
     const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - i));
     // Unpadded month, matching the archive URL scheme.
@@ -112,12 +131,12 @@ export function monthsBack(days, now = new Date()) {
     });
   }
   return [...months.values()];
-}
+};
 
 /** Merge calendar files, later sources winning on conflict. */
-export function mergeCalendars(parts) {
-  const entries = new Map();
-  const metadata = {};
+export const mergeCalendars = (parts: Array<CalendarFile | null | undefined>): CalendarFile => {
+  const entries = new Map<string, CalendarFile['calendar'][number]>();
+  const metadata: CalendarFile['metadata'] = {};
 
   for (const part of parts) {
     for (const entry of part?.calendar ?? []) {
@@ -127,6 +146,12 @@ export function mergeCalendars(parts) {
   }
 
   return { calendar: [...entries.values()], metadata };
+};
+
+export interface CalendarOptions {
+  graceDays?: number;
+  signal?: AbortSignal;
+  now?: Date;
 }
 
 /**
@@ -136,10 +161,13 @@ export function mergeCalendars(parts) {
  * window needs the monthly archives. Archives are merged first and the rolling
  * file last, so the freshest data wins on any overlap.
  */
-export async function fetchCalendar(type, { graceDays = config.graceDays, signal, now = new Date() } = {}) {
+export const fetchCalendar = async (
+  type: CalendarType,
+  { graceDays = config.graceDays, signal, now = new Date() }: CalendarOptions = {},
+): Promise<MergedCalendar> => {
   if (!CALENDAR_FILES[type]) throw new Error(`Unknown calendar type: ${type}`);
 
-  const parts = [];
+  const parts: CalendarFile[] = [];
 
   if (graceDays > ROLLING_PAST_DAYS) {
     for (const { year, month } of monthsBack(graceDays, now)) {
@@ -155,11 +183,13 @@ export async function fetchCalendar(type, { graceDays = config.graceDays, signal
   parts.push(rolling.data);
 
   return { ...mergeCalendars(parts), type, lastModified: rolling.lastModified };
-}
+};
+
+export type Calendars = Record<CalendarType, MergedCalendar>;
 
 /** All calendar types. Safe to parallelise: CDN-cached, unauthenticated. */
-export async function fetchAllCalendars({ graceDays = config.graceDays, signal, now } = {}) {
-  const types = Object.keys(CALENDAR_FILES);
+export const fetchAllCalendars = async ({ graceDays = config.graceDays, signal, now }: CalendarOptions = {}): Promise<Calendars> => {
+  const types = Object.keys(CALENDAR_FILES) as CalendarType[];
   const results = await Promise.all(types.map((t) => fetchCalendar(t, { graceDays, signal, now })));
-  return Object.fromEntries(results.map((r) => [r.type, r]));
-}
+  return Object.fromEntries(results.map((r) => [r.type, r])) as Calendars;
+};

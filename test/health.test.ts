@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { FeedState } from '../src/refresh.js';
-import { config } from '../src/config.js';
+import { FeedState } from '../src/refresh.ts';
+import { config } from '../src/config.ts';
 
 const quiet = { info() {}, warn() {}, error() {} };
-const ago = (ms) => new Date(Date.now() - ms).toISOString();
+const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
 
 const rendered = () => {
   const state = new FeedState({ logger: quiet });

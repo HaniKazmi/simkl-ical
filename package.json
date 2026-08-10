@@ -8,9 +8,10 @@
     "node": ">=22"
   },
   "scripts": {
-    "start": "node src/index.js",
-    "login": "node src/login.js",
-    "test": "node --test \"test/*.test.js\""
+    "start": "node src/index.ts",
+    "login": "node src/login.ts",
+    "test": "node --test \"test/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "fastify": "^5.2.1",

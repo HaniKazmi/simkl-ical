@@ -1,12 +1,39 @@
-import { config } from './config.js';
-import { readToken } from './simkl/auth.js';
-import { SimklAuthError } from './simkl/client.js';
-import { fetchAllCalendars } from './sources/calendar.js';
-import { fetchLists, getActivities, listSignatures, staleLists, LISTS } from './sources/library.js';
-import { fetchMovieReleases, reconcileReleases } from './sources/movies.js';
-import { join, idSet } from './join.js';
-import { renderIcs } from './ics.js';
-import { loadSnapshot, saveSnapshot } from './snapshot.js';
+import { config } from './config.ts';
+import { errorMessage } from './errors.ts';
+import { readToken } from './simkl/auth.ts';
+import { SimklAuthError } from './simkl/client.ts';
+import { fetchAllCalendars, type Calendars } from './sources/calendar.ts';
+import { fetchLists, getActivities, listSignatures, staleLists, LISTS } from './sources/library.ts';
+import { fetchMovieReleases, reconcileReleases } from './sources/movies.ts';
+import { join, idSet, type FeedEvent } from './join.ts';
+import { renderIcs } from './ics.ts';
+import { loadSnapshot, saveSnapshot } from './snapshot.ts';
+import type { Library, MovieRelease } from './simkl/types.ts';
+
+export interface Logger {
+  info?: (message: string) => void;
+  warn?: (message: string) => void;
+  error?: (message: string) => void;
+}
+
+export interface Health {
+  ok: boolean;
+  events: number;
+  calendarsRefreshedAt: string | null;
+  librarySyncedAt: string | null;
+  lastPolledAt: string | null;
+  renderedAt: string | null;
+  stale: boolean | undefined;
+  lastError: string | null;
+  errors: SubsystemErrors;
+  timezone: string;
+}
+
+export interface SubsystemErrors {
+  calendar: string | null;
+  library: string | null;
+  render: string | null;
+}
 
 /**
  * Holds the rendered feed in memory. Requests never trigger a fetch: a client
@@ -14,23 +41,26 @@ import { loadSnapshot, saveSnapshot } from './snapshot.js';
  * to a stale feed rather than an empty one.
  */
 export class FeedState {
-  constructor({ logger = console } = {}) {
+  log: Logger;
+  ics: string;
+  events: FeedEvent[] = [];
+  calendars: Calendars | null = null;
+  library: Library | null = null;
+  movieReleases = new Map<number, MovieRelease>();
+  listSignatures: Record<string, string> = {};
+  calendarsAt: string | null = null;
+  libraryAt: string | null = null;
+  polledAt: string | null = null;
+  renderedAt: string | null = null;
+  // One slot per subsystem. A single shared slot meant the calendar timer and
+  // the library timer cleared each other's failures on success, so a revoked
+  // token showed as unhealthy with no stated reason.
+  errors: SubsystemErrors = { calendar: null, library: null, render: null };
+  timers: NodeJS.Timeout[] = [];
+
+  constructor({ logger = console as Logger }: { logger?: Logger } = {}) {
     this.log = logger;
     this.ics = renderIcs([], { name: 'SIMKL – Upcoming' });
-    this.events = [];
-    this.calendars = null;
-    this.library = null;
-    this.movieReleases = new Map();
-    this.listSignatures = {};
-    this.calendarsAt = null;
-    this.libraryAt = null;
-    this.polledAt = null;
-    this.renderedAt = null;
-    // One slot per subsystem. A single shared slot meant the calendar timer and
-    // the library timer cleared each other's failures on success, so a revoked
-    // token showed as unhealthy with no stated reason.
-    this.errors = { calendar: null, library: null, render: null };
-    this.timers = [];
   }
 
   /**
@@ -42,8 +72,8 @@ export class FeedState {
    * is revoked — otherwise the endpoint reported healthy forever once it had
    * rendered even once.
    */
-  get health() {
-    const ageOf = (iso) => (iso ? Date.now() - Date.parse(iso) : Infinity);
+  get health(): Health {
+    const ageOf = (iso: string | null): number => (iso ? Date.now() - Date.parse(iso) : Infinity);
     const stalePoll = ageOf(this.polledAt) > config.activitiesPollMs * 3;
     const staleCalendars = ageOf(this.calendarsAt) > config.calendarRefreshMs * 3;
 
@@ -64,7 +94,7 @@ export class FeedState {
     };
   }
 
-  render() {
+  render(): void {
     if (!this.calendars || !this.library) return;
     this.events = join(this.calendars, this.library, {
       timezone: config.timezone,
@@ -77,7 +107,7 @@ export class FeedState {
   }
 
   /** Serve something immediately on boot, before any network call returns. */
-  async hydrate() {
+  async hydrate(): Promise<void> {
     const snapshot = await loadSnapshot();
     if (snapshot) {
       this.library = snapshot.library;
@@ -88,31 +118,31 @@ export class FeedState {
     await this.refreshCalendars();
   }
 
-  async refreshCalendars() {
+  async refreshCalendars(): Promise<void> {
     try {
       this.calendars = await fetchAllCalendars({ graceDays: config.graceDays });
       this.calendarsAt = new Date().toISOString();
       this.errors.calendar = null;
     } catch (err) {
-      this.errors.calendar = err.message;
-      this.log.error?.(`calendar refresh failed: ${err.message}`);
+      this.errors.calendar = errorMessage(err);
+      this.log.error?.(`calendar refresh failed: ${errorMessage(err)}`);
     }
     // Rendering is guarded separately: a bad timezone throws from inside the
     // join, and that must degrade the feed rather than take the process down.
     try {
       this.render();
     } catch (err) {
-      this.errors.render = err.message;
-      this.log.error?.(`render failed: ${err.message}`);
+      this.errors.render = errorMessage(err);
+      this.log.error?.(`render failed: ${errorMessage(err)}`);
     }
   }
 
   /**
-   * One cheap request decides whether the five library calls are worth making.
+   * One cheap request decides whether the library calls are worth making.
    * The signature covers only the timestamps that can move an item between
-   * lists — see listSignature in sources/library.js.
+   * lists — see listSignature in sources/library.ts.
    */
-  async refreshLibraryIfChanged({ force = false } = {}) {
+  async refreshLibraryIfChanged({ force = false }: { force?: boolean } = {}): Promise<void> {
     const token = await readToken();
     if (!token) {
       this.errors.library = 'no token — run `npm run login`';
@@ -128,7 +158,9 @@ export class FeedState {
       if (!stale.length) return;
 
       this.log.info?.(`refetching ${stale.length}/${LISTS.length} lists: ${stale.map((l) => l.key).join(', ')}`);
-      Object.assign(this.library ?? (this.library = {}), await fetchLists(token, stale));
+      const library: Library = this.library ?? {};
+      Object.assign(library, await fetchLists(token, stale));
+      this.library = library;
 
       // Release dates only need re-reading when the film list itself changed;
       // they are stable and the lookups are CDN-cached by id. Marking an episode
@@ -136,7 +168,7 @@ export class FeedState {
       let filmsComplete = true;
       if (stale.some((l) => l.key === 'movies_plantowatch')) {
         const filmIds = [...idSet(this.library.movies_plantowatch)];
-        const fetched = filmIds.length ? await fetchMovieReleases(filmIds) : new Map();
+        const fetched = filmIds.length ? await fetchMovieReleases(filmIds) : new Map<number, MovieRelease>();
         ({ releases: this.movieReleases, complete: filmsComplete } = reconcileReleases(
           this.movieReleases,
           filmIds,
@@ -165,23 +197,23 @@ export class FeedState {
     } catch (err) {
       // A revoked token must not empty the feed — keep serving the last render.
       const prefix = err instanceof SimklAuthError ? 'AUTH' : 'library';
-      this.errors.library = `${prefix}: ${err.message}`;
+      this.errors.library = `${prefix}: ${errorMessage(err)}`;
       this.log.error?.(
         err instanceof SimklAuthError
           // The `--` matters: npm swallows a bare --force instead of passing it on.
-          ? `SIMKL rejected the token. Re-run \`npm run login -- --force\`. Serving the last good feed.`
-          : `library refresh failed: ${err.message}`,
+          ? 'SIMKL rejected the token. Re-run `npm run login -- --force`. Serving the last good feed.'
+          : `library refresh failed: ${errorMessage(err)}`,
       );
     }
   }
 
-  start() {
-    this.timers.push(setInterval(() => this.refreshCalendars(), config.calendarRefreshMs));
-    this.timers.push(setInterval(() => this.refreshLibraryIfChanged(), config.activitiesPollMs));
+  start(): void {
+    this.timers.push(setInterval(() => void this.refreshCalendars(), config.calendarRefreshMs));
+    this.timers.push(setInterval(() => void this.refreshLibraryIfChanged(), config.activitiesPollMs));
     for (const t of this.timers) t.unref?.();
   }
 
-  stop() {
+  stop(): void {
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
   }

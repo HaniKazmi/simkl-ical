@@ -1,15 +1,16 @@
-import Fastify from 'fastify';
+import Fastify, { type FastifyInstance } from 'fastify';
 import { timingSafeEqual } from 'node:crypto';
-import { config } from './config.js';
+import { config } from './config.ts';
+import type { FeedState } from './refresh.ts';
 
 /** Constant-time compare so the token cannot be recovered by timing the 404s. */
-function tokenMatches(candidate) {
+const tokenMatches = (candidate: string): boolean => {
   const a = Buffer.from(String(candidate));
   const b = Buffer.from(String(config.feedToken));
   return a.length === b.length && timingSafeEqual(a, b);
-}
+};
 
-export function buildServer(state, { logger = true } = {}) {
+export const buildServer = (state: FeedState, { logger = true }: { logger?: boolean } = {}): FastifyInstance => {
   const app = Fastify({
     logger: logger && {
       // The feed token is a credential; keep it out of the logs.
@@ -25,7 +26,7 @@ export function buildServer(state, { logger = true } = {}) {
     return reply.code(health.ok ? 200 : 503).send(health);
   });
 
-  app.get('/:token/feed.ics', async (req, reply) => {
+  app.get<{ Params: { token: string } }>('/:token/feed.ics', async (req, reply) => {
     if (!config.feedToken || !tokenMatches(req.params.token)) {
       // 404 rather than 401: an unauthenticated caller learns nothing about
       // whether this path serves anything at all.
@@ -40,4 +41,4 @@ export function buildServer(state, { logger = true } = {}) {
   });
 
   return app;
-}
+};

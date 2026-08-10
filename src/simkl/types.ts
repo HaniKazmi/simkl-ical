@@ -131,6 +131,7 @@ export interface CategoryActivity {
 
 export interface Activities {
   all?: string;
+  settings?: { all?: string | null };
   /** Note the name: the sync path says `shows`, activities says `tv_shows`. */
   tv_shows?: CategoryActivity;
   anime?: CategoryActivity;

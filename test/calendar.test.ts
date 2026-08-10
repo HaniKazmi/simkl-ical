@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { archiveUrl, rollingUrl, monthsBack, mergeCalendars } from '../src/sources/calendar.js';
+import { archiveUrl, rollingUrl, monthsBack, mergeCalendars } from '../src/sources/calendar.ts';
+import type { CalendarFile } from '../src/simkl/types.ts';
 
 test('archive URLs use an unpadded month', () => {
   // /2026/8/tv.json returns 200; /2026/08/tv.json returns 404. Verified live.
@@ -40,14 +41,14 @@ test('monthsBack never emits a padded month', () => {
 });
 
 test('merging de-duplicates episodes and unions metadata', () => {
-  const archive = {
-    calendar: [{ simkl_id: 1, date: '2026-07-01T20:00:00Z', episode: { season: 1, episode: 1 } }],
+  const archive: CalendarFile = {
+    calendar: [{ simkl_id: 1, date: '2026-07-01T20:00:00Z', finale_type: null, episode: { season: 1, episode: 1, title: null, url: '' } }],
     metadata: { 1: { title: 'From archive' }, 2: { title: 'Archive only' } },
   };
-  const rolling = {
+  const rolling: CalendarFile = {
     calendar: [
-      { simkl_id: 1, date: '2026-07-01T21:00:00Z', episode: { season: 1, episode: 1 } }, // same episode, newer time
-      { simkl_id: 3, date: '2026-08-11T20:00:00Z', episode: { season: 2, episode: 4 } },
+      { simkl_id: 1, date: '2026-07-01T21:00:00Z', finale_type: null, episode: { season: 1, episode: 1, title: null, url: '' } }, // same episode, newer time
+      { simkl_id: 3, date: '2026-08-11T20:00:00Z', finale_type: null, episode: { season: 2, episode: 4, title: null, url: '' } },
     ],
     metadata: { 1: { title: 'From rolling' } },
   };
@@ -56,12 +57,12 @@ test('merging de-duplicates episodes and unions metadata', () => {
 
   assert.equal(merged.calendar.length, 2, 'the duplicate episode should collapse');
   // Rolling is merged last, so it wins on conflict.
-  assert.equal(merged.calendar.find((e) => e.simkl_id === 1).date, '2026-07-01T21:00:00Z');
-  assert.equal(merged.metadata['1'].title, 'From rolling');
-  assert.equal(merged.metadata['2'].title, 'Archive only');
+  assert.equal(merged.calendar.find((e) => e.simkl_id === 1)!.date, '2026-07-01T21:00:00Z');
+  assert.equal(merged.metadata['1']!.title, 'From rolling');
+  assert.equal(merged.metadata['2']!.title, 'Archive only');
 });
 
 test('merging tolerates missing or empty parts', () => {
   assert.deepEqual(mergeCalendars([]), { calendar: [], metadata: {} });
-  assert.deepEqual(mergeCalendars([null, undefined, {}]), { calendar: [], metadata: {} });
+  assert.deepEqual(mergeCalendars([null, undefined, { calendar: [], metadata: {} }]), { calendar: [], metadata: {} });
 });

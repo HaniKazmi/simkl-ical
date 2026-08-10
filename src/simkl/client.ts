@@ -1,4 +1,4 @@
-import { config, requireClientId } from '../config.js';
+import { config, requireClientId } from '../config.ts';
 
 const API_BASE = 'https://api.simkl.com';
 
@@ -9,10 +9,13 @@ const MAX_ATTEMPTS = 5;
 // cycle until undici's 300s default.
 const TIMEOUT_MS = 30_000;
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 export class SimklError extends Error {
-  constructor(message, status, body) {
+  status: number | undefined;
+  body: string | undefined;
+
+  constructor(message: string, status?: number, body?: string) {
     super(message);
     this.name = 'SimklError';
     this.status = status;
@@ -26,27 +29,29 @@ export class SimklError extends Error {
  * serving the last good snapshot instead of emptying the feed.
  */
 export class SimklAuthError extends SimklError {
-  constructor(message, status, body) {
+  constructor(message: string, status?: number, body?: string) {
     super(message, status, body);
     this.name = 'SimklAuthError';
   }
 }
 
-export function baseHeaders() {
-  return {
-    'User-Agent': `${config.appName}/${config.appVersion}`,
-    'simkl-api-key': requireClientId(),
-    Accept: 'application/json',
-  };
-}
+const baseHeaders = (): Record<string, string> => ({
+  'User-Agent': `${config.appName}/${config.appVersion}`,
+  'simkl-api-key': requireClientId(),
+  Accept: 'application/json',
+});
 
 /** Params every request carries, per the SIMKL docs. */
-export function baseParams() {
-  return {
-    client_id: requireClientId(),
-    'app-name': config.appName,
-    'app-version': config.appVersion,
-  };
+const baseParams = (): Record<string, string> => ({
+  client_id: requireClientId(),
+  'app-name': config.appName,
+  'app-version': config.appVersion,
+});
+
+export interface ApiGetOptions {
+  token?: string | null;
+  params?: Record<string, string | number | undefined | null>;
+  signal?: AbortSignal;
 }
 
 /**
@@ -54,7 +59,7 @@ export function baseParams() {
  * Verified against the live API: omitting client_id entirely returns 412,
  * a valid client_id without a token returns 401.
  */
-export async function apiGet(path, { token, params = {}, signal } = {}) {
+export const apiGet = async <T>(path: string, { token, params = {}, signal }: ApiGetOptions = {}): Promise<T> => {
   const url = new URL(path, API_BASE);
   for (const [k, v] of Object.entries({ ...baseParams(), ...params })) {
     if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
@@ -63,9 +68,9 @@ export async function apiGet(path, { token, params = {}, signal } = {}) {
   const headers = baseHeaders();
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  let lastError;
+  let lastError: unknown;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
-    let res;
+    let res: Response;
     try {
       res = await fetch(url, { headers, signal: signal ?? AbortSignal.timeout(TIMEOUT_MS) });
     } catch (err) {
@@ -75,7 +80,7 @@ export async function apiGet(path, { token, params = {}, signal } = {}) {
       continue;
     }
 
-    if (res.ok) return res.json();
+    if (res.ok) return (await res.json()) as T;
 
     const body = await res.text().catch(() => '');
 
@@ -94,4 +99,4 @@ export async function apiGet(path, { token, params = {}, signal } = {}) {
   }
 
   throw lastError;
-}
+};

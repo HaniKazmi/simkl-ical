@@ -1,19 +1,20 @@
 import ical, { ICalCalendarMethod, ICalEventTransparency } from 'ical-generator';
-import { config } from './config.js';
+import { config } from './config.ts';
+import type { FeedEvent } from './join.ts';
 
 /** YYYY-MM-DD -> Date at UTC midnight, for all-day events. */
-function dateOnly(ymd, addDays = 0) {
-  const [y, m, d] = ymd.split('-').map(Number);
+const dateOnly = (ymd: string, addDays = 0): Date => {
+  const [y, m, d] = ymd.split('-').map(Number) as [number, number, number];
   return new Date(Date.UTC(y, m - 1, d + addDays));
-}
+};
 
 /**
  * Episode titles are deliberately kept out of SUMMARY — a calendar surfaces
  * them without the user choosing to look, and they occasionally spoil. The
  * title lives here, where clients only show it on tap.
  */
-function description(event) {
-  const lines = [];
+const description = (event: FeedEvent): string => {
+  const lines: string[] = [];
   if (event.episodeTitle) lines.push(event.episodeTitle);
 
   const facts = [event.detail, event.runtime].filter(Boolean);
@@ -21,9 +22,14 @@ function description(event) {
   if (event.url) lines.push(event.url);
 
   return lines.join('\n');
+};
+
+export interface RenderOptions {
+  name?: string;
+  timezone?: string;
 }
 
-export function renderIcs(events, { name = 'SIMKL', timezone = config.timezone } = {}) {
+export const renderIcs = (events: FeedEvent[], { name = 'SIMKL', timezone = config.timezone }: RenderOptions = {}): string => {
   const cal = ical({
     name,
     prodId: { company: 'simkl-ical', product: 'simkl-ical', language: 'EN' },
@@ -55,4 +61,4 @@ export function renderIcs(events, { name = 'SIMKL', timezone = config.timezone }
   }
 
   return cal.toString();
-}
+};

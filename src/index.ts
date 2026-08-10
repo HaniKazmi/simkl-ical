@@ -1,12 +1,13 @@
-import { config, requireClientId, requireValidTimezone } from './config.js';
-import { FeedState } from './refresh.js';
-import { buildServer } from './server.js';
+import { config, requireClientId, requireValidTimezone } from './config.ts';
+import { errorMessage, errorStack } from './errors.ts';
+import { FeedState } from './refresh.ts';
+import { buildServer } from './server.ts';
 
 try {
   requireClientId();
   requireValidTimezone();
 } catch (err) {
-  console.error(err.message);
+  console.error(errorMessage(err));
   process.exit(1);
 }
 
@@ -24,15 +25,15 @@ const app = buildServer(state);
 await app.listen({ port: config.port, host: '0.0.0.0' });
 app.log.info(`listening on :${config.port} in ${config.timezone}, warming up`);
 
-(async () => {
+void (async () => {
   await state.hydrate();
   await state.refreshLibraryIfChanged();
   state.start();
   app.log.info(`ready: serving ${state.events.length} events`);
-})().catch((err) => {
+})().catch((err: unknown) => {
   // Never fatal: the server keeps answering /healthz so the failure is visible.
-  state.errors.render = `startup: ${err.message}`;
-  app.log.error(`warm-up failed: ${err.stack ?? err.message}`);
+  state.errors.render = `startup: ${errorMessage(err)}`;
+  app.log.error(`warm-up failed: ${errorStack(err)}`);
 });
 
 for (const signal of ['SIGINT', 'SIGTERM']) {

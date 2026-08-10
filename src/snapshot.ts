@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { config } from './config.js';
+import { config } from './config.ts';
+import type { Library, MovieRelease } from './simkl/types.ts';
 
 /**
  * The last known library, persisted so a restart serves immediately instead of
@@ -8,12 +9,26 @@ import { config } from './config.js';
  * disk; that conversion is the only reason this needs its own module rather
  * than being two JSON calls.
  */
-const snapshotPath = () => join(config.dataDir, 'snapshot.json');
+const snapshotPath = (): string => join(config.dataDir, 'snapshot.json');
 
-export async function loadSnapshot() {
-  let raw;
+export interface Snapshot {
+  library: Library | null;
+  movieReleases: Map<number, MovieRelease>;
+  listSignatures: Record<string, string>;
+  savedAt: string | null;
+}
+
+interface StoredSnapshot {
+  library?: Library | null;
+  movieReleases?: MovieRelease[];
+  listSignatures?: Record<string, string>;
+  savedAt?: string;
+}
+
+export const loadSnapshot = async (): Promise<Snapshot | null> => {
+  let raw: StoredSnapshot;
   try {
-    raw = JSON.parse(await readFile(snapshotPath(), 'utf8'));
+    raw = JSON.parse(await readFile(snapshotPath(), 'utf8')) as StoredSnapshot;
   } catch {
     // Absent or unreadable: first run, or a half-written file. Either way the
     // next poll refetches everything.
@@ -28,9 +43,15 @@ export async function loadSnapshot() {
     listSignatures: raw.listSignatures ?? {},
     savedAt: raw.savedAt ?? null,
   };
+};
+
+export interface SnapshotInput {
+  library: Library | null;
+  movieReleases: Map<number, MovieRelease>;
+  listSignatures: Record<string, string>;
 }
 
-export async function saveSnapshot({ library, movieReleases, listSignatures }) {
+export const saveSnapshot = async ({ library, movieReleases, listSignatures }: SnapshotInput): Promise<void> => {
   await mkdir(config.dataDir, { recursive: true });
   await writeFile(
     snapshotPath(),
@@ -41,4 +62,4 @@ export async function saveSnapshot({ library, movieReleases, listSignatures }) {
       savedAt: new Date().toISOString(),
     }),
   );
-}
+};

@@ -144,7 +144,7 @@ special about the setup.
 
 ## Running from source
 
-Requires Node 22+.
+Requires Node 22.18+ (for native TypeScript support).
 
 ```sh
 npm install
@@ -152,7 +152,17 @@ cp .env.example .env
 npm run login
 npm start
 npm test
+npm run typecheck
 ```
+
+**No build step.** The source is TypeScript, and Node strips the types itself — there is no
+`dist/`, no bundler, and the code that runs is the code you read. `tsc` is a dev dependency
+used only for `npm run typecheck`; the container never compiles anything.
+
+That constrains the source to erasable syntax: no enums, namespaces, parameter properties
+or decorators. `erasableSyntaxOnly` in `tsconfig.json` makes any of those a compile error
+rather than a runtime failure. Import specifiers carry the real extension
+(`import './config.ts'`), as Node requires.
 
 Routes: `GET /:token/feed.ics` and `GET /healthz` (unauthenticated, reports event count and
 last-refresh times).

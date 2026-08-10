@@ -1,9 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { listSignature, listSignatures, staleLists, LISTS } from '../src/sources/library.js';
+import { listSignature, listSignatures, staleLists, LISTS } from '../src/sources/library.ts';
+import type { Activities, ListDefinition } from '../src/simkl/types.ts';
+
+/** The fixture always populates every category, so tests can mutate them freely. */
+type FullActivities = Activities & Required<Pick<Activities, 'tv_shows' | 'anime' | 'movies'>>;
 
 // Shape taken from a real /sync/activities response.
-const activities = () => ({
+const activities = (): FullActivities => ({
   all: '2026-08-10T11:52:03Z',
   settings: { all: '2026-07-26T13:06:36Z' },
   tv_shows: {
@@ -22,7 +26,7 @@ const activities = () => ({
   movies: { all: '2026-08-01T14:44:43Z', rated_at: '2026-08-01T14:25:00Z', plantowatch: '2026-07-25T14:17:58Z', completed: '2026-08-01T14:44:43Z', removed_from_list: '2026-07-26T11:01:42Z' },
 });
 
-const keysOf = (lists) => lists.map((l) => l.key).sort();
+const keysOf = (lists: ListDefinition[]): string[] => lists.map((l) => l.key).sort();
 
 test('the list set covers watching, plan-to-watch and completed', () => {
   assert.deepEqual(keysOf(LISTS), [

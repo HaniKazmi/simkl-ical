@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { renderIcs } from '../src/ics.js';
+import { renderIcs } from '../src/ics.ts';
+import type { FeedEvent } from '../src/join.ts';
 
-const event = {
+const event: FeedEvent = {
   uid: 'simkl-3407-s11e03@simkl-ical',
   kind: 'tv',
   date: '2026-08-10',
@@ -10,6 +11,7 @@ const event = {
   episodeTitle: 'Our Flag Means Medical Coverage',
   detail: 'FOX',
   runtime: '23m',
+  finale: null,
   url: 'https://simkl.com/tv/3407/futurama/season-11/episode-3/',
 };
 
@@ -22,7 +24,7 @@ test('all-day events use DATE values with an exclusive DTEND', () => {
 test('UIDs are derived, so re-rendering updates rather than duplicates', () => {
   const first = renderIcs([event]);
   const second = renderIcs([event]);
-  const uidOf = (ics) => ics.match(/UID:(.+)/)[1].trim();
+  const uidOf = (ics: string) => ics.match(/UID:(.+)/)![1]!.trim();
   assert.equal(uidOf(first), uidOf(second));
   assert.equal(uidOf(first), 'simkl-3407-s11e03@simkl-ical');
 });

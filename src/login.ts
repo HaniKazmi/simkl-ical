@@ -4,7 +4,8 @@
 //
 //   npm run login
 //   docker compose run --rm simkl-ical npm run login
-import { login, writeToken, readToken } from './simkl/auth.js';
+import { login, writeToken, readToken } from './simkl/auth.ts';
+import { errorMessage } from './errors.ts';
 
 const existing = await readToken();
 if (existing && !process.argv.includes('--force')) {
@@ -30,6 +31,6 @@ try {
   const path = await writeToken(token);
   console.log(`\n\n  Authorised. Token written to ${path}\n`);
 } catch (err) {
-  console.error(`\n\n  Login failed: ${err.message}\n`);
+  console.error(`\n\n  Login failed: ${errorMessage(err)}\n`);
   process.exit(1);
 }

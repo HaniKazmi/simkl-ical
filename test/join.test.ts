@@ -1,6 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { localDate, releaseDate, shiftDate, extractItems, itemSimklId, idSet, episodeCode, join } from '../src/join.js';
+import { localDate, releaseDate, shiftDate, extractItems, itemSimklId, idSet, episodeCode, join } from '../src/join.ts';
+import type { CalendarEntry, Library, MergedCalendar, MovieRelease } from '../src/simkl/types.ts';
+import type { Calendars } from '../src/sources/calendar.ts';
+
+const show = (simkl: number, title = `Show ${simkl}`) => ({ show: { title, ids: { simkl } } });
+const movie = (simkl: number, title = `Film ${simkl}`) => ({ movie: { title, ids: { simkl } } });
+const calendarOf = (type: 'tv' | 'anime', calendar: CalendarEntry[], metadata: MergedCalendar['metadata']): MergedCalendar =>
+  ({ type, calendar, metadata, lastModified: null });
 
 // A 9pm Tuesday ET broadcast is stamped 01:00Z Wednesday. Slicing the ISO string
 // would put it on Wednesday for everyone, which is wrong for the US audience.
@@ -26,16 +33,16 @@ test('releaseDate normalises to a plain date', () => {
 test('extractItems copes with the shapes the API actually returns', () => {
   assert.deepEqual(extractItems({}), []);          // empty list
   assert.deepEqual(extractItems(null), []);
-  assert.deepEqual(extractItems({ shows: [1] }), [1]);
-  assert.deepEqual(extractItems({ anime: [2] }), [2]);
-  assert.deepEqual(extractItems({ movies: [3] }), [3]);
+  assert.deepEqual(extractItems({ shows: [show(1)] }), [show(1)]);
+  assert.deepEqual(extractItems({ anime: [show(2)] }), [show(2)]);
+  assert.deepEqual(extractItems({ movies: [movie(3)] }), [movie(3)]);
 });
 
 test('itemSimklId bridges the library ids.simkl to the calendar simkl_id', () => {
-  assert.equal(itemSimklId({ show: { ids: { simkl: 3407 } } }), 3407);
-  assert.equal(itemSimklId({ movie: { ids: { simkl: 174094 } } }), 174094);
-  assert.equal(itemSimklId({ show: { ids: {} } }), null);
-  assert.equal(idSet({ shows: [{ show: { ids: { simkl: 1 } } }] }).has(1), true);
+  assert.equal(itemSimklId(show(3407)), 3407);
+  assert.equal(itemSimklId(movie(174094)), 174094);
+  assert.equal(itemSimklId({ show: { title: 'No ids', ids: {} } }), null);
+  assert.equal(idSet({ shows: [show(1)] }).has(1), true);
 });
 
 test('episodeCode pads, and omits the season for unseasoned anime', () => {
@@ -55,33 +62,36 @@ test('episodeCode returns null rather than formatting a missing episode', () => 
 
 const NOW = new Date('2026-08-10T12:00:00Z');
 
-const tvEntry = (id, season, episode, date, finale = null) => ({
+const tvEntry = (
+  id: number,
+  season: number | null,
+  episode: number,
+  date: string,
+  finale: 1 | 2 | 3 | null = null,
+): CalendarEntry => ({
   simkl_id: id,
   date,
   finale_type: finale,
   episode: { season, episode, title: `Ep ${episode}`, url: `https://simkl.com/tv/${id}/` },
 });
 
-const calendars = (tv = []) => ({
-  tv: {
-    calendar: tv,
-    metadata: {
-      100: { title: 'Watched Show', network: 'HBO', runtime: '60m', url: '/tv/100/x' },
-      200: { title: 'Planned Show', url: '/tv/200/y' },
-      400: { title: 'Completed Show', url: '/tv/400/z' },
-    },
-  },
-  anime: { calendar: [], metadata: {} },
+const calendars = (tv: CalendarEntry[] = []): Partial<Calendars> => ({
+  tv: calendarOf('tv', tv, {
+    100: { title: 'Watched Show', network: 'HBO', runtime: '60m', url: '/tv/100/x' },
+    200: { title: 'Planned Show', url: '/tv/200/y' },
+    400: { title: 'Completed Show', url: '/tv/400/z' },
+  }),
+  anime: calendarOf('anime', [], {}),
 });
 
-const library = {
-  shows_watching: { shows: [{ show: { ids: { simkl: 100 } } }] },
-  shows_plantowatch: { shows: [{ show: { ids: { simkl: 200 } } }] },
-  shows_completed: { shows: [{ show: { ids: { simkl: 400 } } }] },
+const library: Library = {
+  shows_watching: { shows: [show(100, 'Watched Show')] },
+  shows_plantowatch: { shows: [show(200, 'Planned Show')] },
+  shows_completed: { shows: [show(400, 'Completed Show')] },
   anime_watching: {},
   anime_plantowatch: {},
   anime_completed: {},
-  movies_plantowatch: { movies: [{ movie: { ids: { simkl: 300 } } }] },
+  movies_plantowatch: { movies: [movie(300, 'Planned Film')] },
 };
 
 test('watching shows contribute every upcoming episode', () => {
@@ -121,16 +131,13 @@ test('completed shows are not limited to premieres the way plan-to-watch is', ()
 // SIMKL's anime calendar carries no season field at all, so a premiere rule
 // requiring season === 1 could never match anything anime.
 test('anime plan-to-watch premieres match despite having no season', () => {
-  const animeLibrary = { ...library, anime_plantowatch: { anime: [{ show: { ids: { simkl: 500 } } }] } };
-  const cals = {
-    tv: { calendar: [], metadata: {} },
-    anime: {
-      calendar: [
-        { simkl_id: 500, date: '2026-08-15T15:00:00Z', finale_type: null, episode: { season: null, episode: 1, title: 'a' } },
-        { simkl_id: 500, date: '2026-08-22T15:00:00Z', finale_type: null, episode: { season: null, episode: 2, title: 'b' } },
-      ],
-      metadata: { 500: { title: 'Some Anime' } },
-    },
+  const animeLibrary = { ...library, anime_plantowatch: { anime: [show(500, 'Some Anime')] } };
+  const cals: Partial<Calendars> = {
+    tv: calendarOf('tv', [], {}),
+    anime: calendarOf('anime', [
+      { simkl_id: 500, date: '2026-08-15T15:00:00Z', finale_type: null, episode: { season: null, episode: 1, title: 'a', url: '' } },
+      { simkl_id: 500, date: '2026-08-22T15:00:00Z', finale_type: null, episode: { season: null, episode: 2, title: 'b', url: '' } },
+    ], { 500: { title: 'Some Anime' } }),
   };
   const events = join(cals, animeLibrary, { timezone: 'Europe/London', now: NOW });
   assert.equal(events.length, 1, 'only the premiere');
@@ -138,16 +145,13 @@ test('anime plan-to-watch premieres match despite having no season', () => {
 });
 
 test('an entry with no episode object gets a date-keyed uid, not "Eundefined"', () => {
-  const animeLibrary = { ...library, anime_watching: { anime: [{ show: { ids: { simkl: 600 } } }] } };
-  const cals = {
-    tv: { calendar: [], metadata: {} },
-    anime: {
-      calendar: [
-        { simkl_id: 600, date: '2026-08-27T15:00:00Z', finale_type: null },
-        { simkl_id: 600, date: '2026-08-28T15:00:00Z', finale_type: null },
-      ],
-      metadata: { 600: { title: 'Some Anime' } },
-    },
+  const animeLibrary = { ...library, anime_watching: { anime: [show(600, 'Some Anime')] } };
+  const cals: Partial<Calendars> = {
+    tv: calendarOf('tv', [], {}),
+    anime: calendarOf('anime', [
+      { simkl_id: 600, date: '2026-08-27T15:00:00Z', finale_type: null },
+      { simkl_id: 600, date: '2026-08-28T15:00:00Z', finale_type: null },
+    ], { 600: { title: 'Some Anime' } }),
   };
   const events = join(cals, animeLibrary, { timezone: 'Europe/London', now: NOW });
   assert.equal(events.length, 2, 'two episode-less entries must not collapse onto one uid');
@@ -203,7 +207,7 @@ test('the grace boundary is inclusive on its oldest day', () => {
 test('an already-watched episode still lingers', () => {
   const watchedUpToDate = {
     ...library,
-    shows_watching: { shows: [{ show: { ids: { simkl: 100 } }, last_watched: 'S01E09', next_to_watch: null, watched_episodes_count: 9, total_episodes_count: 9 }] },
+    shows_watching: { shows: [{ ...show(100), last_watched: 'S01E09', next_to_watch: null, watched_episodes_count: 9, total_episodes_count: 9 }] },
   };
   const events = join(
     calendars([tvEntry(100, 1, 1, '2026-08-05T20:00:00Z')]),
@@ -244,8 +248,8 @@ test('episode titles stay out of the summary', () => {
   assert.equal(events[0].episodeTitle, 'Ep 3');
 });
 
-const filmReleases = (date) =>
-  new Map([[300, { simkl_id: 300, title: 'Planned Film', date, releaseType: 3, runtime: '140m', url: 'https://simkl.com/movies/300' }]]);
+const filmReleases = (date: string): Map<number, MovieRelease> =>
+  new Map([[300, { simkl_id: 300, title: 'Planned Film', date, releaseType: 3, country: 'GB', runtime: '140m', url: 'https://simkl.com/movies/300' }]]);
 
 test('plan-to-watch films are included by release date', () => {
   const events = join(calendars(), library, { timezone: 'Europe/London', now: NOW, movieReleases: filmReleases('2026-08-20') });

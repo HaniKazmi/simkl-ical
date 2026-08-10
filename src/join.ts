@@ -1,4 +1,15 @@
-import { config } from './config.js';
+import { config } from './config.ts';
+import type { Calendars } from './sources/calendar.ts';
+import type {
+  CalendarEntry,
+  FinaleType,
+  Library,
+  LibraryItem,
+  ListResponse,
+  MergedCalendar,
+  MovieRelease,
+  ShowMetadata,
+} from './simkl/types.ts';
 
 /**
  * Local calendar date (YYYY-MM-DD) for an instant, in a given IANA zone.
@@ -8,53 +19,50 @@ import { config } from './config.js';
  * stamped 01:00Z Wednesday, and naive slicing would put it on the wrong day.
  * 'en-CA' is used because it formats as YYYY-MM-DD.
  */
-export function localDate(iso, timeZone) {
-  return new Intl.DateTimeFormat('en-CA', {
+export const localDate = (iso: string, timeZone: string): string =>
+  new Intl.DateTimeFormat('en-CA', {
     timeZone,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
   }).format(new Date(iso));
-}
 
 /**
  * Film release dates arrive from /movies/{id} already as plain YYYY-MM-DD in
  * the viewer's country, so there is no instant to convert and no timezone to
  * apply. This only guards against a full ISO timestamp sneaking through.
  */
-export function releaseDate(value) {
-  return String(value).slice(0, 10);
-}
+export const releaseDate = (value: string): string => String(value).slice(0, 10);
 
 /**
  * Shift a YYYY-MM-DD date by whole days. Arithmetic is done at UTC noon so a
  * DST transition can never push the result onto the neighbouring day.
  */
-export function shiftDate(ymd, days) {
-  const [y, m, d] = ymd.split('-').map(Number);
+export const shiftDate = (ymd: string, days: number): string => {
+  const [y, m, d] = ymd.split('-').map(Number) as [number, number, number];
   const shifted = new Date(Date.UTC(y, m - 1, d, 12));
   shifted.setUTCDate(shifted.getUTCDate() + days);
   return shifted.toISOString().slice(0, 10);
-}
+};
 
 /** Library responses nest under the type key, and come back as {} when empty. */
-export function extractItems(response) {
+export const extractItems = (response: ListResponse | LibraryItem[] | null | undefined): LibraryItem[] => {
   if (!response || typeof response !== 'object') return [];
   if (Array.isArray(response)) return response;
   return response.shows ?? response.anime ?? response.movies ?? [];
-}
+};
 
 /**
  * The library calls this field `ids.simkl`; the calendar calls it `simkl_id`.
  * Bridging the two names is the whole join.
  */
-export function itemSimklId(item) {
+export const itemSimklId = (item: LibraryItem | null | undefined): number | null => {
   const ids = item?.show?.ids ?? item?.movie?.ids;
   return ids?.simkl ?? ids?.simkl_id ?? null;
-}
+};
 
-export function idSet(...responses) {
-  const set = new Set();
+export const idSet = (...responses: Array<ListResponse | LibraryItem[] | null | undefined>): Set<number> => {
+  const set = new Set<number>();
   for (const response of responses) {
     for (const item of extractItems(response)) {
       const id = itemSimklId(item);
@@ -62,16 +70,20 @@ export function idSet(...responses) {
     }
   }
   return set;
-}
+};
 
-const FINALE_LABEL = { 1: 'Mid-season finale', 2: 'Season finale', 3: 'Series finale' };
+const FINALE_LABEL: Record<FinaleType, string> = {
+  1: 'Mid-season finale',
+  2: 'Season finale',
+  3: 'Series finale',
+};
 
 /**
  * Human label for a film's release type. Presentation, so it lives here with
  * the rest of the event composition rather than in the module that fetches
  * releases — that was the one dependency pointing from domain logic into I/O.
  */
-const RELEASE_LABEL = {
+const RELEASE_LABEL: Record<number, string> = {
   1: 'Premiere',
   2: 'Limited release',
   3: 'In cinemas',
@@ -80,11 +92,10 @@ const RELEASE_LABEL = {
   6: 'TV',
 };
 
-export function releaseLabel(type) {
-  return RELEASE_LABEL[type] ?? 'Release';
-}
+export const releaseLabel = (type: number | null | undefined): string =>
+  (type != null ? RELEASE_LABEL[type] : undefined) ?? 'Release';
 
-const pad = (n) => String(n).padStart(2, '0');
+const pad = (n: number): string => String(n).padStart(2, '0');
 
 /**
  * "S04E03", or "E08" for anime, which SIMKL numbers without a season.
@@ -93,36 +104,83 @@ const pad = (n) => String(n).padStart(2, '0');
  * carries occasional entries with no `episode` object, and formatting those
  * produced "Eundefined" in both the summary and the UID.
  */
-export function episodeCode(season, episode) {
+export const episodeCode = (season: number | null | undefined, episode: number | null | undefined): string | null => {
   if (episode == null) return null;
   if (season == null) return `E${pad(episode)}`;
   return `S${pad(season)}E${pad(episode)}`;
-}
+};
+
+export type EventKind = 'tv' | 'anime' | 'movie';
 
 /**
- * The one event constructor, used by both the episode and film paths.
- *
- * `detail` is a single line of context — a broadcast network for episodes,
- * a release type for films. It was called `network`, which was a lie on half
- * its values.
+ * The one event shape. Declared rather than implied so the two constructors
+ * below and the ICS renderer share a contract — these drifted apart once
+ * already when films had their own inline builder.
  */
-function makeEvent({ uid, kind, date, title, code = null, finale = null, detail = null, runtime = null, episodeTitle = null, url = null }) {
-  return {
-    // Derived, never random: a fresh UID on every render makes clients duplicate
-    // events instead of updating them.
-    uid,
-    kind,
-    date,
-    summary: `${title}${code ? ` – ${code}` : ''}${finale ? ` (${finale})` : ''}`,
-    episodeTitle,
-    detail,
-    runtime,
-    finale,
-    url,
-  };
+export interface FeedEvent {
+  uid: string;
+  kind: EventKind;
+  /** Local calendar date, YYYY-MM-DD. */
+  date: string;
+  summary: string;
+  episodeTitle: string | null;
+  /**
+   * One line of context: a broadcast network for episodes, a release type for
+   * films. Was called `network`, which was a lie on half its values.
+   */
+  detail: string | null;
+  runtime: string | null;
+  finale: string | null;
+  url: string | null;
 }
 
-function buildEpisodeEvent({ entry, meta, kind, date }) {
+interface MakeEventInput {
+  uid: string;
+  kind: EventKind;
+  date: string;
+  title: string;
+  code?: string | null;
+  finale?: string | null;
+  detail?: string | null;
+  runtime?: string | null;
+  episodeTitle?: string | null;
+  url?: string | null;
+}
+
+/** The one event constructor, used by both the episode and film paths. */
+const makeEvent = ({
+  uid,
+  kind,
+  date,
+  title,
+  code = null,
+  finale = null,
+  detail = null,
+  runtime = null,
+  episodeTitle = null,
+  url = null,
+}: MakeEventInput): FeedEvent => ({
+  // Derived, never random: a fresh UID on every render makes clients duplicate
+  // events instead of updating them.
+  uid,
+  kind,
+  date,
+  summary: `${title}${code ? ` – ${code}` : ''}${finale ? ` (${finale})` : ''}`,
+  episodeTitle,
+  detail,
+  runtime,
+  finale,
+  url,
+});
+
+interface EpisodeEventInput {
+  entry: CalendarEntry;
+  meta: ShowMetadata | undefined;
+  kind: EventKind;
+  date: string;
+}
+
+const buildEpisodeEvent = ({ entry, meta, kind, date }: EpisodeEventInput): FeedEvent => {
   const id = entry.simkl_id;
   const title = meta?.title ?? `SIMKL ${id}`;
   const code = episodeCode(entry.episode?.season, entry.episode?.episode);
@@ -136,16 +194,16 @@ function buildEpisodeEvent({ entry, meta, kind, date }) {
     date,
     title,
     code,
-    finale: FINALE_LABEL[entry.finale_type] ?? null,
+    finale: entry.finale_type != null ? (FINALE_LABEL[entry.finale_type] ?? null) : null,
     detail: meta?.network ?? null,
     runtime: meta?.runtime ?? null,
     episodeTitle: entry.episode?.title ?? null,
     url: entry.episode?.url ?? (meta?.url ? `https://simkl.com${meta.url}` : null),
   });
-}
+};
 
-function buildFilmEvent(release) {
-  return makeEvent({
+const buildFilmEvent = (release: MovieRelease): FeedEvent =>
+  makeEvent({
     uid: `simkl-movie-${release.simkl_id}@simkl-ical`,
     kind: 'movie',
     date: releaseDate(release.date),
@@ -154,7 +212,6 @@ function buildFilmEvent(release) {
     runtime: release.runtime ?? null,
     url: release.url ?? null,
   });
-}
 
 /**
  * First episode of a show.
@@ -163,11 +220,18 @@ function buildFilmEvent(release) {
  * field at all — 0 of 572 live entries have one — so requiring `season === 1`
  * meant anime plan-to-watch could never match anything.
  */
-const isPremiere = (entry) => {
+const isPremiere = (entry: CalendarEntry): boolean => {
   const ep = entry.episode;
   if (!ep || ep.episode !== 1) return false;
   return ep.season == null || ep.season === 1;
 };
+
+export interface JoinOptions {
+  timezone?: string;
+  now?: Date;
+  movieReleases?: Map<number, MovieRelease>;
+  graceDays?: number;
+}
 
 /**
  * Join the CDN calendars against the user's library.
@@ -180,11 +244,16 @@ const isPremiere = (entry) => {
  * watch state: the feed is a record of what aired, so an episode should not
  * disappear the moment it does.
  */
-export function join(
-  calendars,
-  library,
-  { timezone = config.timezone, now = new Date(), movieReleases = new Map(), graceDays = config.graceDays } = {},
-) {
+export const join = (
+  calendars: Partial<Calendars>,
+  library: Library,
+  {
+    timezone = config.timezone,
+    now = new Date(),
+    movieReleases = new Map<number, MovieRelease>(),
+    graceDays = config.graceDays,
+  }: JoinOptions = {},
+): FeedEvent[] => {
   const sets = {
     // Completed sits alongside watching: SIMKL marks an ongoing show completed
     // once everything aired has been watched, so dropping it would lose the
@@ -198,9 +267,14 @@ export function join(
 
   const today = localDate(now.toISOString(), timezone);
   const cutoff = shiftDate(today, -graceDays);
-  const events = new Map();
+  const events = new Map<string, FeedEvent>();
 
-  const addEpisodes = (calendar, watching, planned, kind) => {
+  const addEpisodes = (
+    calendar: MergedCalendar | undefined,
+    watching: Set<number>,
+    planned: Set<number>,
+    kind: EventKind,
+  ): void => {
     for (const entry of calendar?.calendar ?? []) {
       const id = Number(entry.simkl_id);
       const inWatching = watching.has(id);
@@ -210,7 +284,7 @@ export function join(
       const date = localDate(entry.date, timezone);
       if (date < cutoff) continue;
 
-      const event = buildEpisodeEvent({ entry, meta: calendar.metadata?.[String(id)], kind, date });
+      const event = buildEpisodeEvent({ entry, meta: calendar?.metadata?.[String(id)], kind, date });
       events.set(event.uid, event);
     }
   };
@@ -231,4 +305,4 @@ export function join(
   }
 
   return [...events.values()].sort((a, b) => a.date.localeCompare(b.date) || a.summary.localeCompare(b.summary));
-}
+};

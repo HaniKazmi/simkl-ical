@@ -1,17 +1,22 @@
-import { apiGet } from '../simkl/client.js';
-import { config } from '../config.js';
+import { apiGet } from '../simkl/client.ts';
+import { config } from '../config.ts';
+import type { MovieDetail, MovieRelease, ReleaseDateResult } from '../simkl/types.ts';
 
 /**
  * TMDB-style release types, as used by SIMKL's `release_dates`.
  * 1 is a premiere screening — often a week or more before anyone can buy a
  * ticket — so it is only ever a last resort.
  */
-const RELEASE_TYPE = { PREMIERE: 1, LIMITED: 2, THEATRICAL: 3, DIGITAL: 4, PHYSICAL: 5, TV: 6 };
+const RELEASE_TYPE = { PREMIERE: 1, LIMITED: 2, THEATRICAL: 3, DIGITAL: 4, PHYSICAL: 5, TV: 6 } as const;
 const PREFERENCE = [RELEASE_TYPE.THEATRICAL, RELEASE_TYPE.LIMITED, RELEASE_TYPE.DIGITAL, RELEASE_TYPE.TV];
 
-function datesFor(movie, country) {
-  const entry = (movie.release_dates ?? []).find((c) => c.iso_3166_1 === country);
-  return entry?.results ?? [];
+const datesFor = (movie: MovieDetail, country: string): ReleaseDateResult[] =>
+  movie.release_dates?.find((c) => c.iso_3166_1 === country)?.results ?? [];
+
+export interface PickedRelease {
+  date: string;
+  type: number | null;
+  country: string | null;
 }
 
 /**
@@ -23,7 +28,7 @@ function datesFor(movie, country) {
  * would put every film in the calendar early. It is kept only as a last resort
  * for titles with no per-country data at all.
  */
-export function pickReleaseDate(movie, country = config.releaseCountry) {
+export const pickReleaseDate = (movie: MovieDetail, country: string = config.releaseCountry): PickedRelease | null => {
   const territories = [
     { code: country, results: datesFor(movie, country) },
     { code: 'US', results: datesFor(movie, 'US') },
@@ -46,6 +51,11 @@ export function pickReleaseDate(movie, country = config.releaseCountry) {
 
   if (movie.released) return { date: movie.released.slice(0, 10), type: null, country: null };
   return null;
+};
+
+export interface Reconciled {
+  releases: Map<number, MovieRelease>;
+  complete: boolean;
 }
 
 /**
@@ -56,19 +66,22 @@ export function pickReleaseDate(movie, country = config.releaseCountry) {
  * resolved — the caller uses it to decide whether to record the list as current
  * or leave it stale so the next poll retries.
  */
-export function reconcileReleases(previous, ids, fetched) {
-  const releases = new Map();
+export const reconcileReleases = (
+  previous: Map<number, MovieRelease>,
+  ids: number[],
+  fetched: Map<number, MovieRelease>,
+): Reconciled => {
+  const releases = new Map<number, MovieRelease>();
   for (const id of ids) {
     const release = fetched.get(id) ?? previous.get(id);
     if (release) releases.set(id, release);
   }
   return { releases, complete: fetched.size === ids.length };
-}
+};
 
 /** Detail lookups need no token — client_id is enough, and they are CDN-cached by id. */
-export function fetchMovie(id, { signal } = {}) {
-  return apiGet(`/movies/${id}`, { params: { extended: 'full' }, signal });
-}
+export const fetchMovie = (id: number, { signal }: { signal?: AbortSignal } = {}): Promise<MovieDetail> =>
+  apiGet<MovieDetail>(`/movies/${id}`, { params: { extended: 'full' }, signal });
 
 /**
  * Release dates for a set of film ids, keyed by id.
@@ -78,13 +91,17 @@ export function fetchMovie(id, { signal } = {}) {
  * window entirely. Cloudflare caches these by id, so the docs allow modest
  * parallelism — capped low because the list is short anyway.
  */
-export async function fetchMovieReleases(ids, { signal, concurrency = 4 } = {}) {
-  const out = new Map();
+export const fetchMovieReleases = async (
+  ids: number[],
+  { signal, concurrency = 4 }: { signal?: AbortSignal; concurrency?: number } = {},
+): Promise<Map<number, MovieRelease>> => {
+  const out = new Map<number, MovieRelease>();
   const queue = [...new Set(ids)];
 
-  const worker = async () => {
+  const worker = async (): Promise<void> => {
     while (queue.length) {
       const id = queue.shift();
+      if (id === undefined) return;
       try {
         const movie = await fetchMovie(id, { signal });
         const release = pickReleaseDate(movie);
@@ -106,4 +123,4 @@ export async function fetchMovieReleases(ids, { signal, concurrency = 4 } = {}) 
 
   await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker));
   return out;
-}
+};
