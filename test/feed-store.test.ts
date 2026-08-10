@@ -84,7 +84,7 @@ test('a render with only calendars does not overwrite the served feed', async ()
     const state = new FeedState({ logger: quiet });
     state.ics = ICS;
     state.servingCached = true;
-    state.calendars = { tv: { type: 'tv', calendar: [], metadata: {}, lastModified: null }, anime: { type: 'anime', calendar: [], metadata: {}, lastModified: null } };
+    state.calendars = { tv: { type: 'tv', calendar: [], metadata: {} }, anime: { type: 'anime', calendar: [], metadata: {} } };
     // library still null — the join cannot run
 
     await state.safeRender();
@@ -114,7 +114,7 @@ test('a complete render replaces the feed and persists it', async () => {
     const state = new FeedState({ logger: quiet });
     state.ics = ICS;
     state.servingCached = true;
-    state.calendars = { tv: { type: 'tv', calendar: [], metadata: {}, lastModified: null }, anime: { type: 'anime', calendar: [], metadata: {}, lastModified: null } };
+    state.calendars = { tv: { type: 'tv', calendar: [], metadata: {} }, anime: { type: 'anime', calendar: [], metadata: {} } };
     state.library = { shows_watching: {} };
 
     await state.safeRender();

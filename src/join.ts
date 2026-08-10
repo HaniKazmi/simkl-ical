@@ -130,7 +130,6 @@ export interface FeedEvent {
    */
   detail: string | null;
   runtime: string | null;
-  finale: string | null;
   url: string | null;
 }
 
@@ -169,7 +168,6 @@ const makeEvent = ({
   episodeTitle,
   detail,
   runtime,
-  finale,
   url,
 });
 

@@ -97,7 +97,7 @@ test('release types are labelled for the event description', () => {
 
 // --- reconcileReleases ---------------------------------------------------
 
-const release = (id: number): MovieRelease => ({ simkl_id: id, title: `Film ${id}`, date: '2026-12-18', releaseType: 3, country: 'GB', runtime: null, url: '' });
+const release = (id: number): MovieRelease => ({ simkl_id: id, title: `Film ${id}`, date: '2026-12-18', releaseType: 3, runtime: null, url: '' });
 
 const lookups = (releases: Array<[number, MovieRelease]>, failed: number[] = []) =>
   ({ releases: new Map(releases), failed });

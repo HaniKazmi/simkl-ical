@@ -37,9 +37,6 @@ interface FetchedFile {
  */
 const cache = new Map<string, FetchedFile>();
 
-/** Test seam: drop everything so a fetch behaves like a cold start. */
-export const clearCalendarCache = (): void => cache.clear();
-
 /**
  * Fetch a calendar JSON file, using the cached copy when the CDN says it hasn't changed.
  *
@@ -171,10 +168,9 @@ export const fetchCalendar = async (
     }
   }
 
-  const rolling = await fetchRolling(type, { signal });
-  parts.push(rolling.data);
+  parts.push((await fetchRolling(type, { signal })).data);
 
-  return { ...mergeCalendars(parts), type, lastModified: rolling.lastModified };
+  return { ...mergeCalendars(parts), type };
 };
 
 export type Calendars = Record<CalendarType, MergedCalendar>;

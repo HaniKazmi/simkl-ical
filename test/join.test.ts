@@ -7,7 +7,7 @@ import type { Calendars } from '../src/sources/calendar.ts';
 const show = (simkl: number, title = `Show ${simkl}`) => ({ show: { title, ids: { simkl } } });
 const movie = (simkl: number, title = `Film ${simkl}`) => ({ movie: { title, ids: { simkl } } });
 const calendarOf = (type: 'tv' | 'anime', calendar: CalendarEntry[], metadata: MergedCalendar['metadata']): MergedCalendar =>
-  ({ type, calendar, metadata, lastModified: null });
+  ({ type, calendar, metadata });
 
 // A 9pm Tuesday ET broadcast is stamped 01:00Z Wednesday. Slicing the ISO string
 // would put it on Wednesday for everyone, which is wrong for the US audience.
@@ -239,7 +239,6 @@ test('shiftDate is unaffected by DST transitions', () => {
 test('finale type decorates the summary', () => {
   const events = join(calendars([tvEntry(100, 3, 8, '2026-08-15T20:00:00Z', 2)]), library, { timezone: 'Europe/London', now: NOW });
   assert.equal(events[0].summary, 'Watched Show – S03E08 (Season finale)');
-  assert.equal(events[0].finale, 'Season finale');
 });
 
 test('episode titles stay out of the summary', () => {

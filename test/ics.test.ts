@@ -11,7 +11,6 @@ const event: FeedEvent = {
   episodeTitle: 'Our Flag Means Medical Coverage',
   detail: 'FOX',
   runtime: '23m',
-  finale: null,
   url: 'https://simkl.com/tv/3407/futurama/season-11/episode-3/',
 };
 

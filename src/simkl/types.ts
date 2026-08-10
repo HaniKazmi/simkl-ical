@@ -51,7 +51,6 @@ export interface CalendarFile {
 /** A merged calendar, as returned by fetchCalendar. */
 export interface MergedCalendar extends CalendarFile {
   type: CalendarType;
-  lastModified: string | null;
 }
 
 export type CalendarType = 'tv' | 'anime';
@@ -167,7 +166,6 @@ export interface MovieRelease {
   title: string;
   date: string;
   releaseType: number | null;
-  country: string | null;
   runtime: string | null;
   url: string;
 }

@@ -124,7 +124,6 @@ export const fetchMovieReleases = async (
           title: movie.title,
           date: release.date,
           releaseType: release.type,
-          country: release.country,
           runtime: movie.runtime ? `${movie.runtime}m` : null,
           url: `https://simkl.com/movies/${id}`,
         });
