@@ -59,14 +59,44 @@ required for the browser redirect flow, which this doesn't use.
 
 ## Docker
 
+The image is built and published by GitHub Actions to
+`ghcr.io/hanikazmi/simkl-ical`, so the host never needs the source or a toolchain — only
+`docker-compose.yml` and a `.env`.
+
 ```sh
-docker compose up -d --build
-docker compose run --rm simkl-ical npm run login   # once, to authorise
+docker compose run --rm simkl-ical npm run login   # first: pulls image, creates volume, writes token
+docker compose up -d
+```
+
+**Run the login first.** `/healthz` answers `503` until a token exists, because nothing has
+been rendered yet. Docker won't restart the container for that — `restart: unless-stopped`
+only acts on exit — but a container started before login sits marked `unhealthy` until the
+next activities poll picks the token up, which looks broken and isn't. Starting with
+`docker compose run` avoids it: that command pulls the image and creates the volume on its
+own.
+
+To update:
+
+```sh
+docker compose pull && docker compose up -d
 ```
 
 The compose file deliberately has **no `ports:`** — the container is reachable only on
 Caddy's Docker network, so nothing can bypass the proxy. It expects an external network
-named `caddy`.
+named `caddy`. It also has no `build:` key on purpose: with both `image` and `build`
+present, Compose tries to build when the image is missing locally, which fails on a host
+with no checkout. To build by hand during development, use `docker build -t simkl-ical .`.
+
+### CI
+
+`.github/workflows/ci.yml` runs the test suite, builds the image for `linux/amd64`, smoke
+tests that it boots and serves `/healthz`, then pushes to GHCR. Pull requests build and
+smoke test but do not publish. Tags: `latest` on `main`, `sha-<short>` on every build, and
+semver if you push a `v*` tag.
+
+The GHCR package is public, so the host pulls with no credentials. Note that **GHCR
+packages default to private** — after the first successful run, flip it to public once in
+the package settings on GitHub.
 
 ### Caddy
 

@@ -1,6 +1,9 @@
 services:
   simkl-ical:
-    build: .
+    # Built and published by GitHub Actions. Deliberately no `build:` key — with
+    # both present Compose tries to build when the image is missing locally,
+    # which fails on a host that has no source checkout.
+    image: ghcr.io/hanikazmi/simkl-ical:latest
     container_name: simkl-ical
     restart: unless-stopped
     environment:

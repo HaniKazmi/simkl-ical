@@ -1,0 +1,11 @@
+# The Dockerfile only does targeted COPYs, but data/ holds the OAuth token and
+# ~8MB of calendar cache — keep it out of the build context entirely.
+data/
+node_modules/
+.env
+.git/
+.github/
+test/
+*.md
+*.log
+.DS_Store
