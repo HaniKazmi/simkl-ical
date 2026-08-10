@@ -1,0 +1,19 @@
+{
+  "name": "simkl-ical",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Joins SIMKL's public airdate calendars with your private library and serves a subscribable iCal feed.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "login": "node src/login.js",
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "fastify": "^5.2.1",
+    "ical-generator": "^8.0.1"
+  }
+}
