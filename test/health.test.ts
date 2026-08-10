@@ -65,6 +65,28 @@ test('an old library sync time alone does not mean unhealthy', () => {
   assert.equal(state.health.ok, true);
 });
 
+// readToken only swallows ENOENT. A truncated token.json threw SyntaxError
+// straight out of the method, and from the timer that killed the process.
+test('an unreadable token file degrades the feed rather than throwing', async () => {
+  const { mkdtemp, writeFile } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+
+  const dir = await mkdtemp(join(tmpdir(), 'simkl-ical-token-'));
+  await writeFile(join(dir, 'token.json'), '{ truncated');
+  const original = config.dataDir;
+  config.dataDir = dir;
+
+  try {
+    const state = new FeedState({ logger: quiet });
+    await state.refreshLibraryIfChanged();
+    assert.ok(state.errors.library, 'the failure is recorded');
+    assert.match(state.errors.library, /library:/);
+  } finally {
+    config.dataDir = original;
+  }
+});
+
 test('health reports the timestamps a human would want', () => {
   const health = rendered().health;
   for (const key of ['events', 'calendarsRefreshedAt', 'librarySyncedAt', 'lastPolledAt', 'renderedAt', 'timezone']) {

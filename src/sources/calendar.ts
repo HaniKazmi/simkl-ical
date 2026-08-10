@@ -140,7 +140,11 @@ export const mergeCalendars = (parts: Array<CalendarFile | null | undefined>): C
 
   for (const part of parts) {
     for (const entry of part?.calendar ?? []) {
-      entries.set(`${entry.simkl_id}-${entry.episode?.season}-${entry.episode?.episode}`, entry);
+      // The date is part of the key because entries without an `episode`
+      // object exist: keying on season/episode alone collapsed every undated
+      // airing of a show onto one slot before the join ever saw them.
+      const episodeKey = entry.episode ? `${entry.episode.season}-${entry.episode.episode}` : entry.date;
+      entries.set(`${entry.simkl_id}-${episodeKey}`, entry);
     }
     Object.assign(metadata, part?.metadata ?? {});
   }

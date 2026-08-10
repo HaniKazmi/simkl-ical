@@ -26,15 +26,21 @@ await app.listen({ port: config.port, host: '0.0.0.0' });
 app.log.info(`listening on :${config.port} in ${config.timezone}, warming up`);
 
 void (async () => {
-  await state.hydrate();
-  await state.refreshLibraryIfChanged();
-  state.start();
-  app.log.info(`ready: serving ${state.events.length} events`);
-})().catch((err: unknown) => {
-  // Never fatal: the server keeps answering /healthz so the failure is visible.
-  state.errors.render = `startup: ${errorMessage(err)}`;
-  app.log.error(`warm-up failed: ${errorStack(err)}`);
-});
+  try {
+    await state.hydrate();
+    await state.refreshLibraryIfChanged();
+    app.log.info(`ready: serving ${state.events.length} events`);
+  } catch (err) {
+    // Never fatal: the server keeps answering /healthz so the failure is visible.
+    state.errors.render = `startup: ${errorMessage(err)}`;
+    app.log.error(`warm-up failed: ${errorStack(err)}`);
+  } finally {
+    // In `finally` on purpose. Starting the timers only on the success path
+    // meant one bad warm-up left the process serving a boot-time snapshot
+    // forever, with nothing scheduled to ever retry.
+    state.start();
+  }
+})();
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, async () => {

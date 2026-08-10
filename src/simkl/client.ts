@@ -76,7 +76,9 @@ export const apiGet = async <T>(path: string, { token, params = {}, signal }: Ap
     } catch (err) {
       if (signal?.aborted) throw err;
       lastError = err;
-      await sleep(2 ** (attempt - 1) * 1000);
+      // Guarded like the HTTP-status path below: sleeping after the last
+      // attempt burns 16s of dead wait per call during a network outage.
+      if (attempt < MAX_ATTEMPTS) await sleep(2 ** (attempt - 1) * 1000);
       continue;
     }
 

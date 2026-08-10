@@ -94,6 +94,16 @@ export class FeedState {
     };
   }
 
+  /** Render, containing any failure in errors.render rather than the caller's slot. */
+  safeRender(): void {
+    try {
+      this.render();
+    } catch (err) {
+      this.errors.render = errorMessage(err);
+      this.log.error?.(`render failed: ${errorMessage(err)}`);
+    }
+  }
+
   render(): void {
     if (!this.calendars || !this.library) return;
     this.events = join(this.calendars, this.library, {
@@ -129,12 +139,7 @@ export class FeedState {
     }
     // Rendering is guarded separately: a bad timezone throws from inside the
     // join, and that must degrade the feed rather than take the process down.
-    try {
-      this.render();
-    } catch (err) {
-      this.errors.render = errorMessage(err);
-      this.log.error?.(`render failed: ${errorMessage(err)}`);
-    }
+    this.safeRender();
   }
 
   /**
@@ -143,16 +148,21 @@ export class FeedState {
    * lists — see listSignature in sources/library.ts.
    */
   async refreshLibraryIfChanged({ force = false }: { force?: boolean } = {}): Promise<void> {
-    const token = await readToken();
-    if (!token) {
-      this.errors.library = 'no token — run `npm run login`';
-      this.log.error?.(this.errors.library);
-      return;
-    }
-
     try {
+      // Inside the try: readToken only swallows ENOENT, so a truncated or
+      // unreadable token.json threw straight out of this method and, from the
+      // timer, took the process down with it.
+      const token = await readToken();
+      if (!token) {
+        this.errors.library = 'no token — run `npm run login`';
+        this.log.error?.(this.errors.library);
+        return;
+      }
+
       const activities = await getActivities(token);
       this.polledAt = new Date().toISOString();
+      // The poll itself succeeded, so any earlier failure is now history.
+      this.errors.library = null;
 
       const stale = force || !this.library ? LISTS : staleLists(activities, this.listSignatures);
       if (!stale.length) return;
@@ -168,13 +178,17 @@ export class FeedState {
       let filmsComplete = true;
       if (stale.some((l) => l.key === 'movies_plantowatch')) {
         const filmIds = [...idSet(this.library.movies_plantowatch)];
-        const fetched = filmIds.length ? await fetchMovieReleases(filmIds) : new Map<number, MovieRelease>();
+        const lookups = filmIds.length
+          ? await fetchMovieReleases(filmIds)
+          : { releases: new Map<number, MovieRelease>(), failed: [] };
         ({ releases: this.movieReleases, complete: filmsComplete } = reconcileReleases(
           this.movieReleases,
           filmIds,
-          fetched,
+          lookups,
         ));
-        if (filmIds.length) this.log.info?.(`resolved ${fetched.size}/${filmIds.length} film release dates`);
+        if (filmIds.length) {
+          this.log.info?.(`resolved ${lookups.releases.size}/${filmIds.length} film release dates`);
+        }
       }
 
       const signatures = listSignatures(activities);
@@ -193,7 +207,6 @@ export class FeedState {
         movieReleases: this.movieReleases,
         listSignatures: this.listSignatures,
       });
-      this.render();
     } catch (err) {
       // A revoked token must not empty the feed — keep serving the last render.
       const prefix = err instanceof SimklAuthError ? 'AUTH' : 'library';
@@ -205,11 +218,14 @@ export class FeedState {
           : `library refresh failed: ${errorMessage(err)}`,
       );
     }
+
+    this.safeRender();
   }
 
   start(): void {
-    this.timers.push(setInterval(() => void this.refreshCalendars(), config.calendarRefreshMs));
-    this.timers.push(setInterval(() => void this.refreshLibraryIfChanged(), config.activitiesPollMs));
+    const swallow = (err: unknown): void => this.log.error?.(`unexpected refresh failure: ${errorMessage(err)}`);
+    this.timers.push(setInterval(() => void this.refreshCalendars().catch(swallow), config.calendarRefreshMs));
+    this.timers.push(setInterval(() => void this.refreshLibraryIfChanged().catch(swallow), config.activitiesPollMs));
     for (const t of this.timers) t.unref?.();
   }
 

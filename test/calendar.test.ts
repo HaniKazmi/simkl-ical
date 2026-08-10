@@ -62,6 +62,22 @@ test('merging de-duplicates episodes and unions metadata', () => {
   assert.equal(merged.metadata['2']!.title, 'Archive only');
 });
 
+// Entries with no `episode` object exist in the live anime calendar. Keying on
+// season/episode alone made every one of them collapse onto a single slot,
+// before the join's date-keyed UID ever saw them.
+test('episode-less entries are keyed by date, not collapsed together', () => {
+  const merged = mergeCalendars([
+    {
+      calendar: [
+        { simkl_id: 600, date: '2026-08-27T15:00:00Z', finale_type: null },
+        { simkl_id: 600, date: '2026-08-28T15:00:00Z', finale_type: null },
+      ],
+      metadata: {},
+    },
+  ]);
+  assert.equal(merged.calendar.length, 2, 'two distinct airings must survive the merge');
+});
+
 test('merging tolerates missing or empty parts', () => {
   assert.deepEqual(mergeCalendars([]), { calendar: [], metadata: {} });
   assert.deepEqual(mergeCalendars([null, undefined, { calendar: [], metadata: {} }]), { calendar: [], metadata: {} });

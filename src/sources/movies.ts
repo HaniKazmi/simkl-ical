@@ -53,6 +53,17 @@ export const pickReleaseDate = (movie: MovieDetail, country: string = config.rel
   return null;
 };
 
+export interface MovieLookups {
+  releases: Map<number, MovieRelease>;
+  /**
+   * Ids whose lookup errored. Deliberately distinct from an id that resolved
+   * with no announced release date: an unreleased film with no date is a
+   * settled answer, and treating it as a failure made every poll refetch the
+   * whole film list forever.
+   */
+  failed: number[];
+}
+
 export interface Reconciled {
   releases: Map<number, MovieRelease>;
   complete: boolean;
@@ -61,22 +72,22 @@ export interface Reconciled {
 /**
  * Fold a round of lookups into what we already had.
  *
- * Films no longer on the list are dropped; ids that failed this time keep their
- * previous value rather than vanishing. `complete` reports whether every id
- * resolved — the caller uses it to decide whether to record the list as current
- * or leave it stale so the next poll retries.
+ * Films no longer on the list are dropped. An id whose lookup errored keeps its
+ * previous value rather than vanishing; an id that simply has no announced date
+ * is allowed to disappear, because that is the true answer.
  */
 export const reconcileReleases = (
   previous: Map<number, MovieRelease>,
   ids: number[],
-  fetched: Map<number, MovieRelease>,
+  { releases: fetched, failed }: MovieLookups,
 ): Reconciled => {
+  const failedIds = new Set(failed);
   const releases = new Map<number, MovieRelease>();
   for (const id of ids) {
-    const release = fetched.get(id) ?? previous.get(id);
+    const release = fetched.get(id) ?? (failedIds.has(id) ? previous.get(id) : undefined);
     if (release) releases.set(id, release);
   }
-  return { releases, complete: fetched.size === ids.length };
+  return { releases, complete: failed.length === 0 };
 };
 
 /** Detail lookups need no token — client_id is enough, and they are CDN-cached by id. */
@@ -94,8 +105,9 @@ export const fetchMovie = (id: number, { signal }: { signal?: AbortSignal } = {}
 export const fetchMovieReleases = async (
   ids: number[],
   { signal, concurrency = 4 }: { signal?: AbortSignal; concurrency?: number } = {},
-): Promise<Map<number, MovieRelease>> => {
+): Promise<MovieLookups> => {
   const out = new Map<number, MovieRelease>();
+  const failed: number[] = [];
   const queue = [...new Set(ids)];
 
   const worker = async (): Promise<void> => {
@@ -105,6 +117,7 @@ export const fetchMovieReleases = async (
       try {
         const movie = await fetchMovie(id, { signal });
         const release = pickReleaseDate(movie);
+        // No announced date is an answer, not a failure.
         if (!release) continue;
         out.set(Number(id), {
           simkl_id: Number(id),
@@ -116,11 +129,13 @@ export const fetchMovieReleases = async (
           url: `https://simkl.com/movies/${id}`,
         });
       } catch {
-        // One unavailable film must not sink the whole refresh.
+        // One unavailable film must not sink the whole refresh, but it must be
+        // remembered so the list stays stale and retries.
+        failed.push(id);
       }
     }
   };
 
   await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker));
-  return out;
+  return { releases: out, failed };
 };

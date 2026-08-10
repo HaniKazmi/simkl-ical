@@ -35,9 +35,10 @@ export interface ShowMetadata {
   title: string;
   /** Site-relative, e.g. "/tv/3407/futurama" — needs the origin prepending. */
   url?: string;
-  network?: string;
-  /** A display string such as "45m", not a number of minutes. */
-  runtime?: string;
+  /** Null on some records, not merely absent. */
+  network?: string | null;
+  /** A display string such as "45m", not a number of minutes. Nullable. */
+  runtime?: string | null;
   ids?: { simkl_id?: number; slug?: string; imdb?: string; tmdb?: string; tvdb?: string };
 }
 
