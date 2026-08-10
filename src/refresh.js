@@ -27,18 +27,34 @@ export class FeedState {
     this.listSignatures = {};
     this.calendarsAt = null;
     this.libraryAt = null;
+    this.polledAt = null;
     this.renderedAt = null;
     this.lastError = null;
     this.timers = [];
   }
 
+  /**
+   * Healthy means "rendered, and still hearing from SIMKL".
+   *
+   * `libraryAt` deliberately is not used: with per-list gating it only advances
+   * when something actually changes, so it can be days old on a correct system.
+   * `polledAt` tracks the activities call itself, which is what stops if a token
+   * is revoked — otherwise the endpoint reported healthy forever once it had
+   * rendered even once.
+   */
   get health() {
+    const ageOf = (iso) => (iso ? Date.now() - Date.parse(iso) : Infinity);
+    const stalePoll = ageOf(this.polledAt) > config.activitiesPollMs * 3;
+    const staleCalendars = ageOf(this.calendarsAt) > config.calendarRefreshMs * 3;
+
     return {
-      ok: this.events.length > 0 || this.renderedAt !== null,
+      ok: this.renderedAt !== null && !stalePoll && !staleCalendars,
       events: this.events.length,
       calendarsRefreshedAt: this.calendarsAt,
-      libraryRefreshedAt: this.libraryAt,
+      librarySyncedAt: this.libraryAt,
+      lastPolledAt: this.polledAt,
       renderedAt: this.renderedAt,
+      stale: stalePoll || staleCalendars || undefined,
       lastError: this.lastError,
       timezone: config.timezone,
     };
@@ -125,6 +141,8 @@ export class FeedState {
 
     try {
       const activities = await getActivities(token);
+      this.polledAt = new Date().toISOString();
+
       const stale = force || !this.library ? LISTS : staleLists(activities, this.listSignatures);
       if (!stale.length) return;
 
@@ -173,7 +191,8 @@ export class FeedState {
       this.lastError = `${prefix}: ${err.message}`;
       this.log.error?.(
         err instanceof SimklAuthError
-          ? `SIMKL rejected the token. Re-run \`npm run login --force\`. Serving the last good feed.`
+          // The `--` matters: npm swallows a bare --force instead of passing it on.
+          ? `SIMKL rejected the token. Re-run \`npm run login -- --force\`. Serving the last good feed.`
           : `library refresh failed: ${err.message}`,
       );
     }

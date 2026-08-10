@@ -5,6 +5,10 @@ const API_BASE = 'https://api.simkl.com';
 const RETRYABLE = new Set([429, 500, 502, 503, 504]);
 const MAX_ATTEMPTS = 5;
 
+// Sync responses are small; without this a hung connection stalls a refresh
+// cycle until undici's 300s default.
+const TIMEOUT_MS = 30_000;
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export class SimklError extends Error {
@@ -63,7 +67,7 @@ export async function apiGet(path, { token, params = {}, signal } = {}) {
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     let res;
     try {
-      res = await fetch(url, { headers, signal });
+      res = await fetch(url, { headers, signal: signal ?? AbortSignal.timeout(TIMEOUT_MS) });
     } catch (err) {
       if (signal?.aborted) throw err;
       lastError = err;

@@ -19,6 +19,9 @@ export const CALENDAR_FILES = {
 /** The rolling file spans roughly -2/+34 days; beyond that we need archives. */
 const ROLLING_PAST_DAYS = 2;
 
+/** Archives run to several MB, so this is generous rather than tight. */
+const FETCH_TIMEOUT_MS = 60_000;
+
 const cachePath = (key) => join(config.dataDir, 'cache', `${key}.json`);
 
 async function readCache(key) {
@@ -46,18 +49,29 @@ async function fetchCached(url, key, { signal } = {}) {
   const headers = { 'User-Agent': `${config.appName}/${config.appVersion}` };
   if (cached?.lastModified) headers['If-Modified-Since'] = cached.lastModified;
 
-  const res = await fetch(url, { headers, signal });
+  // Without a timeout a hung connection blocks a refresh cycle until undici's
+  // 300s default.
+  const res = await fetch(url, { headers, signal: signal ?? AbortSignal.timeout(FETCH_TIMEOUT_MS) });
 
-  if (res.status === 304 && cached) {
-    return { data: cached.data, lastModified: cached.lastModified, fromCache: true };
-  }
+  const fallback = () =>
+    cached ? { data: cached.data, lastModified: cached.lastModified, fromCache: true } : null;
+
+  if (res.status === 304 && cached) return fallback();
   if (!res.ok) {
     // A stale calendar beats no calendar. Only fail if there is nothing to fall back to.
-    if (cached) return { data: cached.data, lastModified: cached.lastModified, fromCache: true };
-    throw new Error(`Calendar ${url} returned ${res.status}`);
+    return fallback() ?? Promise.reject(new Error(`Calendar ${url} returned ${res.status}`));
   }
 
-  const data = await res.json();
+  let data;
+  try {
+    data = await res.json();
+  } catch (err) {
+    // A 200 carrying an HTML interstitial would otherwise discard a good cache.
+    const stale = fallback();
+    if (stale) return stale;
+    throw new Error(`Calendar ${url} returned unparseable JSON: ${err.message}`);
+  }
+
   const lastModified = res.headers.get('last-modified');
   await writeCache(key, { lastModified, data, cachedAt: new Date().toISOString() });
 
