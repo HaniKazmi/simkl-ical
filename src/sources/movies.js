@@ -48,19 +48,6 @@ export function pickReleaseDate(movie, country = config.releaseCountry) {
   return null;
 }
 
-const TYPE_LABEL = {
-  [RELEASE_TYPE.PREMIERE]: 'Premiere',
-  [RELEASE_TYPE.LIMITED]: 'Limited release',
-  [RELEASE_TYPE.THEATRICAL]: 'In cinemas',
-  [RELEASE_TYPE.DIGITAL]: 'Digital release',
-  [RELEASE_TYPE.PHYSICAL]: 'Physical release',
-  [RELEASE_TYPE.TV]: 'TV',
-};
-
-export function releaseLabel(type) {
-  return TYPE_LABEL[type] ?? 'Release';
-}
-
 /** Detail lookups need no token — client_id is enough, and they are CDN-cached by id. */
 export function fetchMovie(id, { signal } = {}) {
   return apiGet(`/movies/${id}`, { params: { extended: 'full' }, signal });

@@ -76,8 +76,3 @@ export async function fetchLists(token, lists, { signal } = {}) {
   }
   return out;
 }
-
-/** Every list. Used on a cold start, when nothing is known to be current. */
-export function fetchLibrary(token, { signal } = {}) {
-  return fetchLists(token, LISTS, { signal });
-}

@@ -54,7 +54,7 @@ async function fetchCached(url, key, { signal } = {}) {
   const res = await fetch(url, { headers, signal: signal ?? AbortSignal.timeout(FETCH_TIMEOUT_MS) });
 
   const fallback = () =>
-    cached ? { data: cached.data, lastModified: cached.lastModified, fromCache: true } : null;
+    cached ? { data: cached.data, lastModified: cached.lastModified } : null;
 
   if (res.status === 304 && cached) return fallback();
   if (!res.ok) {
@@ -75,7 +75,7 @@ async function fetchCached(url, key, { signal } = {}) {
   const lastModified = res.headers.get('last-modified');
   await writeCache(key, { lastModified, data, cachedAt: new Date().toISOString() });
 
-  return { data, lastModified, fromCache: false };
+  return { data, lastModified };
 }
 
 export function rollingUrl(type) {
@@ -140,14 +140,11 @@ export async function fetchCalendar(type, { graceDays = config.graceDays, signal
   if (!CALENDAR_FILES[type]) throw new Error(`Unknown calendar type: ${type}`);
 
   const parts = [];
-  let anyFromCache = true;
 
   if (graceDays > ROLLING_PAST_DAYS) {
     for (const { year, month } of monthsBack(graceDays, now)) {
       try {
-        const archive = await fetchArchive(type, year, month, { signal });
-        parts.push(archive.data);
-        anyFromCache = anyFromCache && archive.fromCache;
+        parts.push((await fetchArchive(type, year, month, { signal })).data);
       } catch {
         // A missing archive just narrows the window; the rolling file still works.
       }
@@ -157,12 +154,7 @@ export async function fetchCalendar(type, { graceDays = config.graceDays, signal
   const rolling = await fetchRolling(type, { signal });
   parts.push(rolling.data);
 
-  return {
-    ...mergeCalendars(parts),
-    type,
-    lastModified: rolling.lastModified,
-    fromCache: anyFromCache && rolling.fromCache,
-  };
+  return { ...mergeCalendars(parts), type, lastModified: rolling.lastModified };
 }
 
 /** All calendar types. Safe to parallelise: CDN-cached, unauthenticated. */

@@ -253,7 +253,7 @@ test('plan-to-watch films are included by release date', () => {
   assert.equal(events[0].kind, 'movie');
   assert.equal(events[0].date, '2026-08-20');
   assert.equal(events[0].summary, 'Planned Film');
-  assert.equal(events[0].network, 'In cinemas');
+  assert.equal(events[0].detail, 'In cinemas');
 });
 
 test('films far beyond the 33-day calendar window still appear', () => {

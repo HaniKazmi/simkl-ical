@@ -1,5 +1,4 @@
 import { config } from './config.js';
-import { releaseLabel } from './sources/movies.js';
 
 /**
  * Local calendar date (YYYY-MM-DD) for an instant, in a given IANA zone.
@@ -67,6 +66,24 @@ export function idSet(...responses) {
 
 const FINALE_LABEL = { 1: 'Mid-season finale', 2: 'Season finale', 3: 'Series finale' };
 
+/**
+ * Human label for a film's release type. Presentation, so it lives here with
+ * the rest of the event composition rather than in the module that fetches
+ * releases — that was the one dependency pointing from domain logic into I/O.
+ */
+const RELEASE_LABEL = {
+  1: 'Premiere',
+  2: 'Limited release',
+  3: 'In cinemas',
+  4: 'Digital release',
+  5: 'Physical release',
+  6: 'TV',
+};
+
+export function releaseLabel(type) {
+  return RELEASE_LABEL[type] ?? 'Release';
+}
+
 const pad = (n) => String(n).padStart(2, '0');
 
 /**
@@ -82,31 +99,61 @@ export function episodeCode(season, episode) {
   return `S${pad(season)}E${pad(episode)}`;
 }
 
-function buildEvent({ entry, meta, kind, date }) {
+/**
+ * The one event constructor, used by both the episode and film paths.
+ *
+ * `detail` is a single line of context — a broadcast network for episodes,
+ * a release type for films. It was called `network`, which was a lie on half
+ * its values.
+ */
+function makeEvent({ uid, kind, date, title, code = null, finale = null, detail = null, runtime = null, episodeTitle = null, url = null }) {
+  return {
+    // Derived, never random: a fresh UID on every render makes clients duplicate
+    // events instead of updating them.
+    uid,
+    kind,
+    date,
+    summary: `${title}${code ? ` – ${code}` : ''}${finale ? ` (${finale})` : ''}`,
+    episodeTitle,
+    detail,
+    runtime,
+    finale,
+    url,
+  };
+}
+
+function buildEpisodeEvent({ entry, meta, kind, date }) {
   const id = entry.simkl_id;
   const title = meta?.title ?? `SIMKL ${id}`;
-  const url = meta?.url ? `https://simkl.com${meta.url}` : entry.episode?.url ?? null;
-
   const code = episodeCode(entry.episode?.season, entry.episode?.episode);
-  const finale = FINALE_LABEL[entry.finale_type] ?? null;
   // Entries with no episode number still describe a real airing, so they keep
   // their slot — keyed on the date, which is the only thing distinguishing them.
   const suffix = code ? code.toLowerCase() : date.replace(/-/g, '');
 
-  return {
-    // Derived, never random: a fresh UID on every render makes clients duplicate
-    // events instead of updating them.
+  return makeEvent({
     uid: `simkl-${id}-${suffix}@simkl-ical`,
     kind,
     date,
-    summary: `${title}${code ? ` – ${code}` : ''}${finale ? ` (${finale})` : ''}`,
-    showTitle: title,
-    episodeTitle: entry.episode?.title ?? null,
-    network: meta?.network ?? null,
+    title,
+    code,
+    finale: FINALE_LABEL[entry.finale_type] ?? null,
+    detail: meta?.network ?? null,
     runtime: meta?.runtime ?? null,
-    finale,
-    url: entry.episode?.url ?? url,
-  };
+    episodeTitle: entry.episode?.title ?? null,
+    url: entry.episode?.url ?? (meta?.url ? `https://simkl.com${meta.url}` : null),
+  });
+}
+
+function buildFilmEvent(release) {
+  return makeEvent({
+    uid: `simkl-movie-${release.simkl_id}@simkl-ical`,
+    kind: 'movie',
+    date: releaseDate(release.date),
+    title: release.title,
+    detail: releaseLabel(release.releaseType),
+    runtime: release.runtime ?? null,
+    url: release.url ?? null,
+  });
 }
 
 /**
@@ -163,7 +210,7 @@ export function join(
       const date = localDate(entry.date, timezone);
       if (date < cutoff) continue;
 
-      const event = buildEvent({ entry, meta: calendar.metadata?.[String(id)], kind, date });
+      const event = buildEpisodeEvent({ entry, meta: calendar.metadata?.[String(id)], kind, date });
       events.set(event.uid, event);
     }
   };
@@ -177,22 +224,10 @@ export function join(
   for (const id of sets.moviesPlanned) {
     const release = movieReleases.get(id);
     if (!release) continue;
+    if (releaseDate(release.date) < cutoff) continue;
 
-    const date = releaseDate(release.date);
-    if (date < cutoff) continue;
-
-    events.set(`simkl-movie-${id}@simkl-ical`, {
-      uid: `simkl-movie-${id}@simkl-ical`,
-      kind: 'movie',
-      date,
-      summary: release.title,
-      showTitle: release.title,
-      episodeTitle: null,
-      network: releaseLabel(release.releaseType),
-      runtime: release.runtime ?? null,
-      finale: null,
-      url: release.url ?? null,
-    });
+    const event = buildFilmEvent({ ...release, simkl_id: id });
+    events.set(event.uid, event);
   }
 
   return [...events.values()].sort((a, b) => a.date.localeCompare(b.date) || a.summary.localeCompare(b.summary));

@@ -8,7 +8,7 @@ const event = {
   date: '2026-08-10',
   summary: 'Futurama – S11E03',
   episodeTitle: 'Our Flag Means Medical Coverage',
-  network: 'FOX',
+  detail: 'FOX',
   runtime: '23m',
   url: 'https://simkl.com/tv/3407/futurama/season-11/episode-3/',
 };

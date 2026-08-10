@@ -136,7 +136,7 @@ export class FeedState {
   /**
    * One cheap request decides whether the five library calls are worth making.
    * The signature covers only the timestamps that can move an item between
-   * lists — see membershipSignature.
+   * lists — see listSignature in sources/library.js.
    */
   async refreshLibraryIfChanged({ force = false } = {}) {
     const token = await readToken();

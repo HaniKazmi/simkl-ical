@@ -16,7 +16,7 @@ function description(event) {
   const lines = [];
   if (event.episodeTitle) lines.push(event.episodeTitle);
 
-  const facts = [event.network, event.runtime].filter(Boolean);
+  const facts = [event.detail, event.runtime].filter(Boolean);
   if (facts.length) lines.push(facts.join(' · '));
   if (event.url) lines.push(event.url);
 

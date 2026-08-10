@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { pickReleaseDate, releaseLabel } from '../src/sources/movies.js';
+import { pickReleaseDate } from '../src/sources/movies.js';
+import { releaseLabel } from '../src/join.js';
 
 // Shape taken from a real /movies/2242503 response. Note `released` is two days
 // earlier than every country's actual theatrical date — this is not a typo in
