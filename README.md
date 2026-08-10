@@ -79,7 +79,7 @@ Under Compose, the first two go in `simkl.secrets.env` and the rest are set dire
 | `RELEASE_COUNTRY`     | `GB`            | ISO 3166-1 alpha-2. Which country's cinema dates to use for films |
 | `GRACE_DAYS`          | `14`            | How long an aired episode stays in the feed                   |
 | `PORT`                | `3000`          | Port inside the container                                     |
-| `DATA_DIR`            | `/data`         | Token, snapshot and calendar cache                            |
+| `DATA_DIR`            | `/data`         | Holds only `token.json` and the last rendered `feed.ics`       |
 | `CALENDAR_REFRESH_MS` | `10800000` (3h) | How often to re-read the airdate calendars                    |
 | `ACTIVITIES_POLL_MS`  | `7200000` (2h)  | How often to check your library for changes                   |
 

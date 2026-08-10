@@ -7,7 +7,7 @@ import { fetchLists, getActivities, listSignatures, staleLists, LISTS } from './
 import { fetchMovieReleases, reconcileReleases } from './sources/movies.ts';
 import { join, idSet, type FeedEvent } from './join.ts';
 import { renderIcs } from './ics.ts';
-import { loadSnapshot, saveSnapshot } from './snapshot.ts';
+import { loadFeed, saveFeed } from './feed-store.ts';
 import type { Library, MovieRelease } from './simkl/types.ts';
 
 export interface Logger {
@@ -23,6 +23,8 @@ export interface Health {
   librarySyncedAt: string | null;
   lastPolledAt: string | null;
   renderedAt: string | null;
+  /** True while the feed came off disk and no fresh render has replaced it. */
+  servingCached: boolean;
   stale: boolean | undefined;
   lastError: string | null;
   errors: SubsystemErrors;
@@ -52,6 +54,7 @@ export class FeedState {
   libraryAt: string | null = null;
   polledAt: string | null = null;
   renderedAt: string | null = null;
+  servingCached = false;
   // One slot per subsystem. A single shared slot meant the calendar timer and
   // the library timer cleared each other's failures on success, so a revoked
   // token showed as unhealthy with no stated reason.
@@ -84,6 +87,7 @@ export class FeedState {
       librarySyncedAt: this.libraryAt,
       lastPolledAt: this.polledAt,
       renderedAt: this.renderedAt,
+      servingCached: this.servingCached,
       stale: stalePoll || staleCalendars || undefined,
       // Kept as a single headline value for the common case; `errors` carries
       // the detail. Library problems outrank calendar ones — a stale calendar
@@ -94,18 +98,38 @@ export class FeedState {
     };
   }
 
-  /** Render, containing any failure in errors.render rather than the caller's slot. */
-  safeRender(): void {
+  /**
+   * Render if both halves of the join are available, containing any failure in
+   * errors.render rather than the caller's slot, and persist what was produced.
+   */
+  async safeRender(): Promise<void> {
+    let rendered = false;
     try {
-      this.render();
+      rendered = this.render();
     } catch (err) {
       this.errors.render = errorMessage(err);
       this.log.error?.(`render failed: ${errorMessage(err)}`);
+      return;
+    }
+    if (!rendered) return;
+
+    this.errors.render = null;
+    this.servingCached = false;
+    try {
+      await saveFeed(this.ics);
+    } catch (err) {
+      // Losing the saved copy only costs resilience at the next restart.
+      this.log.warn?.(`could not save the feed: ${errorMessage(err)}`);
     }
   }
 
-  render(): void {
-    if (!this.calendars || !this.library) return;
+  /**
+   * Returns whether a render actually happened. A feed is only replaced once
+   * both the calendars and the library are present, so a partial refresh never
+   * overwrites a complete feed loaded from disk.
+   */
+  render(): boolean {
+    if (!this.calendars || !this.library) return false;
     this.events = join(this.calendars, this.library, {
       timezone: config.timezone,
       movieReleases: this.movieReleases,
@@ -114,16 +138,20 @@ export class FeedState {
     this.ics = renderIcs(this.events, { name: 'SIMKL – Upcoming' });
     this.renderedAt = new Date().toISOString();
     this.log.info?.(`rendered ${this.events.length} events`);
+    return true;
   }
 
-  /** Serve something immediately on boot, before any network call returns. */
+  /**
+   * Serve the last feed immediately on boot, and keep serving it until a
+   * complete fresh one is rendered. Nothing else is restored: every restart
+   * resyncs from scratch, so no stale control state can outlive the process.
+   */
   async hydrate(): Promise<void> {
-    const snapshot = await loadSnapshot();
-    if (snapshot) {
-      this.library = snapshot.library;
-      this.movieReleases = snapshot.movieReleases;
-      this.listSignatures = snapshot.listSignatures;
-      this.libraryAt = snapshot.savedAt;
+    const saved = await loadFeed();
+    if (saved) {
+      this.ics = saved;
+      this.servingCached = true;
+      this.log.info?.('serving the last saved feed until a fresh one is ready');
     }
     await this.refreshCalendars();
   }
@@ -139,7 +167,7 @@ export class FeedState {
     }
     // Rendering is guarded separately: a bad timezone throws from inside the
     // join, and that must degrade the feed rather than take the process down.
-    this.safeRender();
+    await this.safeRender();
   }
 
   /**
@@ -202,11 +230,6 @@ export class FeedState {
       this.listSignatures = signatures;
       this.libraryAt = new Date().toISOString();
       this.errors.library = null;
-      await saveSnapshot({
-        library: this.library,
-        movieReleases: this.movieReleases,
-        listSignatures: this.listSignatures,
-      });
     } catch (err) {
       // A revoked token must not empty the feed — keep serving the last render.
       const prefix = err instanceof SimklAuthError ? 'AUTH' : 'library';
@@ -219,7 +242,7 @@ export class FeedState {
       );
     }
 
-    this.safeRender();
+    await this.safeRender();
   }
 
   start(): void {

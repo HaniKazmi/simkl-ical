@@ -1,5 +1,3 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { config } from '../config.ts';
 import { errorMessage } from '../errors.ts';
 import type { CalendarFile, CalendarType, MergedCalendar } from '../simkl/types.ts';
@@ -24,31 +22,23 @@ const ROLLING_PAST_DAYS = 2;
 /** Archives run to several MB, so this is generous rather than tight. */
 const FETCH_TIMEOUT_MS = 60_000;
 
-interface CachedFile {
-  lastModified: string | null;
-  data: CalendarFile;
-  cachedAt?: string;
-}
-
 interface FetchedFile {
   data: CalendarFile;
   lastModified: string | null;
 }
 
-const cachePath = (key: string): string => join(config.dataDir, 'cache', `${key}.json`);
+/**
+ * Process-lifetime cache, deliberately not on disk.
+ *
+ * It exists to make the 3-hourly conditional GET cheap — without it every
+ * refresh would re-download several MB. Keeping it in memory means a restart
+ * always resyncs from the CDN, which costs about a second and removes any
+ * possibility of stale state outliving the process.
+ */
+const cache = new Map<string, FetchedFile>();
 
-const readCache = async (key: string): Promise<CachedFile | null> => {
-  try {
-    return JSON.parse(await readFile(cachePath(key), 'utf8')) as CachedFile;
-  } catch {
-    return null;
-  }
-};
-
-const writeCache = async (key: string, entry: CachedFile): Promise<void> => {
-  await mkdir(join(config.dataDir, 'cache'), { recursive: true });
-  await writeFile(cachePath(key), JSON.stringify(entry));
-};
+/** Test seam: drop everything so a fetch behaves like a cold start. */
+export const clearCalendarCache = (): void => cache.clear();
 
 /**
  * Fetch a calendar JSON file, using the cached copy when the CDN says it hasn't changed.
@@ -58,7 +48,7 @@ const writeCache = async (key: string, entry: CachedFile): Promise<void> => {
  * regeneration has actually happened.
  */
 const fetchCached = async (url: string, key: string, { signal }: { signal?: AbortSignal } = {}): Promise<FetchedFile> => {
-  const cached = await readCache(key);
+  const cached = cache.get(key) ?? null;
   const headers: Record<string, string> = { 'User-Agent': `${config.appName}/${config.appVersion}` };
   if (cached?.lastModified) headers['If-Modified-Since'] = cached.lastModified;
 
@@ -66,10 +56,9 @@ const fetchCached = async (url: string, key: string, { signal }: { signal?: Abor
   // 300s default.
   const res = await fetch(url, { headers, signal: signal ?? AbortSignal.timeout(FETCH_TIMEOUT_MS) });
 
-  const fallback = (): FetchedFile | null =>
-    cached ? { data: cached.data, lastModified: cached.lastModified } : null;
+  const fallback = (): FetchedFile | null => cached;
 
-  if (res.status === 304 && cached) return fallback() as FetchedFile;
+  if (res.status === 304 && cached) return cached;
   if (!res.ok) {
     // A stale calendar beats no calendar. Only fail if there is nothing to fall back to.
     const stale = fallback();
@@ -87,10 +76,9 @@ const fetchCached = async (url: string, key: string, { signal }: { signal?: Abor
     throw new Error(`Calendar ${url} returned unparseable JSON: ${errorMessage(err)}`);
   }
 
-  const lastModified = res.headers.get('last-modified');
-  await writeCache(key, { lastModified, data, cachedAt: new Date().toISOString() });
-
-  return { data, lastModified };
+  const entry: FetchedFile = { data, lastModified: res.headers.get('last-modified') };
+  cache.set(key, entry);
+  return entry;
 };
 
 export const rollingUrl = (type: CalendarType): string => CDN_BASE + CALENDAR_FILES[type];
