@@ -1,5 +1,7 @@
 node_modules/
 data/
 .env
+*.secrets.env
+!*.secrets.env.example
 *.log
 .DS_Store

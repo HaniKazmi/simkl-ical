@@ -6,20 +6,31 @@ services:
     image: ghcr.io/hanikazmi/simkl-ical:latest
     container_name: simkl-ical
     restart: unless-stopped
+
+    # Secrets only. Copy simkl.secrets.env.example and fill it in; the file is
+    # gitignored. Values here are injected into the container but are NOT
+    # available for variable interpolation elsewhere in this file, which is why
+    # the published port below is a literal.
+    env_file: ./simkl.secrets.env
+
+    # Non-secret configuration, versioned alongside the compose file so the
+    # deployment is self-describing. These win over anything in the env file.
     environment:
-      SIMKL_CLIENT_ID: ${SIMKL_CLIENT_ID:?set in .env}
-      FEED_TOKEN: ${FEED_TOKEN:?set in .env}
       # Set explicitly. A container that inherits nothing defaults to UTC and
       # produces a feed that is off by one day for late-evening US airings.
-      TZ: ${TZ:-Europe/London}
-      RELEASE_COUNTRY: ${RELEASE_COUNTRY:-GB}
-      GRACE_DAYS: ${GRACE_DAYS:-14}
+      TZ: "Europe/London"
+      # ISO 3166-1 alpha-2 — whose cinema release dates to use for films.
+      RELEASE_COUNTRY: "GB"
+      # How long an aired episode lingers in the feed.
+      GRACE_DAYS: "14"
+
     volumes:
       - simkl-ical-data:/data
+
     ports:
       # Behind a reverse proxy, drop this and put the container on the proxy's
       # network instead — see the README.
-      - "${HOST_PORT:-3000}:3000"
+      - "3000:3000"
 
 volumes:
   simkl-ical-data:

@@ -50,10 +50,14 @@ Get a client id by registering an app at <https://simkl.com/settings/developer/>
 ### With Compose
 
 ```sh
-cp .env.example .env                               # fill in SIMKL_CLIENT_ID and FEED_TOKEN
+cp simkl.secrets.env.example simkl.secrets.env     # fill in the two secrets
 docker compose run --rm simkl-ical npm run login   # once, to authorise
 docker compose up -d
 ```
+
+Secrets live in `simkl.secrets.env` (gitignored). Everything else — timezone, release
+country, grace window, published port — is set directly in `docker-compose.yml`, so the
+deployment is self-describing and safe to commit. Edit it there.
 
 Run the login **first**. `/healthz` answers `503` until a token exists, so a container
 started beforehand sits marked `unhealthy` until the next poll picks the token up — it
@@ -64,14 +68,16 @@ Update with `docker compose pull && docker compose up -d`.
 
 ## Configuration
 
+Under Compose, the first two go in `simkl.secrets.env` and the rest are set directly in
+`docker-compose.yml`.
+
 | Variable              | Default         | Notes                                                        |
 | --------------------- | --------------- | ------------------------------------------------------------ |
-| `SIMKL_CLIENT_ID`     | —               | **Required.** From simkl.com/settings/developer               |
-| `FEED_TOKEN`          | —               | **Required.** Secret path segment of the feed URL. `openssl rand -hex 24` |
+| `SIMKL_CLIENT_ID`     | —               | **Required, secret.** From simkl.com/settings/developer       |
+| `FEED_TOKEN`          | —               | **Required, secret.** Path segment of the feed URL. `openssl rand -hex 24` |
 | `TZ`                  | `Europe/London` | **Set this.** Airdates are converted to local dates; a wrong zone shifts events by a day |
 | `RELEASE_COUNTRY`     | `GB`            | ISO 3166-1 alpha-2. Which country's cinema dates to use for films |
 | `GRACE_DAYS`          | `14`            | How long an aired episode stays in the feed                   |
-| `HOST_PORT`           | `3000`          | Compose only — host port to publish on                        |
 | `PORT`                | `3000`          | Port inside the container                                     |
 | `DATA_DIR`            | `/data`         | Token, snapshot and calendar cache                            |
 | `CALENDAR_REFRESH_MS` | `10800000` (3h) | How often to re-read the airdate calendars                    |

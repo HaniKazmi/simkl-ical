@@ -3,6 +3,7 @@
 data/
 node_modules/
 .env
+*.secrets.env
 .git/
 .github/
 test/
