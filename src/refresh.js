@@ -1,15 +1,12 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { join as joinPath } from 'node:path';
 import { config } from './config.js';
 import { readToken } from './simkl/auth.js';
 import { SimklAuthError } from './simkl/client.js';
 import { fetchAllCalendars } from './sources/calendar.js';
 import { fetchLists, getActivities, listSignatures, staleLists, LISTS } from './sources/library.js';
-import { fetchMovieReleases } from './sources/movies.js';
+import { fetchMovieReleases, reconcileReleases } from './sources/movies.js';
 import { join, idSet } from './join.js';
 import { renderIcs } from './ics.js';
-
-const snapshotPath = () => joinPath(config.dataDir, 'snapshot.json');
+import { loadSnapshot, saveSnapshot } from './snapshot.js';
 
 /**
  * Holds the rendered feed in memory. Requests never trigger a fetch: a client
@@ -79,46 +76,16 @@ export class FeedState {
     this.log.info?.(`rendered ${this.events.length} events`);
   }
 
-  async persist() {
-    await mkdir(config.dataDir, { recursive: true });
-    await writeFile(
-      snapshotPath(),
-      JSON.stringify({
-        library: this.library,
-        movieReleases: [...this.movieReleases.values()],
-        listSignatures: this.listSignatures,
-        savedAt: new Date().toISOString(),
-      }),
-    );
-  }
-
   /** Serve something immediately on boot, before any network call returns. */
   async hydrate() {
-    try {
-      const snap = JSON.parse(await readFile(snapshotPath(), 'utf8'));
-      this.library = snap.library;
-      this.movieReleases = new Map((snap.movieReleases ?? []).map((m) => [Number(m.simkl_id), m]));
-      // Absent on snapshots written before per-list gating: every list then
-      // reads as stale and the next poll refetches the lot, which is correct.
-      this.listSignatures = snap.listSignatures ?? {};
-      this.libraryAt = snap.savedAt;
-    } catch {
-      // No snapshot yet — first run.
+    const snapshot = await loadSnapshot();
+    if (snapshot) {
+      this.library = snapshot.library;
+      this.movieReleases = snapshot.movieReleases;
+      this.listSignatures = snapshot.listSignatures;
+      this.libraryAt = snapshot.savedAt;
     }
-    try {
-      this.calendars = await fetchAllCalendars({ graceDays: config.graceDays });
-      this.calendarsAt = new Date().toISOString();
-    } catch (err) {
-      this.log.warn?.(`calendar hydrate failed: ${err.message}`);
-    }
-    // Guarded like the other two call sites: a render failure must degrade the
-    // feed, not take the process down during startup.
-    try {
-      this.render();
-    } catch (err) {
-      this.errors.render = err.message;
-      this.log.error?.(`render failed during hydrate: ${err.message}`);
-    }
+    await this.refreshCalendars();
   }
 
   async refreshCalendars() {
@@ -126,10 +93,17 @@ export class FeedState {
       this.calendars = await fetchAllCalendars({ graceDays: config.graceDays });
       this.calendarsAt = new Date().toISOString();
       this.errors.calendar = null;
-      this.render();
     } catch (err) {
       this.errors.calendar = err.message;
       this.log.error?.(`calendar refresh failed: ${err.message}`);
+    }
+    // Rendering is guarded separately: a bad timezone throws from inside the
+    // join, and that must degrade the feed rather than take the process down.
+    try {
+      this.render();
+    } catch (err) {
+      this.errors.render = err.message;
+      this.log.error?.(`render failed: ${err.message}`);
     }
   }
 
@@ -162,21 +136,13 @@ export class FeedState {
       let filmsComplete = true;
       if (stale.some((l) => l.key === 'movies_plantowatch')) {
         const filmIds = [...idSet(this.library.movies_plantowatch)];
-        if (filmIds.length) {
-          const releases = await fetchMovieReleases(filmIds);
-          // Carry over anything that failed this time rather than dropping it,
-          // and drop anything no longer on the list.
-          const merged = new Map();
-          for (const id of filmIds) {
-            const release = releases.get(id) ?? this.movieReleases.get(id);
-            if (release) merged.set(id, release);
-          }
-          this.movieReleases = merged;
-          filmsComplete = releases.size === filmIds.length;
-          this.log.info?.(`resolved ${releases.size}/${filmIds.length} film release dates`);
-        } else {
-          this.movieReleases = new Map();
-        }
+        const fetched = filmIds.length ? await fetchMovieReleases(filmIds) : new Map();
+        ({ releases: this.movieReleases, complete: filmsComplete } = reconcileReleases(
+          this.movieReleases,
+          filmIds,
+          fetched,
+        ));
+        if (filmIds.length) this.log.info?.(`resolved ${fetched.size}/${filmIds.length} film release dates`);
       }
 
       const signatures = listSignatures(activities);
@@ -190,7 +156,11 @@ export class FeedState {
       this.listSignatures = signatures;
       this.libraryAt = new Date().toISOString();
       this.errors.library = null;
-      await this.persist();
+      await saveSnapshot({
+        library: this.library,
+        movieReleases: this.movieReleases,
+        listSignatures: this.listSignatures,
+      });
       this.render();
     } catch (err) {
       // A revoked token must not empty the feed — keep serving the last render.

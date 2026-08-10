@@ -48,6 +48,23 @@ export function pickReleaseDate(movie, country = config.releaseCountry) {
   return null;
 }
 
+/**
+ * Fold a round of lookups into what we already had.
+ *
+ * Films no longer on the list are dropped; ids that failed this time keep their
+ * previous value rather than vanishing. `complete` reports whether every id
+ * resolved — the caller uses it to decide whether to record the list as current
+ * or leave it stale so the next poll retries.
+ */
+export function reconcileReleases(previous, ids, fetched) {
+  const releases = new Map();
+  for (const id of ids) {
+    const release = fetched.get(id) ?? previous.get(id);
+    if (release) releases.set(id, release);
+  }
+  return { releases, complete: fetched.size === ids.length };
+}
+
 /** Detail lookups need no token — client_id is enough, and they are CDN-cached by id. */
 export function fetchMovie(id, { signal } = {}) {
   return apiGet(`/movies/${id}`, { params: { extended: 'full' }, signal });
