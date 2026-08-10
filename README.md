@@ -94,8 +94,18 @@ Then point a Cloudflare Tunnel hostname at Caddy the same way as your other serv
 - **Cache size.** Each monthly archive is 0.3–4 MB per type and is cached on disk under
   `DATA_DIR/cache`; a 14-day window keeps about 8 MB. Warm fetches are all `304`s.
 - **Refresh.** CDN calendars every 3h (conditional GET; the CDN ignores query strings, so
-  there's no other way to detect a regeneration). `/sync/activities` every 15m, which gates
-  the five library calls. Requests never trigger a fetch.
+  there's no other way to detect a regeneration). `/sync/activities` every 2h, which gates
+  the five library calls and the film lookups. Requests never trigger a fetch.
+
+  That gate compares only the timestamps that can move an item between lists —
+  `watching`, `plantowatch`, `completed`, `hold`, `dropped`, `removed_from_list`. It
+  deliberately ignores `playback`, `rated_at` and the `all` roll-up: a scrobbler reporting
+  progress or a rating you gave would otherwise trigger a 16-call refetch that renders
+  byte-identical output.
+
+  In steady state that is **12 API calls/day**, plus 16 per genuine list change, and 32–48
+  CDN requests/day (nearly all `304`). Override with `ACTIVITIES_POLL_MS` and
+  `CALENDAR_REFRESH_MS`.
 - **Google Calendar** polls subscribed URLs on its own schedule, commonly 8–24h, and ignores
   every refresh hint. Apple Calendar lets you set the interval.
 - **Revoked token.** Logged loudly; the last good feed keeps serving. Re-run

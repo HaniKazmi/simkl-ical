@@ -18,6 +18,38 @@ export function getActivities(token, { signal } = {}) {
   return apiGet('/sync/activities', { token, signal });
 }
 
+const CATEGORIES = ['tv_shows', 'anime', 'movies'];
+
+/**
+ * The only activity timestamps that can change what appears in the feed — all
+ * of them move an item between lists. `movies` carries no `watching` or `hold`
+ * key, which is why absences are tolerated rather than assumed.
+ */
+export const MEMBERSHIP_FIELDS = ['watching', 'plantowatch', 'completed', 'hold', 'dropped', 'removed_from_list'];
+
+/**
+ * Change key for the refresh gate.
+ *
+ * Deliberately narrower than the whole activities payload: `playback` moves
+ * every time a scrobbler reports progress and `rated_at` moves when you rate
+ * something, but neither changes the feed by a single byte. Including them
+ * meant a full 16-call refetch that produced an identical render. `all` is
+ * excluded for the same reason — it is a roll-up that moves when they do.
+ *
+ * Built from an explicit field list rather than JSON.stringify, so the result
+ * cannot shift if the API returns its keys in a different order.
+ */
+export function membershipSignature(activities) {
+  const parts = [];
+  for (const category of CATEGORIES) {
+    const source = activities?.[category] ?? {};
+    for (const field of MEMBERSHIP_FIELDS) {
+      parts.push(`${category}.${field}=${source[field] ?? ''}`);
+    }
+  }
+  return parts.join('|');
+}
+
 export function fetchList(token, type, status, { signal } = {}) {
   return apiGet(`/sync/all-items/${type}/${status}`, { token, signal });
 }

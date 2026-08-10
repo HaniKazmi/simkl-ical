@@ -36,8 +36,10 @@ export const config = {
   // The CDN files regenerate every 6h; polling at 3h with a conditional GET
   // costs a 304 most of the time and halves worst-case staleness.
   calendarRefreshMs: int(process.env.CALENDAR_REFRESH_MS, 3 * 60 * 60 * 1000),
-  // One tiny request that gates the five expensive library calls.
-  activitiesPollMs: int(process.env.ACTIVITIES_POLL_MS, 15 * 60 * 1000),
+  // One tiny request that gates the five expensive library calls. Two hours:
+  // list membership changes rarely, and a slightly stale feed is invisible next
+  // to a calendar client that polls on its own schedule anyway.
+  activitiesPollMs: int(process.env.ACTIVITIES_POLL_MS, 2 * 60 * 60 * 1000),
 };
 
 export function requireClientId() {

@@ -4,7 +4,7 @@ import { config } from './config.js';
 import { readToken } from './simkl/auth.js';
 import { SimklAuthError } from './simkl/client.js';
 import { fetchAllCalendars } from './sources/calendar.js';
-import { fetchLibrary, getActivities } from './sources/library.js';
+import { fetchLibrary, getActivities, membershipSignature } from './sources/library.js';
 import { fetchMovieReleases } from './sources/movies.js';
 import { join, idSet } from './join.js';
 import { renderIcs } from './ics.js';
@@ -103,8 +103,8 @@ export class FeedState {
 
   /**
    * One cheap request decides whether the five library calls are worth making.
-   * The signature is the full activities payload: any change to any timestamp
-   * we care about produces a different string.
+   * The signature covers only the timestamps that can move an item between
+   * lists — see membershipSignature.
    */
   async refreshLibraryIfChanged({ force = false } = {}) {
     const token = await readToken();
@@ -116,7 +116,7 @@ export class FeedState {
 
     try {
       const activities = await getActivities(token);
-      const signature = JSON.stringify([activities.tv_shows, activities.anime, activities.movies]);
+      const signature = membershipSignature(activities);
       if (!force && signature === this.activitySignature && this.library) return;
 
       this.library = await fetchLibrary(token);
