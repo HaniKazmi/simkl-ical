@@ -29,7 +29,10 @@ export class FeedState {
     this.libraryAt = null;
     this.polledAt = null;
     this.renderedAt = null;
-    this.lastError = null;
+    // One slot per subsystem. A single shared slot meant the calendar timer and
+    // the library timer cleared each other's failures on success, so a revoked
+    // token showed as unhealthy with no stated reason.
+    this.errors = { calendar: null, library: null, render: null };
     this.timers = [];
   }
 
@@ -55,7 +58,11 @@ export class FeedState {
       lastPolledAt: this.polledAt,
       renderedAt: this.renderedAt,
       stale: stalePoll || staleCalendars || undefined,
-      lastError: this.lastError,
+      // Kept as a single headline value for the common case; `errors` carries
+      // the detail. Library problems outrank calendar ones — a stale calendar
+      // still renders, a revoked token eventually will not.
+      lastError: this.errors.library ?? this.errors.calendar ?? this.errors.render ?? null,
+      errors: this.errors,
       timezone: config.timezone,
     };
   }
@@ -109,7 +116,7 @@ export class FeedState {
     try {
       this.render();
     } catch (err) {
-      this.lastError = `render: ${err.message}`;
+      this.errors.render = err.message;
       this.log.error?.(`render failed during hydrate: ${err.message}`);
     }
   }
@@ -118,10 +125,10 @@ export class FeedState {
     try {
       this.calendars = await fetchAllCalendars({ graceDays: config.graceDays });
       this.calendarsAt = new Date().toISOString();
-      this.lastError = null;
+      this.errors.calendar = null;
       this.render();
     } catch (err) {
-      this.lastError = `calendar: ${err.message}`;
+      this.errors.calendar = err.message;
       this.log.error?.(`calendar refresh failed: ${err.message}`);
     }
   }
@@ -134,8 +141,8 @@ export class FeedState {
   async refreshLibraryIfChanged({ force = false } = {}) {
     const token = await readToken();
     if (!token) {
-      this.lastError = 'no token — run `npm run login`';
-      this.log.error?.(this.lastError);
+      this.errors.library = 'no token — run `npm run login`';
+      this.log.error?.(this.errors.library);
       return;
     }
 
@@ -182,13 +189,13 @@ export class FeedState {
       }
       this.listSignatures = signatures;
       this.libraryAt = new Date().toISOString();
-      this.lastError = null;
+      this.errors.library = null;
       await this.persist();
       this.render();
     } catch (err) {
       // A revoked token must not empty the feed — keep serving the last render.
       const prefix = err instanceof SimklAuthError ? 'AUTH' : 'library';
-      this.lastError = `${prefix}: ${err.message}`;
+      this.errors.library = `${prefix}: ${err.message}`;
       this.log.error?.(
         err instanceof SimklAuthError
           // The `--` matters: npm swallows a bare --force instead of passing it on.

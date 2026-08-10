@@ -31,7 +31,7 @@ app.log.info(`listening on :${config.port} in ${config.timezone}, warming up`);
   app.log.info(`ready: serving ${state.events.length} events`);
 })().catch((err) => {
   // Never fatal: the server keeps answering /healthz so the failure is visible.
-  state.lastError = `startup: ${err.message}`;
+  state.errors.render = `startup: ${err.message}`;
   app.log.error(`warm-up failed: ${err.stack ?? err.message}`);
 });
 

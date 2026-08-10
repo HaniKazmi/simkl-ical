@@ -27,9 +27,28 @@ test('nothing rendered yet is unhealthy', () => {
 test('a feed that has stopped polling goes unhealthy', () => {
   const state = rendered();
   state.polledAt = ago(config.activitiesPollMs * 4);
-  state.lastError = 'AUTH: SIMKL rejected the token (401)';
+  state.errors.library = 'AUTH: SIMKL rejected the token (401)';
   assert.equal(state.health.ok, false);
   assert.equal(state.health.stale, true);
+});
+
+// The two timers are independent. A shared error slot meant each cleared the
+// other's failure, leaving health unhealthy with no stated reason.
+test('a calendar success does not erase a library failure', () => {
+  const state = rendered();
+  state.errors.library = 'AUTH: SIMKL rejected the token (401)';
+  state.errors.calendar = null; // as if a calendar refresh just succeeded
+
+  assert.equal(state.health.lastError, 'AUTH: SIMKL rejected the token (401)');
+  assert.equal(state.health.errors.library, 'AUTH: SIMKL rejected the token (401)');
+});
+
+test('a library failure outranks a calendar one in the headline error', () => {
+  const state = rendered();
+  state.errors.calendar = 'calendar boom';
+  assert.equal(state.health.lastError, 'calendar boom');
+  state.errors.library = 'library boom';
+  assert.equal(state.health.lastError, 'library boom');
 });
 
 test('stale calendars go unhealthy', () => {
