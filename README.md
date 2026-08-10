@@ -14,13 +14,19 @@ api.simkl.com/sync/all-items/…  ───┘
 
 ## What lands in the feed
 
-| Source         | Library list         | Included                  |
-| -------------- | -------------------- | ------------------------- |
-| `tv.json`      | `shows/watching`     | every upcoming airing     |
-| `tv.json`      | `shows/plantowatch`  | **S01E01 only**           |
-| `anime.json`   | `anime/watching`     | every upcoming airing     |
-| `anime.json`   | `anime/plantowatch`  | S01E01 only               |
+| Source         | Library list         | Included                    |
+| -------------- | -------------------- | --------------------------- |
+| `tv.json`      | `shows/watching`     | every upcoming airing       |
+| `tv.json`      | `shows/completed`    | every upcoming airing       |
+| `tv.json`      | `shows/plantowatch`  | **S01E01 only**             |
+| `anime.json`   | `anime/watching`     | every upcoming airing       |
+| `anime.json`   | `anime/completed`    | every upcoming airing       |
+| `anime.json`   | `anime/plantowatch`  | S01E01 only                 |
 | `/movies/{id}` | `movies/plantowatch` | cinema date in your country |
+
+`completed` is treated exactly like `watching`, not excluded: SIMKL marks an ongoing show
+completed once you have watched everything aired so far, so a between-seasons show sits
+there. Dropping it would silently lose the next season.
 
 Events are all-day and transparent, so they never mark you busy. Episode titles are kept
 out of `SUMMARY` and put in `DESCRIPTION` — a calendar shouldn't surface a spoiler you
@@ -97,14 +103,21 @@ Then point a Cloudflare Tunnel hostname at Caddy the same way as your other serv
   there's no other way to detect a regeneration). `/sync/activities` every 2h, which gates
   the five library calls and the film lookups. Requests never trigger a fetch.
 
-  That gate compares only the timestamps that can move an item between lists —
-  `watching`, `plantowatch`, `completed`, `hold`, `dropped`, `removed_from_list`. It
-  deliberately ignores `playback`, `rated_at` and the `all` roll-up: a scrobbler reporting
-  progress or a rating you gave would otherwise trigger a 16-call refetch that renders
-  byte-identical output.
+  Activities carries a timestamp per status, so each list is gated individually and only
+  the lists that actually moved are refetched. It ignores `playback`, `rated_at` and the
+  `all` roll-up, none of which can change the feed — otherwise a scrobbler reporting
+  progress would trigger a refetch that renders byte-identical output.
 
-  In steady state that is **12 API calls/day**, plus 16 per genuine list change, and 32–48
-  CDN requests/day (nearly all `304`). Override with `ACTIVITIES_POLL_MS` and
+  | Event | API calls |
+  | ----- | --------- |
+  | Nothing changed | 1 |
+  | Marked an episode watched | 2 |
+  | Added or removed a film | 2 + one lookup per film |
+  | Removed something from a list | 4 (a removal is only reported against `removed_from_list`, so it invalidates its whole category) |
+  | Cold start | 8 + one lookup per film |
+
+  In steady state that is **12 API calls/day** plus a couple per change, and 32–48 CDN
+  requests/day (nearly all `304`). Override with `ACTIVITIES_POLL_MS` and
   `CALENDAR_REFRESH_MS`.
 - **Google Calendar** polls subscribed URLs on its own schedule, commonly 8–24h, and ignores
   every refresh hint. Apple Calendar lets you set the interval.

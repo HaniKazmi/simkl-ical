@@ -54,11 +54,13 @@ export function itemSimklId(item) {
   return ids?.simkl ?? ids?.simkl_id ?? null;
 }
 
-export function idSet(response) {
+export function idSet(...responses) {
   const set = new Set();
-  for (const item of extractItems(response)) {
-    const id = itemSimklId(item);
-    if (id != null) set.add(Number(id));
+  for (const response of responses) {
+    for (const item of extractItems(response)) {
+      const id = itemSimklId(item);
+      if (id != null) set.add(Number(id));
+    }
   }
   return set;
 }
@@ -116,9 +118,12 @@ export function join(
   { timezone = config.timezone, now = new Date(), movieReleases = new Map(), graceDays = config.graceDays } = {},
 ) {
   const sets = {
-    showsWatching: idSet(library.shows_watching),
+    // Completed sits alongside watching: SIMKL marks an ongoing show completed
+    // once everything aired has been watched, so dropping it would lose the
+    // next season of anything between series.
+    showsAiring: idSet(library.shows_watching, library.shows_completed),
     showsPlanned: idSet(library.shows_plantowatch),
-    animeWatching: idSet(library.anime_watching),
+    animeAiring: idSet(library.anime_watching, library.anime_completed),
     animePlanned: idSet(library.anime_plantowatch),
     moviesPlanned: idSet(library.movies_plantowatch),
   };
@@ -142,8 +147,8 @@ export function join(
     }
   };
 
-  addEpisodes(calendars.tv, sets.showsWatching, sets.showsPlanned, 'tv');
-  addEpisodes(calendars.anime, sets.animeWatching, sets.animePlanned, 'anime');
+  addEpisodes(calendars.tv, sets.showsAiring, sets.showsPlanned, 'tv');
+  addEpisodes(calendars.anime, sets.animeAiring, sets.animePlanned, 'anime');
 
   // Films come from per-title lookups rather than the CDN calendar, so a
   // release six months out still appears instead of waiting for the 33-day

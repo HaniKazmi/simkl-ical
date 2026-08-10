@@ -56,15 +56,24 @@ const tvEntry = (id, season, episode, date, finale = null) => ({
 });
 
 const calendars = (tv = []) => ({
-  tv: { calendar: tv, metadata: { 100: { title: 'Watched Show', network: 'HBO', runtime: '60m', url: '/tv/100/x' }, 200: { title: 'Planned Show', url: '/tv/200/y' } } },
+  tv: {
+    calendar: tv,
+    metadata: {
+      100: { title: 'Watched Show', network: 'HBO', runtime: '60m', url: '/tv/100/x' },
+      200: { title: 'Planned Show', url: '/tv/200/y' },
+      400: { title: 'Completed Show', url: '/tv/400/z' },
+    },
+  },
   anime: { calendar: [], metadata: {} },
 });
 
 const library = {
   shows_watching: { shows: [{ show: { ids: { simkl: 100 } } }] },
   shows_plantowatch: { shows: [{ show: { ids: { simkl: 200 } } }] },
+  shows_completed: { shows: [{ show: { ids: { simkl: 400 } } }] },
   anime_watching: {},
   anime_plantowatch: {},
+  anime_completed: {},
   movies_plantowatch: { movies: [{ movie: { ids: { simkl: 300 } } }] },
 };
 
@@ -82,6 +91,24 @@ test('plan-to-watch contributes premieres only', () => {
   );
   assert.equal(events.length, 1);
   assert.equal(events[0].summary, 'Planned Show – S01E01');
+});
+
+// SIMKL marks an ongoing show completed once everything aired has been watched,
+// so a between-seasons show lives here. Excluding it would silently drop the
+// next season from the feed.
+test('completed shows still contribute upcoming episodes', () => {
+  const events = join(calendars([tvEntry(400, 4, 1, '2026-08-15T20:00:00Z')]), library, { timezone: 'Europe/London', now: NOW });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].summary, 'Completed Show – S04E01');
+});
+
+test('completed shows are not limited to premieres the way plan-to-watch is', () => {
+  const events = join(
+    calendars([tvEntry(400, 4, 5, '2026-08-15T20:00:00Z'), tvEntry(400, 4, 6, '2026-08-22T20:00:00Z')]),
+    library,
+    { timezone: 'Europe/London', now: NOW },
+  );
+  assert.equal(events.length, 2);
 });
 
 test('shows not in any list are excluded', () => {

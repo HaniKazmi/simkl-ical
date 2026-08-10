@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { membershipSignature, MEMBERSHIP_FIELDS, LISTS } from '../src/sources/library.js';
+import { listSignature, listSignatures, staleLists, LISTS } from '../src/sources/library.js';
 
 // Shape taken from a real /sync/activities response.
 const activities = () => ({
@@ -17,61 +17,95 @@ const activities = () => ({
     dropped: '2026-07-26T13:03:25Z',
     removed_from_list: '2026-07-12T22:46:29Z',
   },
-  anime: { all: '2026-08-09T22:17:35Z', playback: null, watching: '2026-08-08T11:32:04Z', completed: '2026-08-09T22:17:35Z' },
+  anime: { all: '2026-08-09T22:17:35Z', playback: null, watching: '2026-08-08T11:32:04Z', plantowatch: '2026-07-26T10:48:53Z', completed: '2026-08-09T22:17:35Z', removed_from_list: '2026-08-01T14:49:38Z' },
   // movies carries no `watching` or `hold` key at all.
-  movies: { all: '2026-08-01T14:44:43Z', rated_at: '2026-08-01T14:25:00Z', plantowatch: '2026-07-25T14:17:58Z', completed: '2026-08-01T14:44:43Z' },
+  movies: { all: '2026-08-01T14:44:43Z', rated_at: '2026-08-01T14:25:00Z', plantowatch: '2026-07-25T14:17:58Z', completed: '2026-08-01T14:44:43Z', removed_from_list: '2026-07-26T11:01:42Z' },
 });
 
-test('playback progress does not trip the refresh gate', () => {
-  const before = membershipSignature(activities());
+const keysOf = (lists) => lists.map((l) => l.key).sort();
+
+test('the list set covers watching, plan-to-watch and completed', () => {
+  assert.deepEqual(keysOf(LISTS), [
+    'anime_completed', 'anime_plantowatch', 'anime_watching',
+    'movies_plantowatch',
+    'shows_completed', 'shows_plantowatch', 'shows_watching',
+  ]);
+});
+
+test('nothing is stale when nothing changed', () => {
+  const a = activities();
+  assert.deepEqual(staleLists(a, listSignatures(a)), []);
+});
+
+test('playback progress marks nothing stale', () => {
+  const before = listSignatures(activities());
   const after = activities();
   after.tv_shows.playback = '2026-08-10T20:00:00Z';
-  after.all = '2026-08-10T20:00:00Z';
   after.tv_shows.all = '2026-08-10T20:00:00Z';
-  assert.equal(membershipSignature(after), before, 'a scrobbler must not cause a refetch');
+  after.all = '2026-08-10T20:00:00Z';
+  assert.deepEqual(staleLists(after, before), [], 'a scrobbler must not cause a refetch');
 });
 
-test('rating something does not trip the refresh gate', () => {
-  const before = membershipSignature(activities());
+test('rating something marks nothing stale', () => {
+  const before = listSignatures(activities());
   const after = activities();
   after.tv_shows.rated_at = '2026-08-10T20:00:00Z';
   after.movies.rated_at = '2026-08-10T20:00:00Z';
-  assert.equal(membershipSignature(after), before);
+  assert.deepEqual(staleLists(after, before), []);
 });
 
-test('moving an item between lists does trip the gate', () => {
-  const before = membershipSignature(activities());
-  for (const field of MEMBERSHIP_FIELDS) {
-    const after = activities();
-    after.tv_shows[field] = '2026-08-10T23:00:00Z';
-    assert.notEqual(membershipSignature(after), before, `${field} must be detected`);
-  }
+// The whole point of per-list gating: the common action should be cheap.
+test('marking a TV episode watched refetches only shows/watching', () => {
+  const before = listSignatures(activities());
+  const after = activities();
+  after.tv_shows.watching = '2026-08-10T20:00:00Z';
+  assert.deepEqual(keysOf(staleLists(after, before)), ['shows_watching']);
 });
 
-test('a change in any category is detected', () => {
-  const before = membershipSignature(activities());
-  for (const category of ['tv_shows', 'anime', 'movies']) {
-    const after = activities();
-    after[category].plantowatch = '2026-08-10T23:00:00Z';
-    assert.notEqual(membershipSignature(after), before, `${category} must be detected`);
-  }
+test('marking an anime episode watched leaves the 118KB completed list alone', () => {
+  const before = listSignatures(activities());
+  const after = activities();
+  after.anime.watching = '2026-08-10T20:00:00Z';
+  const stale = keysOf(staleLists(after, before));
+  assert.deepEqual(stale, ['anime_watching']);
+  assert.ok(!stale.includes('anime_completed'));
 });
 
-test('the signature is stable regardless of API key order', () => {
+test('a film list change is isolated to movies', () => {
+  const before = listSignatures(activities());
+  const after = activities();
+  after.movies.plantowatch = '2026-08-10T20:00:00Z';
+  assert.deepEqual(keysOf(staleLists(after, before)), ['movies_plantowatch']);
+});
+
+test('completing a show refetches the completed list', () => {
+  const before = listSignatures(activities());
+  const after = activities();
+  after.tv_shows.completed = '2026-08-10T20:00:00Z';
+  assert.deepEqual(keysOf(staleLists(after, before)), ['shows_completed']);
+});
+
+// A removal is only reported against removed_from_list, never against the
+// status the item left, so it has to invalidate the whole category.
+test('a removal invalidates every list in its category only', () => {
+  const before = listSignatures(activities());
+  const after = activities();
+  after.tv_shows.removed_from_list = '2026-08-10T20:00:00Z';
+  assert.deepEqual(keysOf(staleLists(after, before)), ['shows_completed', 'shows_plantowatch', 'shows_watching']);
+});
+
+test('an unknown list counts as stale, so a cold start fetches everything', () => {
+  assert.equal(staleLists(activities(), {}).length, LISTS.length);
+  assert.equal(staleLists(activities(), undefined).length, LISTS.length);
+});
+
+test('signatures are stable regardless of API key order', () => {
   const a = activities();
   const reordered = { ...a, tv_shows: Object.fromEntries(Object.entries(a.tv_shows).reverse()) };
-  assert.equal(membershipSignature(reordered), membershipSignature(a));
+  assert.deepEqual(listSignatures(reordered), listSignatures(a));
 });
 
 test('missing categories and fields are tolerated', () => {
-  assert.equal(typeof membershipSignature({}), 'string');
-  assert.equal(membershipSignature({}), membershipSignature(null));
-  assert.equal(membershipSignature(undefined), membershipSignature({ tv_shows: {}, anime: {}, movies: {} }));
-});
-
-test('the five library lists are unchanged', () => {
-  assert.deepEqual(
-    LISTS.map((l) => `${l.type}/${l.status}`),
-    ['shows/watching', 'shows/plantowatch', 'anime/watching', 'anime/plantowatch', 'movies/plantowatch'],
-  );
+  assert.equal(typeof listSignature({}, { type: 'movies', status: 'watching' }), 'string');
+  assert.deepEqual(listSignatures({}), listSignatures(null));
 });

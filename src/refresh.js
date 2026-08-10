@@ -4,7 +4,7 @@ import { config } from './config.js';
 import { readToken } from './simkl/auth.js';
 import { SimklAuthError } from './simkl/client.js';
 import { fetchAllCalendars } from './sources/calendar.js';
-import { fetchLibrary, getActivities, membershipSignature } from './sources/library.js';
+import { fetchLists, getActivities, listSignatures, staleLists, LISTS } from './sources/library.js';
 import { fetchMovieReleases } from './sources/movies.js';
 import { join, idSet } from './join.js';
 import { renderIcs } from './ics.js';
@@ -24,7 +24,7 @@ export class FeedState {
     this.calendars = null;
     this.library = null;
     this.movieReleases = new Map();
-    this.activitySignature = null;
+    this.listSignatures = {};
     this.calendarsAt = null;
     this.libraryAt = null;
     this.renderedAt = null;
@@ -63,7 +63,7 @@ export class FeedState {
       JSON.stringify({
         library: this.library,
         movieReleases: [...this.movieReleases.values()],
-        activitySignature: this.activitySignature,
+        listSignatures: this.listSignatures,
         savedAt: new Date().toISOString(),
       }),
     );
@@ -75,7 +75,9 @@ export class FeedState {
       const snap = JSON.parse(await readFile(snapshotPath(), 'utf8'));
       this.library = snap.library;
       this.movieReleases = new Map((snap.movieReleases ?? []).map((m) => [Number(m.simkl_id), m]));
-      this.activitySignature = snap.activitySignature;
+      // Absent on snapshots written before per-list gating: every list then
+      // reads as stale and the next poll refetches the lot, which is correct.
+      this.listSignatures = snap.listSignatures ?? {};
       this.libraryAt = snap.savedAt;
     } catch {
       // No snapshot yet — first run.
@@ -116,23 +118,27 @@ export class FeedState {
 
     try {
       const activities = await getActivities(token);
-      const signature = membershipSignature(activities);
-      if (!force && signature === this.activitySignature && this.library) return;
+      const stale = force || !this.library ? LISTS : staleLists(activities, this.listSignatures);
+      if (!stale.length) return;
 
-      this.library = await fetchLibrary(token);
+      this.log.info?.(`refetching ${stale.length}/${LISTS.length} lists: ${stale.map((l) => l.key).join(', ')}`);
+      Object.assign(this.library ?? (this.library = {}), await fetchLists(token, stale));
 
-      // Release dates only need re-reading when the film list itself changes;
-      // they are stable and the lookups are CDN-cached by id.
-      const filmIds = [...idSet(this.library.movies_plantowatch)];
-      if (filmIds.length) {
-        const releases = await fetchMovieReleases(filmIds);
-        if (releases.size) this.movieReleases = releases;
-        this.log.info?.(`resolved ${releases.size}/${filmIds.length} film release dates`);
-      } else {
-        this.movieReleases = new Map();
+      // Release dates only need re-reading when the film list itself changed;
+      // they are stable and the lookups are CDN-cached by id. Marking an episode
+      // watched must not drag eleven film lookups along with it.
+      if (stale.some((l) => l.key === 'movies_plantowatch')) {
+        const filmIds = [...idSet(this.library.movies_plantowatch)];
+        if (filmIds.length) {
+          const releases = await fetchMovieReleases(filmIds);
+          if (releases.size) this.movieReleases = releases;
+          this.log.info?.(`resolved ${releases.size}/${filmIds.length} film release dates`);
+        } else {
+          this.movieReleases = new Map();
+        }
       }
 
-      this.activitySignature = signature;
+      this.listSignatures = listSignatures(activities);
       this.libraryAt = new Date().toISOString();
       this.lastError = null;
       await this.persist();
