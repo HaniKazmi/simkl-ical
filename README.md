@@ -14,13 +14,13 @@ api.simkl.com/sync/all-items/…  ───┘
 
 ## What lands in the feed
 
-| Calendar        | Library list          | Included                |
-| --------------- | --------------------- | ----------------------- |
-| `tv.json`       | `shows/watching`      | every upcoming airing   |
-| `tv.json`       | `shows/plantowatch`   | **S01E01 only**         |
-| `anime.json`    | `anime/watching`      | every upcoming airing   |
-| `anime.json`    | `anime/plantowatch`   | S01E01 only             |
-| `movie_release` | `movies/plantowatch`  | release date            |
+| Source         | Library list         | Included                  |
+| -------------- | -------------------- | ------------------------- |
+| `tv.json`      | `shows/watching`     | every upcoming airing     |
+| `tv.json`      | `shows/plantowatch`  | **S01E01 only**           |
+| `anime.json`   | `anime/watching`     | every upcoming airing     |
+| `anime.json`   | `anime/plantowatch`  | S01E01 only               |
+| `/movies/{id}` | `movies/plantowatch` | cinema date in your country |
 
 Events are all-day and transparent, so they never mark you busy. Episode titles are kept
 out of `SUMMARY` and put in `DESCRIPTION` — a calendar shouldn't surface a spoiler you
@@ -76,10 +76,15 @@ Then point a Cloudflare Tunnel hostname at Caddy the same way as your other serv
 - **Timezone.** Set `TZ` explicitly; never let it default. Airdates are UTC instants and
   are converted to local dates — 2.8% of entries land on a different day in `Europe/London`
   than naive date-slicing would give, and 19% in `America/New_York`.
-- **Film releases** are date-only: every `movie_release.json` entry is stamped `04:00:00Z`
-  as a placeholder, so the UTC date is used directly rather than converted.
-- **33-day horizon.** The CDN calendars are a rolling 33-day window, so a film releasing in
-  six months won't appear until it enters that window.
+- **Film releases** come from per-title `/movies/{id}` lookups, not the CDN movie calendar.
+  Two reasons. The calendar is a rolling 33-day window, so a 2027 release would never show
+  up in it; and the film's top-level `released` field is consistently *two days earlier*
+  than its real theatrical date (Dune: Part Three reports `2026-12-16` against an actual
+  `2026-12-18`). The correct dates live in `release_dates`, per country and per release
+  type — set `RELEASE_COUNTRY` and the theatrical date for that territory is used, falling
+  back to US. A `type: 1` premiere screening is only used if nothing else is listed.
+- **33-day horizon applies to episodes only.** The TV and anime calendars are a rolling
+  33-day window; films are unbounded.
 - **Refresh.** CDN calendars every 3h (conditional GET; the CDN ignores query strings, so
   there's no other way to detect a regeneration). `/sync/activities` every 15m, which gates
   the five library calls. Requests never trigger a fetch.

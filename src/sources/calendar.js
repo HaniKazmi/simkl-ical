@@ -4,11 +4,16 @@ import { config } from '../config.js';
 
 const CDN_BASE = 'https://data.simkl.in/calendar/v2/';
 
-/** Calendar file per content type. Anime is a separate type in SIMKL, not a show genre. */
+/**
+ * Calendar file per content type. Anime is a separate type in SIMKL, not a show genre.
+ *
+ * movie_release.json is deliberately absent: it only covers a rolling 33-day
+ * window and carries a date-only 04:00Z placeholder, so films are resolved
+ * per-title through /movies/{id} instead — see sources/movies.js.
+ */
 export const CALENDAR_FILES = {
   tv: 'tv.json',
   anime: 'anime.json',
-  movies: 'movie_release.json',
 };
 
 const cachePath = (type) => join(config.dataDir, 'cache', `calendar-${type}.json`);

@@ -18,8 +18,8 @@ test('localDate handles the midnight-UTC boundary', () => {
   assert.equal(localDate('2026-08-12T00:00:00Z', 'Europe/London'), '2026-08-12');
 });
 
-test('releaseDate keeps the UTC date for date-only film placeholders', () => {
-  // Every movie_release.json entry is 04:00:00Z, meaning "this date", not an instant.
+test('releaseDate normalises to a plain date', () => {
+  assert.equal(releaseDate('2026-12-18'), '2026-12-18');
   assert.equal(releaseDate('2026-12-18T04:00:00Z'), '2026-12-18');
 });
 
@@ -55,10 +55,9 @@ const tvEntry = (id, season, episode, date, finale = null) => ({
   episode: { season, episode, title: `Ep ${episode}`, url: `https://simkl.com/tv/${id}/` },
 });
 
-const calendars = (tv = [], movies = []) => ({
+const calendars = (tv = []) => ({
   tv: { calendar: tv, metadata: { 100: { title: 'Watched Show', network: 'HBO', runtime: '60m', url: '/tv/100/x' }, 200: { title: 'Planned Show', url: '/tv/200/y' } } },
   anime: { calendar: [], metadata: {} },
-  movies: { calendar: movies, metadata: { 300: { title: 'Planned Film', url: '/movies/300/z' } } },
 });
 
 const library = {
@@ -111,12 +110,32 @@ test('episode titles stay out of the summary', () => {
   assert.equal(events[0].episodeTitle, 'Ep 3');
 });
 
+const filmReleases = (date) =>
+  new Map([[300, { simkl_id: 300, title: 'Planned Film', date, releaseType: 3, runtime: '140m', url: 'https://simkl.com/movies/300' }]]);
+
 test('plan-to-watch films are included by release date', () => {
-  const events = join(calendars([], [{ simkl_id: 300, date: '2026-08-20T04:00:00Z', finale_type: null }]), library, { timezone: 'Europe/London', now: NOW });
+  const events = join(calendars(), library, { timezone: 'Europe/London', now: NOW, movieReleases: filmReleases('2026-08-20') });
   assert.equal(events.length, 1);
   assert.equal(events[0].kind, 'movie');
   assert.equal(events[0].date, '2026-08-20');
   assert.equal(events[0].summary, 'Planned Film');
+  assert.equal(events[0].network, 'In cinemas');
+});
+
+test('films far beyond the 33-day calendar window still appear', () => {
+  const events = join(calendars(), library, { timezone: 'Europe/London', now: NOW, movieReleases: filmReleases('2027-04-30') });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].date, '2027-04-30');
+});
+
+test('films already released are dropped', () => {
+  const events = join(calendars(), library, { timezone: 'Europe/London', now: NOW, movieReleases: filmReleases('2025-12-17') });
+  assert.equal(events.length, 0);
+});
+
+test('films with no resolvable release date are skipped', () => {
+  const events = join(calendars(), library, { timezone: 'Europe/London', now: NOW, movieReleases: new Map() });
+  assert.equal(events.length, 0);
 });
 
 test('events are deduplicated by uid and sorted by date', () => {

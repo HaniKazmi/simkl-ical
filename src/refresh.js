@@ -5,7 +5,8 @@ import { readToken } from './simkl/auth.js';
 import { SimklAuthError } from './simkl/client.js';
 import { fetchAllCalendars } from './sources/calendar.js';
 import { fetchLibrary, getActivities } from './sources/library.js';
-import { join } from './join.js';
+import { fetchMovieReleases } from './sources/movies.js';
+import { join, idSet } from './join.js';
 import { renderIcs } from './ics.js';
 
 const snapshotPath = () => joinPath(config.dataDir, 'snapshot.json');
@@ -22,6 +23,7 @@ export class FeedState {
     this.events = [];
     this.calendars = null;
     this.library = null;
+    this.movieReleases = new Map();
     this.activitySignature = null;
     this.calendarsAt = null;
     this.libraryAt = null;
@@ -44,7 +46,10 @@ export class FeedState {
 
   render() {
     if (!this.calendars || !this.library) return;
-    this.events = join(this.calendars, this.library, { timezone: config.timezone });
+    this.events = join(this.calendars, this.library, {
+      timezone: config.timezone,
+      movieReleases: this.movieReleases,
+    });
     this.ics = renderIcs(this.events, { name: 'SIMKL – Upcoming' });
     this.renderedAt = new Date().toISOString();
     this.log.info?.(`rendered ${this.events.length} events`);
@@ -54,7 +59,12 @@ export class FeedState {
     await mkdir(config.dataDir, { recursive: true });
     await writeFile(
       snapshotPath(),
-      JSON.stringify({ library: this.library, activitySignature: this.activitySignature, savedAt: new Date().toISOString() }),
+      JSON.stringify({
+        library: this.library,
+        movieReleases: [...this.movieReleases.values()],
+        activitySignature: this.activitySignature,
+        savedAt: new Date().toISOString(),
+      }),
     );
   }
 
@@ -63,6 +73,7 @@ export class FeedState {
     try {
       const snap = JSON.parse(await readFile(snapshotPath(), 'utf8'));
       this.library = snap.library;
+      this.movieReleases = new Map((snap.movieReleases ?? []).map((m) => [Number(m.simkl_id), m]));
       this.activitySignature = snap.activitySignature;
       this.libraryAt = snap.savedAt;
     } catch {
@@ -108,6 +119,18 @@ export class FeedState {
       if (!force && signature === this.activitySignature && this.library) return;
 
       this.library = await fetchLibrary(token);
+
+      // Release dates only need re-reading when the film list itself changes;
+      // they are stable and the lookups are CDN-cached by id.
+      const filmIds = [...idSet(this.library.movies_plantowatch)];
+      if (filmIds.length) {
+        const releases = await fetchMovieReleases(filmIds);
+        if (releases.size) this.movieReleases = releases;
+        this.log.info?.(`resolved ${releases.size}/${filmIds.length} film release dates`);
+      } else {
+        this.movieReleases = new Map();
+      }
+
       this.activitySignature = signature;
       this.libraryAt = new Date().toISOString();
       this.lastError = null;

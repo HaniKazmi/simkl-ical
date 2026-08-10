@@ -1,4 +1,5 @@
 import { config } from './config.js';
+import { releaseLabel } from './sources/movies.js';
 
 /**
  * Local calendar date (YYYY-MM-DD) for an instant, in a given IANA zone.
@@ -18,13 +19,12 @@ export function localDate(iso, timeZone) {
 }
 
 /**
- * Film releases are a date, not a moment: every entry in movie_release.json is
- * stamped 04:00:00Z (midnight US Eastern) as a placeholder. Converting that
- * through a timezone would shift the date for anyone west of UTC-4, so the UTC
- * date is taken directly.
+ * Film release dates arrive from /movies/{id} already as plain YYYY-MM-DD in
+ * the viewer's country, so there is no instant to convert and no timezone to
+ * apply. This only guards against a full ISO timestamp sneaking through.
  */
-export function releaseDate(iso) {
-  return iso.slice(0, 10);
+export function releaseDate(value) {
+  return String(value).slice(0, 10);
 }
 
 /** Library responses nest under the type key, and come back as {} when empty. */
@@ -67,21 +67,6 @@ function buildEvent({ entry, meta, kind, date }) {
   const title = meta?.title ?? `SIMKL ${id}`;
   const url = meta?.url ? `https://simkl.com${meta.url}` : entry.episode?.url ?? null;
 
-  if (kind === 'movie') {
-    return {
-      uid: `simkl-movie-${id}@simkl-ical`,
-      kind,
-      date,
-      summary: title,
-      showTitle: title,
-      episodeTitle: null,
-      network: meta?.network ?? null,
-      runtime: meta?.runtime ?? null,
-      finale: null,
-      url,
-    };
-  }
-
   const code = episodeCode(entry.episode?.season, entry.episode?.episode);
   const finale = FINALE_LABEL[entry.finale_type] ?? null;
 
@@ -110,7 +95,7 @@ const isPremiere = (entry) => entry.episode?.season === 1 && entry.episode?.epis
  * premieres only — including every episode of an unstarted show would bury the
  * calendar in things the user has not begun.
  */
-export function join(calendars, library, { timezone = config.timezone, now = new Date() } = {}) {
+export function join(calendars, library, { timezone = config.timezone, now = new Date(), movieReleases = new Map() } = {}) {
   const sets = {
     showsWatching: idSet(library.shows_watching),
     showsPlanned: idSet(library.shows_plantowatch),
@@ -140,15 +125,28 @@ export function join(calendars, library, { timezone = config.timezone, now = new
   addEpisodes(calendars.tv, sets.showsWatching, sets.showsPlanned, 'tv');
   addEpisodes(calendars.anime, sets.animeWatching, sets.animePlanned, 'anime');
 
-  for (const entry of calendars.movies?.calendar ?? []) {
-    const id = Number(entry.simkl_id);
-    if (!sets.moviesPlanned.has(id)) continue;
+  // Films come from per-title lookups rather than the CDN calendar, so a
+  // release six months out still appears instead of waiting for the 33-day
+  // window to reach it.
+  for (const id of sets.moviesPlanned) {
+    const release = movieReleases.get(id);
+    if (!release) continue;
 
-    const date = releaseDate(entry.date);
+    const date = releaseDate(release.date);
     if (date < today) continue;
 
-    const event = buildEvent({ entry, meta: calendars.movies.metadata?.[String(id)], kind: 'movie', date });
-    events.set(event.uid, event);
+    events.set(`simkl-movie-${id}@simkl-ical`, {
+      uid: `simkl-movie-${id}@simkl-ical`,
+      kind: 'movie',
+      date,
+      summary: release.title,
+      showTitle: release.title,
+      episodeTitle: null,
+      network: releaseLabel(release.releaseType),
+      runtime: release.runtime ?? null,
+      finale: null,
+      url: release.url ?? null,
+    });
   }
 
   return [...events.values()].sort((a, b) => a.date.localeCompare(b.date) || a.summary.localeCompare(b.summary));

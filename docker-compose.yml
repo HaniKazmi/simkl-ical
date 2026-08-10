@@ -9,6 +9,7 @@ services:
       # Set explicitly. A container that inherits nothing defaults to UTC and
       # produces a feed that is off by one day for late-evening US airings.
       TZ: ${TZ:-Europe/London}
+      RELEASE_COUNTRY: ${RELEASE_COUNTRY:-GB}
     volumes:
       - simkl-ical-data:/data
     # No `ports:` on purpose — the container is reachable only on Caddy's

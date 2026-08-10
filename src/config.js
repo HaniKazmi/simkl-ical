@@ -20,6 +20,9 @@ export const config = {
   feedToken: process.env.FEED_TOKEN,
   timezone: process.env.TZ || 'Europe/London',
   dataDir: resolve(process.env.DATA_DIR || './data'),
+  // Which country's cinema dates to use for film releases. Release dates vary by
+  // territory — Dune: Part Three opens 18 Dec in GB and the US but 16 Dec in BE.
+  releaseCountry: process.env.RELEASE_COUNTRY || 'GB',
   port: int(process.env.PORT, 3000),
   horizonDays: int(process.env.HORIZON_DAYS, 33),
 
