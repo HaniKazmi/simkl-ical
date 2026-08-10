@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node src/index.js",
     "login": "node src/login.js",
-    "test": "node --test test/"
+    "test": "node --test \"test/*.test.js\""
   },
   "dependencies": {
     "fastify": "^5.2.1",
