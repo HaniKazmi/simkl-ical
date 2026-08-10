@@ -16,14 +16,10 @@ services:
       GRACE_DAYS: ${GRACE_DAYS:-14}
     volumes:
       - simkl-ical-data:/data
-    # No `ports:` on purpose — the container is reachable only on Caddy's
-    # network, so there is no path to it that bypasses the proxy.
-    networks:
-      - caddy
+    ports:
+      # Behind a reverse proxy, drop this and put the container on the proxy's
+      # network instead — see the README.
+      - "${HOST_PORT:-3000}:3000"
 
 volumes:
   simkl-ical-data:
-
-networks:
-  caddy:
-    external: true

@@ -1,10 +1,161 @@
 # simkl-ical
 
-Serves your upcoming SIMKL episodes and film releases as a subscribable iCal feed.
+[![CI](https://github.com/hanikazmi/simkl-ical/actions/workflows/ci.yml/badge.svg)](https://github.com/hanikazmi/simkl-ical/actions/workflows/ci.yml)
 
-SIMKL has no per-user calendar endpoint. Airdates live in public CDN JSON covering the
-entire database; your library lives behind OAuth with no dates attached. This service
-fetches both and joins them on `simkl_id`.
+Turn your [SIMKL](https://simkl.com) watchlist into a calendar feed you can subscribe to.
+
+Self-hosted, no database, two dependencies. Point Apple Calendar, Google Calendar, Outlook
+or anything else that speaks iCal at one URL and your upcoming episodes and film releases
+show up alongside the rest of your week.
+
+```
+The Bear – S04E03                    Wed 12 Aug
+Silo – S03E07                        Fri 14 Aug
+Dune: Part Three                     Fri 18 Dec
+```
+
+## Why it exists
+
+SIMKL has no per-user calendar endpoint. Airdates live in public CDN files covering the
+entire database, and your library lives behind OAuth with no dates attached — neither is
+useful alone. This service fetches both, joins them on `simkl_id`, and renders the
+intersection as ICS.
+
+SIMKL sells an official iCal feed as part of VIP. This is the self-hosted alternative, and
+it gives you control over the filtering rules that the hosted one doesn't.
+
+## Quick start
+
+```sh
+docker run --rm -it -v simkl-ical-data:/data \
+  -e SIMKL_CLIENT_ID=your-client-id \
+  ghcr.io/hanikazmi/simkl-ical npm run login
+```
+
+Enter the code it prints at <https://simkl.com/pin>. Then:
+
+```sh
+docker run -d --name simkl-ical -p 3000:3000 -v simkl-ical-data:/data \
+  -e SIMKL_CLIENT_ID=your-client-id \
+  -e FEED_TOKEN=$(openssl rand -hex 24) \
+  -e TZ=Europe/London \
+  ghcr.io/hanikazmi/simkl-ical
+```
+
+Your feed is at `http://localhost:3000/<FEED_TOKEN>/feed.ics`.
+
+Get a client id by registering an app at <https://simkl.com/settings/developer/>.
+**No client secret is needed** — the PIN flow authenticates with the client id alone.
+
+### With Compose
+
+```sh
+cp .env.example .env                               # fill in SIMKL_CLIENT_ID and FEED_TOKEN
+docker compose run --rm simkl-ical npm run login   # once, to authorise
+docker compose up -d
+```
+
+Run the login **first**. `/healthz` answers `503` until a token exists, so a container
+started beforehand sits marked `unhealthy` until the next poll picks the token up — it
+looks broken and isn't. `docker compose run` pulls the image and creates the volume by
+itself, so it works as the very first command.
+
+Update with `docker compose pull && docker compose up -d`.
+
+## Configuration
+
+| Variable              | Default         | Notes                                                        |
+| --------------------- | --------------- | ------------------------------------------------------------ |
+| `SIMKL_CLIENT_ID`     | —               | **Required.** From simkl.com/settings/developer               |
+| `FEED_TOKEN`          | —               | **Required.** Secret path segment of the feed URL. `openssl rand -hex 24` |
+| `TZ`                  | `Europe/London` | **Set this.** Airdates are converted to local dates; a wrong zone shifts events by a day |
+| `RELEASE_COUNTRY`     | `GB`            | ISO 3166-1 alpha-2. Which country's cinema dates to use for films |
+| `GRACE_DAYS`          | `14`            | How long an aired episode stays in the feed                   |
+| `HOST_PORT`           | `3000`          | Compose only — host port to publish on                        |
+| `PORT`                | `3000`          | Port inside the container                                     |
+| `DATA_DIR`            | `/data`         | Token, snapshot and calendar cache                            |
+| `CALENDAR_REFRESH_MS` | `10800000` (3h) | How often to re-read the airdate calendars                    |
+| `ACTIVITIES_POLL_MS`  | `7200000` (2h)  | How often to check your library for changes                   |
+
+## What lands in the feed
+
+| Your SIMKL list      | What's included             |
+| -------------------- | --------------------------- |
+| `shows/watching`     | every upcoming airing       |
+| `shows/completed`    | every upcoming airing       |
+| `shows/plantowatch`  | **S01E01 only**             |
+| `anime/watching`     | every upcoming airing       |
+| `anime/completed`    | every upcoming airing       |
+| `anime/plantowatch`  | S01E01 only                 |
+| `movies/plantowatch` | cinema date in your country |
+
+Three rules worth knowing:
+
+- **`completed` counts as watching.** SIMKL marks an ongoing show completed once you've seen
+  everything aired so far, so a between-seasons show sits there. Excluding it would silently
+  drop the next season.
+- **Plan-to-watch contributes premieres only.** Including every episode of a show you haven't
+  started would bury the calendar.
+- **Recently aired episodes linger** for `GRACE_DAYS` so nothing vanishes the moment it airs.
+  This is *not* filtered by watch state — the feed is a record of what aired, not a to-do
+  list. A deep backlog stays in SIMKL where it belongs.
+
+Events are all-day and marked transparent, so they never make you look busy. Episode titles
+go in `DESCRIPTION` rather than `SUMMARY`, so the calendar doesn't surface a spoiler you
+didn't choose to read.
+
+## Subscribing
+
+Use the full `https://…/<FEED_TOKEN>/feed.ics` URL as a *subscribed calendar*, not an import.
+
+**Apple Calendar** lets you choose the refresh interval, so it reflects changes promptly.
+**Google Calendar** polls on its own schedule — commonly 8–24 hours — and ignores every
+refresh hint a feed can send. That's a Google limitation, not something this service can
+influence.
+
+Anyone with the URL can read your watchlist, so treat it as a credential: use a long
+`FEED_TOKEN`, and serve it over HTTPS.
+
+## Behind a reverse proxy
+
+The container serves plain HTTP and does no TLS. To put it behind a proxy, drop the
+`ports:` block from `docker-compose.yml` and attach the container to the proxy's network
+instead — that way nothing can reach it except through the proxy:
+
+```yaml
+services:
+  simkl-ical:
+    # ports:            <- remove
+    networks: [proxy]
+
+networks:
+  proxy:
+    external: true
+```
+
+Then point your proxy at `simkl-ical:3000`. Any reverse proxy works; there's nothing
+special about the setup.
+
+## Running from source
+
+Requires Node 22+.
+
+```sh
+npm install
+cp .env.example .env
+npm run login
+npm start
+npm test
+```
+
+Routes: `GET /:token/feed.ics` and `GET /healthz` (unauthenticated, reports event count and
+last-refresh times).
+
+If your token is ever revoked the last good feed keeps serving and the error is logged;
+re-authorise with `npm run login -- --force`.
+
+<details>
+<summary><b>How it works</b></summary>
 
 ```
 data.simkl.in/calendar/v2/*.json  ─┐
@@ -12,153 +163,50 @@ data.simkl.in/calendar/v2/*.json  ─┐
 api.simkl.com/sync/all-items/…  ───┘
 ```
 
-## What lands in the feed
+A background loop renders the feed into memory; requests never trigger a fetch. A client
+polling hard can't amplify into SIMKL traffic, and a SIMKL outage degrades to a stale feed
+rather than an empty one.
 
-| Source         | Library list         | Included                    |
-| -------------- | -------------------- | --------------------------- |
-| `tv.json`      | `shows/watching`     | every upcoming airing       |
-| `tv.json`      | `shows/completed`    | every upcoming airing       |
-| `tv.json`      | `shows/plantowatch`  | **S01E01 only**             |
-| `anime.json`   | `anime/watching`     | every upcoming airing       |
-| `anime.json`   | `anime/completed`    | every upcoming airing       |
-| `anime.json`   | `anime/plantowatch`  | S01E01 only                 |
-| `/movies/{id}` | `movies/plantowatch` | cinema date in your country |
+Airdate calendars are re-read every 3 hours with a conditional `GET`. Your library is
+gated behind `/sync/activities`, checked every 2 hours: activities carries a timestamp per
+list, so only the lists that actually changed are refetched. It ignores `playback` and
+`rated_at`, neither of which can change the feed — otherwise a scrobbler reporting progress
+would trigger a refetch that renders byte-identical output.
 
-`completed` is treated exactly like `watching`, not excluded: SIMKL marks an ongoing show
-completed once you have watched everything aired so far, so a between-seasons show sits
-there. Dropping it would silently lose the next season.
+| Event                         | API calls                                    |
+| ----------------------------- | -------------------------------------------- |
+| Nothing changed               | 1                                            |
+| Marked an episode watched     | 2                                            |
+| Added or removed a film       | 2 + one lookup per film                      |
+| Removed something from a list | 4 (removals are only reported per category)  |
+| Cold start                    | 8 + one lookup per film                      |
 
-Events are all-day and transparent, so they never mark you busy. Episode titles are kept
-out of `SUMMARY` and put in `DESCRIPTION` — a calendar shouldn't surface a spoiler you
-didn't choose to read.
+Steady state is about 12 API calls a day, well inside SIMKL's 10 requests/second limit.
 
-Recently aired episodes linger for `GRACE_DAYS` (default 14) so nothing disappears the
-moment it airs. This is deliberately **not** filtered by watch state — the feed is a record
-of what aired, not a to-do list. Anything older than the window drops off; a deep backlog
-stays in SIMKL where it belongs.
+</details>
 
-## Setup
+<details>
+<summary><b>Notes on the SIMKL API</b></summary>
 
-```sh
-cp .env.example .env      # fill in SIMKL_CLIENT_ID, generate FEED_TOKEN
-npm install
-npm run login             # device flow: enter the code at simkl.com/pin
-npm start
-```
+Things that cost time to discover, recorded in case they're useful to anyone else building
+against this API:
 
-Register an app at <https://simkl.com/settings/developer/> for a client id. **No client
-secret is needed** — the PIN flow authenticates with the client id alone. A secret is only
-required for the browser redirect flow, which this doesn't use.
+- **The library's id field is `ids.simkl`; the calendar's is `simkl_id`.** Bridging the two
+  names is the entire join. Empty lists come back as `{}`, not `{shows: []}`.
+- **`/oauth/pin` returns the literal string `"DEVICE_CODE"`** as `device_code`. It's a
+  placeholder — polling is keyed on `user_code`.
+- **A film's top-level `released` field is unreliable**, consistently two days earlier than
+  its real theatrical date. The correct dates are in `release_dates`, per country and per
+  release type, where `type: 3` is theatrical and `type: 1` is a premiere screening (which
+  can be a week or more earlier).
+- **Monthly calendar archives use an unpadded month.** `/calendar/v2/2026/8/tv.json` works;
+  `/2026/08/tv.json` returns 404.
+- **The CDN ignores query strings**, so cache-busting is impossible — conditional `GET`
+  against `Last-Modified` is the only way to detect a regeneration.
+- **`next_to_watch` is `null` when you're caught up**, so it can't be used as a progress
+  signal. `last_watched` is always populated.
+- **Airdates are UTC instants**, and a US evening broadcast is stamped the next day in UTC.
+  Roughly 19% of entries land on a different local date in `America/New_York` than naive
+  date-slicing would give, and 3% in `Europe/London`.
 
-`FEED_TOKEN` is the secret path segment of your feed URL: `openssl rand -hex 24`.
-
-### Routes
-
-- `GET /:token/feed.ics` — the feed
-- `GET /healthz` — event count and last-refresh timestamps, unauthenticated
-
-## Docker
-
-The image is built and published by GitHub Actions to
-`ghcr.io/hanikazmi/simkl-ical`, so the host never needs the source or a toolchain — only
-`docker-compose.yml` and a `.env`.
-
-```sh
-docker compose run --rm simkl-ical npm run login   # first: pulls image, creates volume, writes token
-docker compose up -d
-```
-
-**Run the login first.** `/healthz` answers `503` until a token exists, because nothing has
-been rendered yet. Docker won't restart the container for that — `restart: unless-stopped`
-only acts on exit — but a container started before login sits marked `unhealthy` until the
-next activities poll picks the token up, which looks broken and isn't. Starting with
-`docker compose run` avoids it: that command pulls the image and creates the volume on its
-own.
-
-To update:
-
-```sh
-docker compose pull && docker compose up -d
-```
-
-The compose file deliberately has **no `ports:`** — the container is reachable only on
-Caddy's Docker network, so nothing can bypass the proxy. It expects an external network
-named `caddy`. It also has no `build:` key on purpose: with both `image` and `build`
-present, Compose tries to build when the image is missing locally, which fails on a host
-with no checkout. To build by hand during development, use `docker build -t simkl-ical .`.
-
-### CI
-
-`.github/workflows/ci.yml` runs the test suite, builds the image for `linux/amd64`, smoke
-tests that it boots and serves `/healthz`, then pushes to GHCR. Pull requests build and
-smoke test but do not publish. Tags: `latest` on `main`, `sha-<short>` on every build, and
-semver if you push a `v*` tag.
-
-The GHCR package is public, so the host pulls with no credentials. Note that **GHCR
-packages default to private** — after the first successful run, flip it to public once in
-the package settings on GitHub.
-
-### Caddy
-
-Add one block to your existing Caddyfile:
-
-```caddy
-tv.example.com {
-    reverse_proxy simkl-ical:3000
-}
-```
-
-Then point a Cloudflare Tunnel hostname at Caddy the same way as your other services.
-
-## Behaviour notes
-
-- **Timezone.** Set `TZ` explicitly; never let it default. Airdates are UTC instants and
-  are converted to local dates — 2.8% of entries land on a different day in `Europe/London`
-  than naive date-slicing would give, and 19% in `America/New_York`.
-- **Film releases** come from per-title `/movies/{id}` lookups, not the CDN movie calendar.
-  Two reasons. The calendar is a rolling 33-day window, so a 2027 release would never show
-  up in it; and the film's top-level `released` field is consistently *two days earlier*
-  than its real theatrical date (Dune: Part Three reports `2026-12-16` against an actual
-  `2026-12-18`). The correct dates live in `release_dates`, per country and per release
-  type — set `RELEASE_COUNTRY` and the theatrical date for that territory is used, falling
-  back to US. A `type: 1` premiere screening is only used if nothing else is listed.
-- **Episode horizon is roughly −`GRACE_DAYS`/+34 days.** The rolling CDN file only spans
-  about −2/+34, so any grace window longer than 2 days additionally pulls the monthly
-  archives at `data.simkl.in/calendar/v2/{YEAR}/{MONTH}/{type}.json` and merges them, with
-  the rolling file taking precedence on overlap. **The month in that path is not
-  zero-padded** — `/2026/8/` works, `/2026/08/` returns 404. Films are unbounded.
-- **Cache size.** Each monthly archive is 0.3–4 MB per type and is cached on disk under
-  `DATA_DIR/cache`; a 14-day window keeps about 8 MB. Warm fetches are all `304`s.
-- **Refresh.** CDN calendars every 3h (conditional GET; the CDN ignores query strings, so
-  there's no other way to detect a regeneration). `/sync/activities` every 2h, which gates
-  the five library calls and the film lookups. Requests never trigger a fetch.
-
-  Activities carries a timestamp per status, so each list is gated individually and only
-  the lists that actually moved are refetched. It ignores `playback`, `rated_at` and the
-  `all` roll-up, none of which can change the feed — otherwise a scrobbler reporting
-  progress would trigger a refetch that renders byte-identical output.
-
-  | Event | API calls |
-  | ----- | --------- |
-  | Nothing changed | 1 |
-  | Marked an episode watched | 2 |
-  | Added or removed a film | 2 + one lookup per film |
-  | Removed something from a list | 4 (a removal is only reported against `removed_from_list`, so it invalidates its whole category) |
-  | Cold start | 8 + one lookup per film |
-
-  In steady state that is **12 API calls/day** plus a couple per change, and 32–48 CDN
-  requests/day (nearly all `304`). Override with `ACTIVITIES_POLL_MS` and
-  `CALENDAR_REFRESH_MS`.
-- **Google Calendar** polls subscribed URLs on its own schedule, commonly 8–24h, and ignores
-  every refresh hint. Apple Calendar lets you set the interval.
-- **Revoked token.** Logged loudly; the last good feed keeps serving. Re-run
-  `npm run login -- --force`.
-
-## Tests
-
-```sh
-npm test
-```
-
-Covers the things that fail silently: timezone conversion across zones, UID stability,
-the plan-to-watch premiere rule, past-date dropping, line folding and escaping.
+</details>
