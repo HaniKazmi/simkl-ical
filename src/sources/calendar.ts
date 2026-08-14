@@ -27,6 +27,18 @@ interface FetchedFile {
   lastModified: string | null;
 }
 
+interface FetchResult extends FetchedFile {
+  /**
+   * True when the network failed and the cached copy was served instead.
+   *
+   * Without this the fallback below is indistinguishable from success, and a
+   * CDN that has been down for a month reports as healthy while the feed
+   * quietly empties out. A 304 is NOT stale: the CDN answered and confirmed
+   * the file has not changed.
+   */
+  stale: boolean;
+}
+
 /**
  * Process-lifetime cache, deliberately not on disk.
  *
@@ -37,6 +49,12 @@ interface FetchedFile {
  */
 const cache = new Map<string, FetchedFile>();
 
+/** Cache keys currently held. Exported for tests; nothing in src/ reads it. */
+export const cachedKeys = (): string[] => [...cache.keys()];
+
+/** Drop everything. Exported for tests, which must not share a cache. */
+export const clearCache = (): void => cache.clear();
+
 /**
  * Fetch a calendar JSON file, using the cached copy when the CDN says it hasn't changed.
  *
@@ -44,7 +62,7 @@ const cache = new Map<string, FetchedFile>();
  * GET against the stored Last-Modified is the only way to tell whether a
  * regeneration has actually happened.
  */
-const fetchCached = async (url: string, key: string, { signal }: { signal?: AbortSignal } = {}): Promise<FetchedFile> => {
+const fetchCached = async (url: string, key: string, { signal }: { signal?: AbortSignal } = {}): Promise<FetchResult> => {
   const cached = cache.get(key) ?? null;
   const headers: Record<string, string> = { 'User-Agent': `${config.appName}/${config.appVersion}` };
   if (cached?.lastModified) headers['If-Modified-Since'] = cached.lastModified;
@@ -53,29 +71,32 @@ const fetchCached = async (url: string, key: string, { signal }: { signal?: Abor
   // 300s default.
   const res = await fetch(url, { headers, signal: signal ?? AbortSignal.timeout(FETCH_TIMEOUT_MS) });
 
-  const fallback = (): FetchedFile | null => cached;
+  // A stale calendar beats no calendar, so every failure below falls back to the
+  // cache when there is one — but says so, rather than passing as a success.
+  const fallback = (reason: string): FetchResult => {
+    if (cached) return { ...cached, stale: true };
+    throw new Error(`Calendar ${url} ${reason}`);
+  };
 
-  if (res.status === 304 && cached) return cached;
-  if (!res.ok) {
-    // A stale calendar beats no calendar. Only fail if there is nothing to fall back to.
-    const stale = fallback();
-    if (stale) return stale;
-    throw new Error(`Calendar ${url} returned ${res.status}`);
-  }
+  if (res.status === 304 && cached) return { ...cached, stale: false };
+  if (!res.ok) return fallback(`returned ${res.status}`);
 
   let data: CalendarFile;
   try {
     data = (await res.json()) as CalendarFile;
   } catch (err) {
     // A 200 carrying an HTML interstitial would otherwise discard a good cache.
-    const stale = fallback();
-    if (stale) return stale;
-    throw new Error(`Calendar ${url} returned unparseable JSON: ${errorMessage(err)}`);
+    return fallback(`returned unparseable JSON: ${errorMessage(err)}`);
   }
+
+  // Parseable is not the same as usable. A 200 carrying `{}` or an error object
+  // would otherwise replace a good cache entry, render a near-empty feed, and
+  // get persisted over the last good copy.
+  if (!Array.isArray(data.calendar)) return fallback('returned JSON with no calendar array');
 
   const entry: FetchedFile = { data, lastModified: res.headers.get('last-modified') };
   cache.set(key, entry);
-  return entry;
+  return { ...entry, stale: false };
 };
 
 export const rollingUrl = (type: CalendarType): string => CDN_BASE + CALENDAR_FILES[type];
@@ -89,15 +110,18 @@ export const rollingUrl = (type: CalendarType): string => CDN_BASE + CALENDAR_FI
 export const archiveUrl = (type: CalendarType, year: number, month: number): string =>
   `${CDN_BASE}${year}/${month}/${CALENDAR_FILES[type]}`;
 
-export const fetchRolling = (type: CalendarType, { signal }: { signal?: AbortSignal } = {}): Promise<FetchedFile> =>
-  fetchCached(rollingUrl(type), `calendar-${type}`, { signal });
+const rollingKey = (type: CalendarType): string => `calendar-${type}`;
+const archiveKey = (type: CalendarType, year: number, month: number): string => `calendar-${type}-${year}-${month}`;
+
+export const fetchRolling = (type: CalendarType, { signal }: { signal?: AbortSignal } = {}): Promise<FetchResult> =>
+  fetchCached(rollingUrl(type), rollingKey(type), { signal });
 
 export const fetchArchive = (
   type: CalendarType,
   year: number,
   month: number,
   { signal }: { signal?: AbortSignal } = {},
-): Promise<FetchedFile> => fetchCached(archiveUrl(type, year, month), `calendar-${type}-${year}-${month}`, { signal });
+): Promise<FetchResult> => fetchCached(archiveUrl(type, year, month), archiveKey(type, year, month), { signal });
 
 export interface YearMonth {
   year: number;
@@ -141,6 +165,8 @@ export interface CalendarOptions {
   graceDays?: number;
   signal?: AbortSignal;
   now?: Date;
+  /** Optional sink for problems that degrade the result without failing it. */
+  log?: (message: string) => void;
 }
 
 /**
@@ -152,32 +178,57 @@ export interface CalendarOptions {
  */
 export const fetchCalendar = async (
   type: CalendarType,
-  { graceDays = config.graceDays, signal, now = new Date() }: CalendarOptions = {},
+  { graceDays = config.graceDays, signal, now = new Date(), log }: CalendarOptions = {},
 ): Promise<MergedCalendar> => {
   if (!CALENDAR_FILES[type]) throw new Error(`Unknown calendar type: ${type}`);
 
   const parts: CalendarFile[] = [];
+  const months = graceDays > ROLLING_PAST_DAYS ? monthsBack(graceDays, now) : [];
 
-  if (graceDays > ROLLING_PAST_DAYS) {
-    for (const { year, month } of monthsBack(graceDays, now)) {
-      try {
-        parts.push((await fetchArchive(type, year, month, { signal })).data);
-      } catch {
-        // A missing archive just narrows the window; the rolling file still works.
-      }
+  for (const { year, month } of months) {
+    try {
+      parts.push((await fetchArchive(type, year, month, { signal })).data);
+    } catch (err) {
+      // A missing archive just narrows the window; the rolling file still works.
+      // Logged because silently serving a shorter grace window looks identical
+      // to a correct feed with nothing to show.
+      log?.(`archive ${year}/${month} ${type} unavailable, grace window narrowed: ${errorMessage(err)}`);
     }
   }
 
-  parts.push((await fetchRolling(type, { signal })).data);
+  // Only the rolling file's freshness is worth reporting. A closed month's
+  // archive never changes, so serving it from cache is not staleness.
+  const rolling = await fetchRolling(type, { signal });
+  parts.push(rolling.data);
 
-  return { ...mergeCalendars(parts), type };
+  // Every key still in play, so the eviction below keeps what this call needs.
+  evictOutside([rollingKey(type), ...months.map((m) => archiveKey(type, m.year, m.month))], type);
+
+  return { ...mergeCalendars(parts), type, stale: rolling.stale };
+};
+
+/**
+ * Drop cached files this type no longer reads.
+ *
+ * The cache is keyed per archive month, so without this every month the process
+ * survives permanently retains two more multi-MB parsed calendars it will never
+ * request again — measured at roughly 4 MB apiece.
+ */
+const evictOutside = (keep: string[], type: CalendarType): void => {
+  const wanted = new Set(keep);
+  for (const key of cache.keys()) {
+    if (key.startsWith(`calendar-${type}`) && !wanted.has(key)) cache.delete(key);
+  }
 };
 
 export type Calendars = Record<CalendarType, MergedCalendar>;
 
 /** All calendar types. Safe to parallelise: CDN-cached, unauthenticated. */
-export const fetchAllCalendars = async ({ graceDays = config.graceDays, signal, now }: CalendarOptions = {}): Promise<Calendars> => {
+export const fetchAllCalendars = async ({ graceDays = config.graceDays, signal, now, log }: CalendarOptions = {}): Promise<Calendars> => {
   const types = Object.keys(CALENDAR_FILES) as CalendarType[];
-  const results = await Promise.all(types.map((t) => fetchCalendar(t, { graceDays, signal, now })));
+  const results = await Promise.all(types.map((t) => fetchCalendar(t, { graceDays, signal, now, log })));
   return Object.fromEntries(results.map((r) => [r.type, r])) as Calendars;
 };
+
+/** True when any calendar was served from cache after the CDN failed. */
+export const anyStale = (calendars: Calendars): boolean => Object.values(calendars).some((c) => c.stale);

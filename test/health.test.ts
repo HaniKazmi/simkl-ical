@@ -10,6 +10,7 @@ const rendered = () => {
   const state = new FeedState({ logger: quiet });
   state.renderedAt = new Date().toISOString();
   state.calendarsAt = new Date().toISOString();
+  state.calendarsFreshAt = new Date().toISOString();
   state.polledAt = new Date().toISOString();
   return state;
 };
@@ -53,8 +54,41 @@ test('a library failure outranks a calendar one in the headline error', () => {
 
 test('stale calendars go unhealthy', () => {
   const state = rendered();
-  state.calendarsAt = ago(config.calendarRefreshMs * 4);
+  state.calendarsFreshAt = ago(config.calendarRefreshMs * 4);
   assert.equal(state.health.ok, false);
+});
+
+// The bug this guards: fetchCached falls back to its cache on any CDN failure
+// and returned it as a success, so refreshCalendars advanced calendarsAt and
+// cleared errors.calendar on every cycle. A CDN down for a month therefore read
+// as perfectly healthy while the feed quietly emptied out. Health is now keyed
+// on when the CDN last actually answered, which the fallback does not advance.
+test('a CDN outage is unhealthy even though refreshes keep "succeeding"', () => {
+  const state = rendered();
+  state.calendarsAt = new Date().toISOString(); // attempts keep happening...
+  state.calendarsFreshAt = ago(config.calendarRefreshMs * 4); // ...but nothing fresh
+  assert.equal(state.health.ok, false);
+  assert.equal(state.health.stale, true);
+});
+
+// The other half of the same class: safeRender catches, records the failure and
+// returns, leaving the previous feed serving forever. `ok` ignored errors.render
+// entirely, so one malformed calendar entry froze the feed behind a green check.
+test('a render that keeps failing is unhealthy', () => {
+  const state = rendered();
+  assert.equal(state.health.ok, true, 'precondition');
+  state.errors.render = 'Invalid time value';
+  assert.equal(state.health.ok, false);
+  assert.equal(state.health.lastError, 'Invalid time value');
+});
+
+// Renders happen on every calendar refresh, so a renderedAt that stops advancing
+// means rendering has stopped even when nothing reported an error.
+test('a feed that has stopped rendering is unhealthy', () => {
+  const state = rendered();
+  state.renderedAt = ago(config.calendarRefreshMs * 4);
+  assert.equal(state.health.ok, false);
+  assert.equal(state.health.stale, true);
 });
 
 // With per-list gating libraryAt only advances when something actually changes,

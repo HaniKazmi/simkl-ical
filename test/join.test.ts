@@ -7,7 +7,7 @@ import type { Calendars } from '../src/sources/calendar.ts';
 const show = (simkl: number, title = `Show ${simkl}`) => ({ show: { title, ids: { simkl } } });
 const movie = (simkl: number, title = `Film ${simkl}`) => ({ movie: { title, ids: { simkl } } });
 const calendarOf = (type: 'tv' | 'anime', calendar: CalendarEntry[], metadata: MergedCalendar['metadata']): MergedCalendar =>
-  ({ type, calendar, metadata });
+  ({ type, calendar, metadata, stale: false });
 
 // A 9pm Tuesday ET broadcast is stamped 01:00Z Wednesday. Slicing the ISO string
 // would put it on Wednesday for everyone, which is wrong for the US audience.

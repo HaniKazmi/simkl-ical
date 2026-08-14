@@ -2,7 +2,7 @@ import { config } from './config.ts';
 import { errorMessage } from './errors.ts';
 import { readToken } from './simkl/auth.ts';
 import { SimklAuthError } from './simkl/client.ts';
-import { fetchAllCalendars, type Calendars } from './sources/calendar.ts';
+import { anyStale, fetchAllCalendars, type Calendars } from './sources/calendar.ts';
 import { fetchLists, getActivities, listSignatures, staleLists, LISTS } from './sources/library.ts';
 import { fetchMovieReleases, reconcileReleases } from './sources/movies.ts';
 import { join, idSet, type FeedEvent } from './join.ts';
@@ -20,6 +20,12 @@ export interface Health {
   ok: boolean;
   events: number;
   calendarsRefreshedAt: string | null;
+  /**
+   * Last time the CDN actually answered, as distinct from the last refresh
+   * attempt. These diverge exactly when the CDN is down and cached calendars
+   * are being served, which is the case `calendarsRefreshedAt` alone hides.
+   */
+  calendarsFreshAt: string | null;
   librarySyncedAt: string | null;
   lastPolledAt: string | null;
   renderedAt: string | null;
@@ -51,6 +57,10 @@ export class FeedState {
   movieReleases = new Map<number, MovieRelease>();
   listSignatures: Record<string, string> = {};
   calendarsAt: string | null = null;
+  // Only advanced when the CDN actually answered. calendarsAt advances on every
+  // attempt, including the ones served from cache after a failure, so it cannot
+  // be used to detect an outage — which is what it was previously asked to do.
+  calendarsFreshAt: string | null = null;
   libraryAt: string | null = null;
   polledAt: string | null = null;
   renderedAt: string | null = null;
@@ -67,28 +77,38 @@ export class FeedState {
   }
 
   /**
-   * Healthy means "rendered, and still hearing from SIMKL".
+   * Healthy means "rendered recently, rendering successfully, and still hearing
+   * from both SIMKL and the CDN".
    *
    * `libraryAt` deliberately is not used: with per-list gating it only advances
    * when something actually changes, so it can be days old on a correct system.
    * `polledAt` tracks the activities call itself, which is what stops if a token
    * is revoked — otherwise the endpoint reported healthy forever once it had
    * rendered even once.
+   *
+   * `errors.render` and the age of `renderedAt` are both folded in. Without
+   * them a render that throws on every cycle — one malformed calendar entry is
+   * enough — served a frozen feed behind a green healthcheck indefinitely.
    */
   get health(): Health {
     const ageOf = (iso: string | null): number => (iso ? Date.now() - Date.parse(iso) : Infinity);
     const stalePoll = ageOf(this.polledAt) > config.activitiesPollMs * 3;
-    const staleCalendars = ageOf(this.calendarsAt) > config.calendarRefreshMs * 3;
+    // Keyed on freshness, not on the attempt: see calendarsFreshAt above.
+    const staleCalendars = ageOf(this.calendarsFreshAt) > config.calendarRefreshMs * 3;
+    // A render happens on every calendar refresh, so anything older than a few
+    // cycles means renders have stopped even if none of them reported an error.
+    const staleRender = ageOf(this.renderedAt) > config.calendarRefreshMs * 3;
 
     return {
-      ok: this.renderedAt !== null && !stalePoll && !staleCalendars,
+      ok: this.renderedAt !== null && !stalePoll && !staleCalendars && !staleRender && !this.errors.render,
       events: this.events.length,
       calendarsRefreshedAt: this.calendarsAt,
+      calendarsFreshAt: this.calendarsFreshAt,
       librarySyncedAt: this.libraryAt,
       lastPolledAt: this.polledAt,
       renderedAt: this.renderedAt,
       servingCached: this.servingCached,
-      stale: stalePoll || staleCalendars || undefined,
+      stale: stalePoll || staleCalendars || staleRender || undefined,
       // Kept as a single headline value for the common case; `errors` carries
       // the detail. Library problems outrank calendar ones — a stale calendar
       // still renders, a revoked token eventually will not.
@@ -158,9 +178,23 @@ export class FeedState {
 
   async refreshCalendars(): Promise<void> {
     try {
-      this.calendars = await fetchAllCalendars({ graceDays: config.graceDays });
+      this.calendars = await fetchAllCalendars({
+        graceDays: config.graceDays,
+        log: (message) => this.log.warn?.(message),
+      });
       this.calendarsAt = new Date().toISOString();
-      this.errors.calendar = null;
+
+      if (anyStale(this.calendars)) {
+        // Deliberately not treated as a success. Serving the cached copy is the
+        // right behaviour, but reporting it as fresh is what let a month-long
+        // CDN outage pass as healthy while the feed emptied out.
+        const since = this.calendarsFreshAt ?? 'startup';
+        this.errors.calendar = `serving cached calendars — the CDN has not answered since ${since}`;
+        this.log.warn?.(this.errors.calendar);
+      } else {
+        this.calendarsFreshAt = this.calendarsAt;
+        this.errors.calendar = null;
+      }
     } catch (err) {
       this.errors.calendar = errorMessage(err);
       this.log.error?.(`calendar refresh failed: ${errorMessage(err)}`);

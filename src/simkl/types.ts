@@ -51,6 +51,12 @@ export interface CalendarFile {
 /** A merged calendar, as returned by fetchCalendar. */
 export interface MergedCalendar extends CalendarFile {
   type: CalendarType;
+  /**
+   * True when the rolling file could not be refetched and the cached copy was
+   * used. Archives are excluded: a closed month never changes, so serving one
+   * from cache is not staleness.
+   */
+  stale: boolean;
 }
 
 export type CalendarType = 'tv' | 'anime';
