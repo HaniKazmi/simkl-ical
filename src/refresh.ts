@@ -70,6 +70,8 @@ export class FeedState {
   // token showed as unhealthy with no stated reason.
   errors: SubsystemErrors = { calendar: null, library: null, render: null };
   timers: NodeJS.Timeout[] = [];
+  /** Tail of the render chain; see safeRender. Never rejects. */
+  private rendering: Promise<void> = Promise.resolve();
 
   constructor({ logger = console as Logger }: { logger?: Logger } = {}) {
     this.log = logger;
@@ -121,8 +123,17 @@ export class FeedState {
   /**
    * Render if both halves of the join are available, containing any failure in
    * errors.render rather than the caller's slot, and persist what was produced.
+   *
+   * Serialised through a promise chain. Both refresh timers end here, and at the
+   * default 3h/2h intervals they coincide every six hours; overlapping runs
+   * raced on the save and could leave the older render on disk.
    */
-  async safeRender(): Promise<void> {
+  safeRender(): Promise<void> {
+    this.rendering = this.rendering.then(() => this.renderAndSave());
+    return this.rendering;
+  }
+
+  private async renderAndSave(): Promise<void> {
     let rendered = false;
     try {
       rendered = this.render();

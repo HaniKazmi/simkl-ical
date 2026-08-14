@@ -1,25 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { readdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { config } from '../src/config.ts';
 import { loadFeed, saveFeed } from '../src/feed-store.ts';
 import { FeedState } from '../src/refresh.ts';
-
-const quiet = { info() {}, warn() {}, error() {} };
-
-const withTempDataDir = async (fn: (dir: string) => Promise<void>): Promise<void> => {
-  const dir = await mkdtemp(join(tmpdir(), 'simkl-ical-test-'));
-  const original = config.dataDir;
-  config.dataDir = dir;
-  try {
-    await fn(dir);
-  } finally {
-    config.dataDir = original;
-    await rm(dir, { recursive: true, force: true });
-  }
-};
+import { quiet, withTempDataDir } from './helpers.ts';
 
 const ICS = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR';
 
@@ -55,8 +40,53 @@ test('a file that is not a calendar at all is rejected', async () => {
 test('saving leaves no temporary file behind', async () => {
   await withTempDataDir(async (dir) => {
     await saveFeed(ICS);
-    const { readdir } = await import('node:fs/promises');
     assert.deepEqual(await readdir(dir), ['feed.ics']);
+  });
+});
+
+// The bug this guards: the temp path was a fixed `feed.ics.tmp`. Both refresh
+// timers end in saveFeed and coincide every six hours, so two overlapping saves
+// raced on one path — the second rename failed with ENOENT and the *first*
+// writer's content was left on disk, not the newer one.
+test('concurrent saves both succeed and the last writer wins', async () => {
+  await withTempDataDir(async (dir) => {
+    const big = `BEGIN:VCALENDAR\r\n${'A'.repeat(200_000)}\r\nEND:VCALENDAR`;
+    const small = 'BEGIN:VCALENDAR\r\nB\r\nEND:VCALENDAR';
+
+    const results = await Promise.allSettled([saveFeed(big), saveFeed(small)]);
+    assert.deepEqual(
+      results.map((r) => r.status),
+      ['fulfilled', 'fulfilled'],
+      'neither save may fail',
+    );
+
+    assert.equal(await loadFeed(), small, 'the later save is the one on disk');
+    assert.deepEqual(await readdir(dir), ['feed.ics'], 'and no temp file survives');
+  });
+});
+
+// The feed is the user's watchlist, which the README treats as a credential.
+test('the saved feed is not world-readable', async () => {
+  await withTempDataDir(async (dir) => {
+    await saveFeed(ICS);
+    assert.equal((await stat(join(dir, 'feed.ics'))).mode & 0o777, 0o600);
+  });
+});
+
+// safeRender is the only caller in production, and both timers reach it.
+test('overlapping renders are serialised rather than racing', async () => {
+  await withTempDataDir(async () => {
+    const state = new FeedState({ logger: quiet });
+    state.calendars = {
+      tv: { type: 'tv', calendar: [], metadata: {}, stale: false },
+      anime: { type: 'anime', calendar: [], metadata: {}, stale: false },
+    };
+    state.library = { shows_watching: {} };
+
+    await Promise.all([state.safeRender(), state.safeRender(), state.safeRender()]);
+
+    assert.ok(state.renderedAt);
+    assert.equal(await loadFeed(), state.ics);
   });
 });
 

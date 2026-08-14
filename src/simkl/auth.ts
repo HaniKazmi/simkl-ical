@@ -19,7 +19,12 @@ export const readToken = async (): Promise<string | null> => {
 export const writeToken = async (accessToken: string): Promise<string> => {
   await mkdir(config.dataDir, { recursive: true });
   const path = tokenPath();
-  await writeFile(path, JSON.stringify({ access_token: accessToken, saved_at: new Date().toISOString() }, null, 2));
+  const body = JSON.stringify({ access_token: accessToken, saved_at: new Date().toISOString() }, null, 2);
+  // `mode` on the write, not a chmod after it: writeFile creates at 0666 & ~umask
+  // — typically 0644 — so a chmod afterwards leaves a window where the token is
+  // world-readable. The chmod stays for the case where the file already existed,
+  // since an existing file keeps its old mode.
+  await writeFile(path, body, { mode: 0o600 });
   await chmod(path, 0o600);
   return path;
 };
