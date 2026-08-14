@@ -1,5 +1,6 @@
 import { config } from '../config.ts';
 import { errorMessage } from '../errors.ts';
+import { withTimeout } from '../signals.ts';
 import type { CalendarFile, CalendarType, MergedCalendar } from '../simkl/types.ts';
 
 const CDN_BASE = 'https://data.simkl.in/calendar/v2/';
@@ -69,7 +70,7 @@ const fetchCached = async (url: string, key: string, { signal }: { signal?: Abor
 
   // Without a timeout a hung connection blocks a refresh cycle until undici's
   // 300s default.
-  const res = await fetch(url, { headers, signal: signal ?? AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  const res = await fetch(url, { headers, signal: withTimeout(signal, FETCH_TIMEOUT_MS) });
 
   // A stale calendar beats no calendar, so every failure below falls back to the
   // cache when there is one — but says so, rather than passing as a success.

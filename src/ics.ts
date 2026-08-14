@@ -16,14 +16,16 @@ const dateOnly = (ymd: string, addDays = 0): Date => {
  * The simkl.com link is not repeated here: it is already carried by the event's
  * URL property, which clients render as their own link affordance.
  */
-const description = (event: FeedEvent): string => {
+const description = (event: FeedEvent): string | undefined => {
   const lines: string[] = [];
   if (event.episodeTitle) lines.push(event.episodeTitle);
 
   const facts = [event.detail, event.runtime].filter(Boolean);
   if (facts.length) lines.push(facts.join(' · '));
 
-  return lines.join('\n');
+  // undefined, not '': an event with no title, network or runtime was emitting
+  // a bare `DESCRIPTION:` line rather than omitting the property.
+  return lines.length ? lines.join('\n') : undefined;
 };
 
 export interface RenderOptions {

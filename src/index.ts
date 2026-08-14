@@ -42,10 +42,22 @@ void (async () => {
   }
 })();
 
+// Guarded and in a finally. An app.close() rejection used to surface as an
+// unhandled rejection — a non-zero exit and a stack trace on an ordinary
+// shutdown — and a second SIGTERM started a second concurrent close.
+let shuttingDown = false;
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, async () => {
-    state.stop();
-    await app.close();
-    process.exit(0);
+    if (shuttingDown) return;
+    shuttingDown = true;
+    app.log.info(`${signal} received, shutting down`);
+    try {
+      state.stop();
+      await app.close();
+    } catch (err) {
+      app.log.error(`error during shutdown: ${errorMessage(err)}`);
+    } finally {
+      process.exit(0);
+    }
   });
 }

@@ -1,5 +1,6 @@
 import { config, requireClientId } from '../config.ts';
 import { errorMessage } from '../errors.ts';
+import { withTimeout } from '../signals.ts';
 
 const API_BASE = 'https://api.simkl.com';
 
@@ -97,7 +98,10 @@ export const apiGet = async <T>(path: string, { token, params = {}, signal }: Ap
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     let res: Response;
     try {
-      res = await fetch(url, { headers, signal: signal ?? AbortSignal.timeout(TIMEOUT_MS) });
+      // Both signals, not one or the other: `signal ?? timeout` meant any
+      // caller passing a signal silently gave up the 30s timeout and inherited
+      // undici's 300s default instead.
+      res = await fetch(url, { headers, signal: withTimeout(signal, TIMEOUT_MS) });
     } catch (err) {
       if (signal?.aborted) throw err;
       lastError = err;

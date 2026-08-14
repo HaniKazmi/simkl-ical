@@ -1,6 +1,6 @@
 {
   "name": "simkl-ical",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Joins SIMKL's public airdate calendars with your private library and serves a subscribable iCal feed.",

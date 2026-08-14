@@ -73,6 +73,8 @@ export class FeedState {
   timers: NodeJS.Timeout[] = [];
   /** Tail of the render chain; see safeRender. Never rejects. */
   private rendering: Promise<void> = Promise.resolve();
+  /** Cancels in-flight fetches on stop(). Every source call carries its signal. */
+  private aborter = new AbortController();
 
   constructor({ logger = console as Logger }: { logger?: Logger } = {}) {
     this.log = logger;
@@ -192,6 +194,7 @@ export class FeedState {
     try {
       this.calendars = await fetchAllCalendars({
         graceDays: config.graceDays,
+        signal: this.aborter.signal,
         log: (message) => this.log.warn?.(message),
       });
       this.calendarsAt = new Date().toISOString();
@@ -247,7 +250,7 @@ export class FeedState {
         return;
       }
 
-      const activities = await getActivities(token);
+      const activities = await getActivities(token, { signal: this.aborter.signal });
       this.polledAt = new Date().toISOString();
       // The poll itself succeeded, so any earlier failure is now history.
       this.errors.library = null;
@@ -261,7 +264,7 @@ export class FeedState {
       if (stale.length) {
         this.log.info?.(`refetching ${stale.length}/${LISTS.length} lists: ${stale.map((l) => l.key).join(', ')}`);
         const library: Library = this.library ?? {};
-        Object.assign(library, await fetchLists(token, stale));
+        Object.assign(library, await fetchLists(token, stale, { signal: this.aborter.signal }));
         this.library = library;
       }
 
@@ -275,7 +278,7 @@ export class FeedState {
       if (stale.some((l) => l.key === 'movies_plantowatch') || filmsDue) {
         const filmIds = [...idSet(this.library?.movies_plantowatch)];
         const lookups = filmIds.length
-          ? await fetchMovieReleases(filmIds)
+          ? await fetchMovieReleases(filmIds, { signal: this.aborter.signal })
           : { releases: new Map<number, MovieRelease>(), failed: [] };
         ({ releases: this.movieReleases, complete: filmsComplete } = reconcileReleases(
           this.movieReleases,
@@ -317,15 +320,46 @@ export class FeedState {
     await this.safeRender();
   }
 
-  start(): void {
-    const swallow = (err: unknown): void => this.log.error?.(`unexpected refresh failure: ${errorMessage(err)}`);
-    this.timers.push(setInterval(() => void this.refreshCalendars().catch(swallow), config.calendarRefreshMs));
-    this.timers.push(setInterval(() => void this.refreshLibraryIfChanged().catch(swallow), config.activitiesPollMs));
-    for (const t of this.timers) t.unref?.();
+  /**
+   * Run `job` on an interval, skipping a tick if the previous one is still
+   * going. setInterval does not wait, so a refresh slower than its own period —
+   * seven sequential list calls during a SIMKL brownout will do it — would
+   * otherwise overlap itself and interleave writes to library, movieReleases
+   * and listSignatures, letting an older run overwrite a newer signature set.
+   */
+  private schedule(name: string, job: () => Promise<void>, everyMs: number): void {
+    let running = false;
+    const timer = setInterval(() => {
+      if (running) {
+        this.log.warn?.(`${name} is still running from the last tick; skipping this one`);
+        return;
+      }
+      running = true;
+      void job()
+        .catch((err: unknown) => this.log.error?.(`unexpected refresh failure: ${errorMessage(err)}`))
+        .finally(() => {
+          running = false;
+        });
+    }, everyMs);
+    timer.unref?.();
+    this.timers.push(timer);
   }
 
+  start(): void {
+    this.schedule('calendar refresh', () => this.refreshCalendars(), config.calendarRefreshMs);
+    this.schedule('library poll', () => this.refreshLibraryIfChanged(), config.activitiesPollMs);
+  }
+
+  /**
+   * Stop refreshing and cancel anything in flight.
+   *
+   * Aborting matters on shutdown: a calendar refresh can be several MB into a
+   * multi-minute fetch, and without this the process waits for it before the
+   * server can close.
+   */
   stop(): void {
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
+    this.aborter.abort();
   }
 }

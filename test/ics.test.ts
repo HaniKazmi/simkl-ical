@@ -75,3 +75,27 @@ test('an empty feed is still a valid calendar', () => {
   assert.match(ics, /END:VCALENDAR/);
   assert.ok(!ics.includes('BEGIN:VEVENT'));
 });
+
+// An event with no episode title, network or runtime was emitting a bare
+// `DESCRIPTION:` line rather than omitting the property.
+test('an event with nothing to describe omits DESCRIPTION entirely', () => {
+  const bare: FeedEvent = { ...event, episodeTitle: null, detail: null, runtime: null };
+  const ics = renderIcs([bare]);
+  assert.ok(!/DESCRIPTION/.test(ics), ics);
+  assert.match(ics, /SUMMARY:/, 'the rest of the event is still there');
+});
+
+test('a partial description still renders', () => {
+  const ics = renderIcs([{ ...event, episodeTitle: null, runtime: null }]);
+  assert.match(ics, /DESCRIPTION:FOX/);
+});
+
+test('the calendar name and timezone hint are configurable', () => {
+  const ics = renderIcs([event], { name: 'My Feed', timezone: 'America/New_York' });
+  assert.match(ics, /X-WR-CALNAME:My Feed/);
+  assert.match(ics, /X-WR-TIMEZONE:America\/New_York/);
+});
+
+test('an event with no url omits the URL property', () => {
+  assert.ok(!/^URL/m.test(renderIcs([{ ...event, url: null }])));
+});
