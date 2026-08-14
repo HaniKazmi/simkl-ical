@@ -62,6 +62,7 @@ export class FeedState {
   // be used to detect an outage — which is what it was previously asked to do.
   calendarsFreshAt: string | null = null;
   libraryAt: string | null = null;
+  filmsResolvedAt: string | null = null;
   polledAt: string | null = null;
   renderedAt: string | null = null;
   servingCached = false;
@@ -216,6 +217,20 @@ export class FeedState {
   }
 
   /**
+   * Whether the cached film release dates have aged out.
+   *
+   * Nothing in the library moves when a studio shifts a release, so gating film
+   * lookups purely on list changes meant a delayed film kept its old date until
+   * that date fell behind the join's cutoff — at which point it disappeared
+   * from the feed and never came back short of a restart. Once a day is cheap:
+   * the lookups are CDN-cached by id and the list is short.
+   */
+  private filmsDue(now: number = Date.now()): boolean {
+    if (!this.filmsResolvedAt) return true;
+    return now - Date.parse(this.filmsResolvedAt) > config.movieRefreshMs;
+  }
+
+  /**
    * One cheap request decides whether the library calls are worth making.
    * The signature covers only the timestamps that can move an item between
    * lists — see listSignature in sources/library.ts.
@@ -238,19 +253,27 @@ export class FeedState {
       this.errors.library = null;
 
       const stale = force || !this.library ? LISTS : staleLists(activities, this.listSignatures);
-      if (!stale.length) return;
+      // Film dates age out on their own schedule, so a poll with no list changes
+      // still has work to do once a day — see filmsDue.
+      const filmsDue = force || this.filmsDue();
+      if (!stale.length && !filmsDue) return;
 
-      this.log.info?.(`refetching ${stale.length}/${LISTS.length} lists: ${stale.map((l) => l.key).join(', ')}`);
-      const library: Library = this.library ?? {};
-      Object.assign(library, await fetchLists(token, stale));
-      this.library = library;
+      if (stale.length) {
+        this.log.info?.(`refetching ${stale.length}/${LISTS.length} lists: ${stale.map((l) => l.key).join(', ')}`);
+        const library: Library = this.library ?? {};
+        Object.assign(library, await fetchLists(token, stale));
+        this.library = library;
+      }
 
-      // Release dates only need re-reading when the film list itself changed;
-      // they are stable and the lookups are CDN-cached by id. Marking an episode
-      // watched must not drag eleven film lookups along with it.
+      // Release dates are re-read when the film list itself changed, and
+      // otherwise only once a day. Marking an episode watched must not drag
+      // eleven film lookups along with it — but the dates are not the "stable"
+      // the old comment claimed either: a studio delaying a film produces no
+      // library activity at all, so the feed kept the old date until it fell
+      // behind the cutoff and the film silently vanished until a restart.
       let filmsComplete = true;
-      if (stale.some((l) => l.key === 'movies_plantowatch')) {
-        const filmIds = [...idSet(this.library.movies_plantowatch)];
+      if (stale.some((l) => l.key === 'movies_plantowatch') || filmsDue) {
+        const filmIds = [...idSet(this.library?.movies_plantowatch)];
         const lookups = filmIds.length
           ? await fetchMovieReleases(filmIds)
           : { releases: new Map<number, MovieRelease>(), failed: [] };
@@ -259,8 +282,12 @@ export class FeedState {
           filmIds,
           lookups,
         ));
+        this.filmsResolvedAt = new Date().toISOString();
         if (filmIds.length) {
           this.log.info?.(`resolved ${lookups.releases.size}/${filmIds.length} film release dates`);
+        }
+        if (lookups.unavailable?.length) {
+          this.log.warn?.(`${lookups.unavailable.length} film ids are gone upstream: ${lookups.unavailable.join(', ')}`);
         }
       }
 

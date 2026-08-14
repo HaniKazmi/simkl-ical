@@ -27,6 +27,7 @@ export interface Config {
   appVersion: string;
   calendarRefreshMs: number;
   activitiesPollMs: number;
+  movieRefreshMs: number;
 }
 
 export const config: Config = {
@@ -53,6 +54,11 @@ export const config: Config = {
   // list membership changes rarely, and a slightly stale feed is invisible next
   // to a calendar client that polls on its own schedule anyway.
   activitiesPollMs: int(process.env.ACTIVITIES_POLL_MS, 2 * 60 * 60 * 1000),
+  // How often to re-read film release dates regardless of library activity. A
+  // studio moving a release changes nothing in your library, so nothing else
+  // would ever trigger the re-read. Daily, because the lookups are CDN-cached
+  // by id and a plan-to-watch film list is short.
+  movieRefreshMs: int(process.env.MOVIE_REFRESH_MS, 24 * 60 * 60 * 1000),
 };
 
 /**
