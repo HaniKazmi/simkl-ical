@@ -10,16 +10,39 @@ const tokenMatches = (candidate: string): boolean => {
   return a.length === b.length && timingSafeEqual(a, b);
 };
 
-export const buildServer = (state: FeedState, { logger = true }: { logger?: boolean } = {}): FastifyInstance => {
+/** The one 404 body. Every miss answers with this — see setNotFoundHandler. */
+const NOT_FOUND = { error: 'Not found' };
+
+export interface ServerOptions {
+  logger?: boolean;
+  /** Where the logger writes. Defaults to stdout; tests assert on the output. */
+  logStream?: NodeJS.WritableStream;
+}
+
+export const buildServer = (state: FeedState, { logger = true, logStream }: ServerOptions = {}): FastifyInstance => {
   const app = Fastify({
+    // The feed token is a path parameter, and Fastify's default cap is 100
+    // characters. `openssl rand -hex 24` fits, but anyone who generated a
+    // longer one got a 414 and an unreachable feed with no useful explanation.
+    maxParamLength: 512,
     logger: logger && {
-      // The feed token is a credential; keep it out of the logs.
+      ...(logStream ? { stream: logStream } : {}),
+      // The feed token is a credential; keep it out of the logs. Only `req.url`
+      // matters: Fastify's request serializer emits no headers at all, so a
+      // rule for req.headers.authorization would be decoration rather than
+      // protection.
       redact: {
-        paths: ['req.url', 'req.headers.authorization'],
+        paths: ['req.url'],
         censor: '[redacted]',
       },
     },
   });
+
+  // Without this the claim below is false: a wrong token returned this body
+  // while any other path returned Fastify's default, which names the route.
+  // The two were trivially distinguishable, which is exactly what the 404 is
+  // supposed to prevent.
+  app.setNotFoundHandler((_req, reply) => reply.code(404).send(NOT_FOUND));
 
   app.get('/healthz', async (_req, reply) => {
     const health = state.health;
@@ -28,9 +51,10 @@ export const buildServer = (state: FeedState, { logger = true }: { logger?: bool
 
   app.get<{ Params: { token: string } }>('/:token/feed.ics', async (req, reply) => {
     if (!config.feedToken || !tokenMatches(req.params.token)) {
-      // 404 rather than 401: an unauthenticated caller learns nothing about
-      // whether this path serves anything at all.
-      return reply.code(404).send({ error: 'Not found' });
+      // 404 rather than 401, with the same body as any other miss: an
+      // unauthenticated caller learns nothing about whether this path serves
+      // anything at all.
+      return reply.code(404).send(NOT_FOUND);
     }
 
     return reply

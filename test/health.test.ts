@@ -1,9 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { FeedState } from '../src/refresh.ts';
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { config } from '../src/config.ts';
+import { quiet, withTempDataDir } from './helpers.ts';
 
-const quiet = { info() {}, warn() {}, error() {} };
 const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
 
 const rendered = () => {
@@ -102,28 +104,40 @@ test('an old library sync time alone does not mean unhealthy', () => {
 // readToken only swallows ENOENT. A truncated token.json threw SyntaxError
 // straight out of the method, and from the timer that killed the process.
 test('an unreadable token file degrades the feed rather than throwing', async () => {
-  const { mkdtemp, writeFile } = await import('node:fs/promises');
-  const { tmpdir } = await import('node:os');
-  const { join } = await import('node:path');
-
-  const dir = await mkdtemp(join(tmpdir(), 'simkl-ical-token-'));
-  await writeFile(join(dir, 'token.json'), '{ truncated');
-  const original = config.dataDir;
-  config.dataDir = dir;
-
-  try {
+  await withTempDataDir(async (dir) => {
+    await writeFile(join(dir, 'token.json'), '{ truncated');
     const state = new FeedState({ logger: quiet });
     await state.refreshLibraryIfChanged();
     assert.ok(state.errors.library, 'the failure is recorded');
     assert.match(state.errors.library, /library:/);
-  } finally {
-    config.dataDir = original;
-  }
+  });
 });
 
+// Asserting on values, not on key presence: `tsc` already proves the Health
+// interface has these fields, so checking `key in health` proved nothing that
+// the typechecker had not, and passed with every value null or swapped.
 test('health reports the timestamps a human would want', () => {
-  const health = rendered().health;
-  for (const key of ['events', 'calendarsRefreshedAt', 'librarySyncedAt', 'lastPolledAt', 'renderedAt', 'timezone']) {
-    assert.ok(key in health, `missing ${key}`);
-  }
+  const state = rendered();
+  state.events = [];
+  const health = state.health;
+
+  assert.equal(health.events, 0);
+  assert.equal(health.timezone, config.timezone);
+  assert.equal(health.calendarsRefreshedAt, state.calendarsAt);
+  assert.equal(health.calendarsFreshAt, state.calendarsFreshAt);
+  assert.equal(health.librarySyncedAt, state.libraryAt);
+  assert.equal(health.lastPolledAt, state.polledAt);
+  assert.equal(health.renderedAt, state.renderedAt);
+  assert.equal(health.servingCached, false);
+});
+
+test('the event count reflects what was actually joined', () => {
+  const state = rendered();
+  state.calendars = {
+    tv: { type: 'tv', calendar: [], metadata: {}, stale: false },
+    anime: { type: 'anime', calendar: [], metadata: {}, stale: false },
+  };
+  state.library = { shows_watching: {} };
+  state.render();
+  assert.equal(state.health.events, 0);
 });

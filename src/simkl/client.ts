@@ -1,15 +1,40 @@
 import { config, requireClientId } from '../config.ts';
+import { errorMessage } from '../errors.ts';
 
 const API_BASE = 'https://api.simkl.com';
 
-const RETRYABLE = new Set([429, 500, 502, 503, 504]);
+// 408 is a server-side read timeout, and 520-524 are Cloudflare's own origin
+// failures — SIMKL sits behind it, and all of them are transient by definition.
+const RETRYABLE = new Set([408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524]);
 const MAX_ATTEMPTS = 5;
+
+/** Ceiling on a server-requested wait, so a hostile header cannot stall a refresh. */
+const MAX_RETRY_AFTER_MS = 60_000;
 
 // Sync responses are small; without this a hung connection stalls a refresh
 // cycle until undici's 300s default.
 const TIMEOUT_MS = 30_000;
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+const backoffMs = (attempt: number): number => 2 ** (attempt - 1) * 1000;
+
+/**
+ * How long to wait before the next attempt.
+ *
+ * Cloudflare answers a 429 with `Retry-After`, and retrying sooner than asked
+ * can extend the throttle. Both forms are allowed: a delay in seconds, or an
+ * HTTP date. Anything unparseable or negative falls back to the usual backoff.
+ */
+const retryDelayMs = (res: Response, attempt: number): number => {
+  const header = res.headers.get('retry-after');
+  if (header === null) return backoffMs(attempt);
+
+  const seconds = Number(header);
+  const ms = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header) - Date.now();
+  if (!Number.isFinite(ms) || ms < 0) return backoffMs(attempt);
+  return Math.min(ms, MAX_RETRY_AFTER_MS);
+};
 
 export class SimklError extends Error {
   status: number | undefined;
@@ -78,11 +103,22 @@ export const apiGet = async <T>(path: string, { token, params = {}, signal }: Ap
       lastError = err;
       // Guarded like the HTTP-status path below: sleeping after the last
       // attempt burns 16s of dead wait per call during a network outage.
-      if (attempt < MAX_ATTEMPTS) await sleep(2 ** (attempt - 1) * 1000);
+      if (attempt < MAX_ATTEMPTS) await sleep(backoffMs(attempt));
       continue;
     }
 
-    if (res.ok) return (await res.json()) as T;
+    if (res.ok) {
+      try {
+        return (await res.json()) as T;
+      } catch (err) {
+        // A 200 carrying a Cloudflare interstitial used to escape as a bare
+        // SyntaxError — unwrapped and unretried, unlike the same case on the
+        // CDN path. It is transient, so it belongs in the retry loop.
+        lastError = new SimklError(`SIMKL returned unparseable JSON for ${path}: ${errorMessage(err)}`, res.status);
+        if (attempt < MAX_ATTEMPTS) await sleep(backoffMs(attempt));
+        continue;
+      }
+    }
 
     const body = await res.text().catch(() => '');
 
@@ -97,7 +133,7 @@ export const apiGet = async <T>(path: string, { token, params = {}, signal }: Ap
     }
 
     lastError = new SimklError(`SIMKL ${res.status} for ${path}`, res.status, body);
-    if (attempt < MAX_ATTEMPTS) await sleep(2 ** (attempt - 1) * 1000);
+    if (attempt < MAX_ATTEMPTS) await sleep(retryDelayMs(res, attempt));
   }
 
   throw lastError;
