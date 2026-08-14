@@ -7,6 +7,8 @@ import { FeedState } from '../src/refresh.ts';
 import { jsonResponse, quiet, recorder, withFetch, withTempDataDir } from './helpers.ts';
 
 config.clientId ??= 'test-client-id';
+// Exercise the retry paths without spending 15 seconds asleep in each.
+config.retryBaseMs = 1;
 
 const T = '2026-08-15T12:00:00Z';
 

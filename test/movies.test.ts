@@ -6,6 +6,10 @@ import { reconcileReleases } from '../src/sources/movies.ts';
 import { fetchMovieReleases } from '../src/sources/movies.ts';
 import type { MovieDetail, MovieRelease } from '../src/simkl/types.ts';
 import { jsonResponse, withFetch } from './helpers.ts';
+import { config } from '../src/config.ts';
+
+// Exercise the retry paths without spending 15 seconds asleep in each.
+config.retryBaseMs = 1;
 
 // Shape taken from a real /movies/2242503 response. Note `released` is two days
 // earlier than every country's actual theatrical date — this is not a typo in

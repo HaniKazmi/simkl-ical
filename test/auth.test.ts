@@ -26,9 +26,16 @@ test('the token records when it was saved', async () => {
   });
 });
 
-// The bug this guards: writeFile created the file at 0666 & ~umask — typically
-// 0644 — and only a following chmod narrowed it. The token was world-readable
-// for the width of that gap.
+// The bug behind these two: writeFile created the file at 0666 & ~umask —
+// typically 0644 — and only a following chmod narrowed it, leaving a window
+// where the token was world-readable.
+//
+// Worth stating plainly: that window is not observable from outside the process
+// without mocking the filesystem, so no test here can catch a revert to
+// write-then-chmod. What they do catch is the mode going missing altogether,
+// which is the mutation that leaves the token exposed at rest. The window
+// itself is closed structurally instead — writeToken renames a fresh 0600 inode
+// into place, so there is no moment at which a wider mode exists to observe.
 test('a freshly created token file is 0600 from the moment it exists', async () => {
   await withTempDataDir(async (dir) => {
     await writeToken('secret');
@@ -36,13 +43,25 @@ test('a freshly created token file is 0600 from the moment it exists', async () 
   });
 });
 
-test('an existing loose token file is tightened on rewrite', async () => {
+// This is the assertion that actually pins the write-and-rename: a chmod-based
+// implementation would narrow the file after creating it, and `mode` alone does
+// nothing to a file that already exists. Only replacing the inode gets both.
+test('replacing a loose token file leaves it 0600, not 0644', async () => {
   await withTempDataDir(async (dir) => {
     const path = join(dir, 'token.json');
     await writeFile(path, '{}');
     await chmod(path, 0o644);
     await writeToken('replacement');
     assert.equal((await stat(path)).mode & 0o777, 0o600);
+    assert.equal(await readToken(), 'replacement');
+  });
+});
+
+test('writing the token leaves no temporary file behind', async () => {
+  await withTempDataDir(async (dir) => {
+    const { readdir } = await import('node:fs/promises');
+    await writeToken('t');
+    assert.deepEqual(await readdir(dir), ['token.json']);
   });
 });
 

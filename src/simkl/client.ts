@@ -18,7 +18,7 @@ const TIMEOUT_MS = 30_000;
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-const backoffMs = (attempt: number): number => 2 ** (attempt - 1) * 1000;
+const backoffMs = (attempt: number): number => 2 ** (attempt - 1) * config.retryBaseMs;
 
 /**
  * How long to wait before the next attempt.
@@ -27,7 +27,7 @@ const backoffMs = (attempt: number): number => 2 ** (attempt - 1) * 1000;
  * can extend the throttle. Both forms are allowed: a delay in seconds, or an
  * HTTP date. Anything unparseable or negative falls back to the usual backoff.
  */
-const retryDelayMs = (res: Response, attempt: number): number => {
+export const retryDelayMs = (res: Response, attempt: number): number => {
   const header = res.headers.get('retry-after');
   if (header === null) return backoffMs(attempt);
 

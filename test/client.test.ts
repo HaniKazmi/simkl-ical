@@ -1,15 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { config } from '../src/config.ts';
-import { apiGet, SimklAuthError, SimklError } from '../src/simkl/client.ts';
+import { apiGet, retryDelayMs, SimklAuthError, SimklError } from '../src/simkl/client.ts';
 import { jsonResponse, withFetch } from './helpers.ts';
 
 // apiGet requires a client id; the real one is irrelevant to these tests.
 config.clientId ??= 'test-client-id';
+// Exercise the retry paths without spending 15 seconds asleep in each.
+config.retryBaseMs = 1;
 
-// Backoff is real time, so the tests that exercise it use a status that fails
-// fast (one attempt) unless they are specifically about retrying. The retrying
-// ones stub a success on the second attempt, costing a single 1s sleep.
 
 test('a successful call returns the parsed body', async () => {
   await withFetch(
@@ -191,15 +190,65 @@ test('an unparseable success that never recovers throws a SimklError', async () 
 // SIMKL sits behind Cloudflare, which uses 429 with a Retry-After. Ignoring it
 // and retrying on our own schedule can extend the throttle.
 test('Retry-After on a 429 is honoured over the default backoff', async () => {
+  // A backoff long enough that honouring the header is unmistakable. The rest
+  // of this file runs with retryBaseMs at 1, which would hide the difference.
+  const base = config.retryBaseMs;
+  config.retryBaseMs = 5_000;
   let calls = 0;
   const started = Date.now();
-  await withFetch(
-    () => (++calls === 1 ? new Response('slow down', { status: 429, headers: { 'retry-after': '0' } }) : jsonResponse({ ok: true })),
-    async () => {
-      assert.deepEqual(await apiGet('/sync/activities'), { ok: true });
-      assert.equal(calls, 2);
-      // The default first backoff is 1s; Retry-After: 0 should beat it.
-      assert.ok(Date.now() - started < 500, `waited ${Date.now() - started}ms, should have honoured Retry-After: 0`);
-    },
-  );
+  try {
+    await withFetch(
+      () => (++calls === 1 ? new Response('slow down', { status: 429, headers: { 'retry-after': '0' } }) : jsonResponse({ ok: true })),
+      async () => {
+        assert.deepEqual(await apiGet('/sync/activities'), { ok: true });
+        assert.equal(calls, 2);
+        assert.ok(Date.now() - started < 1_000, `waited ${Date.now() - started}ms instead of honouring Retry-After: 0`);
+      },
+    );
+  } finally {
+    config.retryBaseMs = base;
+  }
+});
+
+// The rest of the Retry-After behaviour is a pure calculation, tested directly
+// rather than by sleeping through it.
+const with429 = (headers: Record<string, string> = {}) => new Response('slow down', { status: 429, headers });
+
+test('a missing Retry-After falls back to the exponential backoff', () => {
+  const base = config.retryBaseMs;
+  config.retryBaseMs = 1000;
+  try {
+    assert.equal(retryDelayMs(with429(), 1), 1000);
+    assert.equal(retryDelayMs(with429(), 2), 2000);
+    assert.equal(retryDelayMs(with429(), 4), 8000);
+  } finally {
+    config.retryBaseMs = base;
+  }
+});
+
+test('Retry-After in seconds is honoured', () => {
+  assert.equal(retryDelayMs(with429({ 'retry-after': '30' }), 1), 30_000);
+  assert.equal(retryDelayMs(with429({ 'retry-after': '0' }), 4), 0);
+});
+
+test('Retry-After as an HTTP date is honoured', () => {
+  const twoSeconds = new Date(Date.now() + 2000).toUTCString();
+  const delay = retryDelayMs(with429({ 'retry-after': twoSeconds }), 1);
+  assert.ok(delay > 0 && delay <= 2000, `expected roughly 2s, got ${delay}`);
+});
+
+// A header of hours would otherwise stall a whole refresh cycle.
+test('an absurd Retry-After is capped at a minute', () => {
+  assert.equal(retryDelayMs(with429({ 'retry-after': '99999' }), 1), 60_000);
+});
+
+test('a nonsense or past Retry-After falls back to the backoff', () => {
+  const base = config.retryBaseMs;
+  config.retryBaseMs = 1000;
+  try {
+    assert.equal(retryDelayMs(with429({ 'retry-after': 'soon' }), 1), 1000);
+    assert.equal(retryDelayMs(with429({ 'retry-after': new Date(Date.now() - 60_000).toUTCString() }), 1), 1000);
+  } finally {
+    config.retryBaseMs = base;
+  }
 });

@@ -53,6 +53,7 @@ export interface Config {
   calendarRefreshMs: number;
   activitiesPollMs: number;
   movieRefreshMs: number;
+  retryBaseMs: number;
 }
 
 export const config: Config = {
@@ -89,6 +90,10 @@ export const config: Config = {
   // would ever trigger the re-read. Daily, because the lookups are CDN-cached
   // by id and a plan-to-watch film list is short.
   movieRefreshMs: int(process.env.MOVIE_REFRESH_MS, 24 * 60 * 60 * 1000, { min: 60_000 }),
+  // First step of the API retry backoff, doubling each attempt: 1s, 2s, 4s, 8s.
+  // Configurable mainly so the retry tests do not spend 15 seconds asleep;
+  // lowering it in production only makes a struggling API struggle harder.
+  retryBaseMs: int(process.env.RETRY_BASE_MS, 1000, { min: 1 }),
 };
 
 /**
