@@ -6,8 +6,6 @@ import { config } from '../src/config.ts';
 import { login, pollPin, readToken, requestPin, writeToken } from '../src/simkl/auth.ts';
 import { jsonResponse, withFetch, withTempDataDir } from './helpers.ts';
 
-config.clientId ??= 'test-client-id';
-
 // --- the token on disk ----------------------------------------------------
 
 test('a written token round-trips', async () => {

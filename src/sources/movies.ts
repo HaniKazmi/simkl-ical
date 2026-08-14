@@ -1,5 +1,5 @@
-import { apiGet, SimklAuthError, SimklError } from '../simkl/client.ts';
-import { localDate } from '../join.ts';
+import { apiGet, classify } from '../simkl/client.ts';
+import { localDate, releaseDate } from '../dates.ts';
 import { config } from '../config.ts';
 import type { MovieDetail, MovieRelease, ReleaseDateResult } from '../simkl/types.ts';
 
@@ -20,14 +20,7 @@ const PREFERENCE = [RELEASE_TYPE.THEATRICAL, RELEASE_TYPE.LIMITED, RELEASE_TYPE.
  * a premiere is an invite-only screening, so it stays last.
  */
 const LAST_RESORT = [RELEASE_TYPE.PHYSICAL, RELEASE_TYPE.PREMIERE];
-
-/**
- * Statuses meaning this film id will never resolve, however often we ask —
- * typically a title merged into another id or deleted upstream. Deliberately
- * narrow: anything not listed here is treated as transient, because filing a
- * temporary problem as permanent drops the film for a whole day.
- */
-const GONE = new Set([404, 410]);
+const NAMED_TYPES = new Set<number>([...PREFERENCE, ...LAST_RESORT]);
 
 const datesFor = (movie: MovieDetail, country: string): ReleaseDateResult[] =>
   movie.release_dates?.find((c) => c.iso_3166_1 === country)?.results ?? [];
@@ -45,7 +38,7 @@ const datesFor = (movie: MovieDetail, country: string): ReleaseDateResult[] =>
 const relevantDate = (results: ReleaseDateResult[], type: number, today: string): string | undefined => {
   const dates = results
     .filter((r) => r.type === type && r.release_date)
-    .map((r) => r.release_date.slice(0, 10))
+    .map((r) => releaseDate(r.release_date))
     .sort();
   return dates.find((d) => d >= today) ?? dates.at(-1);
 };
@@ -68,18 +61,18 @@ export interface PickedRelease {
 export const pickReleaseDate = (
   movie: MovieDetail,
   country: string = config.releaseCountry,
-  { now = new Date() }: { now?: Date } = {},
+  // timezone is an option rather than read from config mid-body, matching join:
+  // it keeps this a pure function, so testing it needs no global mutation.
+  { now = new Date(), timezone = config.timezone }: { now?: Date; timezone?: string } = {},
 ): PickedRelease | null => {
   // Uppercased because the comparison is exact: RELEASE_COUNTRY=gb used to miss
-  // every entry and fall silently through to the US dates.
-  const wanted = country.toUpperCase();
-  const territories = [
-    { code: wanted, results: datesFor(movie, wanted) },
-    { code: 'US', results: datesFor(movie, 'US') },
-  ];
+  // every entry and fall silently through to the US dates. Deduplicated because
+  // a US viewer would otherwise walk the identical results twice at every step.
+  const codes = [...new Set([country.toUpperCase(), 'US'])];
+  const territories = codes.map((code) => ({ code, results: datesFor(movie, code) }));
   // The viewer's local date, not UTC: "has this happened yet" is the same
-  // question the join asks, and it answers it in config.timezone.
-  const today = localDate(now.toISOString(), config.timezone);
+  // question the join asks, and it answers it in the viewer's zone.
+  const today = localDate(now.toISOString(), timezone);
 
   // A real release anywhere in the preference order beats a premiere anywhere,
   // so both territories are exhausted before the last resorts are considered.
@@ -96,12 +89,11 @@ export const pickReleaseDate = (
   // one is real data we have no name for. Taking it still beats falling through
   // to `released`, which is consistently two days early.
   for (const territory of territories) {
-    const known = new Set<number>([...PREFERENCE, ...LAST_RESORT]);
-    const other = territory.results.find((r) => r.release_date && !known.has(r.type));
-    if (other) return { date: other.release_date.slice(0, 10), type: other.type ?? null, country: territory.code };
+    const other = territory.results.find((r) => r.release_date && !NAMED_TYPES.has(r.type));
+    if (other) return { date: releaseDate(other.release_date), type: other.type ?? null, country: territory.code };
   }
 
-  if (movie.released) return { date: movie.released.slice(0, 10), type: null, country: null };
+  if (movie.released) return { date: releaseDate(movie.released), type: null, country: null };
   return null;
 };
 
@@ -118,14 +110,10 @@ export interface MovieLookups {
    * Ids the API says are gone — a 404 or 410, typically a film merged into
    * another id or deleted upstream. Retrying cannot help, so these must not
    * hold the list stale: counting them as failures meant every poll refetched
-   * the whole film list and re-looked-up every title, forever. Note how narrow
-   * this is: a 429 reaches the caller only after apiGet has exhausted its own
-   * retries, and filing that as "gone" would drop every film for a whole day.
-   *
-   * Optional so a caller describing "no lookups happened" can omit it;
-   * fetchMovieReleases always populates it.
+   * the whole film list and re-looked-up every title, forever. See classify in
+   * simkl/client.ts for which statuses qualify.
    */
-  unavailable?: number[];
+  unavailable: number[];
 }
 
 export interface Reconciled {
@@ -143,7 +131,7 @@ export interface Reconciled {
 export const reconcileReleases = (
   previous: Map<number, MovieRelease>,
   ids: number[],
-  { releases: fetched, failed, unavailable = [] }: MovieLookups,
+  { releases: fetched, failed, unavailable }: MovieLookups,
 ): Reconciled => {
   // Both kinds of error keep whatever was already known — a cached date beats
   // no date. Only the retryable ones make the round incomplete.
@@ -157,7 +145,7 @@ export const reconcileReleases = (
 };
 
 /** Detail lookups need no token — client_id is enough, and they are CDN-cached by id. */
-export const fetchMovie = (id: number, { signal }: { signal?: AbortSignal } = {}): Promise<MovieDetail> =>
+const fetchMovie = (id: number, { signal }: { signal?: AbortSignal } = {}): Promise<MovieDetail> =>
   apiGet<MovieDetail>(`/movies/${id}`, { params: { extended: 'full' }, signal });
 
 /**
@@ -186,8 +174,8 @@ export const fetchMovieReleases = async (
         const release = pickReleaseDate(movie);
         // No announced date is an answer, not a failure.
         if (!release) continue;
-        out.set(Number(id), {
-          simkl_id: Number(id),
+        out.set(id, {
+          simkl_id: id,
           title: movie.title,
           date: release.date,
           releaseType: release.type,
@@ -195,20 +183,12 @@ export const fetchMovieReleases = async (
           url: `https://simkl.com/movies/${id}`,
         });
       } catch (err) {
-        // A problem with the whole account or client id is not a fact about
-        // this film, and must not be recorded as one — an auth failure filed
+        // One unavailable film must not sink the whole refresh — but a problem
+        // with the whole account is not a fact about this film, and filing it
         // per-id would swallow the "re-run npm run login" message entirely.
-        if (err instanceof SimklAuthError || (err instanceof SimklError && err.status === 412)) throw err;
-
-        // One unavailable film must not sink the whole refresh. Only the
-        // statuses that mean the id will never resolve are settled; everything
-        // else stays retryable so the list is tried again. 408 and 429 in
-        // particular reach here only after apiGet has already exhausted its
-        // retries, and filing a rate-limit as "gone" would drop every film for
-        // a full day.
-        const status = err instanceof SimklError ? err.status : undefined;
-        if (status !== undefined && GONE.has(status)) unavailable.push(id);
-        else failed.push(id);
+        const kind = classify(err);
+        if (kind === 'account') throw err;
+        (kind === 'gone' ? unavailable : failed).push(id);
       }
     }
   };

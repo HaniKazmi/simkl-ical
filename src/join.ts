@@ -1,49 +1,16 @@
 import { config } from './config.ts';
-import type { Calendars } from './sources/calendar.ts';
+import { localDate, releaseDate, shiftDate } from './dates.ts';
 import type {
   CalendarEntry,
   FinaleType,
   Library,
   LibraryItem,
   ListResponse,
-  MergedCalendar,
+  CalendarFile,
+  CalendarType,
   MovieRelease,
   ShowMetadata,
 } from './simkl/types.ts';
-
-/**
- * Local calendar date (YYYY-MM-DD) for an instant, in a given IANA zone.
- *
- * This is the highest-risk conversion in the project. `iso.slice(0, 10)` is
- * wrong for any show airing in the US evening: a 9pm Tuesday ET broadcast is
- * stamped 01:00Z Wednesday, and naive slicing would put it on the wrong day.
- * 'en-CA' is used because it formats as YYYY-MM-DD.
- */
-export const localDate = (iso: string, timeZone: string): string =>
-  new Intl.DateTimeFormat('en-CA', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(new Date(iso));
-
-/**
- * Film release dates arrive from /movies/{id} already as plain YYYY-MM-DD in
- * the viewer's country, so there is no instant to convert and no timezone to
- * apply. This only guards against a full ISO timestamp sneaking through.
- */
-export const releaseDate = (value: string): string => String(value).slice(0, 10);
-
-/**
- * Shift a YYYY-MM-DD date by whole days. Arithmetic is done at UTC noon so a
- * DST transition can never push the result onto the neighbouring day.
- */
-export const shiftDate = (ymd: string, days: number): string => {
-  const [y, m, d] = ymd.split('-').map(Number) as [number, number, number];
-  const shifted = new Date(Date.UTC(y, m - 1, d, 12));
-  shifted.setUTCDate(shifted.getUTCDate() + days);
-  return shifted.toISOString().slice(0, 10);
-};
 
 /** Library responses nest under the type key, and come back as {} when empty. */
 export const extractItems = (response: ListResponse | LibraryItem[] | null | undefined): LibraryItem[] => {
@@ -243,7 +210,7 @@ export interface JoinOptions {
  * disappear the moment it does.
  */
 export const join = (
-  calendars: Partial<Calendars>,
+  calendars: Partial<Record<CalendarType, CalendarFile>>,
   library: Library,
   {
     timezone = config.timezone,
@@ -268,13 +235,15 @@ export const join = (
   const events = new Map<string, FeedEvent>();
 
   const addEpisodes = (
-    calendar: MergedCalendar | undefined,
+    calendar: CalendarFile | undefined,
     watching: Set<number>,
     planned: Set<number>,
     kind: EventKind,
   ): void => {
+    // Hoisted: this was re-evaluated for every entry in the file.
+    const metadata = calendar?.metadata;
     for (const entry of calendar?.calendar ?? []) {
-      const id = Number(entry.simkl_id);
+      const id = entry.simkl_id;
       const inWatching = watching.has(id);
       const inPlanned = planned.has(id) && isPremiere(entry);
       if (!inWatching && !inPlanned) continue;
@@ -282,7 +251,7 @@ export const join = (
       const date = localDate(entry.date, timezone);
       if (date < cutoff) continue;
 
-      const event = buildEpisodeEvent({ entry, meta: calendar?.metadata?.[String(id)], kind, date });
+      const event = buildEpisodeEvent({ entry, meta: metadata?.[String(id)], kind, date });
       events.set(event.uid, event);
     }
   };
@@ -298,7 +267,7 @@ export const join = (
     if (!release) continue;
     if (releaseDate(release.date) < cutoff) continue;
 
-    const event = buildFilmEvent({ ...release, simkl_id: id });
+    const event = buildFilmEvent(release);
     events.set(event.uid, event);
   }
 

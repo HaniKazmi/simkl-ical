@@ -56,22 +56,27 @@ export interface Config {
   retryBaseMs: number;
 }
 
-export const config: Config = {
-  clientId: process.env.SIMKL_CLIENT_ID,
-  feedToken: process.env.FEED_TOKEN,
-  timezone: process.env.TZ || 'Europe/London',
-  dataDir: resolve(process.env.DATA_DIR || './data'),
+/**
+ * Build the config from an environment. Separate from the singleton below so
+ * the parsing and clamping can be exercised directly, rather than by spawning a
+ * fresh process per assertion.
+ */
+export const buildConfig = (env: NodeJS.ProcessEnv): Config => ({
+  clientId: env.SIMKL_CLIENT_ID,
+  feedToken: env.FEED_TOKEN,
+  timezone: env.TZ || 'Europe/London',
+  dataDir: resolve(env.DATA_DIR || './data'),
   // Which country's cinema dates to use for film releases. Release dates vary by
   // territory — Dune: Part Three opens 18 Dec in GB and the US but 16 Dec in BE.
-  releaseCountry: process.env.RELEASE_COUNTRY || 'GB',
+  releaseCountry: env.RELEASE_COUNTRY || 'GB',
   // min 0, not 1: PORT=0 is the standard "bind an ephemeral port" idiom.
-  port: int(process.env.PORT, 3000, { min: 0, max: 65535 }),
+  port: int(env.PORT, 3000, { min: 0, max: 65535 }),
   // How long a recently-aired episode lingers in the feed. Deliberately not
   // filtered by watch state: the calendar is a record of what aired, so nothing
   // should vanish the moment it airs.
   // Capped at 90: each extra month in the window is another multi-MB archive
   // fetched sequentially on every refresh.
-  graceDays: int(process.env.GRACE_DAYS, 14, { min: 0, max: 90 }),
+  graceDays: int(env.GRACE_DAYS, 14, { min: 0, max: 90 }),
 
   appName: 'simkl-ical',
   // Read, not repeated. This was hardcoded '0.1.0' while the repo was tagged
@@ -81,21 +86,23 @@ export const config: Config = {
 
   // The CDN files regenerate every 6h; polling at 3h with a conditional GET
   // costs a 304 most of the time and halves worst-case staleness.
-  calendarRefreshMs: int(process.env.CALENDAR_REFRESH_MS, 3 * 60 * 60 * 1000, { min: 60_000 }),
+  calendarRefreshMs: int(env.CALENDAR_REFRESH_MS, 3 * 60 * 60 * 1000, { min: 60_000 }),
   // One tiny request that gates the five expensive library calls. Two hours:
   // list membership changes rarely, and a slightly stale feed is invisible next
   // to a calendar client that polls on its own schedule anyway.
-  activitiesPollMs: int(process.env.ACTIVITIES_POLL_MS, 2 * 60 * 60 * 1000, { min: 60_000 }),
+  activitiesPollMs: int(env.ACTIVITIES_POLL_MS, 2 * 60 * 60 * 1000, { min: 60_000 }),
   // How often to re-read film release dates regardless of library activity. A
   // studio moving a release changes nothing in your library, so nothing else
   // would ever trigger the re-read. Daily, because the lookups are CDN-cached
   // by id and a plan-to-watch film list is short.
-  movieRefreshMs: int(process.env.MOVIE_REFRESH_MS, 24 * 60 * 60 * 1000, { min: 60_000 }),
+  movieRefreshMs: int(env.MOVIE_REFRESH_MS, 24 * 60 * 60 * 1000, { min: 60_000 }),
   // First step of the API retry backoff, doubling each attempt: 1s, 2s, 4s, 8s.
   // Configurable mainly so the retry tests do not spend 15 seconds asleep;
   // lowering it in production only makes a struggling API struggle harder.
-  retryBaseMs: int(process.env.RETRY_BASE_MS, 1000, { min: 1 }),
-};
+  retryBaseMs: int(env.RETRY_BASE_MS, 1000, { min: 1 }),
+});
+
+export const config: Config = buildConfig(process.env);
 
 /**
  * Fail loudly at boot on an unusable timezone.

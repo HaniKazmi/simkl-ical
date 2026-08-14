@@ -4,11 +4,7 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { config } from '../src/config.ts';
 import { FeedState } from '../src/refresh.ts';
-import { jsonResponse, quiet, recorder, withFetch, withTempDataDir } from './helpers.ts';
-
-config.clientId ??= 'test-client-id';
-// Exercise the retry paths without spending 15 seconds asleep in each.
-config.retryBaseMs = 1;
+import { ago, jsonResponse, quiet, recorder, withFetch, withTempDataDir } from './helpers.ts';
 
 const T = '2026-08-15T12:00:00Z';
 
@@ -46,6 +42,10 @@ const withToken = (fn: (state: FeedState) => Promise<void>, logger: FeedState['l
     await fn(new FeedState({ logger }));
   });
 
+/** Get a state to a warm, fully-synced baseline. Twelve tests started this way. */
+const prime = (state: FeedState, acts: unknown = activities(), opts: { movieStatus?: number } = {}) =>
+  withFetch(api(acts, opts), () => state.refreshLibraryIfChanged());
+
 const lists = (calls: string[]) => calls.filter((c) => c.includes('/all-items/')).map((c) => c.split('/all-items/')[1]!.split('?')[0]!);
 const lookups = (calls: string[]) => calls.filter((c) => /\/movies\/\d/.test(c));
 
@@ -78,9 +78,7 @@ test('a poll with nothing changed makes one request and refetches nothing', asyn
 
 test('marking an episode watched refetches only that one list', async () => {
   await withToken(async (state) => {
-    await withFetch(api(activities()), async () => {
-      await state.refreshLibraryIfChanged();
-    });
+    await prime(state);
 
     const moved = activities({ tv_shows: { watching: '2026-08-15T18:00:00Z' } });
     await withFetch(api(moved), async (calls) => {
@@ -93,9 +91,7 @@ test('marking an episode watched refetches only that one list', async () => {
 
 test('a film list change re-resolves the films', async () => {
   await withToken(async (state) => {
-    await withFetch(api(activities()), async () => {
-      await state.refreshLibraryIfChanged();
-    });
+    await prime(state);
 
     const moved = activities({ movies: { plantowatch: '2026-08-15T18:00:00Z' } });
     await withFetch(api(moved), async (calls) => {
@@ -109,14 +105,10 @@ test('a film list change re-resolves the films', async () => {
 // A partial refresh must merge into what is already held, not replace it.
 test('refetching one list leaves the others in place', async () => {
   await withToken(async (state) => {
-    await withFetch(api(activities()), async () => {
-      await state.refreshLibraryIfChanged();
-    });
+    await prime(state);
     const before = Object.keys(state.library ?? {}).sort();
 
-    await withFetch(api(activities({ tv_shows: { watching: '2026-08-15T18:00:00Z' } })), async () => {
-      await state.refreshLibraryIfChanged();
-    });
+    await prime(state, activities({ tv_shows: { watching: '2026-08-15T18:00:00Z' } }));
     assert.deepEqual(Object.keys(state.library ?? {}).sort(), before, 'no list may be lost');
   });
 });
@@ -126,9 +118,7 @@ test('refetching one list leaves the others in place', async () => {
 // nothing would retry until the user next added or removed a title.
 test('a transient film failure leaves the list stale so the next poll retries', async () => {
   await withToken(async (state) => {
-    await withFetch(api(activities(), { movieStatus: 500 }), async () => {
-      await state.refreshLibraryIfChanged();
-    });
+    await prime(state, activities(), { movieStatus: 500 });
 
     await withFetch(api(activities()), async (calls) => {
       await state.refreshLibraryIfChanged();
@@ -142,9 +132,7 @@ test('a transient film failure leaves the list stale so the next poll retries', 
 // refetched the whole film list on every poll for the life of the process.
 test('a permanently gone film does not cause a refetch loop', async () => {
   await withToken(async (state) => {
-    await withFetch(api(activities(), { movieStatus: 404 }), async () => {
-      await state.refreshLibraryIfChanged();
-    });
+    await prime(state, activities(), { movieStatus: 404 });
 
     await withFetch(api(activities()), async (calls) => {
       await state.refreshLibraryIfChanged();
@@ -157,11 +145,9 @@ test('a permanently gone film does not cause a refetch loop', async () => {
 // age-based trigger the feed keeps a stale date until the film vanishes.
 test('film dates are re-resolved once they age out, with no library change', async () => {
   await withToken(async (state) => {
-    await withFetch(api(activities()), async () => {
-      await state.refreshLibraryIfChanged();
-    });
+    await prime(state);
 
-    state.filmsResolvedAt = new Date(Date.now() - config.movieRefreshMs - 1000).toISOString();
+    state.filmsResolvedAt = ago(config.movieRefreshMs + 1000);
     await withFetch(api(activities()), async (calls) => {
       await state.refreshLibraryIfChanged();
       assert.equal(lists(calls).length, 0, 'no list changed, so none is refetched');
@@ -172,9 +158,7 @@ test('film dates are re-resolved once they age out, with no library change', asy
 
 test('force refetches everything regardless of the signatures', async () => {
   await withToken(async (state) => {
-    await withFetch(api(activities()), async () => {
-      await state.refreshLibraryIfChanged();
-    });
+    await prime(state);
     await withFetch(api(activities()), async (calls) => {
       await state.refreshLibraryIfChanged({ force: true });
       assert.equal(lists(calls).length, 7);
@@ -203,9 +187,7 @@ test('no token is reported without touching the network', async () => {
 test('a revoked token keeps the last good feed and says how to fix it', async () => {
   const log = recorder();
   await withToken(async (state) => {
-    await withFetch(api(activities()), async () => {
-      await state.refreshLibraryIfChanged();
-    });
+    await prime(state);
     const good = state.ics;
 
     await withFetch(
@@ -227,9 +209,7 @@ test('a revoked token keeps the last good feed and says how to fix it', async ()
 test('a successful poll clears an earlier library failure', async () => {
   await withToken(async (state) => {
     state.errors.library = 'AUTH: something old';
-    await withFetch(api(activities()), async () => {
-      await state.refreshLibraryIfChanged();
-    });
+    await prime(state);
     assert.equal(state.errors.library, null);
   });
 });
@@ -241,12 +221,10 @@ test('a successful poll clears an earlier library failure', async () => {
 // filmsDue() false, so the early return skipped the retry for another 24 hours.
 test('a failed daily re-read retries on the next poll, not in another day', async () => {
   await withToken(async (state) => {
-    await withFetch(api(activities()), async () => {
-      await state.refreshLibraryIfChanged();
-    });
+    await prime(state);
 
     const before = state.filmsResolvedAt;
-    state.filmsResolvedAt = new Date(Date.now() - config.movieRefreshMs - 1000).toISOString();
+    state.filmsResolvedAt = ago(config.movieRefreshMs + 1000);
 
     await withFetch(api(activities(), { movieStatus: 500 }), async (calls) => {
       await state.refreshLibraryIfChanged();
@@ -269,14 +247,10 @@ test('a failed daily re-read retries on the next poll, not in another day', asyn
 
 test('a successful daily re-read does reset the clock', async () => {
   await withToken(async (state) => {
-    await withFetch(api(activities()), async () => {
-      await state.refreshLibraryIfChanged();
-    });
-    state.filmsResolvedAt = new Date(Date.now() - config.movieRefreshMs - 1000).toISOString();
+    await prime(state);
+    state.filmsResolvedAt = ago(config.movieRefreshMs + 1000);
 
-    await withFetch(api(activities()), async () => {
-      await state.refreshLibraryIfChanged();
-    });
+    await prime(state);
     await withFetch(api(activities()), async (calls) => {
       await state.refreshLibraryIfChanged();
       assert.equal(calls.length, 1, 'nothing more to do until it ages out again');
@@ -287,15 +261,11 @@ test('a successful daily re-read does reset the clock', async () => {
 // A rate limit is an account-wide condition, not a fact about these films.
 test('a sustained rate limit keeps the films and retries rather than dropping them', async () => {
   await withToken(async (state) => {
-    await withFetch(api(activities()), async () => {
-      await state.refreshLibraryIfChanged();
-    });
+    await prime(state);
     assert.equal(state.movieReleases.size, 1, 'precondition');
 
-    state.filmsResolvedAt = new Date(Date.now() - config.movieRefreshMs - 1000).toISOString();
-    await withFetch(api(activities(), { movieStatus: 429 }), async () => {
-      await state.refreshLibraryIfChanged();
-    });
+    state.filmsResolvedAt = ago(config.movieRefreshMs + 1000);
+    await prime(state, activities(), { movieStatus: 429 });
 
     assert.equal(state.movieReleases.size, 1, 'the known date is kept, not dropped');
     await withFetch(api(activities()), async (calls) => {

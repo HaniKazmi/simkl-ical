@@ -5,13 +5,21 @@
  * typing. `withTempDataDir` was duplicated across two files; more importantly
  * `config.dataDir` defaults to ./data, which on a real checkout holds a live
  * OAuth token — so any test that builds a FeedState without overriding it would
- * make authenticated calls to SIMKL. `stubFetch` closes the same hole for the
+ * make authenticated calls to SIMKL. `withFetch` closes the same hole for the
  * network: nothing in the suite should ever reach the real CDN or API.
  */
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { config } from '../src/config.ts';
+import { config, type Config } from '../src/config.ts';
+import type { Calendars } from '../src/sources/calendar.ts';
+import type { CalendarEntry, CalendarFile, ShowMetadata } from '../src/simkl/types.ts';
+
+// Done here rather than in each test file, for the reason above: a new test
+// file that forgets these reaches the real API, or sleeps 15s per retry path
+// with nothing pointing at the cause. Every test file imports this module.
+config.clientId ??= 'test-client-id';
+config.retryBaseMs = 1;
 
 /** A logger that records nothing, for states under test. */
 export const quiet = { info() {}, warn() {}, error() {} };
@@ -26,6 +34,39 @@ export const recorder = () => {
     error: (m: string) => void lines.push(`error: ${m}`),
   };
 };
+
+/**
+ * Override config for the duration of `fn`, restoring it afterwards.
+ *
+ * config is a process-wide singleton and node:test files share it, so a missed
+ * restore silently changes behaviour elsewhere. One helper beats hand-written
+ * try/finally blocks at every call site.
+ */
+export const withConfig = async (overrides: Partial<Config>, fn: () => void | Promise<void>): Promise<void> => {
+  const keys = Object.keys(overrides) as Array<keyof Config>;
+  const previous = Object.fromEntries(keys.map((k) => [k, config[k]])) as Partial<Config>;
+  Object.assign(config, overrides);
+  try {
+    await fn();
+  } finally {
+    Object.assign(config, previous);
+  }
+};
+
+/** An ISO timestamp `ms` in the past, for aging a FeedState field. */
+export const ago = (ms: number): string => new Date(Date.now() - ms).toISOString();
+
+/** One calendar's payload, as fetchCalendar would return it. */
+export const calendarOf = (calendar: CalendarEntry[] = [], metadata: Record<string, ShowMetadata> = {}): CalendarFile => ({
+  calendar,
+  metadata,
+});
+
+/** A complete, empty, fresh set of calendars — the shape refresh.ts holds. */
+export const emptyCalendars = (): Calendars => ({
+  tv: { data: calendarOf(), stale: false },
+  anime: { data: calendarOf(), stale: false },
+});
 
 /** Point config.dataDir at a fresh directory for the duration of `fn`. */
 export const withTempDataDir = async (fn: (dir: string) => Promise<void>): Promise<void> => {

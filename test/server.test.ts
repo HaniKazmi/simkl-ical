@@ -1,28 +1,32 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Writable } from 'node:stream';
-import { config } from '../src/config.ts';
 import { buildServer } from '../src/server.ts';
 import { FeedState } from '../src/refresh.ts';
-import { quiet } from './helpers.ts';
+import { quiet, withConfig } from './helpers.ts';
 
 const TOKEN = 'a'.repeat(48);
+
+interface ServerCase {
+  /** The configured feed token. `null` means none is set at all. */
+  token?: string | null;
+  logStream?: NodeJS.WritableStream;
+}
 
 /** Build a server with a known feed token, restoring config afterwards. */
 const withServer = async (
   fn: (app: ReturnType<typeof buildServer>, state: FeedState) => Promise<void>,
-  { noToken = false } = {},
+  { token = TOKEN, logStream }: ServerCase = {},
 ): Promise<void> => {
-  const original = config.feedToken;
-  config.feedToken = noToken ? undefined : TOKEN;
-  const state = new FeedState({ logger: quiet });
-  const app = buildServer(state, { logger: false });
-  try {
-    await fn(app, state);
-  } finally {
-    await app.close();
-    config.feedToken = original;
-  }
+  await withConfig({ feedToken: token ?? undefined }, async () => {
+    const state = new FeedState({ logger: quiet });
+    const app = buildServer(state, { logger: Boolean(logStream), logStream });
+    try {
+      await fn(app, state);
+    } finally {
+      await app.close();
+    }
+  });
 };
 
 test('the right token serves the feed as a calendar', async () => {
@@ -58,17 +62,14 @@ test('a token of the wrong length is a 404, not a 500', async () => {
 // Fastify caps path parameters at 100 characters by default, so a token longer
 // than that produced a 414 and an unreachable feed rather than a 404.
 test('a longer feed token is usable', async () => {
-  const original = config.feedToken;
   const long = 'c'.repeat(128); // e.g. openssl rand -hex 64
-  config.feedToken = long;
-  const app = buildServer(new FeedState({ logger: quiet }), { logger: false });
-  try {
-    assert.equal((await app.inject({ method: 'GET', url: `/${long}/feed.ics` })).statusCode, 200);
-    assert.equal((await app.inject({ method: 'GET', url: `/${'d'.repeat(128)}/feed.ics` })).statusCode, 404);
-  } finally {
-    await app.close();
-    config.feedToken = original;
-  }
+  await withServer(
+    async (app) => {
+      assert.equal((await app.inject({ method: 'GET', url: `/${long}/feed.ics` })).statusCode, 200);
+      assert.equal((await app.inject({ method: 'GET', url: `/${'d'.repeat(128)}/feed.ics` })).statusCode, 404);
+    },
+    { token: long },
+  );
 });
 
 test('a token that is a prefix of the real one is rejected', async () => {
@@ -85,7 +86,7 @@ test('with no token configured the feed is unreachable rather than open', async 
         assert.equal((await app.inject({ method: 'GET', url })).statusCode, 404, url);
       }
     },
-    { noToken: true },
+    { token: null },
   );
 });
 
@@ -135,9 +136,6 @@ test('healthz needs no token and leaks no credential', async () => {
 // every poll. Fastify's serializer emits no headers, so `req.url` is the only
 // path that matters — and it is the one that has to work.
 test('the feed token never reaches the logs', async () => {
-  const original = config.feedToken;
-  config.feedToken = TOKEN;
-
   const lines: string[] = [];
   const stream = new Writable({
     write(chunk, _enc, cb) {
@@ -145,16 +143,15 @@ test('the feed token never reaches the logs', async () => {
       cb();
     },
   });
-  const app = buildServer(new FeedState({ logger: quiet }), { logger: true, logStream: stream });
 
-  try {
-    await app.inject({ method: 'GET', url: `/${TOKEN}/feed.ics` });
-    assert.ok(lines.length > 0, 'the request should have been logged at all');
-    const logged = lines.join('');
-    assert.ok(!logged.includes(TOKEN), `token leaked into logs: ${logged}`);
-    assert.ok(logged.includes('[redacted]'), 'the url should be redacted, not merely absent');
-  } finally {
-    await app.close();
-    config.feedToken = original;
-  }
+  await withServer(
+    async (app) => {
+      await app.inject({ method: 'GET', url: `/${TOKEN}/feed.ics` });
+      assert.ok(lines.length > 0, 'the request should have been logged at all');
+      const logged = lines.join('');
+      assert.ok(!logged.includes(TOKEN), `token leaked into logs: ${logged}`);
+      assert.ok(logged.includes('[redacted]'), 'the url should be redacted, not merely absent');
+    },
+    { logStream: stream },
+  );
 });

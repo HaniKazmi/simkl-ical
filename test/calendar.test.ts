@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   archiveUrl,
@@ -107,6 +107,10 @@ test('merging tolerates missing or empty parts', () => {
 
 // --- fetching, caching and the staleness signal ---------------------------
 
+// The cache is module state shared by every test in this file; a test that
+// forgot to clear it inherited another's entries and failed confusingly.
+beforeEach(clearCache);
+
 const entry = (id: number, date: string) => ({ simkl_id: id, date, finale_type: null });
 const GOOD = calendarFile([entry(1, '2026-08-01T20:00:00Z')]);
 
@@ -114,7 +118,6 @@ const GOOD = calendarFile([entry(1, '2026-08-01T20:00:00Z')]);
 // and the caller could not tell that from a real fetch, so refreshCalendars
 // reported every cycle of a month-long outage as a success.
 test('a CDN failure serves the cached copy but reports it as stale', async () => {
-  clearCache();
   let calls = 0;
   await withFetch(
     () => (++calls === 1 ? jsonResponse(GOOD) : new Response('upstream down', { status: 503 })),
@@ -132,7 +135,6 @@ test('a CDN failure serves the cached copy but reports it as stale', async () =>
 });
 
 test('a 304 is fresh, not stale — the CDN answered', async () => {
-  clearCache();
   let calls = 0;
   await withFetch(
     () => (++calls === 1 ? jsonResponse(GOOD, { lastModified: 'Sat, 01 Aug 2026 00:00:00 GMT' }) : new Response(null, { status: 304 })),
@@ -146,7 +148,6 @@ test('a 304 is fresh, not stale — the CDN answered', async () => {
 });
 
 test('a conditional GET is sent once a Last-Modified is known', async () => {
-  clearCache();
   const seen: Array<string | undefined> = [];
   await withFetch(
     (_url, init) => {
@@ -165,7 +166,6 @@ test('a conditional GET is sent once a Last-Modified is known', async () => {
 // `{}` replaced a good cache entry, rendered a near-empty feed, and safeRender
 // then persisted it over the last good copy on disk.
 test('a parseable 200 with no calendar array falls back instead of replacing the cache', async () => {
-  clearCache();
   let calls = 0;
   await withFetch(
     () => (++calls === 1 ? jsonResponse(GOOD) : jsonResponse({ error: 'nope' })),
@@ -179,7 +179,6 @@ test('a parseable 200 with no calendar array falls back instead of replacing the
 });
 
 test('a first fetch with nothing cached still throws rather than inventing a feed', async () => {
-  clearCache();
   await withFetch(
     () => new Response('upstream down', { status: 503 }),
     async () => {
@@ -192,7 +191,6 @@ test('a first fetch with nothing cached still throws rather than inventing a fee
 // month the process survived permanently retained two more multi-MB parsed
 // calendars it would never request again.
 test('archives outside the grace window are evicted from the cache', async () => {
-  clearCache();
   await withFetch(
     () => jsonResponse(GOOD),
     async () => {
@@ -211,7 +209,6 @@ test('archives outside the grace window are evicted from the cache', async () =>
 });
 
 test('evicting one calendar type leaves the other alone', async () => {
-  clearCache();
   await withFetch(
     () => jsonResponse(GOOD),
     async () => {
@@ -227,18 +224,17 @@ test('evicting one calendar type leaves the other alone', async () => {
 // A missing archive silently narrows the grace window, which looks identical to
 // a correct feed with nothing old to show.
 test('an unavailable archive is reported rather than swallowed', async () => {
-  clearCache();
   const logged: string[] = [];
   await withFetch(
     (url) => (url.includes('/2026/') ? new Response('gone', { status: 404 }) : jsonResponse(GOOD)),
     async () => {
-      const merged = await fetchCalendar('tv', {
+      const { data: merged, stale } = await fetchCalendar('tv', {
         graceDays: 14,
         now: new Date('2026-08-20T12:00:00Z'),
         log: (m) => void logged.push(m),
       });
       assert.equal(merged.calendar.length, 1, 'the rolling file still carries the feed');
-      assert.equal(merged.stale, false, 'a failed archive is not rolling-file staleness');
+      assert.equal(stale, false, 'a failed archive is not rolling-file staleness');
       assert.ok(logged.some((l) => /archive .* unavailable/.test(l)), logged.join('\n'));
     },
   );

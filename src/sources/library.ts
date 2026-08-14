@@ -71,7 +71,7 @@ export const staleLists = (activities: Activities | null | undefined, previous: 
   return LISTS.filter((list) => current[list.key] !== previous[list.key]);
 };
 
-export const fetchList = (
+const fetchList = (
   token: string,
   type: SyncType,
   status: SyncStatus,

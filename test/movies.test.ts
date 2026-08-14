@@ -1,15 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { pickReleaseDate } from '../src/sources/movies.ts';
+import { fetchMovieReleases, pickReleaseDate, reconcileReleases } from '../src/sources/movies.ts';
 import { releaseLabel } from '../src/join.ts';
-import { reconcileReleases } from '../src/sources/movies.ts';
-import { fetchMovieReleases } from '../src/sources/movies.ts';
 import type { MovieDetail, MovieRelease } from '../src/simkl/types.ts';
 import { jsonResponse, withFetch } from './helpers.ts';
 import { config } from '../src/config.ts';
-
-// Exercise the retry paths without spending 15 seconds asleep in each.
-config.retryBaseMs = 1;
 
 // Shape taken from a real /movies/2242503 response. Note `released` is two days
 // earlier than every country's actual theatrical date — this is not a typo in
@@ -105,8 +100,8 @@ test('release types are labelled for the event description', () => {
 
 const release = (id: number): MovieRelease => ({ simkl_id: id, title: `Film ${id}`, date: '2026-12-18', releaseType: 3, runtime: null, url: '' });
 
-const lookups = (releases: Array<[number, MovieRelease]>, failed: number[] = []) =>
-  ({ releases: new Map(releases), failed });
+const lookups = (releases: Array<[number, MovieRelease]>, failed: number[] = [], unavailable: number[] = []) =>
+  ({ releases: new Map(releases), failed, unavailable });
 
 test('all lookups resolving reports complete', () => {
   const { releases, complete } = reconcileReleases(new Map(), [1, 2], lookups([[1, release(1)], [2, release(2)]]));
@@ -251,23 +246,19 @@ test('the release country is matched case-insensitively', () => {
 // upstream — fails identically every time, so every poll refetched the whole
 // film list and re-looked-up every title, forever.
 test('a permanently gone film does not hold the list stale', () => {
-  const { releases, complete } = reconcileReleases(new Map(), [1, 2], {
-    releases: new Map([[1, release(1)]]),
-    failed: [],
-    unavailable: [2],
-  });
+  const { releases, complete } = reconcileReleases(new Map(), [1, 2], lookups([[1, release(1)]], [], [2]));
   assert.equal(complete, true, 'a 4xx is settled, not a retry');
   assert.deepEqual([...releases.keys()], [1]);
 });
 
 test('a gone film keeps a date already known for it', () => {
   const previous = new Map([[2, release(2)]]);
-  const { releases } = reconcileReleases(previous, [2], { releases: new Map(), failed: [], unavailable: [2] });
+  const { releases } = reconcileReleases(previous, [2], lookups([], [], [2]));
   assert.equal(releases.get(2), previous.get(2), 'a cached date beats no date');
 });
 
 test('a transient failure still holds the list stale', () => {
-  const { complete } = reconcileReleases(new Map(), [1], { releases: new Map(), failed: [1], unavailable: [] });
+  const { complete } = reconcileReleases(new Map(), [1], lookups([], [1]));
   assert.equal(complete, false);
 });
 
@@ -421,7 +412,6 @@ test('a known type is still preferred over an unrecognised one', () => {
 // yesterday's date, so a release that had already passed locally could still be
 // chosen as the next one.
 test('whether a date has passed is judged in the viewer timezone, not UTC', () => {
-  const original = config.timezone;
   // 12:00Z is already the 16th in Auckland and still the 15th in UTC.
   const now = { now: new Date('2026-08-15T12:00:00Z') };
   const movie: MovieDetail = {
@@ -437,13 +427,15 @@ test('whether a date has passed is judged in the viewer timezone, not UTC', () =
     ],
   };
 
-  try {
-    config.timezone = 'Pacific/Auckland';
-    assert.equal(pickReleaseDate(movie, 'NZ', now)!.date, '2026-08-20', 'the 15th is yesterday in Auckland');
-
-    config.timezone = 'UTC';
-    assert.equal(pickReleaseDate(movie, 'NZ', now)!.date, '2026-08-15', 'but is still today in UTC');
-  } finally {
-    config.timezone = original;
-  }
+  // timezone is a parameter now, so this needs no global mutation at all.
+  assert.equal(
+    pickReleaseDate(movie, 'NZ', { ...now, timezone: 'Pacific/Auckland' })!.date,
+    '2026-08-20',
+    'the 15th is yesterday in Auckland',
+  );
+  assert.equal(
+    pickReleaseDate(movie, 'NZ', { ...now, timezone: 'UTC' })!.date,
+    '2026-08-15',
+    'but is still today in UTC',
+  );
 });

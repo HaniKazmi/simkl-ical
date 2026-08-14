@@ -4,7 +4,7 @@ import { readdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { loadFeed, saveFeed } from '../src/feed-store.ts';
 import { FeedState } from '../src/refresh.ts';
-import { calendarFile, jsonResponse, quiet, withFetch, withTempDataDir } from './helpers.ts';
+import { calendarFile, emptyCalendars, jsonResponse, quiet, withFetch, withTempDataDir } from './helpers.ts';
 
 const ICS = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR';
 
@@ -77,10 +77,7 @@ test('the saved feed is not world-readable', async () => {
 test('overlapping renders are serialised rather than racing', async () => {
   await withTempDataDir(async () => {
     const state = new FeedState({ logger: quiet });
-    state.calendars = {
-      tv: { type: 'tv', calendar: [], metadata: {}, stale: false },
-      anime: { type: 'anime', calendar: [], metadata: {}, stale: false },
-    };
+    state.calendars = emptyCalendars();
     state.library = { shows_watching: {} };
 
     await Promise.all([state.safeRender(), state.safeRender(), state.safeRender()]);
@@ -151,7 +148,7 @@ test('a render with only calendars does not overwrite the served feed', async ()
     const state = new FeedState({ logger: quiet });
     state.ics = ICS;
     state.servingCached = true;
-    state.calendars = { tv: { type: 'tv', calendar: [], metadata: {}, stale: false }, anime: { type: 'anime', calendar: [], metadata: {}, stale: false } };
+    state.calendars = emptyCalendars();
     // library still null — the join cannot run
 
     await state.safeRender();
@@ -186,7 +183,7 @@ test('a complete render replaces the feed and persists it', async () => {
     const state = new FeedState({ logger: quiet });
     state.ics = ICS;
     state.servingCached = true;
-    state.calendars = { tv: { type: 'tv', calendar: [], metadata: {}, stale: false }, anime: { type: 'anime', calendar: [], metadata: {}, stale: false } };
+    state.calendars = emptyCalendars();
     state.library = { shows_watching: {} };
 
     await state.safeRender();

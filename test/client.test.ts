@@ -2,12 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { config } from '../src/config.ts';
 import { apiGet, retryDelayMs, SimklAuthError, SimklError } from '../src/simkl/client.ts';
-import { jsonResponse, withFetch } from './helpers.ts';
-
-// apiGet requires a client id; the real one is irrelevant to these tests.
-config.clientId ??= 'test-client-id';
-// Exercise the retry paths without spending 15 seconds asleep in each.
-config.retryBaseMs = 1;
+import { jsonResponse, withConfig, withFetch } from './helpers.ts';
 
 
 test('a successful call returns the parsed body', async () => {
@@ -192,11 +187,9 @@ test('an unparseable success that never recovers throws a SimklError', async () 
 test('Retry-After on a 429 is honoured over the default backoff', async () => {
   // A backoff long enough that honouring the header is unmistakable. The rest
   // of this file runs with retryBaseMs at 1, which would hide the difference.
-  const base = config.retryBaseMs;
-  config.retryBaseMs = 5_000;
   let calls = 0;
   const started = Date.now();
-  try {
+  await withConfig({ retryBaseMs: 5_000 }, async () => {
     await withFetch(
       () => (++calls === 1 ? new Response('slow down', { status: 429, headers: { 'retry-after': '0' } }) : jsonResponse({ ok: true })),
       async () => {
@@ -205,25 +198,19 @@ test('Retry-After on a 429 is honoured over the default backoff', async () => {
         assert.ok(Date.now() - started < 1_000, `waited ${Date.now() - started}ms instead of honouring Retry-After: 0`);
       },
     );
-  } finally {
-    config.retryBaseMs = base;
-  }
+  });
 });
 
 // The rest of the Retry-After behaviour is a pure calculation, tested directly
 // rather than by sleeping through it.
 const with429 = (headers: Record<string, string> = {}) => new Response('slow down', { status: 429, headers });
 
-test('a missing Retry-After falls back to the exponential backoff', () => {
-  const base = config.retryBaseMs;
-  config.retryBaseMs = 1000;
-  try {
+test('a missing Retry-After falls back to the exponential backoff', async () => {
+  await withConfig({ retryBaseMs: 1000 }, () => {
     assert.equal(retryDelayMs(with429(), 1), 1000);
     assert.equal(retryDelayMs(with429(), 2), 2000);
     assert.equal(retryDelayMs(with429(), 4), 8000);
-  } finally {
-    config.retryBaseMs = base;
-  }
+  });
 });
 
 test('Retry-After in seconds is honoured', () => {
@@ -242,27 +229,19 @@ test('an absurd Retry-After is capped at a minute', () => {
   assert.equal(retryDelayMs(with429({ 'retry-after': '99999' }), 1), 60_000);
 });
 
-test('a nonsense or past Retry-After falls back to the backoff', () => {
-  const base = config.retryBaseMs;
-  config.retryBaseMs = 1000;
-  try {
+test('a nonsense or past Retry-After falls back to the backoff', async () => {
+  await withConfig({ retryBaseMs: 1000 }, () => {
     assert.equal(retryDelayMs(with429({ 'retry-after': 'soon' }), 1), 1000);
     assert.equal(retryDelayMs(with429({ 'retry-after': new Date(Date.now() - 60_000).toUTCString() }), 1), 1000);
-  } finally {
-    config.retryBaseMs = base;
-  }
+  });
 });
 
 // Number('') is 0 and finite, so a header present but empty meant "retry
 // immediately" against a server that had just asked us to slow down.
-test('a blank Retry-After falls back to the backoff rather than meaning zero', () => {
-  const base = config.retryBaseMs;
-  config.retryBaseMs = 1000;
-  try {
+test('a blank Retry-After falls back to the backoff rather than meaning zero', async () => {
+  await withConfig({ retryBaseMs: 1000 }, () => {
     assert.equal(retryDelayMs(with429({ 'retry-after': '' }), 1), 1000);
     assert.equal(retryDelayMs(with429({ 'retry-after': '   ' }), 1), 1000);
     assert.equal(retryDelayMs(with429({ 'retry-after': '0' }), 1), 0, 'an explicit zero still means zero');
-  } finally {
-    config.retryBaseMs = base;
-  }
+  });
 });

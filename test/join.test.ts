@@ -1,13 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { localDate, releaseDate, shiftDate, extractItems, itemSimklId, idSet, episodeCode, join } from '../src/join.ts';
-import type { CalendarEntry, Library, MergedCalendar, MovieRelease } from '../src/simkl/types.ts';
-import type { Calendars } from '../src/sources/calendar.ts';
+import { extractItems, itemSimklId, idSet, episodeCode, join } from '../src/join.ts';
+import { localDate, releaseDate, shiftDate } from '../src/dates.ts';
+import type { CalendarEntry, CalendarFile, CalendarType, Library, MovieRelease } from '../src/simkl/types.ts';
+import { calendarOf } from './helpers.ts';
+
+type Cals = Partial<Record<CalendarType, CalendarFile>>;
 
 const show = (simkl: number, title = `Show ${simkl}`) => ({ show: { title, ids: { simkl } } });
 const movie = (simkl: number, title = `Film ${simkl}`) => ({ movie: { title, ids: { simkl } } });
-const calendarOf = (type: 'tv' | 'anime', calendar: CalendarEntry[], metadata: MergedCalendar['metadata']): MergedCalendar =>
-  ({ type, calendar, metadata, stale: false });
+
 
 // A 9pm Tuesday ET broadcast is stamped 01:00Z Wednesday. Slicing the ISO string
 // would put it on Wednesday for everyone, which is wrong for the US audience.
@@ -77,13 +79,13 @@ const tvEntry = (
   episode: { season, episode, title: `Ep ${episode}`, url: `https://simkl.com/tv/${id}/` },
 });
 
-const calendars = (tv: CalendarEntry[] = []): Partial<Calendars> => ({
-  tv: calendarOf('tv', tv, {
+const calendars = (tv: CalendarEntry[] = []): Cals => ({
+  tv: calendarOf(tv, {
     100: { title: 'Watched Show', network: 'HBO', runtime: '60m', url: '/tv/100/x' },
     200: { title: 'Planned Show', url: '/tv/200/y' },
     400: { title: 'Completed Show', url: '/tv/400/z' },
   }),
-  anime: calendarOf('anime', [], {}),
+  anime: calendarOf([], {}),
 });
 
 const library: Library = {
@@ -134,9 +136,9 @@ test('completed shows are not limited to premieres the way plan-to-watch is', ()
 // requiring season === 1 could never match anything anime.
 test('anime plan-to-watch premieres match despite having no season', () => {
   const animeLibrary = { ...library, anime_plantowatch: { anime: [show(500, 'Some Anime')] } };
-  const cals: Partial<Calendars> = {
-    tv: calendarOf('tv', [], {}),
-    anime: calendarOf('anime', [
+  const cals: Cals = {
+    tv: calendarOf([], {}),
+    anime: calendarOf([
       { simkl_id: 500, date: '2026-08-15T15:00:00Z', finale_type: null, episode: { season: null, episode: 1, title: 'a', url: '' } },
       { simkl_id: 500, date: '2026-08-22T15:00:00Z', finale_type: null, episode: { season: null, episode: 2, title: 'b', url: '' } },
     ], { 500: { title: 'Some Anime' } }),
@@ -148,9 +150,9 @@ test('anime plan-to-watch premieres match despite having no season', () => {
 
 test('an entry with no episode object gets a date-keyed uid, not "Eundefined"', () => {
   const animeLibrary = { ...library, anime_watching: { anime: [show(600, 'Some Anime')] } };
-  const cals: Partial<Calendars> = {
-    tv: calendarOf('tv', [], {}),
-    anime: calendarOf('anime', [
+  const cals: Cals = {
+    tv: calendarOf([], {}),
+    anime: calendarOf([
       { simkl_id: 600, date: '2026-08-27T15:00:00Z', finale_type: null },
       { simkl_id: 600, date: '2026-08-28T15:00:00Z', finale_type: null },
     ], { 600: { title: 'Some Anime' } }),
@@ -250,7 +252,7 @@ test('episode titles stay out of the summary', () => {
 });
 
 const filmReleases = (date: string): Map<number, MovieRelease> =>
-  new Map([[300, { simkl_id: 300, title: 'Planned Film', date, releaseType: 3, country: 'GB', runtime: '140m', url: 'https://simkl.com/movies/300' }]]);
+  new Map([[300, { simkl_id: 300, title: 'Planned Film', date, releaseType: 3, runtime: '140m', url: 'https://simkl.com/movies/300' }]]);
 
 test('plan-to-watch films are included by release date', () => {
   const events = join(calendars(), library, { timezone: 'Europe/London', now: NOW, movieReleases: filmReleases('2026-08-20') });

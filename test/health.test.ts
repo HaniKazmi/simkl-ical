@@ -4,9 +4,7 @@ import { FeedState } from '../src/refresh.ts';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { config } from '../src/config.ts';
-import { quiet, withTempDataDir } from './helpers.ts';
-
-const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+import { ago, emptyCalendars, quiet, withTempDataDir } from './helpers.ts';
 
 const rendered = () => {
   const state = new FeedState({ logger: quiet });
@@ -133,10 +131,7 @@ test('health reports the timestamps a human would want', () => {
 
 test('the event count reflects what was actually joined', () => {
   const state = rendered();
-  state.calendars = {
-    tv: { type: 'tv', calendar: [], metadata: {}, stale: false },
-    anime: { type: 'anime', calendar: [], metadata: {}, stale: false },
-  };
+  state.calendars = emptyCalendars();
   state.library = { shows_watching: {} };
   state.render();
   assert.equal(state.health.events, 0);

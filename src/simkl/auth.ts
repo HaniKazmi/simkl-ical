@@ -1,5 +1,6 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { writeFileAtomic } from '../atomic-write.ts';
 import { config } from '../config.ts';
 import { apiGet } from './client.ts';
 import type { PinResponse } from './types.ts';
@@ -16,23 +17,10 @@ export const readToken = async (): Promise<string | null> => {
   }
 };
 
-/**
- * Save the access token, 0600, without ever exposing it more widely.
- *
- * Write-and-rename rather than write-then-chmod. `writeFile` creates at
- * 0666 & ~umask — typically 0644 — so narrowing afterwards leaves a window
- * where the token is world-readable, and `mode` alone does not help when the
- * file already exists, because an existing file keeps its old mode. Writing a
- * fresh inode with the mode set and renaming it into place has neither
- * problem, and makes the replacement atomic into the bargain.
- */
+/** Save the access token 0600, never exposing it more widely — see writeFileAtomic. */
 export const writeToken = async (accessToken: string): Promise<string> => {
-  await mkdir(config.dataDir, { recursive: true, mode: 0o700 });
   const path = tokenPath();
-  const body = JSON.stringify({ access_token: accessToken, saved_at: new Date().toISOString() }, null, 2);
-  const tmp = `${path}.${process.pid}.tmp`;
-  await writeFile(tmp, body, { mode: 0o600 });
-  await rename(tmp, path);
+  await writeFileAtomic(path, JSON.stringify({ access_token: accessToken, saved_at: new Date().toISOString() }, null, 2));
   return path;
 };
 

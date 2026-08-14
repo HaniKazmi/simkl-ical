@@ -7,6 +7,18 @@ const API_BASE = 'https://api.simkl.com';
 // 408 is a server-side read timeout, and 520-524 are Cloudflare's own origin
 // failures — SIMKL sits behind it, and all of them are transient by definition.
 const RETRYABLE = new Set([408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524]);
+
+/**
+ * Statuses meaning the resource will never resolve, however often we ask —
+ * typically merged into another id or deleted upstream.
+ *
+ * Deliberately narrow, and deliberately here rather than at the call site: this
+ * answers a different question from RETRYABLE ("will this ever succeed later?"
+ * against "should I try again within this call?"), but the two must stay
+ * disjoint, and that invariant is only visible with both sets in one file.
+ */
+const GONE = new Set([404, 410]);
+
 const MAX_ATTEMPTS = 5;
 
 /** Ceiling on a server-requested wait, so a hostile header cannot stall a refresh. */
@@ -63,6 +75,24 @@ export class SimklAuthError extends SimklError {
     this.name = 'SimklAuthError';
   }
 }
+
+/**
+ * How a caller should treat a failure it could not avoid.
+ *
+ * - `account`: nothing to do with the resource asked for — a revoked token or a
+ *   rejected client id. Callers doing per-item work must let this propagate
+ *   rather than record it against the item.
+ * - `gone`: this id is settled. Retrying it never starts working.
+ * - `transient`: worth trying again later, after apiGet's own retries.
+ */
+export type FailureKind = 'account' | 'gone' | 'transient';
+
+export const classify = (err: unknown): FailureKind => {
+  if (err instanceof SimklAuthError) return 'account';
+  if (!(err instanceof SimklError) || err.status === undefined) return 'transient';
+  if (err.status === 412) return 'account';
+  return GONE.has(err.status) ? 'gone' : 'transient';
+};
 
 const baseHeaders = (): Record<string, string> => ({
   'User-Agent': `${config.appName}/${config.appVersion}`,
