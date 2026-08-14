@@ -64,7 +64,8 @@ export const config: Config = {
   // Which country's cinema dates to use for film releases. Release dates vary by
   // territory — Dune: Part Three opens 18 Dec in GB and the US but 16 Dec in BE.
   releaseCountry: process.env.RELEASE_COUNTRY || 'GB',
-  port: int(process.env.PORT, 3000, { min: 1, max: 65535 }),
+  // min 0, not 1: PORT=0 is the standard "bind an ephemeral port" idiom.
+  port: int(process.env.PORT, 3000, { min: 0, max: 65535 }),
   // How long a recently-aired episode lingers in the feed. Deliberately not
   // filtered by watch state: the calendar is a record of what aired, so nothing
   // should vanish the moment it airs.

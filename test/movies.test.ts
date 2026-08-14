@@ -338,3 +338,112 @@ test('an empty id list makes no requests at all', async () => {
     },
   );
 });
+
+// --- what counts as permanently gone --------------------------------------
+
+// The bug this guards: the predicate was `status >= 400 && status < 500`, which
+// swallowed the statuses apiGet had already retried to exhaustion. A sustained
+// 429 filed every film as "gone", reported the round complete, and dropped the
+// lot from the feed for a full movieRefreshMs with health still green.
+for (const status of [408, 429]) {
+  test(`a ${status} stays retryable rather than counting as gone`, async () => {
+    await withFetch(
+      () => new Response('slow down', { status }),
+      async () => {
+        const { failed, unavailable } = await fetchMovieReleases([1]);
+        assert.deepEqual(unavailable, [], 'apiGet already retried this to exhaustion');
+        assert.deepEqual(failed, [1], 'so it must be tried again next poll');
+      },
+    );
+  });
+}
+
+for (const status of [404, 410]) {
+  test(`a ${status} is genuinely gone`, async () => {
+    await withFetch(
+      () => new Response('gone', { status }),
+      async () => {
+        const { failed, unavailable } = await fetchMovieReleases([1]);
+        assert.deepEqual(unavailable, [1]);
+        assert.deepEqual(failed, []);
+      },
+    );
+  });
+}
+
+// An account-wide problem is not a fact about any one film, and filing it per
+// id swallowed the "re-run npm run login" message entirely.
+for (const status of [401, 403, 412]) {
+  test(`a ${status} propagates rather than being filed against a film`, async () => {
+    await withFetch(
+      () => new Response('nope', { status }),
+      async () => {
+        await assert.rejects(() => fetchMovieReleases([1, 2]), /401|403|412/);
+      },
+    );
+  });
+}
+
+// --- release types we have no name for ------------------------------------
+
+// The rewrite enumerated types 1-6 exhaustively, where the code it replaced
+// ended with a catch-all over any dated entry. An unrecognised type therefore
+// fell through to `released`, which the docstring itself calls unreliable.
+test('an unrecognised release type still beats the unreliable released field', () => {
+  const movie: MovieDetail = {
+    title: 'x',
+    released: '2026-12-16',
+    release_dates: [{ iso_3166_1: 'GB', results: [{ type: 7, release_date: '2026-12-18' }] }],
+  };
+  const picked = pickReleaseDate(movie, 'GB', NOW)!;
+  assert.equal(picked.date, '2026-12-18');
+  assert.equal(picked.country, 'GB');
+});
+
+test('a known type is still preferred over an unrecognised one', () => {
+  const movie: MovieDetail = {
+    title: 'x',
+    release_dates: [
+      {
+        iso_3166_1: 'GB',
+        results: [
+          { type: 7, release_date: '2026-01-01' },
+          { type: 3, release_date: '2027-05-25' },
+        ],
+      },
+    ],
+  };
+  assert.equal(pickReleaseDate(movie, 'GB', NOW)!.type, 3);
+});
+
+// "Has this happened yet" must be answered in the viewer's timezone, the same
+// way the join answers it. Computing it in UTC put a viewer far enough east on
+// yesterday's date, so a release that had already passed locally could still be
+// chosen as the next one.
+test('whether a date has passed is judged in the viewer timezone, not UTC', () => {
+  const original = config.timezone;
+  // 12:00Z is already the 16th in Auckland and still the 15th in UTC.
+  const now = { now: new Date('2026-08-15T12:00:00Z') };
+  const movie: MovieDetail = {
+    title: 'x',
+    release_dates: [
+      {
+        iso_3166_1: 'NZ',
+        results: [
+          { type: 3, release_date: '2026-08-15' },
+          { type: 3, release_date: '2026-08-20' },
+        ],
+      },
+    ],
+  };
+
+  try {
+    config.timezone = 'Pacific/Auckland';
+    assert.equal(pickReleaseDate(movie, 'NZ', now)!.date, '2026-08-20', 'the 15th is yesterday in Auckland');
+
+    config.timezone = 'UTC';
+    assert.equal(pickReleaseDate(movie, 'NZ', now)!.date, '2026-08-15', 'but is still today in UTC');
+  } finally {
+    config.timezone = original;
+  }
+});

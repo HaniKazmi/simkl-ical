@@ -29,7 +29,10 @@ const backoffMs = (attempt: number): number => 2 ** (attempt - 1) * config.retry
  */
 export const retryDelayMs = (res: Response, attempt: number): number => {
   const header = res.headers.get('retry-after');
-  if (header === null) return backoffMs(attempt);
+  // Blank as well as absent: Number('') is 0, so a malformed `Retry-After:`
+  // with no value would otherwise mean "retry immediately" against a server
+  // that has just asked us to slow down.
+  if (header === null || header.trim() === '') return backoffMs(attempt);
 
   const seconds = Number(header);
   const ms = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header) - Date.now();

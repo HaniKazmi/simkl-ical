@@ -252,3 +252,17 @@ test('a nonsense or past Retry-After falls back to the backoff', () => {
     config.retryBaseMs = base;
   }
 });
+
+// Number('') is 0 and finite, so a header present but empty meant "retry
+// immediately" against a server that had just asked us to slow down.
+test('a blank Retry-After falls back to the backoff rather than meaning zero', () => {
+  const base = config.retryBaseMs;
+  config.retryBaseMs = 1000;
+  try {
+    assert.equal(retryDelayMs(with429({ 'retry-after': '' }), 1), 1000);
+    assert.equal(retryDelayMs(with429({ 'retry-after': '   ' }), 1), 1000);
+    assert.equal(retryDelayMs(with429({ 'retry-after': '0' }), 1), 0, 'an explicit zero still means zero');
+  } finally {
+    config.retryBaseMs = base;
+  }
+});

@@ -233,3 +233,88 @@ test('a successful poll clears an earlier library failure', async () => {
     assert.equal(state.errors.library, null);
   });
 });
+
+// The bug this guards: filmsResolvedAt was stamped whether or not the lookups
+// succeeded. The signature rollback that normally forces a retry cannot help
+// when the round was triggered by age rather than a list change — the signature
+// never moved, so there is nothing to roll back — and the fresh timestamp made
+// filmsDue() false, so the early return skipped the retry for another 24 hours.
+test('a failed daily re-read retries on the next poll, not in another day', async () => {
+  await withToken(async (state) => {
+    await withFetch(api(activities()), async () => {
+      await state.refreshLibraryIfChanged();
+    });
+
+    const before = state.filmsResolvedAt;
+    state.filmsResolvedAt = new Date(Date.now() - config.movieRefreshMs - 1000).toISOString();
+
+    await withFetch(api(activities(), { movieStatus: 500 }), async (calls) => {
+      await state.refreshLibraryIfChanged();
+      // More than one: a 500 is retryable, so apiGet exhausts its five attempts
+      // before giving up. What matters here is that the re-read was attempted.
+      assert.ok(lookups(calls).length >= 1, 'the re-read was attempted');
+    });
+    assert.notEqual(state.filmsResolvedAt, before, 'precondition: it was aged');
+    assert.ok(
+      Date.now() - Date.parse(state.filmsResolvedAt!) > config.movieRefreshMs,
+      'a failed round must not count as resolved',
+    );
+
+    await withFetch(api(activities()), async (calls) => {
+      await state.refreshLibraryIfChanged();
+      assert.equal(lookups(calls).length, 1, 'so the very next poll tries again');
+    });
+  });
+});
+
+test('a successful daily re-read does reset the clock', async () => {
+  await withToken(async (state) => {
+    await withFetch(api(activities()), async () => {
+      await state.refreshLibraryIfChanged();
+    });
+    state.filmsResolvedAt = new Date(Date.now() - config.movieRefreshMs - 1000).toISOString();
+
+    await withFetch(api(activities()), async () => {
+      await state.refreshLibraryIfChanged();
+    });
+    await withFetch(api(activities()), async (calls) => {
+      await state.refreshLibraryIfChanged();
+      assert.equal(calls.length, 1, 'nothing more to do until it ages out again');
+    });
+  });
+});
+
+// A rate limit is an account-wide condition, not a fact about these films.
+test('a sustained rate limit keeps the films and retries rather than dropping them', async () => {
+  await withToken(async (state) => {
+    await withFetch(api(activities()), async () => {
+      await state.refreshLibraryIfChanged();
+    });
+    assert.equal(state.movieReleases.size, 1, 'precondition');
+
+    state.filmsResolvedAt = new Date(Date.now() - config.movieRefreshMs - 1000).toISOString();
+    await withFetch(api(activities(), { movieStatus: 429 }), async () => {
+      await state.refreshLibraryIfChanged();
+    });
+
+    assert.equal(state.movieReleases.size, 1, 'the known date is kept, not dropped');
+    await withFetch(api(activities()), async (calls) => {
+      await state.refreshLibraryIfChanged();
+      assert.equal(lookups(calls).length, 1, 'and it is retried promptly');
+    });
+  });
+});
+
+// An auth failure during film lookups must surface as an auth failure, not be
+// filed against individual films and silently swallowed.
+test('a revoked token during film lookups is reported as AUTH', async () => {
+  await withToken(async (state) => {
+    await withFetch(
+      (url) => (url.includes('/movies/') && !url.includes('all-items') ? new Response('nope', { status: 401 }) : api(activities())(url)),
+      async () => {
+        await state.refreshLibraryIfChanged();
+      },
+    );
+    assert.match(state.errors.library!, /^AUTH:/);
+  });
+});

@@ -24,7 +24,7 @@ export const buildServer = (state: FeedState, { logger = true, logStream }: Serv
     // The feed token is a path parameter, and Fastify's default cap is 100
     // characters. `openssl rand -hex 24` fits, but anyone who generated a
     // longer one got a 414 and an unreachable feed with no useful explanation.
-    maxParamLength: 512,
+    routerOptions: { maxParamLength: 512 },
     logger: logger && {
       ...(logStream ? { stream: logStream } : {}),
       // The feed token is a credential; keep it out of the logs. Only `req.url`

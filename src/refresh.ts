@@ -285,7 +285,11 @@ export class FeedState {
           filmIds,
           lookups,
         ));
-        this.filmsResolvedAt = new Date().toISOString();
+        // Only on a complete round. Stamping regardless meant a failed daily
+        // re-read pushed the next attempt out another full movieRefreshMs — the
+        // signature rollback below cannot help when the round was triggered by
+        // age rather than by a list change, because the signature never moved.
+        if (filmsComplete) this.filmsResolvedAt = new Date().toISOString();
         if (filmIds.length) {
           this.log.info?.(`resolved ${lookups.releases.size}/${filmIds.length} film release dates`);
         }
