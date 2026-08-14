@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "fastify": "^5.2.1",
-    "ical-generator": "^8.0.1"
+    "ical-generator": "^11.1.0"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
