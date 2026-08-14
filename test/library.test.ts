@@ -36,6 +36,29 @@ test('the list set covers watching, plan-to-watch and completed', () => {
   ]);
 });
 
+// Asserting against literal expected signatures, not against listSignatures'
+// own output. Comparing f(a) to f(a) passes even if the function returns a
+// constant, which is exactly the failure mode that matters here: a signature
+// that never varies would gate every list off forever.
+test('a signature is built from the status and removal timestamps only', () => {
+  const acts = activities();
+  assert.equal(
+    listSignature(acts, { type: 'shows', status: 'watching' }),
+    `watching=${acts.tv_shows.watching}|removed=${acts.tv_shows.removed_from_list}`,
+  );
+  assert.equal(
+    listSignature(acts, { type: 'movies', status: 'plantowatch' }),
+    `plantowatch=${acts.movies.plantowatch}|removed=${acts.movies.removed_from_list}`,
+  );
+});
+
+test('signatures differ between lists that share a category', () => {
+  const acts = activities();
+  const watching = listSignature(acts, { type: 'shows', status: 'watching' });
+  const completed = listSignature(acts, { type: 'shows', status: 'completed' });
+  assert.notEqual(watching, completed, 'otherwise every list in a category gates together');
+});
+
 test('nothing is stale when nothing changed', () => {
   const a = activities();
   assert.deepEqual(staleLists(a, listSignatures(a)), []);
@@ -103,13 +126,28 @@ test('an unknown list counts as stale, so a cold start fetches everything', () =
   assert.equal(staleLists(activities(), undefined).length, LISTS.length);
 });
 
-test('signatures are stable regardless of API key order', () => {
-  const a = activities();
-  const reordered = { ...a, tv_shows: Object.fromEntries(Object.entries(a.tv_shows).reverse()) };
-  assert.deepEqual(listSignatures(reordered), listSignatures(a));
+// Was "signatures are stable regardless of API key order", which asserted a
+// property of JavaScript — named property reads are order-independent — rather
+// than anything the code does. What is worth pinning is that the fields the
+// signature deliberately ignores really are ignored: a scrobbler reporting
+// progress must not trigger a refetch that renders byte-identical output.
+test('only the fields that can move an item between lists count', () => {
+  const before = listSignatures(activities());
+
+  for (const noise of ['all', 'rated_at', 'playback', 'hold', 'dropped'] as const) {
+    const acts = activities();
+    acts.tv_shows[noise] = '2027-01-01T00:00:00Z';
+    assert.deepEqual(listSignatures(acts), before, `${noise} must not invalidate anything`);
+  }
 });
 
-test('missing categories and fields are tolerated', () => {
-  assert.equal(typeof listSignature({}, { type: 'movies', status: 'watching' }), 'string');
-  assert.deepEqual(listSignatures({}), listSignatures(null));
+test('a missing category degrades to an empty signature rather than throwing', () => {
+  // `movies` carries no `watching` key at all, so this is a real shape.
+  assert.equal(listSignature({}, { type: 'movies', status: 'watching' }), 'watching=|removed=');
+  assert.equal(listSignature(null, { type: 'shows', status: 'watching' }), 'watching=|removed=');
+});
+
+test('an absent activities payload makes every list stale, not none', () => {
+  // The safe direction: knowing nothing must mean "refetch", never "skip".
+  assert.equal(staleLists(null, listSignatures(activities())).length, LISTS.length);
 });

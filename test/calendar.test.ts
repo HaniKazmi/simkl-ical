@@ -16,7 +16,6 @@ import { calendarFile, jsonResponse, withFetch } from './helpers.ts';
 test('archive URLs use an unpadded month', () => {
   // /2026/8/tv.json returns 200; /2026/08/tv.json returns 404. Verified live.
   assert.equal(archiveUrl('tv', 2026, 8), 'https://data.simkl.in/calendar/v2/2026/8/tv.json');
-  assert.ok(!archiveUrl('tv', 2026, 8).includes('/08/'));
   assert.equal(archiveUrl('anime', 2025, 12), 'https://data.simkl.in/calendar/v2/2025/12/anime.json');
 });
 
@@ -43,11 +42,24 @@ test('monthsBack crosses a year boundary', () => {
   ]);
 });
 
-test('monthsBack never emits a padded month', () => {
-  for (const { month } of monthsBack(90, new Date('2026-08-10T12:00:00Z'))) {
-    assert.equal(typeof month, 'number');
-    assert.ok(month >= 1 && month <= 12);
+// Was a loop asserting 1 <= month <= 12, which is vacuous if monthsBack returns
+// nothing at all. The real property is that a 90-day window spans exactly the
+// four months it touches, in order, with no padding in the URLs they build.
+test('a long window spans every month it touches, oldest first', () => {
+  const months = monthsBack(90, new Date('2026-08-10T12:00:00Z'));
+  assert.deepEqual(months, [
+    { year: 2026, month: 5 },
+    { year: 2026, month: 6 },
+    { year: 2026, month: 7 },
+    { year: 2026, month: 8 },
+  ]);
+  for (const { year, month } of months) {
+    assert.ok(archiveUrl('tv', year, month).includes(`/${year}/${month}/`), `${year}/${month} must not be padded`);
   }
+});
+
+test('a zero-day window is still the current month, not nothing', () => {
+  assert.deepEqual(monthsBack(0, new Date('2026-08-10T12:00:00Z')), [{ year: 2026, month: 8 }]);
 });
 
 test('merging de-duplicates episodes and unions metadata', () => {

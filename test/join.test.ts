@@ -16,8 +16,10 @@ const NINE_PM_ET_TUESDAY = '2026-08-12T01:00:00Z';
 test('localDate resolves a US evening airing to the correct day in each zone', () => {
   assert.equal(localDate(NINE_PM_ET_TUESDAY, 'America/New_York'), '2026-08-11');
   assert.equal(localDate(NINE_PM_ET_TUESDAY, 'Europe/London'), '2026-08-12');
-  // The naive approach, kept here to document what we are avoiding.
-  assert.notEqual(NINE_PM_ET_TUESDAY.slice(0, 10), '2026-08-11');
+  // What naive slicing would have given, so the difference is the assertion
+  // rather than a comment. Slicing agrees with London and is wrong for New York.
+  assert.equal(NINE_PM_ET_TUESDAY.slice(0, 10), localDate(NINE_PM_ET_TUESDAY, 'Europe/London'));
+  assert.notEqual(NINE_PM_ET_TUESDAY.slice(0, 10), localDate(NINE_PM_ET_TUESDAY, 'America/New_York'));
 });
 
 test('localDate handles the midnight-UTC boundary', () => {
