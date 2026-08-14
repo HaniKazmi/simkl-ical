@@ -76,12 +76,17 @@ Under Compose, the first two go in `simkl.secrets.env` and the rest are set dire
 | `SIMKL_CLIENT_ID`     | —               | **Required, secret.** From simkl.com/settings/developer       |
 | `FEED_TOKEN`          | —               | **Required, secret.** Path segment of the feed URL. `openssl rand -hex 24` |
 | `TZ`                  | `Europe/London` | **Set this.** Airdates are converted to local dates; a wrong zone shifts events by a day |
-| `RELEASE_COUNTRY`     | `GB`            | ISO 3166-1 alpha-2. Which country's cinema dates to use for films |
-| `GRACE_DAYS`          | `14`            | How long an aired episode stays in the feed                   |
+| `RELEASE_COUNTRY`     | `GB`            | ISO 3166-1 alpha-2, case-insensitive. Which country's cinema dates to use for films |
+| `GRACE_DAYS`          | `14`            | How long an aired episode stays in the feed. Capped at 90     |
 | `PORT`                | `3000`          | Port inside the container                                     |
-| `DATA_DIR`            | `/data`         | Holds only `token.json` and the last rendered `feed.ics`       |
+| `DATA_DIR`            | `/data`         | Holds only `token.json` and the last rendered `feed.ics`. `./data` outside Docker |
 | `CALENDAR_REFRESH_MS` | `10800000` (3h) | How often to re-read the airdate calendars                    |
 | `ACTIVITIES_POLL_MS`  | `7200000` (2h)  | How often to check your library for changes                   |
+| `MOVIE_REFRESH_MS`    | `86400000` (24h)| How often to re-read film release dates, which move without any library change |
+
+The three interval settings are floored at 60 seconds and `GRACE_DAYS` is clamped
+to 0–90, so a mistyped value degrades to something sane rather than hammering
+SIMKL or emptying the feed.
 
 ## What lands in the feed
 
@@ -144,7 +149,8 @@ special about the setup.
 
 ## Running from source
 
-Requires Node 22.18+ (for native TypeScript support).
+Requires Node 22.18+ (for native TypeScript support). CI runs the suite on 22.18 and 24,
+so the floor is tested rather than merely claimed.
 
 ```sh
 npm install
@@ -164,8 +170,12 @@ or decorators. `erasableSyntaxOnly` in `tsconfig.json` makes any of those a comp
 rather than a runtime failure. Import specifiers carry the real extension
 (`import './config.ts'`), as Node requires.
 
-Routes: `GET /:token/feed.ics` and `GET /healthz` (unauthenticated, reports event count and
-last-refresh times).
+Routes: `GET /:token/feed.ics` and `GET /healthz`. Health is unauthenticated and reports the
+event count, the last refresh, sync and render times, whether the feed is still the one
+loaded from disk, and a per-subsystem error breakdown. It answers `503` rather than `200`
+whenever the feed has stopped moving — a revoked token, a CDN that has stopped answering,
+or a render that keeps throwing — so "the container is up" and "the feed is current" are
+not the same signal.
 
 If your token is ever revoked the last good feed keeps serving and the error is logged;
 re-authorise with `npm run login -- --force`.
@@ -196,6 +206,11 @@ would trigger a refetch that renders byte-identical output.
 | Added or removed a film       | 2 + one lookup per film                      |
 | Removed something from a list | 4 (removals are only reported per category)  |
 | Cold start                    | 8 + one lookup per film                      |
+| Once a day                    | 1 + one lookup per film                      |
+
+Film release dates get that daily re-read because nothing in your library moves when a
+studio delays a release — gating them on list changes alone meant the feed kept the old
+date until it aged out, at which point the film disappeared until the next restart.
 
 Steady state is about 12 API calls a day, well inside SIMKL's 10 requests/second limit.
 

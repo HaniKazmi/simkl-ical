@@ -16,8 +16,9 @@ services:
     # Non-secret configuration, versioned alongside the compose file so the
     # deployment is self-describing. These win over anything in the env file.
     environment:
-      # Set explicitly. A container that inherits nothing defaults to UTC and
-      # produces a feed that is off by one day for late-evening US airings.
+      # Set explicitly. Unset, this falls back to Europe/London, which is a
+      # guess about you rather than a fact — and a wrong zone puts late-evening
+      # US airings on the wrong day.
       TZ: "Europe/London"
       # ISO 3166-1 alpha-2 — whose cinema release dates to use for films.
       RELEASE_COUNTRY: "GB"

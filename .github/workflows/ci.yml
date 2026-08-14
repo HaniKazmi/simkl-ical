@@ -7,6 +7,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A rapid series of pushes should not leave several full builds racing.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
@@ -14,12 +19,24 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # npm ci runs dependency lifecycle scripts, so this job gets no more than
+    # it needs rather than inheriting the repository default.
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22.18 is the floor in package.json engines and the README, and nothing
+        # used to run on it — code using a newer API typechecked green against
+        # @types/node and then crashed on the documented minimum.
+        node: ['22.18', '24']
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: ${{ matrix.node }}
           cache: npm
 
       - run: npm ci
@@ -29,6 +46,7 @@ jobs:
   publish:
     needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write
@@ -36,6 +54,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
 
       # GITHUB_TOKEN is enough for GHCR; no personal access token needed.
@@ -56,8 +75,10 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
-      # Build into the local daemon first. Smoke testing before publishing means
-      # a broken image never reaches the registry.
+      # Build the host architecture into the local daemon first. Smoke testing
+      # before publishing means a broken image never reaches the registry.
+      # `load` cannot take a multi-arch build, hence the single platform here
+      # and the full set on the push below.
       - name: Build
         uses: docker/build-push-action@v7
         with:
@@ -92,7 +113,10 @@ jobs:
             sleep 1
           done
 
-          BODY=$(curl -s http://localhost:3000/healthz)
+          # Guarded for the same reason as the loop: without `|| true`, set -e
+          # kills the script here when the container never came up, and the
+          # deliberate error message below never runs.
+          BODY=$(curl -s http://localhost:3000/healthz) || BODY=''
           echo "HTTP $CODE"
           echo "$BODY"
 
@@ -104,9 +128,16 @@ jobs:
 
           echo "$BODY" | python3 -c "import json,sys; d=json.load(sys.stdin); print('parsed ok, timezone =', d['timezone'])"
 
-          # The feed route must exist and reject a wrong token.
+          # The feed route must reject a wrong token...
           WRONG=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/nope/feed.ics)
           [ "$WRONG" = "404" ] || { echo "::error::expected 404 for a wrong token, got $WRONG"; exit 1; }
+
+          # ...and accept the right one. Without this a regression that made
+          # every token 404 passed the smoke test cleanly.
+          RIGHT=$(curl -s -o /tmp/feed.ics -w '%{http_code}' http://localhost:3000/smoke-test-token/feed.ics)
+          [ "$RIGHT" = "200" ] || { echo "::error::expected 200 for the right token, got $RIGHT"; exit 1; }
+          head -c 15 /tmp/feed.ics | grep -q 'BEGIN:VCALENDAR' || {
+            echo "::error::the feed did not start with BEGIN:VCALENDAR"; exit 1; }
 
           echo "smoke test passed"
 
@@ -118,14 +149,17 @@ jobs:
         if: always()
         run: docker rm -f smoke || true
 
-      # Only now, with the image proven to run. Cache makes this near-instant.
+      # Only now, with the image proven to run. arm64 is built here rather than
+      # above because `load` cannot take a multi-arch result; the amd64 layers
+      # come straight from the cache, so this is near-instant.
       - name: Push
         if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v7
         with:
           context: .
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
+          cache-to: type=gha,mode=max
