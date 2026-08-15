@@ -508,3 +508,68 @@ test('an anime block still gets a Status without any episode list', () => {
   });
   assert.deepEqual(plan().edits.filter((e) => e.field === 'Status').map((e) => e.value.stringValue), ['Ended']);
 });
+
+// --- more pending inserts than one run may make -----------------------------
+
+const twoNewSeasons = (rows: CellSpec[][]) =>
+  scenario({
+    rows,
+    items: [
+      { id: 3407, title: 'Futurama', status: 'watching', seasons: { 10: watched(13, 400), 11: watched(6) }, watched: 19, total: 19 },
+      { id: 300, title: 'Silo', status: 'watching', seasons: { 1: watched(10, 400), 2: watched(4) }, watched: 14, total: 14 },
+    ],
+    episodes: { 3407: [...eps(10, 13), ...eps(11, 10, 6)], 300: [...eps(1, 10), ...eps(2, 10, 4)] },
+    details: { 3407: { status: 'airing', runtime: 22 }, 300: { status: 'airing', runtime: 45 } },
+  });
+
+// One insert per run keeps the rollback trivially correct, so two seasons
+// started between polls cannot both land at once. What matters is that the
+// second is not lost: the job re-plans the whole sheet every run, so the next
+// one picks it up.
+test('two new seasons insert one per run, and the second survives to the next', () => {
+  const before: CellSpec[][] = [
+    show('Futurama', 'Watching', 3407),
+    season(10, 13, 44000),
+    show('Silo', 'Watching', 300),
+    season(1, 10, 44000),
+  ];
+
+  const first = twoNewSeasons(before).plan();
+  assert.equal(first.inserts.length, 1, 'never more than one per run');
+  assert.equal(first.inserts[0]?.title, 'Futurama');
+  assert.equal(first.inserts[0]?.season, 11);
+
+  // The sheet as it stands after that insert lands.
+  const after: CellSpec[][] = [
+    show('Futurama', 'Watching', 3407),
+    season(10, 13, 44000),
+    season(11, 6, null),
+    show('Silo', 'Watching', 300),
+    season(1, 10, 44000),
+  ];
+  const second = twoNewSeasons(after).plan();
+  assert.equal(second.inserts.length, 1);
+  assert.equal(second.inserts[0]?.title, 'Silo');
+  assert.equal(second.inserts[0]?.season, 2);
+
+  // And a third run has nothing left to insert.
+  const settled: CellSpec[][] = [...after, season(2, 4, null)];
+  assert.deepEqual(twoNewSeasons(settled).plan().inserts, []);
+});
+
+// Deferring it silently is the part that would bite: the report says "1 insert"
+// and nothing tells you a second season is waiting.
+test('a season deferred past the per-run cap is reported', () => {
+  const before: CellSpec[][] = [
+    show('Futurama', 'Watching', 3407),
+    season(10, 13, 44000),
+    show('Silo', 'Watching', 300),
+    season(1, 10, 44000),
+  ];
+  const result = twoNewSeasons(before).plan();
+  assert.match(result.notes.concat(result.skipped).join('\n'), /Silo S2/, 'the deferred season is named');
+  // Counted, not just mentioned: this is what makes the sync ask for another
+  // poll instead of waiting on unrelated watch activity to wake one.
+  assert.equal(result.deferred, 1);
+  assert.equal(twoNewSeasons([...before.slice(0, 2)]).plan().deferred, 0, 'nothing deferred when it fits');
+});

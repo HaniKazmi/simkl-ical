@@ -129,8 +129,11 @@ export class SheetSync {
       const plan = planSync(grid, index, catalogue);
       const lines = describePlan(plan, grid.columns);
       // An incomplete catalogue means some season's shape is unknown, and an
-      // unknown shape is exactly what makes an end date premature.
-      const retry = catalogue.failed.length > 0;
+      // unknown shape is exactly what makes an end date premature. A deferred
+      // row is simpler: the work exists and the cap is the only thing holding
+      // it, so ask for another poll rather than waiting on unrelated activity.
+      const retry = catalogue.failed.length > 0 || plan.deferred > 0;
+      if (plan.deferred) this.log.info(`${plan.deferred} more row(s) to add; the next poll will take the next one`);
       if (catalogue.failed.length) {
         this.log.warn(`${catalogue.failed.length} SIMKL lookups failed; the sheet sync will retry on the next poll`);
       }
@@ -162,7 +165,7 @@ export class SheetSync {
         continue;
       }
 
-      return await this.apply(grid, plan, lines, signal);
+      return await this.apply(grid, plan, lines, retry, signal);
     }
 
     const message = `could not plan against a fresh snapshot in ${MAX_ATTEMPTS} attempts`;
@@ -216,7 +219,7 @@ export class SheetSync {
     return { titles: this.retained, failed: fetched.failed, unavailable: fetched.unavailable };
   }
 
-  private async apply(grid: Grid, plan: SheetPlan, lines: string[], signal: AbortSignal | undefined): Promise<SheetSyncResult> {
+  private async apply(grid: Grid, plan: SheetPlan, lines: string[], retry: boolean, signal: AbortSignal | undefined): Promise<SheetSyncResult> {
     const name = backupName(new Date());
     // The snapshot rides at the head of the write batch, so it is taken and the
     // write applied in one atomic request — there is no state in which the
@@ -250,7 +253,7 @@ export class SheetSync {
       if (writeError) this.log.warn(`the sheet write reported "${writeError}" but landed exactly as planned`);
       await this.sweepBackups(signal);
       this.report(`sheet sync applied ${plan.edits.length} edits and ${plan.inserts.length} inserts`, lines);
-      return idle({ status: 'applied', edits: plan.edits.length, inserts: plan.inserts.length, lines });
+      return idle({ status: 'applied', edits: plan.edits.length, inserts: plan.inserts.length, lines, retry });
     }
 
     // The write errored and none of it is in the sheet: the batch never landed.
@@ -334,7 +337,7 @@ export class SheetSync {
       await applyRequests([restoreRequest(backupId, restored.sheetId, grid.snapshot.rowCount, grid.snapshot.columnCount)], { signal });
       restored = await readSnapshot({ signal });
 
-      const confirmation = verify(grid, restored, { edits: [], inserts: [], skipped: [], notes: [] });
+      const confirmation = verify(grid, restored, { edits: [], inserts: [], skipped: [], notes: [], deferred: 0 });
       if (!confirmation.ok) {
         throw new Error(`${confirmation.problems.length} cells did not go back (${confirmation.problems.slice(0, 5).join('; ')})`);
       }

@@ -26,7 +26,7 @@ const cell = (row: number, field: HeaderName, value: ExtendedValue, previous?: E
   note: 'test',
 });
 
-const planOf = (edits: CellEdit[] = [], inserts: RowInsert[] = []): SheetPlan => ({ edits, inserts, skipped: [], notes: [] });
+const planOf = (edits: CellEdit[] = [], inserts: RowInsert[] = []): SheetPlan => ({ edits, inserts, skipped: [], notes: [], deferred: 0 });
 
 const refuses = (plan: SheetPlan, pattern: RegExp): void => assert.throws(() => assertPlanSafe(plan, grid), (err: Error) => err instanceof UnsafePlanError && pattern.test(err.message));
 

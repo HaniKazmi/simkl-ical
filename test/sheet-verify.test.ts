@@ -30,7 +30,7 @@ const withChange = (row: number, field: HeaderName, spec: CellSpec) => {
   return sheetSnapshot(rows);
 };
 
-const planOf = (edits: CellEdit[] = [], inserts: SheetPlan['inserts'] = []): SheetPlan => ({ edits, inserts, skipped: [], notes: [] });
+const planOf = (edits: CellEdit[] = [], inserts: SheetPlan['inserts'] = []): SheetPlan => ({ edits, inserts, skipped: [], notes: [], deferred: 0 });
 
 test('a shift maps a pre-existing row to where the inserts leave it', () => {
   assert.equal(shiftRow(3, []), 3);
@@ -202,6 +202,7 @@ const insertPlan = (before: ReturnType<typeof parseGrid>): SheetPlan => ({
   ],
   skipped: [],
   notes: [],
+  deferred: 0,
 });
 
 test("a formula Sheets rewrote because the row moved is not an unplanned change", () => {
@@ -236,7 +237,7 @@ test('without an insert a changed formula is still a change', () => {
   const grid = parseGrid(sheetSnapshot(rowsWithFormulas()));
   const tampered = rowsWithFormulas();
   tampered[3]![grid.columns.Length] = { formula: '=G99*D99' };
-  const result = verify(grid, sheetSnapshot(tampered), { edits: [], inserts: [], skipped: [], notes: [] });
+  const result = verify(grid, sheetSnapshot(tampered), { edits: [], inserts: [], skipped: [], notes: [], deferred: 0 });
   assert.equal(result.ok, false);
   assert.match(result.problems.join('; '), /H4: changed without being planned/);
 });

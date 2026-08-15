@@ -66,6 +66,12 @@ export interface SheetPlan {
   skipped: string[];
   /** Everything else worth a human's attention — new shows, new cours. */
   notes: string[];
+  /**
+   * Rows that were ready to add but did not fit under the per-run cap. Work
+   * known to be waiting, so the sync asks for another poll rather than letting
+   * it sit until something else happens to wake one.
+   */
+  deferred: number;
 }
 
 export interface PlanOptions {
@@ -335,7 +341,7 @@ export const planSync = (
   catalogue: CatalogueView,
   { now = new Date(), timezone = config.timezone, sinceDays = config.sheetSinceDays, maxInserts = config.sheetMaxInserts }: PlanOptions & { maxInserts?: number } = {},
 ): SheetPlan => {
-  const plan: SheetPlan = { edits: [], inserts: [], skipped: [], notes: [] };
+  const plan: SheetPlan = { edits: [], inserts: [], skipped: [], notes: [], deferred: 0 };
   const cutoffMs = now.getTime() - sinceDays * MS_PER_DAY;
   const duplicates = duplicateIds(grid.blocks);
   const seen = new Set<number>();
@@ -410,10 +416,19 @@ export const planSync = (
     }
 
     // --- Inserting a season row
-    if (plan.inserts.length < maxInserts) {
-      const insert = planInsert(grid, block, source, covered, catalogue, { now, timezone, sinceDays });
-      if (typeof insert === 'string') plan.skipped.push(insert);
-      else if (insert) plan.inserts.push(insert);
+    const insert = planInsert(grid, block, source, covered, catalogue, { now, timezone, sinceDays });
+    if (typeof insert === 'string') plan.skipped.push(insert);
+    else if (insert) {
+      // One row per run keeps the rollback trivially correct, so starting two
+      // seasons between polls defers the second. It is not lost — the job
+      // re-plans the whole sheet every run and the next one takes it — but it
+      // has to say so: a silent deferral reads exactly like a season the sync
+      // never noticed, which is the failure a report is there to rule out.
+      if (plan.inserts.length < maxInserts) plan.inserts.push(insert);
+      else {
+        plan.deferred += 1;
+        plan.notes.push(`${insert.title} S${insert.season} is ready to add — deferred, one row is added per run`);
+      }
     }
   }
 

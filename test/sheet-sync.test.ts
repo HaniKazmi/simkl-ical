@@ -413,3 +413,36 @@ test('a clean run sweeps snapshot tabs an earlier run left behind', async () => 
     }),
   );
 });
+
+// A deferred row is work known to be waiting, held back only by the one-row
+// cap. Without the retry flag it would sit until some unrelated thing woke the
+// next poll — the daily film clock, at worst.
+test('a run that deferred a row asks for another poll', async () => {
+  clearTokenCache();
+  const grid: CellSpec[][] = [
+    H,
+    show('Fargo', 'Watching', 3381),
+    season(1, 6, 44000),
+    show('Silo', 'Watching', 7000),
+    season(1, 10, 44000),
+  ];
+  const library = libraryOf(
+    { id: 3381, title: 'Fargo', status: 'watching', seasons: { 1: [daysAgo(400)], 2: [daysAgo(2)] }, watched: 2, total: 2 },
+    { id: 7000, title: 'Silo', status: 'watching', seasons: { 1: [daysAgo(400)], 2: [daysAgo(3)] }, watched: 2, total: 2 },
+  );
+  const episodes = [
+    { season: 1, episode: 1, type: 'episode', aired: true },
+    { season: 2, episode: 1, type: 'episode', aired: true },
+    { season: 2, episode: 2, type: 'episode', aired: false },
+  ];
+
+  const sheet = server({ grid, episodes });
+  await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL }, () =>
+    withFetch(sheet.handler, async () => {
+      const result = await new SheetSync({ logger: quiet }).run(library);
+      assert.equal(result.status, 'applied');
+      assert.equal(result.inserts, 1, 'one row per run');
+      assert.equal(result.retry, true, 'and the next poll is asked for');
+    }),
+  );
+});
