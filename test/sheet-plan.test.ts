@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseGrid } from '../src/sheet/grid.ts';
-import { deriveStatus, planLookups, planSync, statusSource } from '../src/sheet/plan.ts';
+import { deriveStatus, needsLookup, planLookups, planSync, statusSource } from '../src/sheet/plan.ts';
 import { dateSerial, indexLibrary } from '../src/sheet/progress.ts';
 import type { Catalogue } from '../src/sources/shows.ts';
 import type { EpisodeDetail, ShowDetail } from '../src/simkl/types.ts';
@@ -9,6 +9,7 @@ import { daysAgo, libraryItem, sheetSnapshot, SHEET_HEADERS, type CellSpec, type
 
 const H = SHEET_HEADERS;
 const TZ = 'Europe/London';
+const DAY = 86_400_000;
 
 const show = (title: string, status: string | null, id: number | string | null, type = 'show'): CellSpec[] =>
   [title, status, { formula: '=LET(…)', value: 1 }, { formula: '=LET(…)', value: 1 }, 45000, { formula: '=LET(…)' }, { formula: '=LET(…)' }, { formula: '=LET(…)' }, id, type];
@@ -408,4 +409,65 @@ test('a season row that failed to resolve still blocks an insert for that season
   const result = plan();
   assert.deepEqual(result.inserts, []);
   assert.match(result.skipped.join('\n'), /SIMKL id 999999 is in no list/);
+});
+
+// --- lookup gating ---------------------------------------------------------
+
+// /sync/activities resolves to the list and never to the title, so without a
+// per-title gate watching one episode re-reads the catalogue of every eligible
+// show. This is what keeps a warm run at ~2 calls rather than ~28.
+test('a title whose watch time has not moved is not looked up again', () => {
+  const { grid, index } = scenario({
+    rows: [show('Fargo', 'Watching', 1), season(1, 1, null), show('Silo', 'Watching', 2), season(1, 1, null)],
+    items: [
+      { id: 1, status: 'watching', seasons: { 1: watched(5) } },
+      { id: 2, status: 'watching', seasons: { 1: watched(5) } },
+    ],
+  });
+
+  const cold = planLookups(grid, index);
+  assert.deepEqual([...new Set(cold.map((r) => r.id))], [1, 2], 'a cold process reads everything eligible');
+
+  const at = Date.now();
+  const stamps = new Map(cold.map((r) => [r.id, { watchedAt: index.get(r.id)?.lastWatchedAt ?? null, at }]));
+  assert.deepEqual(planLookups(grid, index, { stamps, maxAgeMs: DAY }), [], 'nothing moved, nothing re-read');
+
+  // Only the title that moved.
+  stamps.set(1, { watchedAt: '1999-01-01T00:00:00Z', at });
+  assert.deepEqual([...new Set(planLookups(grid, index, { stamps, maxAgeMs: DAY }).map((r) => r.id))], [1]);
+});
+
+// The backstop for the case watch activity cannot catch: /tv/{id} status
+// flipping on a renewal, which produces nothing in the library to gate on.
+test('a stamp past its age ceiling is re-read even with no activity', () => {
+  const { grid, index } = scenario({
+    rows: [show('Fargo', 'Watching', 1), season(1, 1, null)],
+    items: [{ id: 1, status: 'watching', seasons: { 1: watched(5) } }],
+  });
+  const unchanged = { watchedAt: index.get(1)?.lastWatchedAt ?? null };
+
+  const fresh = new Map([[1, { ...unchanged, at: Date.now() - DAY / 2 }]]);
+  assert.deepEqual(planLookups(grid, index, { stamps: fresh, maxAgeMs: DAY }), []);
+
+  const old = new Map([[1, { ...unchanged, at: Date.now() - DAY * 2 }]]);
+  assert.equal(planLookups(grid, index, { stamps: old, maxAgeMs: DAY }).length > 0, true);
+});
+
+test('the cut-off still wins over a stamp — an ineligible title is never read', () => {
+  const { grid, index } = scenario({
+    rows: [show('Dormant', 'Ended', 1), season(1, 10, 44000)],
+    items: [{ id: 1, status: 'completed', seasons: { 1: watched(10, 500) } }],
+  });
+  assert.deepEqual(planLookups(grid, index, { stamps: new Map(), maxAgeMs: DAY }), []);
+});
+
+test('needsLookup reads unstamped, moved and aged as due, and nothing else', () => {
+  const progress = indexLibrary({ shows_watching: { shows: [libraryItem({ id: 1, lastWatchedAt: '2026-08-01T00:00:00Z' })] } }).get(1);
+  const now = Date.now();
+  assert.equal(needsLookup(undefined, progress, now, DAY), true, 'never read');
+  assert.equal(needsLookup({ watchedAt: '2026-08-01T00:00:00Z', at: now }, progress, now, DAY), false);
+  assert.equal(needsLookup({ watchedAt: '2026-07-01T00:00:00Z', at: now }, progress, now, DAY), true, 'moved');
+  assert.equal(needsLookup({ watchedAt: '2026-08-01T00:00:00Z', at: now - DAY * 2 }, progress, now, DAY), true, 'aged');
+  // A title that has dropped out of the library entirely still compares.
+  assert.equal(needsLookup({ watchedAt: null, at: now }, undefined, now, DAY), false);
 });

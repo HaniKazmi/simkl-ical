@@ -13,12 +13,12 @@
 import { config } from './config.ts';
 import { errorMessage } from './errors.ts';
 import { parseGrid, type Grid } from './sheet/grid.ts';
-import { describePlan, planLookups, planSync, type SheetPlan } from './sheet/plan.ts';
-import { indexLibrary } from './sheet/progress.ts';
+import { describePlan, planLookups, planSync, type CatalogueStamp, type SheetPlan } from './sheet/plan.ts';
+import { indexLibrary, type TitleProgress } from './sheet/progress.ts';
 import { assertPlanSafe, toRequests, toRollbackRequests, UnsafePlanError } from './sheet/safety.ts';
 import { verify } from './sheet/verify.ts';
 import { applyRequests, readSnapshot, type SheetSnapshot } from './sources/sheet.ts';
-import { fetchCatalogue } from './sources/shows.ts';
+import { fetchCatalogue, type Catalogue } from './sources/shows.ts';
 import type { Logger } from './refresh.ts';
 import type { Library } from './simkl/types.ts';
 
@@ -32,6 +32,13 @@ const FRESH_MS = 120_000;
 
 /** Bounded so a pathologically slow catalogue fetch cannot loop forever. */
 const MAX_ATTEMPTS = 3;
+
+/**
+ * How long a title's catalogue is trusted without any watch activity to
+ * prompt a re-read. Daily, for the reason `movieRefreshMs` is daily: a network
+ * renewing a show produces nothing in your library to gate on.
+ */
+const CATALOGUE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 export type SheetSyncStatus = 'idle' | 'reported' | 'applied' | 'refused' | 'failed' | 'rolled-back' | 'frozen';
 
@@ -68,6 +75,17 @@ export class SheetSync {
   frozen: string | null = null;
   lastRunAt: string | null = null;
   lastStatus: SheetSyncStatus = 'idle';
+  /**
+   * Catalogue results retained across polls, so the planner always sees a
+   * complete picture even though only the titles that moved were re-read.
+   *
+   * The gating belongs here rather than in a cache under `fetchCatalogue`: the
+   * decision needs the library, and the source has no business knowing about
+   * it. Process-local, so a restart re-reads everything — which is the right
+   * answer after a restart anyway.
+   */
+  private retained: Pick<Catalogue, 'episodes' | 'details'> = { episodes: new Map(), details: new Map() };
+  private stamps = new Map<number, CatalogueStamp>();
 
   constructor({ logger = console as Logger }: { logger?: Logger } = {}) {
     this.log = logger;
@@ -103,7 +121,7 @@ export class SheetSync {
       const snapshot = await readSnapshot({ signal });
       const grid = parseGrid(snapshot);
 
-      const catalogue = await fetchCatalogue(planLookups(grid, index), { signal });
+      const catalogue = await this.catalogueFor(grid, index, signal);
       const plan = planSync(grid, index, catalogue);
       const lines = describePlan(plan, grid.columns);
       // An incomplete catalogue means some season's shape is unknown, and an
@@ -146,6 +164,39 @@ export class SheetSync {
     const message = `could not plan against a fresh snapshot in ${MAX_ATTEMPTS} attempts`;
     this.log.warn(`sheet sync: ${message}`);
     return idle({ status: 'failed', error: message, retry: true });
+  }
+
+  /**
+   * Re-read the catalogue of every title that moved, and fold the results into
+   * what is already held.
+   *
+   * Stamping happens here rather than at the end of the run, so the FRESH
+   * retry loop's second pass asks for nothing: it has already been read.
+   */
+  private async catalogueFor(grid: Grid, index: Map<number, TitleProgress>, signal: AbortSignal | undefined): Promise<Catalogue> {
+    const requests = planLookups(grid, index, { stamps: this.stamps, maxAgeMs: CATALOGUE_MAX_AGE_MS });
+    const fetched = await fetchCatalogue(requests, { signal });
+
+    for (const [id, episodes] of fetched.episodes) this.retained.episodes.set(id, episodes);
+    for (const [id, detail] of fetched.details) this.retained.details.set(id, detail);
+
+    // A retryable failure is deliberately not stamped, so the next poll asks
+    // again — the same reason the film path withholds its list signature. A
+    // `gone` id is stamped: retrying never starts working, and leaving it
+    // unstamped would re-request it on every poll forever.
+    const stalled = new Set(fetched.failed);
+    const at = Date.now();
+    for (const { id } of requests) {
+      if (stalled.has(id)) continue;
+      this.stamps.set(id, { watchedAt: index.get(id)?.lastWatchedAt ?? null, at });
+    }
+
+    if (requests.length) this.log.info(`sheet sync: re-read ${requests.length} title catalogues`);
+    if (fetched.unavailable.length) {
+      this.log.warn(`${fetched.unavailable.length} SIMKL titles are gone upstream: ${fetched.unavailable.join(', ')}`);
+    }
+
+    return { ...this.retained, failed: fetched.failed, unavailable: fetched.unavailable };
   }
 
   private async apply(grid: Grid, plan: SheetPlan, lines: string[], signal: AbortSignal | undefined): Promise<SheetSyncResult> {

@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
 import { SheetSync } from '../src/sheet-sync.ts';
 import { clearTokenCache } from '../src/sheets/auth.ts';
-import { clearCache } from '../src/sources/shows.ts';
 import type { CellData, SheetRequest } from '../src/sheets/types.ts';
 import { cellOf, daysAgo, jsonResponse, libraryOf, quiet, recorder, sheetSnapshot, SHEET_HEADERS, withConfig, withFetch, type CellSpec } from './helpers.ts';
 
@@ -100,7 +99,6 @@ const server = ({ meddle, failWrite, failRollback }: ServerOptions = {}) => {
 
 const run = async (mode: 'report' | 'apply', options: ServerOptions, assertions: (result: Awaited<ReturnType<SheetSync['run']>>, calls: string[], sheet: ReturnType<typeof server>, sync: SheetSync, log: ReturnType<typeof recorder>) => void | Promise<void>) => {
   clearTokenCache();
-  clearCache();
   const sheet = server(options);
   const log = recorder();
   await withConfig({ sheetId: 'SID', sheetSyncMode: mode, googleKeyBase64: CREDENTIAL, timezone: 'Europe/London' }, () =>
@@ -178,7 +176,6 @@ test('a 500 on the write is never retried, and the re-read settles what happened
 
 test('a run with nothing to write is idle and writes nothing', async () => {
   clearTokenCache();
-  clearCache();
   const sheet = server();
   // The sheet already holds what SIMKL says.
   sheet.state[3]![3] = cellOf(5);
@@ -219,5 +216,59 @@ test('run never rejects, however the sheet misbehaves', async () => {
         assert.match(result.error ?? '', /share the spreadsheet with the service account as Editor/);
       },
     ),
+  );
+});
+
+// --- catalogue gating ------------------------------------------------------
+
+const catalogueCalls = (calls: string[]) => calls.filter((c) => /api\.simkl\.com\/(tv|anime)\//.test(c));
+
+// The claim the gating exists to make. `/sync/activities` names a list, never a
+// title, so a second poll with nothing moved would otherwise re-read every
+// eligible show's catalogue from scratch.
+test('a second run with nothing moved makes no catalogue requests at all', async () => {
+  clearTokenCache();
+  const sheet = server();
+  await withConfig({ sheetId: 'SID', sheetSyncMode: 'report', googleKeyBase64: CREDENTIAL }, () =>
+    withFetch(sheet.handler, async (calls) => {
+      const sync = new SheetSync({ logger: quiet });
+
+      await sync.run(LIBRARY);
+      const cold = catalogueCalls(calls).length;
+      assert.ok(cold > 0, 'a cold process reads the catalogue');
+
+      calls.length = 0;
+      const again = await sync.run(LIBRARY);
+      assert.deepEqual(catalogueCalls(calls), []);
+      // And the plan is unchanged, because the retained catalogue still feeds
+      // it in full — the gate is on the network, not on what the planner sees.
+      assert.equal(again.status, 'reported');
+      assert.equal(again.edits, 1);
+    }),
+  );
+});
+
+test('a title that moved is re-read, and only that title', async () => {
+  clearTokenCache();
+  const sheet = server();
+  const second = libraryOf(
+    { id: 3381, title: 'Fargo', status: 'watching', seasons: { 1: [daysAgo(400)], 2: [daysAgo(9), daysAgo(1)] }, watched: 12, total: 16, notAired: 4 },
+    { id: 7000, title: 'Silo', status: 'watching', seasons: { 1: [daysAgo(2)] }, watched: 1, total: 10, notAired: 0 },
+  );
+
+  await withConfig({ sheetId: 'SID', sheetSyncMode: 'report', googleKeyBase64: CREDENTIAL }, () =>
+    withFetch(sheet.handler, async (calls) => {
+      const sync = new SheetSync({ logger: quiet });
+      await sync.run(LIBRARY);
+
+      calls.length = 0;
+      await sync.run(second);
+      // Fargo's last watch moved, so it is re-read. Silo has no row, so it is
+      // reported rather than read at all.
+      assert.deepEqual([...new Set(catalogueCalls(calls).map((c) => c.split('?')[0]))], [
+        'https://api.simkl.com/tv/episodes/3381',
+        'https://api.simkl.com/tv/3381',
+      ]);
+    }),
   );
 });

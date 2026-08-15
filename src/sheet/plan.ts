@@ -246,18 +246,61 @@ const latestSeasonAiring = (shapes: Map<number, SeasonShape>): boolean => {
 // --- Lookups ---------------------------------------------------------------
 
 /**
- * Which catalogue lookups the plan will need, decided before any are made.
+ * What we already hold for one title's catalogue, and how current it is.
  *
- * Only for eligible blocks, which is what keeps this at roughly 28 calls rather
- * than 600: the cut-off leaves 18 of 307 shows in scope.
+ * `watchedAt` is the value `lastWatchedAt` had when the lookup was made, not
+ * when it was stored — comparing it against the library's current value is the
+ * whole gate.
+ */
+export interface CatalogueStamp {
+  watchedAt: string | null;
+  /** When the lookup was made, in ms. */
+  at: number;
+}
+
+/**
+ * Whether a title's catalogue needs re-reading.
+ *
+ * Watch activity is the trigger, because it is the trigger for everything this
+ * sync writes. A season cannot become complete without being watched, and
+ * watching moves `lastWatchedAt` — so the case that matters always fires.
+ *
+ * The age ceiling is the backstop for the case that does not: `/tv/{id}` status
+ * flipping on a renewal, which produces no library activity at all. Same
+ * reasoning as `movieRefreshMs`, and the same daily cadence — a studio moving a
+ * release, or a network renewing a show, changes nothing you could gate on.
+ */
+export const needsLookup = (stamp: CatalogueStamp | undefined, progress: TitleProgress | undefined, nowMs: number, maxAgeMs: number): boolean => {
+  if (!stamp) return true;
+  if (nowMs - stamp.at > maxAgeMs) return true;
+  return stamp.watchedAt !== (progress?.lastWatchedAt ?? null);
+};
+
+export interface LookupOptions extends PlanOptions {
+  /** What is already held, keyed by SIMKL id. Empty on a cold process. */
+  stamps?: Map<number, CatalogueStamp>;
+  maxAgeMs?: number;
+}
+
+/**
+ * Which catalogue lookups to actually make, decided before any are made.
+ *
+ * Two filters, and both matter. The cut-off drops 289 of 307 blocks, which is
+ * what keeps a cold run at roughly 28 calls rather than 600. The per-title
+ * stamp then drops everything that has not moved since it was last read, which
+ * is what keeps a *warm* run at roughly 2 — without it, watching one episode
+ * re-reads the catalogue of every eligible show, since `/sync/activities`
+ * resolves only to the list and never to the title.
  */
 export const planLookups = (
   grid: Grid,
   index: Map<number, TitleProgress>,
-  { now = new Date(), sinceDays = config.sheetSinceDays }: PlanOptions = {},
+  { now = new Date(), sinceDays = config.sheetSinceDays, stamps = new Map<number, CatalogueStamp>(), maxAgeMs = Infinity }: LookupOptions = {},
 ): CatalogueRequest[] => {
   const cutoffMs = now.getTime() - sinceDays * MS_PER_DAY;
+  const nowMs = now.getTime();
   const requests: CatalogueRequest[] = [];
+  const due = (id: number): boolean => needsLookup(stamps.get(id), index.get(id), nowMs, maxAgeMs);
 
   for (const block of grid.blocks) {
     const progresses = blockIds(block)
@@ -270,10 +313,10 @@ export const planLookups = (
     // discovers that. Anime needs none of it: one entry is one cour, so its own
     // counters already describe the season.
     if (!anime) {
-      for (const id of block.ids) requests.push({ id, episodes: true, detail: true });
+      for (const id of block.ids) if (due(id)) requests.push({ id, episodes: true, detail: true });
     }
     const source = statusSource(block);
-    if (source !== null) requests.push({ id: source, anime, detail: true });
+    if (source !== null && due(source)) requests.push({ id: source, anime, detail: true });
   }
   return requests;
 };

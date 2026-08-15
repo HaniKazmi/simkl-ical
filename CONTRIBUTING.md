@@ -47,8 +47,9 @@ feed token gets a 404, and the right one returns something starting `BEGIN:VCALE
   A cell spec of `{ formula }` is the one that matters: only `userEnteredValue.formulaValue`
   distinguishes a formula, and a formula target must be refused unconditionally.
 
-`sources/calendar.ts` and `sources/shows.ts` keep module-level caches; call their `clearCache()` in
-tests that touch them, and `clearTokenCache()` from `sheets/auth.ts` alongside.
+`sources/calendar.ts` keeps a module-level cache; call `clearCache()` in tests that touch it, and
+`clearTokenCache()` from `sheets/auth.ts` in tests that reach Google. `sources/shows.ts` has no
+cache of its own — `SheetSync` retains catalogue results and decides when to re-read.
 
 The sheet sync's tests are weighted towards `sheet-safety.test.ts` on purpose: a one-row
 misalignment is the only catastrophic failure the feature has, and the guards and the request

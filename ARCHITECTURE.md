@@ -78,6 +78,20 @@ Why each piece is the way it is:
   when someone writes, which turns verification into an equality check.
 - **A write is never retried.** `batchUpdate` is atomic but not idempotent — a retried
   `insertDimension` inserts two rows. Reads opt into retry; writes never do.
+- **Catalogue lookups are gated per title, by watch activity.** `/sync/activities` resolves to a
+  list and never to a show, so a poll knows only that *something* moved. Without a second gate,
+  watching one episode re-reads the catalogue of every eligible show — roughly 28 calls for a
+  one-cell edit. `SheetSync` retains results across polls and stamps each id with the
+  `lastWatchedAt` it held at the time; `planLookups` re-requests only ids whose value moved. Watch
+  activity is the right trigger because it is the trigger for everything the sync writes: a season
+  cannot become complete without being watched. The 24h ceiling is the backstop for the one thing
+  that changes with no library activity — `/tv/{id}` status flipping on a renewal — and is daily
+  for the same reason `movieRefreshMs` is.
+- **The retention lives in `SheetSync`, not in `sources/shows.ts`.** The source fetches; the caller
+  decides when, exactly as `movies.ts` and `FeedState` divide it. A TTL cache under the source
+  would serve a stale episode list for a show the caller just decided to refresh *because* it
+  changed — and the planner would silently see a different catalogue than it asked for, which
+  changes what `Status` derives to.
 - **Rollback is not partial-write recovery**; batchUpdate leaves no half-applied state. It exists
   for the case where *the plan was wrong*, which is why its restore set comes from the observed diff
   rather than from the plan.

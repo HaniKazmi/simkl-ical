@@ -20,29 +20,15 @@ import { apiGet, classify } from '../simkl/client.ts';
 import type { EpisodeDetail, ShowDetail } from '../simkl/types.ts';
 
 /**
- * Cached across polls but not forever. A process-lifetime cache would freeze
- * `aired` at whatever it was when the container booted, so a season that
- * finished airing since would never be recognised as complete — the safe
- * direction, but a sync that quietly stops working.
+ * No cache here, deliberately — the same division as `movies.ts`, where the
+ * source fetches and `FeedState` decides when.
+ *
+ * `SheetSync` retains results across polls and knows which titles moved, so it
+ * has strictly better information about when to refetch than a blind TTL does.
+ * Two caching layers with different policies is how "why is this stale" bugs
+ * happen: a TTL here would serve a five-hour-old episode list for a show the
+ * caller just decided to refresh precisely because it changed.
  */
-const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
-
-interface CacheEntry<T> {
-  value: T;
-  at: number;
-}
-
-const episodeCache = new Map<number, CacheEntry<EpisodeDetail[]>>();
-const detailCache = new Map<string, CacheEntry<ShowDetail>>();
-
-/** Tests share a process; a cache that outlives one would leak between them. */
-export const clearCache = (): void => {
-  episodeCache.clear();
-  detailCache.clear();
-};
-
-const fresh = <T>(entry: CacheEntry<T> | undefined, now: number): T | undefined =>
-  entry && now - entry.at < CACHE_TTL_MS ? entry.value : undefined;
 
 /** What a single title needs looked up. Both flags false is a no-op. */
 export interface CatalogueRequest {
@@ -92,27 +78,15 @@ export const fetchCatalogue = async (
   const failed: number[] = [];
   const unavailable: number[] = [];
   const queue = [...merged.values()];
-  const now = Date.now();
 
   const worker = async (): Promise<void> => {
     while (queue.length) {
       const request = queue.shift();
       if (!request) return;
       const { id, anime = false } = request;
-      const detailKey = `${anime ? 'anime' : 'tv'}:${id}`;
       try {
-        if (request.episodes) {
-          const cached = fresh(episodeCache.get(id), now);
-          const value = cached ?? (await fetchEpisodes(id, signal));
-          if (!cached) episodeCache.set(id, { value, at: Date.now() });
-          episodes.set(id, value);
-        }
-        if (request.detail) {
-          const cached = fresh(detailCache.get(detailKey), now);
-          const value = cached ?? (await fetchDetail(id, anime, signal));
-          if (!cached) detailCache.set(detailKey, { value, at: Date.now() });
-          details.set(id, value);
-        }
+        if (request.episodes) episodes.set(id, await fetchEpisodes(id, signal));
+        if (request.detail) details.set(id, await fetchDetail(id, anime, signal));
       } catch (err) {
         // One missing title must not sink the sync, but an account-level
         // problem is not a fact about this title and must not be filed as one.
