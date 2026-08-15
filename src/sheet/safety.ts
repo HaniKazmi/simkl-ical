@@ -50,14 +50,13 @@ const describeValue = (value: ExtendedValue): string =>
 export interface SafetyLimits {
   maxEdits?: number;
   maxRows?: number;
-  maxInserts?: number;
   now?: Date;
 }
 
 export const assertPlanSafe = (
   plan: SheetPlan,
   grid: Grid,
-  { maxEdits = config.sheetMaxEdits, maxRows = config.sheetMaxRows, maxInserts = config.sheetMaxInserts, now = new Date() }: SafetyLimits = {},
+  { maxEdits = config.sheetMaxEdits, maxRows = config.sheetMaxRows, now = new Date() }: SafetyLimits = {},
 ): void => {
   // Tomorrow, via the shared date arithmetic rather than slicing an instant.
   const maxSerial = dateSerial(shiftDate(now.toISOString().slice(0, 10), 1));
@@ -68,14 +67,10 @@ export const assertPlanSafe = (
   if (plan.edits.length > maxEdits) {
     refuse(`${plan.edits.length} edits exceeds SHEET_MAX_EDITS=${maxEdits}. Nothing written; the report lists every proposed edit.`);
   }
-  if (plan.inserts.length > maxInserts) {
-    refuse(`${plan.inserts.length} inserts exceeds SHEET_MAX_INSERTS=${maxInserts}.`);
-  }
-  // Independent of the configured cap, which a future edit could raise. Every
-  // index in a plan is pre-write, but `insertDimension` requests apply
-  // cumulatively — a second insert would land one row above where it was
-  // planned, and `verify` makes the same unshifted assumption, so the two would
-  // disagree with the sheet in different ways.
+  // Not configurable, and not a budget. Every index in a plan is pre-write, but
+  // `insertDimension` requests apply cumulatively — a second insert would land
+  // one row above where it was planned, and `verify` makes the same unshifted
+  // assumption, so the two would disagree with the sheet in different ways.
   if (plan.inserts.length > 1) {
     refuse(`${plan.inserts.length} inserts in one batch: request indices are pre-write and would not be shifted.`);
   }

@@ -339,7 +339,7 @@ export const planSync = (
   grid: Grid,
   index: Map<number, TitleProgress>,
   catalogue: CatalogueView,
-  { now = new Date(), timezone = config.timezone, sinceDays = config.sheetSinceDays, maxInserts = config.sheetMaxInserts }: PlanOptions & { maxInserts?: number } = {},
+  { now = new Date(), timezone = config.timezone, sinceDays = config.sheetSinceDays }: PlanOptions = {},
 ): SheetPlan => {
   const plan: SheetPlan = { edits: [], inserts: [], skipped: [], notes: [], deferred: 0 };
   const cutoffMs = now.getTime() - sinceDays * MS_PER_DAY;
@@ -419,12 +419,18 @@ export const planSync = (
     const insert = planInsert(grid, block, source, covered, catalogue, { now, timezone, sinceDays });
     if (typeof insert === 'string') plan.skipped.push(insert);
     else if (insert) {
-      // One row per run keeps the rollback trivially correct, so starting two
-      // seasons between polls defers the second. It is not lost — the job
-      // re-plans the whole sheet every run and the next one takes it — but it
-      // has to say so: a silent deferral reads exactly like a season the sync
-      // never noticed, which is the failure a report is there to rule out.
-      if (plan.inserts.length < maxInserts) plan.inserts.push(insert);
+      // One row per run, and not a setting: every request index in a plan is
+      // pre-write, but `insertDimension` applies cumulatively, so a second
+      // insert would land a row above where it was planned. `assertPlanSafe`
+      // refuses more than one for that reason, so this is an invariant of how
+      // the requests are built rather than a number anyone may choose.
+      //
+      // Starting two seasons between polls therefore defers the second. It is
+      // not lost — the job re-plans the whole sheet every run and the next one
+      // takes it — but it has to say so: a silent deferral reads exactly like a
+      // season the sync never noticed, which is the failure a report exists to
+      // rule out.
+      if (!plan.inserts.length) plan.inserts.push(insert);
       else {
         plan.deferred += 1;
         plan.notes.push(`${insert.title} S${insert.season} is ready to add — deferred, one row is added per run`);

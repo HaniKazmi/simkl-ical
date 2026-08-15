@@ -106,7 +106,6 @@ along on the library fetch the feed already makes.
 | `SHEET_SINCE_DAYS`               | `90`       | Nothing is touched without watch activity this recent           |
 | `SHEET_MAX_EDITS`                | `30`       | Over budget refuses the whole plan rather than trimming it      |
 | `SHEET_MAX_ROWS`                 | `20`       | Distinct rows in one run                                        |
-| `SHEET_MAX_INSERTS`              | `1`        | `0` or `1` only — a batch with more inserts is refused outright  |
 
 The default mode writes nothing. Point it at the real sheet, read a run's report in the log, and
 only then share the spreadsheet with the service account's `client_email` as **Editor** and switch
@@ -116,7 +115,11 @@ It writes exactly three things — a season row's episode count, a season row's 
 row's status — and inserts a season row when you start a new season. It never adds a show, never
 touches a season that already has an end date, never moves a count backwards, and never writes a
 formula. Every write is read back and compared against what was planned; anything unexpected is
-rolled back. See [ARCHITECTURE.md](ARCHITECTURE.md#the-sheet-sync).
+rolled back.
+
+Exactly one row is added per run, so starting two seasons between polls adds them over two runs —
+the report names the one it deferred, and the sync asks for the next poll rather than waiting.
+See [ARCHITECTURE.md](ARCHITECTURE.md#the-sheet-sync).
 
 ## What lands in the feed
 

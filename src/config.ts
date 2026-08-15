@@ -79,7 +79,6 @@ export interface Config {
   sheetSinceDays: number;
   sheetMaxEdits: number;
   sheetMaxRows: number;
-  sheetMaxInserts: number;
   /** Base64 of the whole service-account JSON. The container path. */
   googleKeyBase64: string | undefined;
   googleCredentialsPath: string;
@@ -143,8 +142,6 @@ export const buildConfig = (env: NodeJS.ProcessEnv): Config => ({
   // refusing the whole plan is the safe answer.
   sheetMaxEdits: int(env.SHEET_MAX_EDITS, 30, { min: 1 }),
   sheetMaxRows: int(env.SHEET_MAX_ROWS, 20, { min: 1 }),
-  // One insert per run is what keeps rollback trivially correct.
-  sheetMaxInserts: int(env.SHEET_MAX_INSERTS, 1, { min: 0, max: 1 }),
   googleKeyBase64: env.GOOGLE_SA_KEY_B64,
   googleCredentialsPath: env.GOOGLE_APPLICATION_CREDENTIALS || resolve(homedir(), '.config/plot-device/sa.json'),
   googleCredentialsExplicit: Boolean(env.GOOGLE_APPLICATION_CREDENTIALS),

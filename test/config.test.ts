@@ -112,7 +112,6 @@ test('the sync needs a target and a credential that was actually supplied', () =
 
 test('the sheet limits are clamped rather than fatal', () => {
   assert.equal(buildConfig({ SHEET_MAX_EDITS: '0' }).sheetMaxEdits, 1);
-  assert.equal(buildConfig({ SHEET_MAX_INSERTS: '9' }).sheetMaxInserts, 1);
   assert.equal(buildConfig({ SHEET_SINCE_DAYS: '-5' }).sheetSinceDays, 1);
   assert.equal(buildConfig({ SHEET_SINCE_DAYS: 'soon' }).sheetSinceDays, 90);
 });

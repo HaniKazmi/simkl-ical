@@ -46,13 +46,13 @@ services:
       # Safety limits. Over budget the whole plan is refused rather than
       # trimmed, and the report still names every edit it wanted — so if a long
       # absence produces a legitimate catch-up bigger than this, raise it for
-      # one run rather than letting a bug through. SHEET_MAX_INSERTS is 0 or 1
-      # only; more inserts in one batch are refused outright.
+      # one run rather than letting a bug through. New season rows are not
+      # covered: exactly one is added per run, which is a property of how the
+      # requests are built rather than a setting.
       #
       # SHEET_SINCE_DAYS: "90"
       # SHEET_MAX_EDITS: "30"
       # SHEET_MAX_ROWS: "20"
-      # SHEET_MAX_INSERTS: "1"
 
     volumes:
       - simkl-ical-data:/data
