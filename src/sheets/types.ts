@@ -110,4 +110,37 @@ export interface DeleteDimensionRequest {
   };
 }
 
-export type SheetRequest = UpdateCellsRequest | InsertDimensionRequest | DeleteDimensionRequest;
+/**
+ * A server-side copy of a whole tab. The nearest thing the API offers to the
+ * UI's named versions, which are exposed nowhere: Sheets v4 has no revision
+ * surface at all, and Drive v3 revisions can only be listed, fetched, deleted
+ * or pinned — never named, created, or reverted to.
+ */
+export interface DuplicateSheetRequest {
+  duplicateSheet: { sourceSheetId: number; insertSheetIndex?: number; newSheetId?: number; newSheetName?: string };
+}
+
+export interface DeleteSheetRequest {
+  deleteSheet: { sheetId: number };
+}
+
+/**
+ * Copies a range from one tab onto another, server-side — no cell values cross
+ * the wire. Relative formula references are adjusted by the paste offset, which
+ * is zero when source and destination sit at the same coordinates.
+ */
+export interface CopyPasteRequest {
+  copyPaste: { source: GridRange; destination: GridRange; pasteType: 'PASTE_NORMAL'; pasteOrientation?: 'NORMAL' };
+}
+
+export type SheetRequest =
+  | UpdateCellsRequest
+  | InsertDimensionRequest
+  | DeleteDimensionRequest
+  | DuplicateSheetRequest
+  | DeleteSheetRequest
+  | CopyPasteRequest;
+
+export interface BatchUpdateResponse {
+  replies?: Array<{ duplicateSheet?: { properties?: SheetProperties } }>;
+}

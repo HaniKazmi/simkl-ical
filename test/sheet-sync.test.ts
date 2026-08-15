@@ -48,22 +48,57 @@ interface ServerOptions {
   failRollback?: boolean;
 }
 
-const server = ({ meddle, failWrite, failRollback }: ServerOptions = {}) => {
-  const state: CellData[][] = GRID.map((row) => row.map(cellOf));
+/**
+ * A spreadsheet of several tabs, because the write batch now snapshots the
+ * target into a new one first. Modelling only Sheet1 would let a duplicateSheet
+ * or copyPaste silently no-op and every rollback assertion below pass vacuously.
+ */
+const server = ({ meddle, failWrite, failRollback, episodes = EPISODES, grid = GRID }: ServerOptions & { episodes?: unknown; grid?: CellSpec[][] } = {}) => {
+  const tabs = new Map<number, CellData[][]>([[1, grid.map((row) => row.map(cellOf))]]);
+  const titles = new Map<number, string>([[1, 'Sheet1']]);
+  const state = tabs.get(1)!;
+  let nextSheetId = 2;
   let writes = 0;
+  const batches: string[][] = [];
 
-  const apply = (request: SheetRequest): void => {
+  const clone = (rows: CellData[][]): CellData[][] => rows.map((row) => row.map((cell) => structuredClone(cell)));
+
+  const apply = (request: SheetRequest): { duplicateSheet?: { properties: { sheetId: number } } } => {
     if ('updateCells' in request) {
       const { range, rows } = request.updateCells;
-      const row = state[range.startRowIndex ?? 0];
+      const row = tabs.get(range.sheetId)?.[range.startRowIndex ?? 0];
       if (row) row[range.startColumnIndex ?? 0] = rows[0]?.values?.[0] ?? {};
-      return;
+      return {};
     }
     if ('insertDimension' in request) {
-      state.splice(request.insertDimension.range.startIndex, 0, []);
-      return;
+      tabs.get(request.insertDimension.range.sheetId)?.splice(request.insertDimension.range.startIndex, 0, []);
+      return {};
     }
-    state.splice(request.deleteDimension.range.startIndex, 1);
+    if ('deleteDimension' in request) {
+      tabs.get(request.deleteDimension.range.sheetId)?.splice(request.deleteDimension.range.startIndex, 1);
+      return {};
+    }
+    if ('duplicateSheet' in request) {
+      const { sourceSheetId, newSheetName } = request.duplicateSheet;
+      const id = nextSheetId++;
+      tabs.set(id, clone(tabs.get(sourceSheetId) ?? []));
+      titles.set(id, newSheetName ?? `Copy ${id}`);
+      return { duplicateSheet: { properties: { sheetId: id } } };
+    }
+    if ('deleteSheet' in request) {
+      tabs.delete(request.deleteSheet.sheetId);
+      titles.delete(request.deleteSheet.sheetId);
+      return {};
+    }
+    // copyPaste, at a zero offset: the destination becomes the source.
+    const { source, destination } = request.copyPaste;
+    const from = tabs.get(source.sheetId) ?? [];
+    const to = tabs.get(destination.sheetId);
+    if (to) {
+      to.length = 0;
+      to.push(...clone(from));
+    }
+    return {};
   };
 
   const handler = (url: string, init?: RequestInit): Response => {
@@ -71,30 +106,41 @@ const server = ({ meddle, failWrite, failRollback }: ServerOptions = {}) => {
 
     if (url.includes(':batchUpdate')) {
       writes += 1;
+      const requests = (JSON.parse(String(init?.body)) as { requests: SheetRequest[] }).requests;
+      batches.push(requests.map((r) => Object.keys(r)[0] ?? '?'));
+      // The write is the first batch carrying a cell or a row; anything after
+      // it is rollback or housekeeping.
       const isRollback = writes > 1;
-      if (writes === failWrite || (isRollback && failRollback)) return new Response('{"error":{"message":"boom"}}', { status: 500 });
-      for (const request of (JSON.parse(String(init?.body)) as { requests: SheetRequest[] }).requests) apply(request);
+      if (writes === failWrite || (isRollback && failRollback && !requests.every((r) => 'deleteSheet' in r))) {
+        return new Response('{"error":{"message":"boom"}}', { status: 500 });
+      }
+      const replies = requests.map(apply);
       if (!isRollback) meddle?.(state);
-      return jsonResponse({});
+      return jsonResponse({ replies });
     }
 
     if (url.includes('sheets.googleapis.com')) {
+      // The metadata-only read that finds backup tabs.
+      if (url.includes('fields=')) {
+        return jsonResponse({ sheets: [...titles].map(([sheetId, title]) => ({ properties: { sheetId, title } })) });
+      }
+      const rows = tabs.get(1) ?? [];
       return jsonResponse({
         sheets: [
           {
-            properties: { sheetId: 1, title: 'Sheet1', gridProperties: { rowCount: state.length, columnCount: H.length } },
-            data: [{ rowData: state.map((row) => ({ values: row })) }],
+            properties: { sheetId: 1, title: 'Sheet1', gridProperties: { rowCount: rows.length, columnCount: H.length } },
+            data: [{ rowData: rows.map((row) => ({ values: row })) }],
           },
         ],
       });
     }
 
-    if (url.includes('/tv/episodes/')) return jsonResponse(EPISODES);
+    if (url.includes('/tv/episodes/')) return jsonResponse(episodes);
     if (url.includes('/tv/')) return jsonResponse({ status: 'airing', runtime: 45 });
     throw new Error(`unexpected request: ${url}`);
   };
 
-  return { handler, state, writes: () => writes };
+  return { handler, state, tabs, titles, batches, writes: () => writes };
 };
 
 const run = async (mode: 'report' | 'apply', options: ServerOptions, assertions: (result: Awaited<ReturnType<SheetSync['run']>>, calls: string[], sheet: ReturnType<typeof server>, sync: SheetSync, log: ReturnType<typeof recorder>) => void | Promise<void>) => {
@@ -125,11 +171,12 @@ test('apply mode writes exactly what it planned and verifies it', async () => {
   await run('apply', {}, (result, calls, sheet) => {
     assert.equal(result.status, 'applied', result.error ?? '');
     assert.equal(result.error, null);
-    assert.equal(sheet.writes(), 1);
     assert.equal(sheet.state[3]?.[3]?.userEnteredValue?.numberValue, 5);
-    // Read, write, read: nothing is written without a fresh read either side.
+    // Snapshot and write in one atomic batch, then a read, then the snapshot is
+    // dropped. Nothing is written without a fresh read either side of it.
+    assert.deepEqual(sheet.batches, [['duplicateSheet', 'updateCells'], ['deleteSheet']]);
     const sheets = calls.filter((c) => c.startsWith('https://sheets.googleapis.com/v4/spreadsheets/'));
-    assert.deepEqual(sheets.map((c) => (c.includes(':batchUpdate') ? 'write' : 'read')), ['read', 'write', 'read']);
+    assert.deepEqual(sheets.map((c) => (c.includes(':batchUpdate') ? 'write' : 'read')), ['read', 'write', 'read', 'write']);
     // Pinned because `new URL('SID:batchUpdate', base)` reads `SID:` as a
     // scheme and silently sends the request somewhere else entirely.
     assert.ok(sheets[1]?.startsWith('https://sheets.googleapis.com/v4/spreadsheets/SID:batchUpdate'), sheets[1]);
@@ -142,11 +189,12 @@ test('a write that does not verify is rolled back exactly once', async () => {
   await run('apply', { meddle: (state) => void (state[2]![3] = cellOf(99)) }, (result, calls, sheet) => {
     assert.equal(result.status, 'rolled-back');
     assert.match(result.error ?? '', /changed without being planned/);
-    assert.equal(sheet.writes(), 2, 'the write and one rollback');
-    // The meddled cell is back, and the planned edit stayed — verify does not
-    // decide what to undo, the diff does.
+    // One wholesale paste from the snapshot, not a cell-by-cell repair.
+    assert.deepEqual(sheet.batches, [['duplicateSheet', 'updateCells'], ['copyPaste'], ['deleteSheet']]);
+    // The meddled cell is back, and so is the planned edit — a restore from the
+    // snapshot undoes the whole write, not just the part that surprised us.
     assert.equal(sheet.state[2]?.[3]?.userEnteredValue?.numberValue, 6);
-    assert.deepEqual(calls.filter((c) => c.includes(':batchUpdate')).length, 2);
+    assert.equal(sheet.state[3]?.[3]?.userEnteredValue?.numberValue, 3, 'the planned edit is undone too');
   });
 });
 
@@ -154,7 +202,6 @@ test('a failed rollback freezes the process rather than writing again', async ()
   await run('apply', { meddle: (state) => void (state[2]![3] = cellOf(99)), failRollback: true }, async (result, _calls, sheet, sync) => {
     assert.equal(result.status, 'frozen');
     assert.match(result.error ?? '', /^FROZEN:/);
-    assert.match(result.error ?? '', /Restore by hand from Sheets version history/);
 
     const writesBefore = sheet.writes();
     const again = await sync.run(LIBRARY);
@@ -274,13 +321,13 @@ test('a title that moved is re-read, and only that title', async () => {
 });
 
 // The path that corrupted the first real apply run. A rollback that must both
-// delete an inserted row and restore cells has to do them in separate batches:
+// delete an inserted row and put cells back has to do them in separate batches:
 // the delete rewrites the relative references in everything it shifts,
 // including anything written earlier in the same batch.
-test('a rollback involving an insert deletes first, in its own batch, then restores', async () => {
+test('a rollback involving an insert deletes first, then restores from the backup tab', async () => {
   clearTokenCache();
   // A Fargo block with no S2 row, so the plan inserts one mid-sheet.
-  const grid: CellSpec[][] = [
+  const rows: CellSpec[][] = [
     H,
     show('Fargo', 'Watching', 3381),
     [null, null, 1, 6, 45000, 44000, 0.0153, { formula: '=G3*D3' }, null, null],
@@ -292,62 +339,62 @@ test('a rollback involving an insert deletes first, in its own batch, then resto
     { id: 3381, title: 'Fargo', status: 'watching', seasons: { 1: [daysAgo(400)], 2: [daysAgo(3), daysAgo(2)], 3: [daysAgo(300)] }, watched: 4, total: 4 },
     { id: 7000, title: 'Silo', status: 'watching', seasons: { 1: [daysAgo(5)] }, watched: 1, total: 10, notAired: 9 },
   );
+  const episodes = [
+    { season: 1, episode: 1, type: 'episode', aired: true },
+    { season: 2, episode: 1, type: 'episode', aired: true },
+    { season: 2, episode: 2, type: 'episode', aired: true },
+    { season: 3, episode: 1, type: 'episode', aired: true },
+  ];
 
-  const state: CellData[][] = grid.map((row) => row.map(cellOf));
-  // What was typed, which is all a write can restore — the fake server does not
-  // recompute effectiveValue the way Sheets does.
-  const typed = () => JSON.stringify(state.map((row) => row.map((cell) => cell.userEnteredValue ?? null)));
+  const sheet = server({ grid: rows, episodes, meddle: (state) => void (state[5]![3] = cellOf(999)) });
+  const typed = () => JSON.stringify((sheet.tabs.get(1) ?? []).map((row) => row.map((cell) => cell.userEnteredValue ?? null)));
   const original = typed();
-  const batches: string[][] = [];
-
-  const handler = (url: string, init?: RequestInit): Response => {
-    if (url.startsWith('https://oauth2.googleapis.com/token')) return jsonResponse({ access_token: 't', expires_in: 3600 });
-    if (url.includes(':batchUpdate')) {
-      const requests = (JSON.parse(String(init?.body)) as { requests: SheetRequest[] }).requests;
-      batches.push(requests.map((r) => ('insertDimension' in r ? 'insert' : 'deleteDimension' in r ? 'delete' : 'write')));
-      for (const request of requests) {
-        if ('updateCells' in request) {
-          const row = state[request.updateCells.range.startRowIndex ?? 0];
-          if (row) row[request.updateCells.range.startColumnIndex ?? 0] = request.updateCells.rows[0]?.values?.[0] ?? {};
-        } else if ('insertDimension' in request) {
-          state.splice(request.insertDimension.range.startIndex, 0, []);
-        } else {
-          state.splice(request.deleteDimension.range.startIndex, 1);
-        }
-      }
-      // Meddle once, on the first write only, so verify must fail.
-      if (batches.length === 1) state[state.length - 1]![3] = cellOf(999);
-      return jsonResponse({});
-    }
-    if (url.includes('sheets.googleapis.com')) {
-      return jsonResponse({
-        sheets: [{ properties: { sheetId: 1, title: 'Sheet1', gridProperties: { rowCount: state.length, columnCount: H.length } }, data: [{ rowData: state.map((row) => ({ values: row })) }] }],
-      });
-    }
-    if (url.includes('/tv/episodes/')) {
-      return jsonResponse([
-        { season: 1, episode: 1, type: 'episode', aired: true },
-        { season: 2, episode: 1, type: 'episode', aired: true },
-        { season: 2, episode: 2, type: 'episode', aired: true },
-        { season: 3, episode: 1, type: 'episode', aired: true },
-      ]);
-    }
-    if (url.includes('/tv/')) return jsonResponse({ status: 'airing', runtime: 45 });
-    throw new Error(`unexpected request: ${url}`);
-  };
 
   await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL }, () =>
-    withFetch(handler, async () => {
+    withFetch(sheet.handler, async () => {
       const result = await new SheetSync({ logger: quiet }).run(library);
       assert.equal(result.status, 'rolled-back', result.error ?? '');
 
-      // Batch 1 is the write. Batch 2 is the delete ALONE — no restores riding
-      // along with it. Batch 3 puts the cells back, against stable indices.
-      assert.ok(batches[0]?.includes('insert'), 'the write inserted');
-      assert.deepEqual(batches[1], ['delete'], 'the delete travels alone');
-      assert.ok(batches.slice(2).every((b) => b.every((k) => k === 'write')), 'nothing structural after the delete');
+      // Batch 1 snapshots and writes, in that order and atomically. Batch 2 is
+      // the delete ALONE. Batch 3 is the paste. Batch 4 drops the snapshot.
+      assert.equal(sheet.batches[0]?.[0], 'duplicateSheet', 'the snapshot leads the write batch');
+      assert.ok(sheet.batches[0]?.includes('insertDimension'), 'and the write follows it');
+      assert.deepEqual(sheet.batches[1], ['deleteDimension'], 'the delete travels alone');
+      assert.deepEqual(sheet.batches[2], ['copyPaste'], 'then one wholesale restore');
+      assert.deepEqual(sheet.batches[3], ['deleteSheet'], 'and the snapshot is cleaned up');
 
       assert.equal(typed(), original, 'every cell holds exactly what it held before the write');
+      assert.deepEqual([...sheet.titles.values()], ['Sheet1'], 'no backup tab left behind');
+    }),
+  );
+});
+
+// The snapshot is what makes a frozen sheet recoverable without archaeology in
+// version history, so it must survive precisely when the rollback did not.
+test('a failed rollback keeps the backup tab and names it', async () => {
+  clearTokenCache();
+  const sheet = server({ meddle: (state) => void (state[2]![3] = cellOf(99)), failRollback: true });
+  await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL }, () =>
+    withFetch(sheet.handler, async () => {
+      const result = await new SheetSync({ logger: quiet }).run(LIBRARY);
+      assert.equal(result.status, 'frozen');
+      const backup = [...sheet.titles.values()].find((t) => t.startsWith('_sync-backup-'));
+      assert.ok(backup, 'the snapshot tab survives a failed rollback');
+      assert.ok(result.error?.includes(backup), 'and the frozen message names it');
+      assert.match(result.error ?? '', /copy it back over Sheet1/);
+    }),
+  );
+});
+
+// A snapshot left lying around on every successful run would be clutter, and
+// clutter that looks like a failure.
+test('a clean run leaves no backup tab behind', async () => {
+  clearTokenCache();
+  const sheet = server();
+  await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL }, () =>
+    withFetch(sheet.handler, async () => {
+      assert.equal((await new SheetSync({ logger: quiet }).run(LIBRARY)).status, 'applied');
+      assert.deepEqual([...sheet.titles.values()], ['Sheet1']);
     }),
   );
 });

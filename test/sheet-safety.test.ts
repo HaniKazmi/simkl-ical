@@ -164,7 +164,9 @@ test('an insert may only fill its own whitelist, and only its own row', () => {
 // --- request ordering ------------------------------------------------------
 
 const kinds = (requests: ReturnType<typeof toRequests>) =>
-  requests.map((r) => ('insertDimension' in r ? 'insert' : 'deleteDimension' in r ? 'delete' : `write@${r.updateCells.range.startRowIndex}`));
+  requests.map((r) =>
+    'insertDimension' in r ? 'insert' : 'deleteDimension' in r ? 'delete' : 'updateCells' in r ? `write@${r.updateCells.range.startRowIndex}` : Object.keys(r)[0],
+  );
 
 test('every write is a single cell, with userEnteredValue fields only', () => {
   for (const request of toRequests(planOf([cell(3, 'Episode', { numberValue: 8 })], [insertAt(4, 3)]), grid)) {

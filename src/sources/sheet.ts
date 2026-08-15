@@ -12,7 +12,7 @@
 
 import { config } from '../config.ts';
 import { sheetsRequest } from '../sheets/client.ts';
-import type { CellData, SheetRequest, SpreadsheetResponse } from '../sheets/types.ts';
+import type { BatchUpdateResponse, CellData, SheetRequest, SpreadsheetResponse } from '../sheets/types.ts';
 
 /**
  * One tab, as read. `rows` is ragged — the API omits trailing blanks — so every
@@ -67,17 +67,38 @@ export const readSnapshot = async (
 /**
  * One batchUpdate. Never retried, and never split: the ordering within the
  * array is load-bearing, and a partially-sent plan is a corrupt sheet.
+ *
+ * The replies are returned because `duplicateSheet` reports the id of the tab
+ * it created, and that id is what a rollback restores from.
  */
 export const applyRequests = async (
   requests: SheetRequest[],
   { spreadsheetId = config.sheetId, signal }: { spreadsheetId?: string; signal?: AbortSignal } = {},
-): Promise<void> => {
+): Promise<BatchUpdateResponse> => {
   if (!spreadsheetId) throw new Error('SHEET_ID is not set.');
-  if (!requests.length) return;
+  if (!requests.length) return {};
 
-  await sheetsRequest<unknown>(`${encodeURIComponent(spreadsheetId)}:batchUpdate`, {
+  return await sheetsRequest<BatchUpdateResponse>(`${encodeURIComponent(spreadsheetId)}:batchUpdate`, {
     method: 'POST',
     body: { requests, includeSpreadsheetInResponse: false },
     signal,
   });
+};
+
+/**
+ * Every tab's id and title, and nothing else. Used to find backup tabs — both
+ * the one this run made and any a frozen run left behind.
+ */
+export const listSheets = async (
+  { spreadsheetId = config.sheetId, signal }: { spreadsheetId?: string; signal?: AbortSignal } = {},
+): Promise<Array<{ sheetId: number; title: string }>> => {
+  if (!spreadsheetId) throw new Error('SHEET_ID is not set.');
+  const response = await sheetsRequest<SpreadsheetResponse>(encodeURIComponent(spreadsheetId), {
+    params: { fields: 'sheets.properties(sheetId,title)' },
+    retry: true,
+    signal,
+  });
+  return (response.sheets ?? [])
+    .map((sheet) => ({ sheetId: sheet.properties?.sheetId, title: sheet.properties?.title }))
+    .filter((s): s is { sheetId: number; title: string } => typeof s.sheetId === 'number' && typeof s.title === 'string');
 };

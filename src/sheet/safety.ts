@@ -219,6 +219,46 @@ export const toRequests = (plan: SheetPlan, grid: Grid): SheetRequest[] => {
   return requests;
 };
 
+/**
+ * Prefix for the snapshot tabs the sync makes before writing. Strict, because
+ * it is the sole basis on which a tab gets deleted.
+ */
+export const BACKUP_PREFIX = '_sync-backup-';
+
+export const backupName = (now: Date): string => `${BACKUP_PREFIX}${now.toISOString().replaceAll(':', '-').replace('.', '-')}`;
+
+/**
+ * Snapshot the tab, as the first request of the write batch.
+ *
+ * First, and in the *same* batch, deliberately: batchUpdate applies in order
+ * and atomically, so the copy captures the pre-write state and there is no
+ * window in which the write landed but the snapshot did not. It duplicates
+ * server-side, so a 1644-row tab costs no data transfer.
+ */
+export const backupRequest = (sheetId: number, name: string): SheetRequest => ({
+  duplicateSheet: { sourceSheetId: sheetId, newSheetName: name },
+});
+
+export const deleteSheetRequest = (sheetId: number): SheetRequest => ({ deleteSheet: { sheetId } });
+
+/**
+ * Put the whole tab back from its snapshot, in one server-side request.
+ *
+ * Source and destination sit at identical coordinates, so the paste offset is
+ * zero and no relative formula reference is adjusted — which is exactly what
+ * makes this immune to the off-by-one that a cell-by-cell restore invites.
+ *
+ * The caller must delete any inserted rows first: this overwrites a range, it
+ * does not shrink the grid, so an extra row would survive underneath it.
+ */
+export const restoreRequest = (fromSheetId: number, toSheetId: number, rowCount: number, columnCount: number): SheetRequest => ({
+  copyPaste: {
+    source: { sheetId: fromSheetId, startRowIndex: 0, endRowIndex: rowCount, startColumnIndex: 0, endColumnIndex: columnCount },
+    destination: { sheetId: toSheetId, startRowIndex: 0, endRowIndex: rowCount, startColumnIndex: 0, endColumnIndex: columnCount },
+    pasteType: 'PASTE_NORMAL',
+  },
+});
+
 export interface Restore {
   row: number;
   column: number;

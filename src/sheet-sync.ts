@@ -15,9 +15,9 @@ import { errorMessage } from './errors.ts';
 import { parseGrid, type Grid } from './sheet/grid.ts';
 import { describePlan, planLookups, planSync, type CatalogueStamp, type SheetPlan } from './sheet/plan.ts';
 import { indexLibrary, type TitleProgress } from './sheet/progress.ts';
-import { assertPlanSafe, toRequests, toRollbackRequests, UnsafePlanError } from './sheet/safety.ts';
+import { assertPlanSafe, backupName, backupRequest, deleteSheetRequest, restoreRequest, toRequests, toRollbackRequests, UnsafePlanError } from './sheet/safety.ts';
 import { verify } from './sheet/verify.ts';
-import { applyRequests, readSnapshot, type SheetSnapshot } from './sources/sheet.ts';
+import { applyRequests, listSheets, readSnapshot, type SheetSnapshot } from './sources/sheet.ts';
 import { fetchCatalogue, type Catalogue } from './sources/shows.ts';
 import type { Logger } from './refresh.ts';
 import type { Library } from './simkl/types.ts';
@@ -206,15 +206,27 @@ export class SheetSync {
   }
 
   private async apply(grid: Grid, plan: SheetPlan, lines: string[], signal: AbortSignal | undefined): Promise<SheetSyncResult> {
-    const requests = toRequests(plan, grid);
+    const name = backupName(new Date());
+    // The snapshot rides at the head of the write batch, so it is taken and the
+    // write applied in one atomic request — there is no state in which the
+    // sheet changed but nothing recorded what it looked like first.
+    const requests = [backupRequest(grid.snapshot.sheetId, name), ...toRequests(plan, grid)];
+
     let writeError: string | null = null;
+    let backupId: number | undefined;
     try {
-      await applyRequests(requests, { signal });
+      const response = await applyRequests(requests, { signal });
+      backupId = response.replies?.[0]?.duplicateSheet?.properties?.sheetId;
     } catch (err) {
       // Never retried: batchUpdate is atomic but not idempotent, and a timeout
       // can fire on a request the server already applied. The re-read below is
       // what settles which happened.
       writeError = errorMessage(err);
+    }
+    // A timeout can hide a batch that landed, so the tab list is the authority
+    // on whether a snapshot exists — not the reply we may never have seen.
+    if (backupId === undefined) {
+      backupId = (await listSheets({ signal }).catch(() => [])).find((s) => s.title === name)?.sheetId;
     }
 
     const after = await readSnapshot({ signal });
@@ -222,6 +234,7 @@ export class SheetSync {
 
     if (verification.ok) {
       if (writeError) this.log.warn(`the sheet write reported "${writeError}" but landed exactly as planned`);
+      await this.discardBackup(backupId, signal);
       this.report(`sheet sync applied ${plan.edits.length} edits and ${plan.inserts.length} inserts`, lines);
       return idle({ status: 'applied', edits: plan.edits.length, inserts: plan.inserts.length, lines });
     }
@@ -230,10 +243,21 @@ export class SheetSync {
     // There is nothing to roll back, and the next poll re-plans from scratch.
     if (writeError && !verification.restores.length && !verification.deleteRows.length && after.rows.length === grid.snapshot.rows.length) {
       this.log.error(`sheet write failed and nothing changed: ${writeError}`);
+      await this.discardBackup(backupId, signal);
       return idle({ status: 'failed', lines, error: writeError, retry: true });
     }
 
-    return await this.rollback(grid, after, verification, lines, signal);
+    return await this.rollback(grid, after, verification, lines, backupId, name, signal);
+  }
+
+  /** Best effort: a leftover snapshot tab is untidy, never dangerous. */
+  private async discardBackup(backupId: number | undefined, signal: AbortSignal | undefined): Promise<void> {
+    if (backupId === undefined) return;
+    try {
+      await applyRequests([deleteSheetRequest(backupId)], { signal });
+    } catch (err) {
+      this.log.warn(`could not remove the backup tab (harmless, delete it by hand): ${errorMessage(err)}`);
+    }
   }
 
   private async rollback(
@@ -241,6 +265,8 @@ export class SheetSync {
     after: SheetSnapshot,
     verification: ReturnType<typeof verify>,
     lines: string[],
+    backupId: number | undefined,
+    name: string,
     signal: AbortSignal | undefined,
   ): Promise<SheetSyncResult> {
     const detail = verification.problems.join('; ');
@@ -249,38 +275,52 @@ export class SheetSync {
     try {
       let restored = after;
 
-      // Structure first, in its own batch. Deleting the inserted row is what
-      // puts every formula beneath it back, because Sheets rewrites the
-      // references on the way out exactly as it did on the way in. Restoring
-      // cells in the same batch cannot work: whatever the delete shifts, it
-      // rewrites — including text written moments earlier in that same batch.
+      // Structure first, in its own batch, and before any paste. Deleting the
+      // inserted row is what shrinks the grid back — a paste overwrites a
+      // range, it does not remove a row, so an extra one would survive
+      // underneath. Doing it separately also matters because `deleteDimension`
+      // rewrites the relative references in everything it shifts, including
+      // anything written earlier in the same batch.
       if (verification.deleteRows.length) {
         await applyRequests(toRollbackRequests(after.sheetId, [], verification.deleteRows), { signal });
         restored = await readSnapshot({ signal });
       }
 
-      // Only now, against a grid whose row indices match the original again,
-      // is it safe to ask what still differs. An empty plan makes `verify` a
-      // plain diff, and with no insert in it formulas are compared strictly —
-      // which is correct, because the delete has undone the rewriting.
-      const residual = verify(grid, restored, { edits: [], inserts: [], skipped: [], notes: [] });
-      if (residual.restores.length) {
-        await applyRequests(toRollbackRequests(restored.sheetId, residual.restores, []), { signal });
+      if (backupId !== undefined) {
+        // One server-side paste of the whole tab, at a zero offset. It cannot
+        // be off by a row, and its cost does not grow with the number of cells
+        // that changed.
+        await applyRequests([restoreRequest(backupId, restored.sheetId, grid.snapshot.rowCount, grid.snapshot.columnCount)], { signal });
         restored = await readSnapshot({ signal });
+      } else {
+        // No snapshot — the write batch never reported one and the tab list has
+        // none. Fall back to putting back exactly what is observed to differ.
+        this.log.warn('no backup tab to restore from; falling back to a cell-level rollback');
+        const residual = verify(grid, restored, { edits: [], inserts: [], skipped: [], notes: [] });
+        if (residual.restores.length) {
+          await applyRequests(toRollbackRequests(restored.sheetId, residual.restores, []), { signal });
+          restored = await readSnapshot({ signal });
+        }
       }
 
       const confirmation = verify(grid, restored, { edits: [], inserts: [], skipped: [], notes: [] });
       if (!confirmation.ok) {
         throw new Error(`${confirmation.problems.length} cells did not go back (${confirmation.problems.slice(0, 5).join('; ')})`);
       }
+      await this.discardBackup(backupId, signal);
     } catch (err) {
       // Nagging on every poll rather than scrolling away once: the repair is
       // manual, and the message carries what is needed to do it.
+      // The snapshot tab is deliberately left in place. It holds the sheet
+      // exactly as it was before the write, which makes the manual repair a
+      // copy rather than an archaeology exercise in version history.
       this.frozen =
         `FROZEN: the sheet write failed verification and the rollback did not complete (${errorMessage(err)}). ` +
-        `No further writes this process. Restore by hand from Sheets version history, then restart. ` +
-        `Verify problems: ${detail}. Cells to restore: ${verification.restores.map((r) => `${r.row + 1}:${r.column}`).join(', ') || 'none'}. ` +
-        `Rows to delete: ${verification.deleteRows.map((r) => r + 1).join(', ') || 'none'}.`;
+        `No further writes this process. ` +
+        (backupId === undefined
+          ? `There is no backup tab; restore by hand from Sheets version history, then restart. `
+          : `The tab "${name}" holds the sheet exactly as it was before the write — copy it back over ${grid.snapshot.title}, delete it, then restart. `) +
+        `Verify problems: ${detail}. Rows to delete: ${verification.deleteRows.map((r) => r + 1).join(', ') || 'none'}.`;
       this.log.error(this.frozen);
       return idle({ status: 'frozen', lines, error: this.frozen });
     }
