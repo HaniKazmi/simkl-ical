@@ -1,5 +1,6 @@
-import { config } from './config.ts';
+import { config, sheetSyncConfigured } from './config.ts';
 import { errorMessage } from './errors.ts';
+import { SheetSync, type SheetSyncStatus } from './sheet-sync.ts';
 import { readToken } from './simkl/auth.ts';
 import { SimklAuthError } from './simkl/client.ts';
 import { anyStale, fetchAllCalendars, payloads, type Calendars } from './sources/calendar.ts';
@@ -40,12 +41,26 @@ export interface Health {
   lastError: string | null;
   errors: SubsystemErrors;
   timezone: string;
+  sheet: SheetHealth;
+}
+
+export interface SheetHealth {
+  mode: string;
+  configured: boolean;
+  lastRunAt: string | null;
+  status: SheetSyncStatus;
+  frozen: boolean;
 }
 
 export interface SubsystemErrors {
   calendar: string | null;
   library: string | null;
   render: string | null;
+  /**
+   * Fourth slot for the same reason as the other three: the sheet sync shares
+   * the library timer, and the two must not clear each other's failures.
+   */
+  sheet: string | null;
 }
 
 /**
@@ -71,7 +86,16 @@ export class FeedState {
   renderedAt: string | null = null;
   servingCached = false;
   // One slot per subsystem: the two timers must not clear each other's failures.
-  errors: SubsystemErrors = { calendar: null, library: null, render: null };
+  errors: SubsystemErrors = { calendar: null, library: null, render: null, sheet: null };
+  /** Null unless a spreadsheet *and* a credential were both supplied. */
+  sheetSync: SheetSync | null = null;
+  /**
+   * Whether the last sheet sync wants another go. A boolean, not an interval:
+   * the sheet has no upstream clock of its own — everything it writes derives
+   * from watch state, and `staleLists` already detects that. This exists only
+   * so a failed write is not stranded until the user next watches something.
+   */
+  sheetRetryPending = false;
   timers: NodeJS.Timeout[] = [];
   /** Tail of the render chain; see safeRender. Never rejects. */
   private rendering: Promise<void> = Promise.resolve();
@@ -81,6 +105,7 @@ export class FeedState {
   constructor({ logger = console as Logger }: { logger?: Logger } = {}) {
     this.log = logger;
     this.ics = renderIcs([], { name: FEED_NAME });
+    if (sheetSyncConfigured()) this.sheetSync = new SheetSync({ logger });
   }
 
   /**
@@ -111,10 +136,20 @@ export class FeedState {
       stale: stalePoll || staleCalendars || staleRender || undefined,
       // A single headline value; `errors` carries the detail. Library problems
       // outrank calendar ones: a stale calendar still renders, a revoked token
-      // eventually will not.
-      lastError: this.errors.library ?? this.errors.calendar ?? this.errors.render ?? null,
+      // eventually will not. The sheet sits last — it cannot affect the feed.
+      lastError: this.errors.library ?? this.errors.calendar ?? this.errors.render ?? this.errors.sheet ?? null,
       errors: this.errors,
       timezone: config.timezone,
+      // Reported but deliberately excluded from `ok` above: /healthz is the
+      // container healthcheck and the CI smoke test, and a frozen sheet sync
+      // must not restart the container or fail a deploy.
+      sheet: {
+        mode: config.sheetSyncMode,
+        configured: this.sheetSync !== null,
+        lastRunAt: this.sheetSync?.lastRunAt ?? null,
+        status: this.sheetSync?.lastStatus ?? 'idle',
+        frozen: Boolean(this.sheetSync?.frozen),
+      },
     };
   }
 
@@ -262,7 +297,9 @@ export class FeedState {
       // Film dates age out on their own schedule, so a poll with no list
       // changes still has work to do once a day.
       const filmsDue = force || this.filmsDue();
-      if (!stale.length && !filmsDue) return;
+      // The retry term is a boolean, and false when the sync is unconfigured,
+      // so a quiet poll still makes exactly one request.
+      if (!stale.length && !filmsDue && !this.sheetRetryPending) return;
 
       if (stale.length) {
         this.log.info(`refetching ${stale.length}/${LISTS.length} lists: ${stale.map((l) => l.key).join(', ')}`);
@@ -285,7 +322,10 @@ export class FeedState {
         this.log.warn('some film lookups failed; will retry on the next poll');
       }
       this.listSignatures = signatures;
-      this.libraryAt = new Date().toISOString();
+      // Only when a list actually moved. A poll that fell through purely to
+      // retry the sheet would otherwise report librarySyncedAt as now, which
+      // contradicts what that field means.
+      if (stale.length) this.libraryAt = new Date().toISOString();
     } catch (err) {
       // A revoked token must not empty the feed — keep serving the last render.
       const prefix = err instanceof SimklAuthError ? 'AUTH' : 'library';
@@ -299,6 +339,22 @@ export class FeedState {
     }
 
     await this.safeRender();
+    await this.syncSheet();
+  }
+
+  /**
+   * The sheet write, after the render and outside the library `try`.
+   *
+   * Outside, so a Sheets failure is never filed as `errors.library`, never
+   * touches `listSignatures`, and never holds the feed up. After, so the feed —
+   * which is the service's actual job — is already out before a spreadsheet is
+   * touched.
+   */
+  private async syncSheet(): Promise<void> {
+    if (!this.sheetSync || !this.library) return;
+    const result = await this.sheetSync.run(this.library, { signal: this.aborter.signal });
+    this.errors.sheet = result.error;
+    this.sheetRetryPending = result.retry;
   }
 
   /**

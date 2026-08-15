@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 
 // Node 20.6+ loads .env with --env-file, but doing it here keeps `node src/x.ts`
@@ -26,6 +27,16 @@ const int = (value: string | undefined, fallback: number, { min = 0, max = Numbe
 };
 
 /**
+ * A value from a closed set, falling back rather than throwing — same posture
+ * as `int`, and for the same reason. No enum: Node strips the types, so an enum
+ * is not erasable syntax.
+ */
+const oneOf = <T extends string>(value: string | undefined, allowed: readonly T[], fallback: T): T => {
+  const candidate = value?.trim().toLowerCase();
+  return allowed.find((a) => a === candidate) ?? fallback;
+};
+
+/**
  * The version from package.json, which the Dockerfile copies into the image
  * alongside src/ — it is needed at runtime for "type": "module" anyway.
  */
@@ -37,6 +48,15 @@ const packageVersion = (): string => {
     return '0.0.0';
   }
 };
+
+/**
+ * `report` plans and logs without writing; `apply` writes. Unrecognised clamps
+ * to `report` — never to `apply`, because the failure of a typo must be an
+ * inert run, not an unintended one.
+ */
+export type SheetSyncMode = 'off' | 'report' | 'apply';
+
+export const SHEET_SYNC_MODES: readonly SheetSyncMode[] = ['off', 'report', 'apply'];
 
 export interface Config {
   clientId: string | undefined;
@@ -52,6 +72,23 @@ export interface Config {
   activitiesPollMs: number;
   movieRefreshMs: number;
   retryBaseMs: number;
+
+  sheetId: string | undefined;
+  sheetName: string;
+  sheetSyncMode: SheetSyncMode;
+  sheetSinceDays: number;
+  sheetMaxEdits: number;
+  sheetMaxRows: number;
+  sheetMaxInserts: number;
+  /** Base64 of the whole service-account JSON. The container path. */
+  googleKeyBase64: string | undefined;
+  googleCredentialsPath: string;
+  /**
+   * Whether GOOGLE_APPLICATION_CREDENTIALS was actually set, as opposed to
+   * defaulted. `googleCredentialsPath` always has a value, so testing it for
+   * truthiness would say "a credential was supplied" on every machine.
+   */
+  googleCredentialsExplicit: boolean;
 }
 
 /**
@@ -93,6 +130,24 @@ export const buildConfig = (env: NodeJS.ProcessEnv): Config => ({
   // Configurable mainly for tests; lowering it in production only makes a
   // struggling API struggle harder.
   retryBaseMs: int(env.RETRY_BASE_MS, 1000, { min: 1 }),
+
+  // --- Google Sheet sync. Absent SHEET_ID, the whole feature is inert.
+  sheetId: env.SHEET_ID,
+  sheetName: env.SHEET_NAME || 'Sheet1',
+  sheetSyncMode: oneOf(env.SHEET_SYNC_MODE, SHEET_SYNC_MODES, 'report'),
+  // Nothing is touched without watch activity this recent. The rule is what
+  // stops a run retro-editing years of history, so it gates everything.
+  sheetSinceDays: int(env.SHEET_SINCE_DAYS, 90, { min: 1, max: 3650 }),
+  // Circuit breakers. Set below the theoretical ceiling on purpose: a run
+  // wanting this many cells is likelier a bug than a legitimate binge, and
+  // refusing the whole plan is the safe answer.
+  sheetMaxEdits: int(env.SHEET_MAX_EDITS, 30, { min: 1 }),
+  sheetMaxRows: int(env.SHEET_MAX_ROWS, 20, { min: 1 }),
+  // One insert per run is what keeps rollback trivially correct.
+  sheetMaxInserts: int(env.SHEET_MAX_INSERTS, 1, { min: 0, max: 1 }),
+  googleKeyBase64: env.GOOGLE_SA_KEY_B64,
+  googleCredentialsPath: env.GOOGLE_APPLICATION_CREDENTIALS || resolve(homedir(), '.config/plot-device/sa.json'),
+  googleCredentialsExplicit: Boolean(env.GOOGLE_APPLICATION_CREDENTIALS),
 });
 
 export const config: Config = buildConfig(process.env);
@@ -109,6 +164,17 @@ export const requireValidTimezone = (timeZone: string = config.timezone): string
   }
   return timeZone;
 };
+
+/**
+ * Whether the sheet sync should exist at all: a target *and* a credential that
+ * was actually supplied.
+ *
+ * Testing the credentials path alone is vacuous — it has a default — so a
+ * container given SHEET_ID and no key would activate against a nonexistent file
+ * and file an ENOENT on every poll.
+ */
+export const sheetSyncConfigured = (c: Config = config): boolean =>
+  Boolean(c.sheetId) && c.sheetSyncMode !== 'off' && Boolean(c.googleKeyBase64 || c.googleCredentialsExplicit);
 
 export const requireClientId = (): string => {
   if (!config.clientId) {

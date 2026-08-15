@@ -32,6 +32,60 @@ Layering, downward only:
   `config` mid-body, so they stay testable.
 - `src/server.ts` — Fastify, two routes, no state of its own.
 
+## The sheet sync
+
+A second consumer of the same poll, and structurally separate from the feed: `src/sheets/`
+(transport), `src/sheet/` (pure), `src/sheet-sync.ts` (the protocol). Inert unless `SHEET_ID` **and**
+a Google credential are both supplied — a target with no credential stays off rather than filing an
+ENOENT once per poll.
+
+It writes exactly three things — a season row's `Episode` count, a season row's `End` date, and a
+show row's `Status` — and inserts a season row when a new season is started. Nothing else, ever.
+
+```
+library (already fetched)  ─┐
+/tv/episodes/{id}           ─┤─ plan ─→ guard ─→ batchUpdate ─→ verify ─→ (rollback)
+/tv/{id} | /anime/{id}      ─┘
+```
+
+The whole cycle — read, plan, guard, write, verify — happens inside one poll, so what was planned
+and what was written describe the same grid. A snapshot older than 120s is discarded and the cycle
+restarts **from the read**, not from the write.
+
+Why each piece is the way it is:
+
+- **The sheet's own show-row formulas do the roll-ups.** Every derived cell on a show row
+  (`Season`, `Episode`, `End`, `Episodes`, `Length`) is a self-sizing formula over the season rows
+  beneath it. That makes the show row read-only to the sync, makes an insert need no formula
+  rewriting, and is why the never-write-a-formula rule is unconditional.
+- **Columns are resolved by header, never by position** — the columns get rearranged. A missing,
+  renamed or duplicated label writes nothing at all, because a duplicate makes "which column is
+  `Episode`" unanswerable and the wrong answer is a real edit to the wrong cell.
+- **Which SIMKL entry a row belongs to is decided by where its id sits**, never by `Type`. A season
+  row's own id wins; a blank one inherits the show row's. Both exceptions exist in the live sheet
+  and are independent of each other.
+- **`Episode` on a season row is a count, not an episode number**, because `Length = Episodes ×
+  Episode`. The two coincide for in-order viewing, which is exactly why writing the highest episode
+  number would survive testing and corrupt every total.
+- **A season is complete only when `aired === total` AND `watched >= total`.** "Every aired episode
+  watched" dates a season that is still running, and a dated season is never revisited.
+- **Reads use `spreadsheets.get?includeGridData=true`, writes use `batchUpdate`.** The read gives
+  `userEnteredValue` (the only definitive formula test) and `effectiveValue` (true date serials);
+  the write is atomic, ordered, leaves formats alone, and sends `{numberValue: 46265}` rather than a
+  date string that `08/15` and `15/08` misparse identically for twelve days a month.
+- **Verification diffs `userEnteredValue`, never `effectiveValue`.** Writing one cell recalculates
+  five formulas, so `effectiveValue` moves in cells nobody wrote. `userEnteredValue` changes only
+  when someone writes, which turns verification into an equality check.
+- **A write is never retried.** `batchUpdate` is atomic but not idempotent — a retried
+  `insertDimension` inserts two rows. Reads opt into retry; writes never do.
+- **Rollback is not partial-write recovery**; batchUpdate leaves no half-applied state. It exists
+  for the case where *the plan was wrong*, which is why its restore set comes from the observed diff
+  rather than from the plan.
+- **Request order is load-bearing**: edits to pre-existing rows (descending), then the
+  `insertDimension`, then the new row's fill — which shares a row index with the insert, so any
+  "edits before inserts" rule overwrites a real row. Rollbacks go the other way: all restores first,
+  `deleteDimension` last.
+
 ## No build step
 
 Node strips the types itself. There is no `dist/`, no bundler; the code that runs is the code you
@@ -48,9 +102,11 @@ read. `tsc` is a checker only. Consequences that bite:
   overwrite a complete feed loaded from disk.
 - **`safeRender()` serialises renders through a promise chain.** Both timers end there and coincide
   every six hours at the default intervals; overlapping runs would race on the disk save.
-- **Errors are per-subsystem** (`calendar`, `library`, `render`). The two timers must not clear each
-  other's failures. Nothing in the refresh path is allowed to be fatal — the process stays up and
-  `/healthz` reports why.
+- **Errors are per-subsystem** (`calendar`, `library`, `render`, `sheet`). The timers must not clear
+  each other's failures. Nothing in the refresh path is allowed to be fatal — the process stays up
+  and `/healthz` reports why. `errors.sheet` is reported but deliberately excluded from
+  `Health.ok`: `/healthz` is the container healthcheck and the CI smoke test, and a frozen sheet
+  sync must not restart the container or fail a deploy.
 - **Only `feed.ics` and `token.json` are persisted.** No control state outlives the process, so a
   restart always resyncs. Both are written 0600 through `writeFileAtomic`.
 - **UIDs are derived, never random.** A fresh UID each render makes clients duplicate events

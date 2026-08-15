@@ -24,6 +24,12 @@ services:
       RELEASE_COUNTRY: "GB"
       # How long an aired episode lingers in the feed.
       GRACE_DAYS: "14"
+      # Google Sheet sync. Inert unless SHEET_ID is set *and* GOOGLE_SA_KEY_B64
+      # is in the secrets file — a target with no credential stays off rather
+      # than failing once per poll. Leave the mode at report until a run has
+      # been read: it plans in full and writes nothing.
+      # SHEET_ID: ""
+      # SHEET_SYNC_MODE: "report"
 
     volumes:
       - simkl-ical-data:/data

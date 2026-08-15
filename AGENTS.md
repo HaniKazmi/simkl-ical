@@ -10,6 +10,10 @@ A self-hosted service that joins SIMKL's public airdate CDN with your private OA
 serves the intersection as a subscribable iCal feed. No database, no build step, two runtime
 dependencies (`fastify`, `ical-generator`).
 
+Off the same poll it also keeps a hand-maintained Google Sheet of watch progress current. That half
+is inert unless `SHEET_ID` and a Google credential are both set — see
+[The sheet sync](ARCHITECTURE.md#the-sheet-sync).
+
 ## Commands
 
 ```sh
@@ -46,8 +50,16 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   token rather than a rate limit. It clears on its own — the same token works again minutes later,
   so wait it out rather than reaching for `npm run login`; re-authorising fixes nothing the wait
   would not. This applies to ad-hoc inspection scripts too, not just the refresh path.
-- **Tests must not reach the network or the real `./data`.** Use `withFetch`, `withConfig` and
-  `withTempDataDir` from `test/helpers.ts` — on a real checkout `./data` holds a live OAuth token.
+  `LISTS` covers 11 lists rather than the feed's 7 because the sheet sync needs `hold` and
+  `dropped`: for it, "absent from every list" has to mean *no information*. Widening it further
+  costs call budget for nothing — the gate is what makes 11 affordable, not the count.
+- **Never write a formula cell, and never write a show row except `Status`.** Every derived cell on
+  a show row rolls up from the season rows beneath it. Writing one replaces a live roll-up with a
+  frozen number, and nothing would ever notice.
+- **Tests must not reach the network, the real `./data`, or the real spreadsheet.** Use `withFetch`,
+  `withConfig` and `withTempDataDir` from `test/helpers.ts` — on a real checkout `./data` holds a
+  live OAuth token, and `.env` holds a live `SHEET_ID`. The helpers module forces `sheetId` to
+  undefined and `sheetSyncMode` to `off` on import for exactly that reason.
 
 ## Where things live
 
@@ -55,12 +67,15 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
 | --- | --- |
 | `src/refresh.ts` | `FeedState` — the whole orchestration; the only thing that mutates |
 | `src/join.ts`, `src/ics.ts` | Pure: calendars + library + releases → events → ICS string |
-| `src/sources/` | One module per upstream (CDN calendars, OAuth library, per-film releases) |
+| `src/sources/` | One module per upstream (CDN calendars, OAuth library, per-film releases, per-show catalogue, the sheet) |
 | `src/simkl/` | Transport: retry/backoff, error classification, device-flow auth, API types |
+| `src/sheets/` | Transport: service-account JWT, Sheets retry/backoff, API types |
+| `src/sheet/` | Pure: grid → blocks → plan → guard → requests → verify |
+| `src/sheet-sync.ts` | The write protocol. The only thing that writes to the spreadsheet |
 | `src/server.ts` | Fastify; two routes, no state of its own |
 
-Layering runs downward only, and `join`/`ics` stay pure — they take options with config-backed
-defaults rather than reading `config` mid-body.
+Layering runs downward only, and `join`/`ics`/`sheet/*` stay pure — they take options with
+config-backed defaults rather than reading `config` mid-body.
 
 ## Upstream API reference
 

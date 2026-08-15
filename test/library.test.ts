@@ -28,11 +28,13 @@ const activities = (): FullActivities => ({
 
 const keysOf = (lists: ListDefinition[]): string[] => lists.map((l) => l.key).sort();
 
-test('the list set covers watching, plan-to-watch and completed', () => {
+// hold and dropped are here for the sheet sync, not the feed: `join` reads
+// library keys by name, so a wider fetch cannot leak into it.
+test('the list set covers every show and anime status, and plan-to-watch films', () => {
   assert.deepEqual(keysOf(LISTS), [
-    'anime_completed', 'anime_plantowatch', 'anime_watching',
+    'anime_completed', 'anime_dropped', 'anime_hold', 'anime_plantowatch', 'anime_watching',
     'movies_plantowatch',
-    'shows_completed', 'shows_plantowatch', 'shows_watching',
+    'shows_completed', 'shows_dropped', 'shows_hold', 'shows_plantowatch', 'shows_watching',
   ]);
 });
 
@@ -116,7 +118,9 @@ test('a removal invalidates every list in its category only', () => {
   const before = listSignatures(activities());
   const after = activities();
   after.tv_shows.removed_from_list = '2026-08-10T20:00:00Z';
-  assert.deepEqual(keysOf(staleLists(after, before)), ['shows_completed', 'shows_plantowatch', 'shows_watching']);
+  assert.deepEqual(keysOf(staleLists(after, before)), [
+    'shows_completed', 'shows_dropped', 'shows_hold', 'shows_plantowatch', 'shows_watching',
+  ]);
 });
 
 test('an unknown list counts as stale, so a cold start fetches everything', () => {
@@ -129,7 +133,7 @@ test('an unknown list counts as stale, so a cold start fetches everything', () =
 test('only the fields that can move an item between lists count', () => {
   const before = listSignatures(activities());
 
-  for (const noise of ['all', 'rated_at', 'playback', 'hold', 'dropped'] as const) {
+  for (const noise of ['all', 'rated_at', 'playback'] as const) {
     const acts = activities();
     acts.tv_shows[noise] = '2027-01-01T00:00:00Z';
     assert.deepEqual(listSignatures(acts), before, `${noise} must not invalidate anything`);

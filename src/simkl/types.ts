@@ -65,18 +65,48 @@ export interface LibraryTitle {
   ids: LibraryIds;
 }
 
+/**
+ * One watched episode, from `include_all_episodes=yes`.
+ *
+ * `watched_at` is nullable because the docs say unwatched rows can be filled in
+ * — see the measurement in the sheet-sync notes, which did not reproduce it.
+ * Counting still filters on it: the whole sync rests on that number.
+ */
+export interface WatchedEpisode {
+  number: number;
+  watched_at?: string | null;
+}
+
+/** Season 0 is specials, and is excluded from both sides of every comparison. */
+export interface WatchedSeason {
+  number: number;
+  episodes?: WatchedEpisode[];
+}
+
 export interface LibraryItem {
   /** Shows and anime both nest under `show`; films under `movie`. */
   show?: LibraryTitle;
   movie?: LibraryTitle;
+  /**
+   * Per-item and authoritative. List membership is not: a move is reported only
+   * against the list it moved to, so an un-dropped show sits in two lists at
+   * once and only this field says which one is current.
+   */
   status?: string;
   /** Always populated. "S07E06", or "E07" for anime. */
   last_watched?: string | null;
   /** Null once caught up, so it cannot be used as a progress signal. */
   next_to_watch?: string | null;
+  /** ISO instant. Only present with `episode_watched_at=yes`. */
+  last_watched_at?: string | null;
   watched_episodes_count?: number;
   total_episodes_count?: number;
   not_aired_episodes_count?: number;
+  /**
+   * Only present with `include_all_episodes=yes`, which is required for the
+   * completed and dropped lists — without it the key is absent entirely.
+   */
+  seasons?: WatchedSeason[];
 }
 
 /**
@@ -92,9 +122,13 @@ export type ListKey =
   | 'shows_watching'
   | 'shows_plantowatch'
   | 'shows_completed'
+  | 'shows_hold'
+  | 'shows_dropped'
   | 'anime_watching'
   | 'anime_plantowatch'
   | 'anime_completed'
+  | 'anime_hold'
+  | 'anime_dropped'
   | 'movies_plantowatch';
 
 export type Library = Partial<Record<ListKey, ListResponse>>;
@@ -152,6 +186,39 @@ export interface MovieDetail {
   /** Minutes here, unlike the calendar's display string. */
   runtime?: number | null;
   release_dates?: Array<{ iso_3166_1: string; results: ReleaseDateResult[] }>;
+  ids?: LibraryIds;
+}
+
+// --- Show detail -----------------------------------------------------------
+
+/**
+ * One entry from `/tv/episodes/{id}` — what SIMKL knows exists, as opposed to
+ * what the library says was watched.
+ *
+ * `aired` is the field that distinguishes a season still running from a
+ * finished one, and `type` is what keeps a special out of a numbered season's
+ * total. Both are optional: absent means "do not conclude anything".
+ */
+export interface EpisodeDetail {
+  season?: number | null;
+  episode?: number;
+  /** `episode` or `special`. Specials are counted nowhere. */
+  type?: string;
+  aired?: boolean;
+  date?: string | null;
+}
+
+/**
+ * `/tv/{id}` and `/anime/{id}`. Only `status` is consulted: it is the one
+ * signal that separates a show that has ended from one merely between seasons,
+ * which the episode list cannot express.
+ */
+export interface ShowDetail {
+  title?: string;
+  /** `ended`, `airing`, `tba`, or something we have not seen. */
+  status?: string;
+  /** Minutes, and **per episode** — "most common length", not a season or series total. */
+  runtime?: number | null;
   ids?: LibraryIds;
 }
 

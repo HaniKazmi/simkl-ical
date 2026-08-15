@@ -40,6 +40,16 @@ feed token gets a 404, and the right one returns something starting `BEGIN:VCALE
 - `withTempDataDir(fn)` — `config.dataDir` defaults to `./data`, which on a real checkout holds a
   live OAuth token.
 - The module sets `config.retryBaseMs = 1` on import, so a retry path takes microseconds rather
-  than 15 seconds.
+  than 15 seconds. It also forces `config.sheetId = undefined` and `config.sheetSyncMode = 'off'`:
+  `SHEET_ID` lives in `.env` and `config.ts` loads it at import, so a test that forgot to override
+  would write to the real spreadsheet.
+- `sheetSnapshot(rows)`, `cellOf(spec)` and `libraryOf(...items)` build sheet and library fixtures.
+  A cell spec of `{ formula }` is the one that matters: only `userEnteredValue.formulaValue`
+  distinguishes a formula, and a formula target must be refused unconditionally.
 
-`sources/calendar.ts` keeps a module-level cache; call `clearCache()` in tests that touch it.
+`sources/calendar.ts` and `sources/shows.ts` keep module-level caches; call their `clearCache()` in
+tests that touch them, and `clearTokenCache()` from `sheets/auth.ts` alongside.
+
+The sheet sync's tests are weighted towards `sheet-safety.test.ts` on purpose: a one-row
+misalignment is the only catastrophic failure the feature has, and the guards and the request
+ordering are what prevent it.

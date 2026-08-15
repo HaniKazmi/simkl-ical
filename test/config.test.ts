@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { buildConfig, config, requireClientId, requireValidTimezone } from '../src/config.ts';
+import { buildConfig, config, requireClientId, requireValidTimezone, sheetSyncConfigured } from '../src/config.ts';
 import { withTimeout } from '../src/signals.ts';
 import { withConfig } from './helpers.ts';
 
@@ -85,4 +85,34 @@ test('with no caller signal the timeout alone applies', async () => {
   const combined = withTimeout(undefined, 10);
   await new Promise((r) => setTimeout(r, 30));
   assert.equal(combined.aborted, true);
+});
+
+// --- the sheet sync -------------------------------------------------------
+
+test('an unrecognised sheet sync mode clamps to report, never to apply', () => {
+  assert.equal(buildConfig({ SHEET_SYNC_MODE: 'apply' }).sheetSyncMode, 'apply');
+  assert.equal(buildConfig({ SHEET_SYNC_MODE: ' APPLY ' }).sheetSyncMode, 'apply');
+  assert.equal(buildConfig({}).sheetSyncMode, 'report');
+  // The failure of a typo must be an inert run, not an unintended one.
+  for (const typo of ['aply', 'write', 'yes', '']) {
+    assert.equal(buildConfig({ SHEET_SYNC_MODE: typo }).sheetSyncMode, 'report', typo);
+  }
+});
+
+// The credentials path has a default, so testing it for truthiness would report
+// "a credential was supplied" on every machine — and file an ENOENT per poll.
+test('the sync needs a target and a credential that was actually supplied', () => {
+  const on = (env: NodeJS.ProcessEnv) => sheetSyncConfigured(buildConfig({ SHEET_ID: 'SID', ...env }));
+  assert.equal(on({}), false, 'a default credentials path is not a supplied credential');
+  assert.equal(on({ GOOGLE_SA_KEY_B64: 'x' }), true);
+  assert.equal(on({ GOOGLE_APPLICATION_CREDENTIALS: '/tmp/sa.json' }), true);
+  assert.equal(on({ GOOGLE_SA_KEY_B64: 'x', SHEET_SYNC_MODE: 'off' }), false);
+  assert.equal(sheetSyncConfigured(buildConfig({ GOOGLE_SA_KEY_B64: 'x' })), false, 'no SHEET_ID');
+});
+
+test('the sheet limits are clamped rather than fatal', () => {
+  assert.equal(buildConfig({ SHEET_MAX_EDITS: '0' }).sheetMaxEdits, 1);
+  assert.equal(buildConfig({ SHEET_MAX_INSERTS: '9' }).sheetMaxInserts, 1);
+  assert.equal(buildConfig({ SHEET_SINCE_DAYS: '-5' }).sheetSinceDays, 1);
+  assert.equal(buildConfig({ SHEET_SINCE_DAYS: 'soon' }).sheetSinceDays, 90);
 });

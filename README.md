@@ -88,6 +88,35 @@ The three interval settings are floored at 60 seconds and `GRACE_DAYS` is clampe
 to 0–90, so a mistyped value degrades to something sane rather than hammering
 SIMKL or emptying the feed.
 
+### Google Sheet sync (optional)
+
+If you keep a spreadsheet of what you've watched, the same poll can maintain it. Off by default,
+and inert unless `SHEET_ID` **and** a credential are both set — a target with no credential stays
+off rather than failing once per poll. It costs no extra SIMKL requests: the watch detail rides
+along on the library fetch the feed already makes.
+
+| Variable                         | Default    | Notes                                                          |
+| -------------------------------- | ---------- | -------------------------------------------------------------- |
+| `SHEET_ID`                       | —          | The spreadsheet id. Unset ⇒ none of this runs                   |
+| `SHEET_NAME`                     | `Sheet1`   | Which tab                                                       |
+| `GOOGLE_SA_KEY_B64`              | —          | **Secret.** Base64 of the service-account JSON: `base64 -w0 sa.json` |
+| `GOOGLE_APPLICATION_CREDENTIALS` | —          | Path to that JSON instead, for local dev                        |
+| `SHEET_SYNC_MODE`                | `report`   | `off` / `report` / `apply`. Anything unrecognised clamps to `report` |
+| `SHEET_SINCE_DAYS`               | `90`       | Nothing is touched without watch activity this recent           |
+| `SHEET_MAX_EDITS`                | `30`       | Over budget refuses the whole plan rather than trimming it      |
+| `SHEET_MAX_ROWS`                 | `20`       | Distinct rows in one run                                        |
+| `SHEET_MAX_INSERTS`              | `1`        | One new season row per run                                      |
+
+The default mode writes nothing. Point it at the real sheet, read a run's report in the log, and
+only then share the spreadsheet with the service account's `client_email` as **Editor** and switch
+to `apply`. `GET /healthz` carries the mode, the last run and its outcome.
+
+It writes exactly three things — a season row's episode count, a season row's end date, and a show
+row's status — and inserts a season row when you start a new season. It never adds a show, never
+touches a season that already has an end date, never moves a count backwards, and never writes a
+formula. Every write is read back and compared against what was planned; anything unexpected is
+rolled back. See [ARCHITECTURE.md](ARCHITECTURE.md#the-sheet-sync).
+
 ## What lands in the feed
 
 | Your SIMKL list      | What's included             |
