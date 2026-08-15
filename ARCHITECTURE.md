@@ -1,8 +1,7 @@
 # Architecture
 
-How the service is put together, and the constraints that are easy to break without noticing.
-For commands and test conventions see [CONTRIBUTING.md](CONTRIBUTING.md); for the short version of
-the rules below, [AGENTS.md](AGENTS.md).
+How the service is put together, and why. The rules that follow from it are listed in
+[AGENTS.md](AGENTS.md); what the service does for its user is in [README.md](README.md).
 
 ## The shape
 
@@ -21,93 +20,19 @@ than an empty one.
 
 Layering, downward only:
 
-- `src/simkl/` — transport. `client.ts` (retry/backoff, `SimklError`/`SimklAuthError`, `classify`),
-  `auth.ts` (device flow, token file), `types.ts` (only shapes SIMKL actually sends — no
-  freshness or bookkeeping fields).
+- `src/backoff.ts` — retry timing and the `HttpError` base. Shared because `retryDelayMs` encodes
+  two things that are easy to get subtly wrong (a blank `Retry-After` is not zero; the header may
+  be an HTTP date) and a second copy means fixing one and not the other.
+- `src/simkl/`, `src/sheets/` — transport, one per upstream API. Each owns its base URL, auth,
+  retryable statuses and status-to-error mapping; those are what genuinely differ, so the request
+  loops stay separate rather than collapsing into one parameterised one.
 - `src/sources/` — one module per upstream. `calendar.ts` (CDN, conditional GET, in-process cache,
   monthly archives), `library.ts` (authenticated lists, activities gating), `movies.ts` (per-title
-  release-date resolution).
-- `src/join.ts` → `src/ics.ts` — pure. Given calendars + library + movie releases, produce
-  `FeedEvent[]`, then a string. Both take options with config-backed defaults rather than reading
-  `config` mid-body, so they stay testable.
+  release dates), `shows.ts` (per-title episode lists and status), `sheet.ts` (read and write one
+  tab).
+- `src/join.ts` → `src/ics.ts`, and all of `src/sheet/` — pure. They take options with config-backed
+  defaults rather than reading `config` mid-body, so they stay testable.
 - `src/server.ts` — Fastify, two routes, no state of its own.
-
-## The sheet sync
-
-A second consumer of the same poll, and structurally separate from the feed: `src/sheets/`
-(transport), `src/sheet/` (pure), `src/sheet-sync.ts` (the protocol). Inert unless `SHEET_ID` **and**
-a Google credential are both supplied — a target with no credential stays off rather than filing an
-ENOENT once per poll.
-
-It writes exactly three things — a season row's `Episode` count, a season row's `End` date, and a
-show row's `Status` — and inserts a season row when a new season is started. Nothing else, ever.
-
-```
-library (already fetched)  ─┐
-/tv/episodes/{id}           ─┤─ plan ─→ guard ─→ batchUpdate ─→ verify ─→ (rollback)
-/tv/{id} | /anime/{id}      ─┘
-```
-
-The whole cycle — read, plan, guard, write, verify — happens inside one poll, so what was planned
-and what was written describe the same grid. A snapshot older than 120s is discarded and the cycle
-restarts **from the read**, not from the write.
-
-Why each piece is the way it is:
-
-- **The sheet's own show-row formulas do the roll-ups.** Every derived cell on a show row
-  (`Season`, `Episode`, `End`, `Episodes`, `Length`) is a self-sizing formula over the season rows
-  beneath it. That makes the show row read-only to the sync, makes an insert need no formula
-  rewriting, and is why the never-write-a-formula rule is unconditional.
-- **Columns are resolved by header, never by position** — the columns get rearranged. A missing,
-  renamed or duplicated label writes nothing at all, because a duplicate makes "which column is
-  `Episode`" unanswerable and the wrong answer is a real edit to the wrong cell.
-- **Which SIMKL entry a row belongs to is decided by where its id sits**, never by `Type`. A season
-  row's own id wins; a blank one inherits the show row's. Both exceptions exist in the live sheet
-  and are independent of each other.
-- **`Episode` on a season row is a count, not an episode number**, because `Length = Episodes ×
-  Episode`. The two coincide for in-order viewing, which is exactly why writing the highest episode
-  number would survive testing and corrupt every total.
-- **A season is complete only when `aired === total` AND `watched >= total`.** "Every aired episode
-  watched" dates a season that is still running, and a dated season is never revisited.
-- **Reads use `spreadsheets.get?includeGridData=true`, writes use `batchUpdate`.** The read gives
-  `userEnteredValue` (the only definitive formula test) and `effectiveValue` (true date serials);
-  the write is atomic, ordered, leaves formats alone, and sends `{numberValue: 46265}` rather than a
-  date string that `08/15` and `15/08` misparse identically for twelve days a month.
-- **Verification diffs `userEnteredValue`, never `effectiveValue`.** Writing one cell recalculates
-  five formulas, so `effectiveValue` moves in cells nobody wrote. `userEnteredValue` changes only
-  when someone writes — **while the grid holds still**. Inserting a row is the exception, and it
-  cost a corrupted sheet to learn: Sheets rewrites the relative A1 references in every formula the
-  insert shifts, so `=I609*F609` becomes `=I610*F610` with nobody having typed anything. Across an
-  insert, a formula is therefore checked for still *being* a formula rather than for its text.
-  Literals stay strictly compared, and they are what catches a misalignment — every literal on a
-  season row moves with the row.
-- **A write is never retried.** `batchUpdate` is atomic but not idempotent — a retried
-  `insertDimension` inserts two rows. Reads opt into retry; writes never do.
-- **Catalogue lookups are gated per title, by watch activity.** `/sync/activities` resolves to a
-  list and never to a show, so a poll knows only that *something* moved. Without a second gate,
-  watching one episode re-reads the catalogue of every eligible show — roughly 28 calls for a
-  one-cell edit. `SheetSync` retains results across polls and stamps each id with the
-  `lastWatchedAt` it held at the time; `planLookups` re-requests only ids whose value moved. Watch
-  activity is the right trigger because it is the trigger for everything the sync writes: a season
-  cannot become complete without being watched. The 24h ceiling is the backstop for the one thing
-  that changes with no library activity — `/tv/{id}` status flipping on a renewal — and is daily
-  for the same reason `movieRefreshMs` is.
-- **The retention lives in `SheetSync`, not in `sources/shows.ts`.** The source fetches; the caller
-  decides when, exactly as `movies.ts` and `FeedState` divide it. A TTL cache under the source
-  would serve a stale episode list for a show the caller just decided to refresh *because* it
-  changed — and the planner would silently see a different catalogue than it asked for, which
-  changes what `Status` derives to.
-- **Rollback is not partial-write recovery**; batchUpdate leaves no half-applied state. It exists
-  for the case where *the plan was wrong*, which is why its restore set comes from the observed diff
-  rather than from the plan.
-- **Request order is load-bearing**: edits to pre-existing rows (descending), then the
-  `insertDimension`, then the new row's fill — which shares a row index with the insert, so any
-  "edits before inserts" rule overwrites a real row.
-- **A rollback splits into separate batches**: delete, re-read, then restore. No single ordering is
-  safe once formulas are involved, because `deleteDimension` rewrites the references in everything
-  it shifts — including text written moments earlier in the same batch. Deleting first also does
-  most of the work, since Sheets rewrites the formulas back on the way out exactly as it did on the
-  way in, leaving a plain diff against stable indices (`verify` with an empty plan).
 
 ## No build step
 
@@ -127,9 +52,9 @@ read. `tsc` is a checker only. Consequences that bite:
   every six hours at the default intervals; overlapping runs would race on the disk save.
 - **Errors are per-subsystem** (`calendar`, `library`, `render`, `sheet`). The timers must not clear
   each other's failures. Nothing in the refresh path is allowed to be fatal — the process stays up
-  and `/healthz` reports why. `errors.sheet` is reported but deliberately excluded from
-  `Health.ok`: `/healthz` is the container healthcheck and the CI smoke test, and a frozen sheet
-  sync must not restart the container or fail a deploy.
+  and `/healthz` reports why. `errors.sheet` is reported but deliberately excluded from `Health.ok`:
+  `/healthz` is the container healthcheck and the CI smoke test, and a frozen sheet sync must not
+  restart the container or fail a deploy.
 - **Only `feed.ics` and `token.json` are persisted.** No control state outlives the process, so a
   restart always resyncs. Both are written 0600 through `writeFileAtomic`.
 - **UIDs are derived, never random.** A fresh UID each render makes clients duplicate events
@@ -152,14 +77,133 @@ is deliberately *not* filtered by watch state. Anime is a separate SIMKL type, n
 carries no season number. A grace window past two days pulls monthly archives, whose URLs use an
 **unpadded** month.
 
+---
+
+# The sheet sync
+
+A second consumer of the same poll, structurally separate from the feed: `src/sheets/` (transport),
+`src/sheet/` (pure), `src/sheet-sync.ts` (the protocol). Inert unless `SHEET_ID` **and** a Google
+credential are both supplied — a target with no credential stays off rather than filing an ENOENT
+once per poll.
+
+It writes exactly three things — a season row's `Episode` count, a season row's `End` date, and a
+show row's `Status` — and inserts a season row when a new season is started. Nothing else, ever.
+
+```
+library (already fetched)  ─┐
+/tv/episodes/{id}           ─┤─ plan ─→ guard ─→ batchUpdate ─→ verify ─→ (rollback)
+/tv/{id} | /anime/{id}      ─┘
+```
+
+## Reading the sheet
+
+The spreadsheet is hand-maintained and its structure is implicit, so parsing fails closed rather
+than guessing.
+
+- **A row with the `Show` column filled starts a block**; every row after it belongs to that block
+  until the next one.
+- **Columns are resolved by header, never by position** — they get rearranged. A missing, renamed
+  or duplicated label writes nothing at all, because a duplicate makes "which column is `Episode`"
+  unanswerable and the wrong answer is a real edit to the wrong cell.
+- **Which SIMKL entry a row belongs to is decided by where its id sits**, never by `Type`. A season
+  row's own id wins; a blank one inherits the show row's. Both exceptions exist in the live sheet
+  and are independent of each other — one title has ids in both places, another only on a season
+  row despite reading `Type=show`.
+- **`Episode` on a season row is a count, not an episode number**, because `Length = Episodes ×
+  Episode`. The two coincide for in-order viewing, which is exactly why writing the highest episode
+  number would survive testing and corrupt every total.
+- **A non-blank `End` closes the row even if it does not parse as a date.** A hand-typed `TBD` is
+  not a missing end date, and treating it as one would overwrite the note with a serial.
+
+## What it will and will not write
+
+- **The sheet's own show-row formulas do the roll-ups.** Every derived cell on a show row (`Season`,
+  `Episode`, `End`, `Episodes`, `Length`) is a self-sizing formula over the season rows beneath it.
+  That makes the show row read-only to the sync, makes an insert need no formula rewriting, and is
+  why the never-write-a-formula rule is unconditional.
+- **A season is complete only when `aired === total` AND `watched >= total`.** "Every aired episode
+  watched" dates a season that is still running, and a dated season is never revisited.
+- **Nothing is touched without recent watch activity.** The cut-off (`SHEET_SINCE_DAYS`, 90 by
+  default) is what stops any run retro-editing years of history; a dormant sheet produces zero
+  edits.
+- **Missing data fails closed.** A season with no episode list gets no end date, and — for the same
+  reason — a live-action show with no episode list gets no `Status` either, rather than falling
+  through to the anime reading of the not-aired counter, which spans the whole show.
+- **Exactly one row is added per run.** Plan indices are pre-write while `insertDimension` requests
+  apply cumulatively, so a second insert would land a row high and `verify` would make the same
+  unshifted assumption. It is an invariant of how requests are built, not a budget: a second
+  pending season is reported and taken by the next poll.
+
+## The write protocol
+
+The whole cycle — read, plan, guard, write, verify — happens inside one poll, so what was planned
+and what was written describe the same grid. A snapshot older than 120s is discarded and the cycle
+restarts **from the read**, not from the write.
+
+- **Reads use `spreadsheets.get?includeGridData=true`, writes use `batchUpdate`.** The read gives
+  `userEnteredValue` (the only definitive formula test) and `effectiveValue` (true date serials);
+  the write is atomic, ordered, leaves formats alone, and sends `{numberValue: 46265}` rather than a
+  date string that `08/15` and `15/08` misparse identically for twelve days a month.
+- **A write is never retried.** `batchUpdate` is atomic but not idempotent — a retried
+  `insertDimension` inserts two rows. Reads opt into retry; writes never do.
+- **Request order is load-bearing**: edits to pre-existing rows (descending), then the
+  `insertDimension`, then the new row's fill — which shares a row index with the insert, so any
+  "edits before inserts" rule overwrites a real row.
+- **The write batch snapshots the tab first.** `duplicateSheet` leads the same atomic batch, so
+  there is no state in which the sheet changed but nothing recorded what it looked like. It is
+  server-side, so a 1600-row copy costs no data transfer, and it is dropped once a write verifies.
+  Named versions were the obvious alternative and are reachable from no API at all.
+
+## Verification, and what it cost to learn
+
+**The diff is on `userEnteredValue`, never `effectiveValue`.** Writing one cell recalculates five
+formulas, so `effectiveValue` moves in cells nobody wrote and cannot be compared.
+
+`userEnteredValue` changes only when someone writes — **while the grid holds still**. Inserting a
+row is the exception, and finding that out cost a corrupted sheet: Sheets rewrites the relative A1
+references in every formula the insert shifts, so `=I609*F609` becomes `=I610*F610` with nobody
+having typed anything. Verify read ~1500 of those as unplanned changes, and the rollback then wrote
+the pre-insert text back *and* deleted the row in one batch — so the delete rewrote that text again
+on the way out, one row off. A false positive became the exact corruption the design exists to
+prevent.
+
+So across an insert a formula is checked for still *being* a formula rather than for its text.
+Literals stay strictly compared, and they are what catches a misalignment — every literal on a
+season row moves with the row.
+
+**Rollback is not partial-write recovery**; `batchUpdate` leaves no half-applied state. It exists
+for the case where *the plan was wrong*, and it runs in separate batches: delete the inserted row,
+re-read, then paste the snapshot back over the tab at a zero offset. Deleting first is what shrinks
+the grid — a paste overwrites a range, it cannot remove a row — and it also undoes the reference
+rewriting for free, since Sheets rewrites on the way out exactly as it did on the way in. The paste
+is one server-side request whose cost does not grow with the number of cells that changed, and it
+cannot be off by a row.
+
+If the write landed and no snapshot can be found, the sync **freezes** rather than falling back to
+putting cells back individually — that is the mechanism that produced the misalignment once, and
+running it in the least-exercised state there is would be worse than stopping.
+
+## Catalogue lookups
+
+`/sync/activities` resolves to a list and never to a show, so a poll knows only that *something*
+moved. Without a second gate, watching one episode re-reads the catalogue of every eligible show —
+roughly 28 calls for a one-cell edit.
+
+`SheetSync` retains results across polls and stamps each id with the `lastWatchedAt` it held at the
+time; `planLookups` re-requests only ids whose value moved. Watch activity is the right trigger
+because it is the trigger for everything the sync writes: a season cannot become complete without
+being watched. A 24h ceiling backstops the one thing that changes with no library activity —
+`/tv/{id}` status flipping on a renewal — and is daily for the same reason `movieRefreshMs` is.
+
+**The retention lives in `SheetSync`, not in `sources/shows.ts`.** The source fetches; the caller
+decides when, exactly as `movies.ts` and `FeedState` divide it. A TTL cache under the source would
+serve a stale episode list for a show the caller just decided to refresh *because* it changed. It
+also stores only what the planner reads — per-season shapes, `status`, `runtime` — rather than the
+raw payloads, so per-episode descriptions and images do not accumulate for the life of the process.
+
 ## Further reading
 
 `README.md` has two collapsed sections worth reading before touching the refresh logic: the
 API-call budget per event type, and a list of SIMKL API quirks that cost real time to discover.
-
-SIMKL publishes its API reference in an agent-readable form at <https://api.simkl.org/llms.txt>.
-That is the authority for everything under `src/simkl/` and `src/sources/` — the PIN device flow,
-`/sync/activities`, `/sync/all-items`, the calendar files and the per-title film lookups — and it
-states the rate-limit rules the polling intervals here are derived from. Note that `types.ts` is
-still written from live responses rather than from the docs: the two disagree in several places,
-and the live shape is the one that ships.
+Upstream API references, and what they do not offer, are listed at the end of
+[AGENTS.md](AGENTS.md).

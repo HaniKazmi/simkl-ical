@@ -89,38 +89,6 @@ The three interval settings are floored at 60 seconds and `GRACE_DAYS` is clampe
 to 0–90, so a mistyped value degrades to something sane rather than hammering
 SIMKL or emptying the feed.
 
-### Google Sheet sync (optional)
-
-If you keep a spreadsheet of what you've watched, the same poll can maintain it. Off by default,
-and inert unless `SHEET_ID` **and** a credential are both set — a target with no credential stays
-off rather than failing once per poll. It costs no extra SIMKL requests: the watch detail rides
-along on the library fetch the feed already makes.
-
-| Variable                         | Default    | Notes                                                          |
-| -------------------------------- | ---------- | -------------------------------------------------------------- |
-| `SHEET_ID`                       | —          | The spreadsheet id. Unset ⇒ none of this runs                   |
-| `SHEET_NAME`                     | `Sheet1`   | Which tab                                                       |
-| `GOOGLE_SA_KEY_B64`              | —          | **Secret.** Base64 of the service-account JSON: `base64 -w0 sa.json` |
-| `GOOGLE_APPLICATION_CREDENTIALS` | —          | Path to that JSON instead, for local dev                        |
-| `SHEET_SYNC_MODE`                | `report`   | `off` / `report` / `apply`. Anything unrecognised clamps to `report` |
-| `SHEET_SINCE_DAYS`               | `90`       | Nothing is touched without watch activity this recent           |
-| `SHEET_MAX_EDITS`                | `30`       | Over budget refuses the whole plan rather than trimming it      |
-| `SHEET_MAX_ROWS`                 | `20`       | Distinct rows in one run                                        |
-
-The default mode writes nothing. Point it at the real sheet, read a run's report in the log, and
-only then share the spreadsheet with the service account's `client_email` as **Editor** and switch
-to `apply`. `GET /healthz` carries the mode, the last run and its outcome.
-
-It writes exactly three things — a season row's episode count, a season row's end date, and a show
-row's status — and inserts a season row when you start a new season. It never adds a show, never
-touches a season that already has an end date, never moves a count backwards, and never writes a
-formula. Every write is read back and compared against what was planned; anything unexpected is
-rolled back.
-
-Exactly one row is added per run, so starting two seasons between polls adds them over two runs —
-the report names the one it deferred, and the sync asks for the next poll rather than waiting.
-See [ARCHITECTURE.md](ARCHITECTURE.md#the-sheet-sync).
-
 ## What lands in the feed
 
 | Your SIMKL list      | What's included             |
@@ -148,6 +116,10 @@ Events are all-day and marked transparent, so they never make you look busy. Epi
 go in `DESCRIPTION` rather than `SUMMARY`, so the calendar doesn't surface a spoiler you
 didn't choose to read.
 
+Your `hold` and `dropped` lists are fetched but contribute nothing to the feed. They exist
+for the sheet sync below, which needs to tell "you dropped this" from "SIMKL has never
+heard of it".
+
 ## Subscribing
 
 Use the full `https://…/<FEED_TOKEN>/feed.ics` URL as a *subscribed calendar*, not an import.
@@ -159,6 +131,54 @@ influence.
 
 Anyone with the URL can read your watchlist, so treat it as a credential: use a long
 `FEED_TOKEN`, and serve it over HTTPS.
+
+## Google Sheet sync (optional)
+
+If you keep a spreadsheet of what you've watched, the same poll can maintain it. Off unless
+`SHEET_ID` **and** a credential are both set — a target with no credential stays inert rather
+than failing once per poll, so half-configuring it is safe. It costs no extra SIMKL requests
+for the library: the watch detail rides along on the fetch the feed already makes.
+
+| Variable                         | Default    | Notes                                                          |
+| -------------------------------- | ---------- | -------------------------------------------------------------- |
+| `SHEET_ID`                       | —          | The spreadsheet id, from its URL. Unset ⇒ none of this runs     |
+| `SHEET_NAME`                     | `Sheet1`   | Which tab                                                       |
+| `GOOGLE_SA_KEY_B64`              | —          | **Secret.** Base64 of the service-account JSON: `base64 -w0 sa.json` |
+| `GOOGLE_APPLICATION_CREDENTIALS` | —          | Path to that JSON instead, for local dev                        |
+| `SHEET_SYNC_MODE`                | `report`   | `off` / `report` / `apply`. Anything unrecognised clamps to `report` |
+| `SHEET_SINCE_DAYS`               | `90`       | Nothing is touched without watch activity this recent           |
+| `SHEET_MAX_EDITS`                | `30`       | Over budget refuses the whole plan rather than trimming it      |
+| `SHEET_MAX_ROWS`                 | `20`       | Distinct rows in one run                                        |
+
+### Setting it up
+
+1. Create a service account in the GCP console — it needs no project roles — and download its
+   JSON key.
+2. Share the spreadsheet with the key's `client_email`. **Viewer is enough to start.**
+3. Set `SHEET_ID` and `GOOGLE_SA_KEY_B64`, leave the mode at `report`, and read a run in the
+   log. It plans in full and writes nothing.
+4. Once the report looks right, re-share the sheet as **Editor** and switch to `apply`.
+
+`GET /healthz` carries the mode, the last run and its outcome.
+
+### What it does
+
+It writes exactly three things — a season row's episode count, a season row's end date, and a
+show row's status — and inserts a season row when you start a new season. It never adds a show,
+never touches a season that already has an end date, never moves a count backwards, and never
+writes a formula.
+
+Every write is preceded by a server-side snapshot of the tab and followed by a read-back
+compared against what was planned; anything unexpected restores the snapshot wholesale. If even
+that fails it stops writing for the life of the process and tells you which tab holds the
+pre-write state.
+
+Exactly one row is added per run, so starting two seasons between polls adds them over two runs —
+the report names the one it deferred, and the sync asks for the next poll rather than waiting.
+
+The sheet has to hold up its end: each show row's derived cells are self-sizing formulas over the
+season rows beneath it, and that is what makes the show row read-only to the sync. See
+[ARCHITECTURE.md](ARCHITECTURE.md#the-sheet-sync).
 
 ## Behind a reverse proxy
 
@@ -205,13 +225,17 @@ rather than a runtime failure. Import specifiers carry the real extension
 
 Routes: `GET /:token/feed.ics` and `GET /healthz`. Health is unauthenticated and reports the
 event count, the last refresh, sync and render times, whether the feed is still the one
-loaded from disk, and a per-subsystem error breakdown. It answers `503` rather than `200`
-whenever the feed has stopped moving — a revoked token, a CDN that has stopped answering,
-or a render that keeps throwing — so "the container is up" and "the feed is current" are
-not the same signal.
+loaded from disk, the sheet sync's state, and a per-subsystem error breakdown. It answers
+`503` rather than `200` whenever the feed has stopped moving — a revoked token, a CDN that
+has stopped answering, or a render that keeps throwing — so "the container is up" and "the
+feed is current" are not the same signal. A sheet-sync failure is reported but never makes it
+`503`: it cannot affect the feed, and restarting the container would not fix it.
 
 If your token is ever revoked the last good feed keeps serving and the error is logged;
 re-authorise with `npm run login -- --force`.
+
+Contributing, test conventions and the rules worth knowing before changing anything are in
+[AGENTS.md](AGENTS.md); the design and its reasoning are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 <details>
 <summary><b>How it works</b></summary>
@@ -232,13 +256,17 @@ list, so only the lists that actually changed are refetched. It ignores `playbac
 `rated_at`, neither of which can change the feed — otherwise a scrobbler reporting progress
 would trigger a refetch that renders byte-identical output.
 
+Eleven lists are covered — watching, plan-to-watch, completed, hold and dropped for both shows
+and anime, plus plan-to-watch films. Only seven reach the feed; the rest are there for the
+sheet sync.
+
 | Event                         | API calls                                    |
 | ----------------------------- | -------------------------------------------- |
 | Nothing changed               | 1                                            |
 | Marked an episode watched     | 2                                            |
 | Added or removed a film       | 2 + one lookup per film                      |
-| Removed something from a list | 4 (removals are only reported per category)  |
-| Cold start                    | 8 + one lookup per film                      |
+| Removed something from a list | 6 (removals are only reported per category)  |
+| Cold start                    | 12 + one lookup per film                     |
 | Once a day                    | 1 + one lookup per film                      |
 
 Film release dates get that daily re-read because nothing in your library moves when a
@@ -246,6 +274,10 @@ studio delays a release — gating them on list changes alone meant the feed kep
 date until it aged out, at which point the film disappeared until the next restart.
 
 Steady state is about 12 API calls a day, well inside SIMKL's 10 requests/second limit.
+
+With the sheet sync configured, a cold start adds one per-title episode list and one detail
+lookup for each show with recent watch activity — around 35 for a 300-row sheet. Afterwards
+only titles whose watch time actually moved are re-read, so a warm run is nearer two.
 
 </details>
 
@@ -259,6 +291,9 @@ against this API:
   names is the entire join. Empty lists come back as `{}`, not `{shows: []}`.
 - **`/oauth/pin` returns the literal string `"DEVICE_CODE"`** as `device_code`. It's a
   placeholder — polling is keyed on `user_code`.
+- **A burst of uncached sync calls returns `401 user_token_failed`, not `429`.** It looks
+  exactly like a dead token and isn't; the same token works again minutes later. Re-authorising
+  fixes nothing that waiting would not.
 - **A film's top-level `released` field is unreliable**, consistently two days earlier than
   its real theatrical date. The correct dates are in `release_dates`, per country and per
   release type, where `type: 3` is theatrical and `type: 1` is a premiere screening (which
@@ -269,8 +304,12 @@ against this API:
   against `Last-Modified` is the only way to detect a regeneration.
 - **`next_to_watch` is `null` when you're caught up**, so it can't be used as a progress
   signal. `last_watched` is always populated.
+- **`include_all_episodes=yes` is required** for the completed and dropped lists, or the
+  `seasons` key is absent entirely rather than empty.
 - **Airdates are UTC instants**, and a US evening broadcast is stamped the next day in UTC.
   Roughly 19% of entries land on a different local date in `America/New_York` than naive
   date-slicing would give, and 3% in `Europe/London`.
+- **Anime films are filed under the anime type, not movies**, so a list of "anime" contains
+  entries with no seasons at all.
 
 </details>
