@@ -77,7 +77,7 @@ export const claimSet = (clientEmail: string, now: Date = new Date()): Record<st
 
 const base64url = (input: string): string => Buffer.from(input).toString('base64url');
 
-export const exchangeToken = async (key: ServiceAccountKey, { signal }: { signal?: AbortSignal } = {}): Promise<string> => {
+export const exchangeToken = async (key: ServiceAccountKey, { signal }: { signal?: AbortSignal } = {}): Promise<{ token: string; expiresIn: number }> => {
   const header = base64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
   const claims = base64url(JSON.stringify(claimSet(key.client_email)));
   const signingInput = `${header}.${claims}`;
@@ -93,11 +93,15 @@ export const exchangeToken = async (key: ServiceAccountKey, { signal }: { signal
     signal,
   });
 
-  const body = (await response.json().catch(() => ({}))) as { access_token?: string; error_description?: string };
+  const body = (await response.json().catch(() => ({}))) as { access_token?: string; expires_in?: number; error_description?: string };
   if (!response.ok || !body.access_token) {
     throw new Error(`Google token exchange failed (${response.status}): ${body.error_description ?? JSON.stringify(body)}`);
   }
-  return body.access_token;
+  // Google says an hour today. Taking it from the response rather than assuming
+  // means a shorter-lived token cannot be served past its expiry, which costs a
+  // failed poll each cycle before the 401 handler clears the cache.
+  const expiresIn = typeof body.expires_in === 'number' && body.expires_in > 0 ? body.expires_in : 3600;
+  return { token: body.access_token, expiresIn };
 };
 
 let cached: { token: string; expiresAt: number } | null = null;
@@ -110,7 +114,7 @@ export const clearTokenCache = (): void => {
 /** A bearer token, reused until it is close enough to expiry to be worth replacing. */
 export const getAccessToken = async ({ signal }: { signal?: AbortSignal } = {}): Promise<string> => {
   if (cached && cached.expiresAt - REFRESH_MARGIN_MS > Date.now()) return cached.token;
-  const token = await exchangeToken(readServiceAccountKey(), { signal });
-  cached = { token, expiresAt: Date.now() + 3600 * 1000 };
+  const { token, expiresIn } = await exchangeToken(readServiceAccountKey(), { signal });
+  cached = { token, expiresAt: Date.now() + expiresIn * 1000 };
   return token;
 };

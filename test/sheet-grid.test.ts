@@ -72,8 +72,8 @@ test('a show row starts a block and the rows under it are its seasons', () => {
   );
   assert.deepEqual(grid.blocks.map((b) => b.title), ['Fargo', 'Silo']);
   assert.deepEqual(grid.blocks[0]?.seasons.map((s) => s.season), [1, 2]);
-  assert.equal(grid.blocks[0]?.seasons[0]?.end, 45010);
-  assert.equal(grid.blocks[0]?.seasons[1]?.end, null);
+  assert.equal(grid.blocks[0]?.seasons[0]?.closed, true);
+  assert.equal(grid.blocks[0]?.seasons[1]?.closed, false);
   assert.deepEqual(grid.blocks[1]?.seasons.map((s) => s.row), [5]);
 });
 
@@ -129,4 +129,22 @@ test('a block whose show row has no id still resolves from its season rows', () 
 test('an id claimed by two rows is reported, because neither claimant is safe to write', () => {
   const grid = parseGrid(sheetSnapshot([H, show('A', 'Ended', null, 'anime'), season(1, 6, 45000, null, 99), season(2, 6, 45100, null, 99)]));
   assert.deepEqual([...duplicateIds(grid.blocks)], [99]);
+});
+
+// The likeliest duplication in a hand-maintained file, and the one a
+// season-rows-only scan misses: every season of both blocks would inherit the
+// id, so one title's progress would drive edits in two unrelated places.
+test('the same id on two show rows is caught, not just on two season rows', () => {
+  const grid = parseGrid(
+    sheetSnapshot([H, show('Fargo', 'Ended', 3381, 'show'), season(1, 6, 45000, null), show('Fargo (again)', 'Ended', 3381, 'show'), season(1, 6, 45000, null)]),
+  );
+  assert.deepEqual([...duplicateIds(grid.blocks)], [3381]);
+});
+
+// A row is closed by having anything in End, not by that thing parsing as a
+// date — otherwise a hand-typed note reads as open and gets overwritten.
+test('a non-numeric End still closes the row', () => {
+  const rows = [H, show('Fargo', 'Ended', 1, 'show'), season(1, 6, 45000, null)];
+  rows[2]![5] = 'TBD';
+  assert.equal(parseGrid(sheetSnapshot(rows)).blocks[0]?.seasons[0]?.closed, true);
 });

@@ -71,6 +71,14 @@ export const assertPlanSafe = (
   if (plan.inserts.length > maxInserts) {
     refuse(`${plan.inserts.length} inserts exceeds SHEET_MAX_INSERTS=${maxInserts}.`);
   }
+  // Independent of the configured cap, which a future edit could raise. Every
+  // index in a plan is pre-write, but `insertDimension` requests apply
+  // cumulatively — a second insert would land one row above where it was
+  // planned, and `verify` makes the same unshifted assumption, so the two would
+  // disagree with the sheet in different ways.
+  if (plan.inserts.length > 1) {
+    refuse(`${plan.inserts.length} inserts in one batch: request indices are pre-write and would not be shifted.`);
+  }
   const rows = new Set([...plan.edits.map((e) => e.row), ...plan.inserts.map((i) => i.row)]);
   if (rows.size > maxRows) {
     refuse(`${rows.size} distinct rows exceeds SHEET_MAX_ROWS=${maxRows}.`);
@@ -124,7 +132,7 @@ export const assertPlanSafe = (
     const season = seasonRows.get(cell.row);
     if (!season) refuse(`${where}: ${cell.field} may only be written on a season row.`);
     // A dated season is closed by the user's decision and never revisited.
-    if (season.end !== null) refuse(`${where}: the season already has an end date.`);
+    if (season.closed) refuse(`${where}: the season already has an end date.`);
 
     if (cell.field === 'Episode') {
       const next = cell.value.numberValue;
@@ -210,8 +218,13 @@ export const toRequests = (plan: SheetPlan, grid: Grid): SheetRequest[] => {
   return requests;
 };
 
-/** Prefix for the snapshot tabs the sync makes before writing. */
-const BACKUP_PREFIX = '_sync-backup-';
+/**
+ * Prefix for the snapshot tabs the sync makes before writing. Strict, because
+ * it is the sole basis on which a tab is later swept.
+ */
+export const BACKUP_PREFIX = '_sync-backup-';
+
+export const isBackupTab = (title: string): boolean => title.startsWith(BACKUP_PREFIX);
 
 export const backupName = (now: Date): string => `${BACKUP_PREFIX}${now.toISOString().replaceAll(':', '-').replace('.', '-')}`;
 

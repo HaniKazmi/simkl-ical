@@ -238,10 +238,18 @@ export const deriveStatus = (
   return 'Up To Date';
 };
 
-/** Whether the highest-numbered season SIMKL knows about is still airing. */
+/**
+ * Whether the highest-numbered season SIMKL knows about is part-way through
+ * airing — some out, some still to come.
+ *
+ * `aired > 0` matters. A season listed with nothing aired yet is an announced
+ * future one, and a viewer caught up on everything released is *Up To Date* by
+ * the user's own definition ("all aired seasons are over and watched and a new
+ * season is coming eventually"), not *Watching* with nothing to watch.
+ */
 const latestSeasonAiring = (shapes: Map<number, SeasonShape>): boolean => {
   const latest = [...shapes.values()].sort((a, b) => a.number - b.number).at(-1);
-  return latest !== undefined && latest.aired < latest.total;
+  return latest !== undefined && latest.aired > 0 && latest.aired < latest.total;
 };
 
 // --- Lookups ---------------------------------------------------------------
@@ -358,7 +366,7 @@ export const planSync = (
       // A season row with an end date is finished, by the user's decision. It
       // is never revisited — which is also why a wrongly-stamped end date could
       // never be corrected, and why `End` is so conservative.
-      if (season.end !== null) continue;
+      if (season.closed) continue;
       if (!within(resolved.lastWatchedAt, cutoffMs)) continue;
 
       const label = `${block.title} S${season.season ?? '?'}`;

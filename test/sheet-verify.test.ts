@@ -42,7 +42,7 @@ test('a shift maps a pre-existing row to where the inserts leave it', () => {
 test('the planned write, and only the planned write, verifies', () => {
   const result = verify(before, withChange(3, 'Episode', 8), planOf([editOf(3, 'Episode', 8)]));
   assert.equal(result.ok, true, result.problems.join('; '));
-  assert.equal(result.unexpected, 0);
+  assert.equal(result.landed, true);
 });
 
 // This is why the diff is on userEnteredValue and never effectiveValue: writing
@@ -57,13 +57,17 @@ test('a formula recalculating is not a change', () => {
 });
 
 // A concurrent human, or us being wrong about row alignment. Both mean stop.
-test('an unplanned change fails and is counted', () => {
-  const result = verify(before, withChange(2, 'Episode', 99), planOf([editOf(3, 'Episode', 8)]));
+test('an unplanned change fails', () => {
+  // The planned write landed *and* something else moved — the real shape of a
+  // concurrent edit, and what separates it from a batch that never went out.
+  const rows = ROWS.map((r) => [...r]);
+  rows[3]![before.columns.Episode] = 8;
+  rows[2]![before.columns.Episode] = 99;
+
+  const result = verify(before, sheetSnapshot(rows), planOf([editOf(3, 'Episode', 8)]));
   assert.equal(result.ok, false);
   assert.match(result.problems.join('; '), /D3: changed without being planned/);
-  // The count is what tells a batch that never landed from one that landed
-  // wrongly; the cells themselves come back from the snapshot tab.
-  assert.equal(result.unexpected, 1);
+  assert.equal(result.landed, true);
 });
 
 test('a planned write that did not land fails', () => {
@@ -139,7 +143,7 @@ test('a one-row misalignment is caught, and the inserted row is offered for dele
   const result = verify(before, misaligned, plan);
   assert.equal(result.ok, false);
   assert.deepEqual(result.deleteRows, [4]);
-  assert.ok(result.unexpected > 0);
+  assert.equal(result.landed, true);
 });
 
 test('a show row that lost its title fails, because it silently merges two blocks', () => {
@@ -204,7 +208,7 @@ test("a formula Sheets rewrote because the row moved is not an unplanned change"
   const grid = parseGrid(sheetSnapshot(rowsWithFormulas()));
   const result = verify(grid, sheetSnapshot(afterInsertAt3()), insertPlan(grid));
   assert.equal(result.ok, true, result.problems.join('; '));
-  assert.equal(result.unexpected, 0);
+  assert.equal(result.landed, true);
   assert.deepEqual(result.deleteRows, []);
 });
 
@@ -235,4 +239,24 @@ test('without an insert a changed formula is still a change', () => {
   const result = verify(grid, sheetSnapshot(tampered), { edits: [], inserts: [], skipped: [], notes: [] });
   assert.equal(result.ok, false);
   assert.match(result.problems.join('; '), /H4: changed without being planned/);
+});
+
+// The guard that decides whether to roll back reads this, so it has to be false
+// only when the sheet really is untouched.
+test('a write that never went out reads as not landed', () => {
+  const result = verify(before, sheetSnapshot(ROWS), planOf([editOf(3, 'Episode', 8)]));
+  assert.equal(result.landed, false);
+});
+
+// The case that made `unexpected` the wrong signal: the batch landed and broke
+// a roll-up, so nothing *unplanned* moved, yet skipping the rollback here would
+// also discard the only snapshot of the pre-write state.
+test('a landed write that broke a formula still reads as landed', () => {
+  const rows = ROWS.map((r) => [...r]);
+  rows[3]![before.columns.Episode] = 8;
+  const after = sheetSnapshot(rows);
+  after.rows[1]![before.columns.Episodes] = { userEnteredValue: { formulaValue: '=LET(…)' }, effectiveValue: { errorValue: { type: 'REF' } } };
+  const result = verify(before, after, planOf([editOf(3, 'Episode', 8)]));
+  assert.equal(result.ok, false);
+  assert.equal(result.landed, true);
 });

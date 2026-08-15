@@ -15,7 +15,7 @@ import { errorMessage } from './errors.ts';
 import { parseGrid, type Grid } from './sheet/grid.ts';
 import { describePlan, planLookups, planSync, type CatalogueStamp, type CatalogueView, type SheetPlan, type TitleCatalogue } from './sheet/plan.ts';
 import { indexLibrary, seasonShapes, type TitleProgress } from './sheet/progress.ts';
-import { assertPlanSafe, backupName, backupRequest, deleteRowRequests, deleteSheetRequest, restoreRequest, toRequests, UnsafePlanError } from './sheet/safety.ts';
+import { assertPlanSafe, backupName, backupRequest, deleteRowRequests, deleteSheetRequest, isBackupTab, restoreRequest, toRequests, UnsafePlanError } from './sheet/safety.ts';
 import { verify, type Verification } from './sheet/verify.ts';
 import { applyRequests, listSheets, readSnapshot, type SheetSnapshot } from './sources/sheet.ts';
 import { fetchCatalogue } from './sources/shows.ts';
@@ -248,14 +248,17 @@ export class SheetSync {
 
     if (verification.ok) {
       if (writeError) this.log.warn(`the sheet write reported "${writeError}" but landed exactly as planned`);
-      await this.discardBackup(backupId, signal);
+      await this.sweepBackups(signal);
       this.report(`sheet sync applied ${plan.edits.length} edits and ${plan.inserts.length} inserts`, lines);
       return idle({ status: 'applied', edits: plan.edits.length, inserts: plan.inserts.length, lines });
     }
 
-    // Nothing moved at all, and the write errored: the batch never landed.
+    // The write errored and none of it is in the sheet: the batch never landed.
     // There is nothing to roll back, and the next poll re-plans from scratch.
-    if (writeError && !verification.unexpected && !verification.deleteRows.length && after.rows.length === grid.snapshot.rows.length) {
+    // Asked of the planned writes, not of unplanned changes — a batch that
+    // landed and broke a formula moves nothing unplanned, and treating that as
+    // "never landed" would skip the rollback *and* discard the only snapshot.
+    if (writeError && !verification.landed) {
       this.log.error(`sheet write failed and nothing changed: ${writeError}`);
       await this.discardBackup(backupId, signal);
       return idle({ status: 'failed', lines, error: writeError, retry: true });
@@ -271,6 +274,27 @@ export class SheetSync {
       await applyRequests([deleteSheetRequest(backupId)], { signal });
     } catch (err) {
       this.log.warn(`could not remove the backup tab (harmless, delete it by hand): ${errorMessage(err)}`);
+    }
+  }
+
+  /**
+   * Drop every snapshot tab, not just this run's.
+   *
+   * Only reached after a write verified clean, which is the one moment the
+   * sheet is known good — so an older snapshot describes a state nobody chose
+   * to restore. Without this they only accumulate: the write batch always makes
+   * one, and any failure between the write and the verify read leaves it behind
+   * with nothing to remove it. Each is a full copy of a 1644-row tab, against a
+   * 10M-cell ceiling for the whole spreadsheet.
+   */
+  private async sweepBackups(signal: AbortSignal | undefined): Promise<void> {
+    try {
+      const stale = (await listSheets({ signal })).filter((s) => isBackupTab(s.title));
+      if (!stale.length) return;
+      await applyRequests(stale.map((s) => deleteSheetRequest(s.sheetId)), { signal });
+      if (stale.length > 1) this.log.warn(`removed ${stale.length} snapshot tabs, ${stale.length - 1} left over by an earlier run`);
+    } catch (err) {
+      this.log.warn(`could not remove the backup tabs (harmless, delete them by hand): ${errorMessage(err)}`);
     }
   }
 

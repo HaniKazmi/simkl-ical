@@ -174,7 +174,7 @@ test('apply mode writes exactly what it planned and verifies it', async () => {
     // dropped. Nothing is written without a fresh read either side of it.
     assert.deepEqual(sheet.batches, [['duplicateSheet', 'updateCells'], ['deleteSheet']]);
     const sheets = calls.filter((c) => c.startsWith('https://sheets.googleapis.com/v4/spreadsheets/'));
-    assert.deepEqual(sheets.map((c) => (c.includes(':batchUpdate') ? 'write' : 'read')), ['read', 'write', 'read', 'write']);
+    assert.deepEqual(sheets.map((c) => (c.includes(':batchUpdate') ? 'write' : 'read')), ['read', 'write', 'read', 'read', 'write']);
     // Pinned because `new URL('SID:batchUpdate', base)` reads `SID:` as a
     // scheme and silently sends the request somewhere else entirely.
     assert.ok(sheets[1]?.startsWith('https://sheets.googleapis.com/v4/spreadsheets/SID:batchUpdate'), sheets[1]);
@@ -393,6 +393,23 @@ test('a clean run leaves no backup tab behind', async () => {
     withFetch(sheet.handler, async () => {
       assert.equal((await new SheetSync({ logger: quiet }).run(LIBRARY)).status, 'applied');
       assert.deepEqual([...sheet.titles.values()], ['Sheet1']);
+    }),
+  );
+});
+
+// The write batch always makes a snapshot, and any failure between the write
+// and the verify read leaves it behind with nothing to remove it. A clean run
+// is the one moment the sheet is known good, so it clears the lot.
+test('a clean run sweeps snapshot tabs an earlier run left behind', async () => {
+  clearTokenCache();
+  const sheet = server();
+  sheet.titles.set(99, '_sync-backup-2020-01-01T00-00-00-000Z');
+  sheet.tabs.set(99, []);
+
+  await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL }, () =>
+    withFetch(sheet.handler, async () => {
+      assert.equal((await new SheetSync({ logger: quiet }).run(LIBRARY)).status, 'applied');
+      assert.deepEqual([...sheet.titles.values()], ['Sheet1'], 'the orphan goes too');
     }),
   );
 });

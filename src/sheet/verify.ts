@@ -54,19 +54,22 @@ export interface Verification {
   ok: boolean;
   problems: string[];
   /**
-   * How many cells changed that nothing planned. The rollback restores from the
-   * snapshot tab wholesale, so it needs the count and not the cells — the only
-   * caller asks "did anything move at all", to tell a batch that never landed
-   * from one that landed wrongly.
+   * Whether any part of the write reached the sheet.
+   *
+   * Answered from the planned writes themselves — are they present? — because
+   * that is the actual question. Counting *unplanned* changes instead gets it
+   * backwards for a batch that landed and broke a formula: nothing unplanned
+   * moved, yet the write is very much there. Conservatively true whenever the
+   * sheet could not be inspected at all.
    */
-  unexpected: number;
+  landed: boolean;
   /** Rows the write created, and only ones this read positively identifies as ours. */
   deleteRows: number[];
 }
 
 export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Verification => {
   const problems: string[] = [];
-  let unexpected = 0;
+  let landedWrites = 0;
   const insertRows = plan.inserts.map((i) => i.row);
   const inserted = new Set(insertRows);
 
@@ -76,19 +79,19 @@ export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Ver
   try {
     afterGrid = parseGrid(after);
   } catch (err) {
-    return { ok: false, problems: [`the sheet no longer parses: ${errorMessage(err)}`], unexpected: 0, deleteRows: [] };
+    return { ok: false, problems: [`the sheet no longer parses: ${errorMessage(err)}`], landed: true, deleteRows: [] };
   }
   for (const header of INSPECTED) {
     if (afterGrid.columns[header] !== before.columns[header]) {
       problems.push(`the ${header} column moved during the write`);
     }
   }
-  if (problems.length) return { ok: false, problems, unexpected: 0, deleteRows: [] };
+  if (problems.length) return { ok: false, problems, landed: true, deleteRows: [] };
 
   const grew = after.rows.length - before.snapshot.rows.length;
   if (grew !== insertRows.length) {
     problems.push(`the sheet grew by ${grew} rows, not ${insertRows.length}`);
-    return { ok: false, problems, unexpected: 0, deleteRows: [] };
+    return { ok: false, problems, landed: true, deleteRows: [] };
   }
 
   const expected = new Map<string, ExtendedValue>();
@@ -119,21 +122,18 @@ export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Ver
       // this stays an unconditional equality check.
       if (column === before.columns.id && !sameValue(was, now)) {
         problems.push(`${a1(target, column)}: the id changed`);
-        unexpected += 1;
         continue;
       }
       if (!inspected.has(column)) continue;
 
       if (plannedValue) {
-        if (!sameValue(now, plannedValue)) problems.push(`${a1(target, column)}: the planned write did not land`);
+        if (sameValue(now, plannedValue)) landedWrites += 1;
+        else problems.push(`${a1(target, column)}: the planned write did not land`);
         expected.delete(key);
         continue;
       }
       if (structural && rewritten(was, now)) continue;
-      if (!sameValue(was, now)) {
-        problems.push(`${a1(target, column)}: changed without being planned`);
-        unexpected += 1;
-      }
+      if (!sameValue(was, now)) problems.push(`${a1(target, column)}: changed without being planned`);
     }
   }
 
@@ -144,14 +144,12 @@ export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Ver
       const key = `${row}:${column}`;
       const plannedValue = expected.get(key);
       if (plannedValue) {
-        if (!sameValue(now, plannedValue)) problems.push(`${a1(row, column)}: the inserted row's ${column} did not take`);
+        if (sameValue(now, plannedValue)) landedWrites += 1;
+        else problems.push(`${a1(row, column)}: the inserted row's ${column} did not take`);
         expected.delete(key);
         continue;
       }
-      if (now !== undefined) {
-        problems.push(`${a1(row, column)}: the inserted row carries a value nothing planned`);
-        unexpected += 1;
-      }
+      if (now !== undefined) problems.push(`${a1(row, column)}: the inserted row carries a value nothing planned`);
     }
   }
 
@@ -173,5 +171,5 @@ export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Ver
     }
   }
 
-  return { ok: problems.length === 0, problems, unexpected, deleteRows: problems.length ? [...inserted] : [] };
+  return { ok: problems.length === 0, problems, landed: landedWrites > 0 || grew > 0, deleteRows: problems.length ? [...inserted] : [] };
 };

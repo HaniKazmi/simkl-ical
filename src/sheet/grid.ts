@@ -163,8 +163,15 @@ export interface SeasonRow {
   season: number | null;
   /** Episodes *watched* — a count, not the highest episode number. */
   episode: number | null;
-  /** Date serial, or null when blank. A set end date freezes the row forever. */
-  end: number | null;
+  /**
+   * Whether the row has an end date, which freezes it forever.
+   *
+   * A flag rather than the serial, because the serial is never read and asking
+   * `end !== null` of a parsed number gets the fail-safe backwards: a hand-typed
+   * `TBD` is not blank but does not parse, so it would read as *open* and the
+   * sync would overwrite the note with a date.
+   */
+  closed: boolean;
   /** SIMKL ids, in release order. A row can carry several when a cour was split. */
   ids: number[];
 }
@@ -248,7 +255,7 @@ export const parseGrid = (snapshot: SheetSnapshot): Grid => {
       row,
       season: numberOf(cells[columns.Season]),
       episode: numberOf(cells[columns.Episode]),
-      end: isBlank(cells[columns.End]) ? null : numberOf(cells[columns.End]),
+      closed: !isBlank(cells[columns.End]),
       ids: parseIds(cells[columns.id]),
     });
   }
@@ -267,17 +274,25 @@ export const parseGrid = (snapshot: SheetSnapshot): Grid => {
  */
 export const idsFor = (block: ShowBlock, season: SeasonRow): number[] => (season.ids.length ? season.ids : block.ids);
 
-/** Ids claimed by more than one row. Both claimants are unsafe to write. */
+/**
+ * Ids claimed by more than one row. Both claimants are unsafe to write.
+ *
+ * Show rows count as claimants, not just season rows: the same series entered
+ * twice with the same id on both show rows is the likeliest way this happens in
+ * a hand-maintained file, and every season row of *both* blocks would then
+ * inherit it through `idsFor` — one title's progress driving edits in two
+ * unrelated places.
+ */
 export const duplicateIds = (blocks: ShowBlock[]): Set<number> => {
-  const seen = new Map<number, number>();
+  const seen = new Set<number>();
   const duplicates = new Set<number>();
+  const claim = (id: number): void => {
+    if (seen.has(id)) duplicates.add(id);
+    seen.add(id);
+  };
   for (const block of blocks) {
-    for (const season of block.seasons) {
-      for (const id of season.ids) {
-        seen.set(id, (seen.get(id) ?? 0) + 1);
-        if ((seen.get(id) ?? 0) > 1) duplicates.add(id);
-      }
-    }
+    for (const id of block.ids) claim(id);
+    for (const season of block.seasons) for (const id of season.ids) claim(id);
   }
   return duplicates;
 };
