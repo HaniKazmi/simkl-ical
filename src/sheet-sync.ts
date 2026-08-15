@@ -13,12 +13,12 @@
 import { config } from './config.ts';
 import { errorMessage } from './errors.ts';
 import { parseGrid, type Grid } from './sheet/grid.ts';
-import { describePlan, planLookups, planSync, type CatalogueStamp, type SheetPlan } from './sheet/plan.ts';
-import { indexLibrary, type TitleProgress } from './sheet/progress.ts';
-import { assertPlanSafe, backupName, backupRequest, deleteSheetRequest, restoreRequest, toRequests, toRollbackRequests, UnsafePlanError } from './sheet/safety.ts';
-import { verify } from './sheet/verify.ts';
+import { describePlan, planLookups, planSync, type CatalogueStamp, type CatalogueView, type SheetPlan, type TitleCatalogue } from './sheet/plan.ts';
+import { indexLibrary, seasonShapes, type TitleProgress } from './sheet/progress.ts';
+import { assertPlanSafe, backupName, backupRequest, deleteRowRequests, deleteSheetRequest, restoreRequest, toRequests, UnsafePlanError } from './sheet/safety.ts';
+import { verify, type Verification } from './sheet/verify.ts';
 import { applyRequests, listSheets, readSnapshot, type SheetSnapshot } from './sources/sheet.ts';
-import { fetchCatalogue, type Catalogue } from './sources/shows.ts';
+import { fetchCatalogue } from './sources/shows.ts';
 import type { Logger } from './refresh.ts';
 import type { Library } from './simkl/types.ts';
 
@@ -79,12 +79,16 @@ export class SheetSync {
    * Catalogue results retained across polls, so the planner always sees a
    * complete picture even though only the titles that moved were re-read.
    *
+   * Reduced to what the planner reads — per-season shapes, `status`, `runtime`
+   * — rather than the raw payloads, so this does not accumulate per-episode
+   * descriptions and images for the life of the process.
+   *
    * The gating belongs here rather than in a cache under `fetchCatalogue`: the
    * decision needs the library, and the source has no business knowing about
    * it. Process-local, so a restart re-reads everything — which is the right
    * answer after a restart anyway.
    */
-  private retained: Pick<Catalogue, 'episodes' | 'details'> = { episodes: new Map(), details: new Map() };
+  private retained = new Map<number, TitleCatalogue>();
   private stamps = new Map<number, CatalogueStamp>();
 
   constructor({ logger = console as Logger }: { logger?: Logger } = {}) {
@@ -173,12 +177,19 @@ export class SheetSync {
    * Stamping happens here rather than at the end of the run, so the FRESH
    * retry loop's second pass asks for nothing: it has already been read.
    */
-  private async catalogueFor(grid: Grid, index: Map<number, TitleProgress>, signal: AbortSignal | undefined): Promise<Catalogue> {
+  private async catalogueFor(grid: Grid, index: Map<number, TitleProgress>, signal: AbortSignal | undefined): Promise<CatalogueView> {
     const requests = planLookups(grid, index, { stamps: this.stamps, maxAgeMs: CATALOGUE_MAX_AGE_MS });
     const fetched = await fetchCatalogue(requests, { signal });
 
-    for (const [id, episodes] of fetched.episodes) this.retained.episodes.set(id, episodes);
-    for (const [id, detail] of fetched.details) this.retained.details.set(id, detail);
+    // Derive on the way in: the shapes are computed once per title here rather
+    // than once per season row inside the planner.
+    const entry = (id: number): TitleCatalogue => {
+      const existing = this.retained.get(id) ?? { shapes: new Map() };
+      this.retained.set(id, existing);
+      return existing;
+    };
+    for (const [id, episodes] of fetched.episodes) entry(id).shapes = seasonShapes(episodes);
+    for (const [id, detail] of fetched.details) Object.assign(entry(id), { status: detail.status, runtime: detail.runtime });
 
     // A retryable failure is deliberately not stamped, so the next poll asks
     // again — the same reason the film path withholds its list signature. A
@@ -202,7 +213,7 @@ export class SheetSync {
       this.log.warn(`${fetched.unavailable.length} SIMKL titles are gone upstream: ${fetched.unavailable.join(', ')}`);
     }
 
-    return { ...this.retained, failed: fetched.failed, unavailable: fetched.unavailable };
+    return { titles: this.retained, failed: fetched.failed, unavailable: fetched.unavailable };
   }
 
   private async apply(grid: Grid, plan: SheetPlan, lines: string[], signal: AbortSignal | undefined): Promise<SheetSyncResult> {
@@ -224,9 +235,12 @@ export class SheetSync {
       writeError = errorMessage(err);
     }
     // A timeout can hide a batch that landed, so the tab list is the authority
-    // on whether a snapshot exists — not the reply we may never have seen.
+    // on whether a snapshot exists — not the reply we may never have seen. A
+    // failure to *list* is not evidence that no snapshot exists, and must not
+    // be reported as one: it leaves backupId unset either way, but only one of
+    // the two states means "the tab is definitely not there".
     if (backupId === undefined) {
-      backupId = (await listSheets({ signal }).catch(() => [])).find((s) => s.title === name)?.sheetId;
+      backupId = (await listSheets({ signal })).find((s) => s.title === name)?.sheetId;
     }
 
     const after = await readSnapshot({ signal });
@@ -241,7 +255,7 @@ export class SheetSync {
 
     // Nothing moved at all, and the write errored: the batch never landed.
     // There is nothing to roll back, and the next poll re-plans from scratch.
-    if (writeError && !verification.restores.length && !verification.deleteRows.length && after.rows.length === grid.snapshot.rows.length) {
+    if (writeError && !verification.unexpected && !verification.deleteRows.length && after.rows.length === grid.snapshot.rows.length) {
       this.log.error(`sheet write failed and nothing changed: ${writeError}`);
       await this.discardBackup(backupId, signal);
       return idle({ status: 'failed', lines, error: writeError, retry: true });
@@ -263,7 +277,7 @@ export class SheetSync {
   private async rollback(
     grid: Grid,
     after: SheetSnapshot,
-    verification: ReturnType<typeof verify>,
+    verification: Verification,
     lines: string[],
     backupId: number | undefined,
     name: string,
@@ -282,26 +296,19 @@ export class SheetSync {
       // rewrites the relative references in everything it shifts, including
       // anything written earlier in the same batch.
       if (verification.deleteRows.length) {
-        await applyRequests(toRollbackRequests(after.sheetId, [], verification.deleteRows), { signal });
+        await applyRequests(deleteRowRequests(after.sheetId, verification.deleteRows), { signal });
         restored = await readSnapshot({ signal });
       }
 
-      if (backupId !== undefined) {
-        // One server-side paste of the whole tab, at a zero offset. It cannot
-        // be off by a row, and its cost does not grow with the number of cells
-        // that changed.
-        await applyRequests([restoreRequest(backupId, restored.sheetId, grid.snapshot.rowCount, grid.snapshot.columnCount)], { signal });
-        restored = await readSnapshot({ signal });
-      } else {
-        // No snapshot — the write batch never reported one and the tab list has
-        // none. Fall back to putting back exactly what is observed to differ.
-        this.log.warn('no backup tab to restore from; falling back to a cell-level rollback');
-        const residual = verify(grid, restored, { edits: [], inserts: [], skipped: [], notes: [] });
-        if (residual.restores.length) {
-          await applyRequests(toRollbackRequests(restored.sheetId, residual.restores, []), { signal });
-          restored = await readSnapshot({ signal });
-        }
-      }
+      // One server-side paste of the whole tab, at a zero offset. It cannot be
+      // off by a row, and its cost does not grow with the number of cells that
+      // changed. There is deliberately no cell-level fallback: putting cells
+      // back individually is the mechanism that produced a one-row misalignment
+      // once already, and running it in the one state nobody has exercised —
+      // a landed write whose snapshot cannot be found — is worse than stopping.
+      if (backupId === undefined) throw new Error('the write landed but its snapshot tab could not be found');
+      await applyRequests([restoreRequest(backupId, restored.sheetId, grid.snapshot.rowCount, grid.snapshot.columnCount)], { signal });
+      restored = await readSnapshot({ signal });
 
       const confirmation = verify(grid, restored, { edits: [], inserts: [], skipped: [], notes: [] });
       if (!confirmation.ok) {
@@ -317,9 +324,8 @@ export class SheetSync {
       this.frozen =
         `FROZEN: the sheet write failed verification and the rollback did not complete (${errorMessage(err)}). ` +
         `No further writes this process. ` +
-        (backupId === undefined
-          ? `There is no backup tab; restore by hand from Sheets version history, then restart. `
-          : `The tab "${name}" holds the sheet exactly as it was before the write — copy it back over ${grid.snapshot.title}, delete it, then restart. `) +
+        `Look for a tab named "${name}" — it holds the sheet exactly as it was before the write, so copy it back over ` +
+        `${grid.snapshot.title}, delete it, then restart. If it is not there, restore from Sheets version history instead. ` +
         `Verify problems: ${detail}. Rows to delete: ${verification.deleteRows.map((r) => r + 1).join(', ') || 'none'}.`;
       this.log.error(this.frozen);
       return idle({ status: 'frozen', lines, error: this.frozen });

@@ -1,9 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseGrid } from '../src/sheet/grid.ts';
-import { deriveStatus, needsLookup, planLookups, planSync, statusSource } from '../src/sheet/plan.ts';
-import { dateSerial, indexLibrary } from '../src/sheet/progress.ts';
-import type { Catalogue } from '../src/sources/shows.ts';
+import { deriveStatus, needsLookup, planLookups, planSync, statusSource, type CatalogueView, type TitleCatalogue } from '../src/sheet/plan.ts';
+import { dateSerial, indexLibrary, seasonShapes } from '../src/sheet/progress.ts';
 import type { EpisodeDetail, ShowDetail } from '../src/simkl/types.ts';
 import { daysAgo, libraryItem, sheetSnapshot, SHEET_HEADERS, type CellSpec, type ItemSpec } from './helpers.ts';
 
@@ -33,12 +32,11 @@ interface Scenario {
 const scenario = ({ rows, items, episodes = {}, details = {}, failed = [] }: Scenario) => {
   const grid = parseGrid(sheetSnapshot([H, ...rows]));
   const index = indexLibrary({ shows_watching: { shows: items.map(libraryItem) } });
-  const catalogue: Catalogue = {
-    episodes: new Map(Object.entries(episodes).map(([id, list]) => [Number(id), list])),
-    details: new Map(Object.entries(details).map(([id, detail]) => [Number(id), detail])),
-    failed,
-    unavailable: [],
-  };
+  const titles = new Map<number, TitleCatalogue>();
+  const entry = (id: number) => titles.get(id) ?? titles.set(id, { shapes: new Map() }).get(id)!;
+  for (const [id, list] of Object.entries(episodes)) entry(Number(id)).shapes = seasonShapes(list);
+  for (const [id, detail] of Object.entries(details)) Object.assign(entry(Number(id)), detail);
+  const catalogue: CatalogueView = { titles, failed, unavailable: [] };
   return { grid, index, catalogue, plan: () => planSync(grid, index, catalogue, { timezone: TZ }) };
 };
 
@@ -192,7 +190,9 @@ test('Abandoned comes from the item status, not from list membership', () => {
   const index = indexLibrary({
     shows_dropped: { shows: [libraryItem({ id: 700, status: 'watching', seasons: { 1: watched(10) } })] },
   });
-  const plan = planSync(grid, index, { episodes: new Map(), details: new Map([[700, { status: 'ended' }]]), failed: [], unavailable: [] }, { timezone: TZ });
+  // Real shapes, or the fail-closed rule below would make this pass vacuously.
+  const titles = new Map([[700, { shapes: seasonShapes(eps(1, 10)), status: 'ended' }]]);
+  const plan = planSync(grid, index, { titles, failed: [], unavailable: [] }, { timezone: TZ });
   assert.deepEqual(plan.edits, []);
 });
 
@@ -470,4 +470,42 @@ test('needsLookup reads unstamped, moved and aged as due, and nothing else', () 
   assert.equal(needsLookup({ watchedAt: '2026-08-01T00:00:00Z', at: now - DAY * 2 }, progress, now, DAY), true, 'aged');
   // A title that has dropped out of the library entirely still compares.
   assert.equal(needsLookup({ watchedAt: null, at: now }, undefined, now, DAY), false);
+});
+
+// A live-action block with no episode shapes is a *failed lookup*, not a cour.
+// Reading it as one answers with `notAiredCount`, which spans the whole show
+// rather than the latest season — so Status fails closed the way End already
+// does, and the run's `retry` flag brings it back next poll.
+test('a live-action show whose episode list did not arrive gets no Status', () => {
+  const { plan } = scenario({
+    rows: [show('Silo', 'Ended', 300), season(1, 1, null)],
+    items: [{ id: 300, status: 'watching', seasons: { 1: watched(10) }, watched: 10, total: 10, notAired: 0 }],
+    // No `episodes` entry: the /tv/episodes lookup failed.
+    details: { 300: { status: 'ended' } },
+    failed: [300],
+  });
+  const result = plan();
+  assert.deepEqual(result.edits.filter((e) => e.field === 'Status'), []);
+  assert.match(result.skipped.join('\n'), /Silo: no episode list came back, so Status is left alone/);
+
+  // With the list present the same inputs do produce it, so the guard above is
+  // the missing data and not something else.
+  const withList = scenario({
+    rows: [show('Silo', 'Ended', 300), season(1, 1, null)],
+    items: [{ id: 300, status: 'watching', seasons: { 1: watched(10) }, watched: 10, total: 10, notAired: 0 }],
+    episodes: { 300: eps(1, 10) },
+    details: { 300: { status: 'airing' } },
+  });
+  assert.deepEqual(withList.plan().edits.filter((e) => e.field === 'Status').map((e) => e.value.stringValue), ['Up To Date']);
+});
+
+// Anime legitimately has no episode list — one entry is one cour — so it must
+// keep deriving Status from its own not-aired counter.
+test('an anime block still gets a Status without any episode list', () => {
+  const { plan } = scenario({
+    rows: [show('Frieren', 'Watching', null, 'anime'), season(1, 11, 44000, 1500)],
+    items: [{ id: 1500, status: 'completed', seasons: { 1: watched(11, 3) }, watched: 11, total: 11, notAired: 0 }],
+    details: { 1500: { status: 'ended' } },
+  });
+  assert.deepEqual(plan().edits.filter((e) => e.field === 'Status').map((e) => e.value.stringValue), ['Ended']);
 });

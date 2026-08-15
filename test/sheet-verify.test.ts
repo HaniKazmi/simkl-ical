@@ -44,7 +44,7 @@ test('a shift maps a pre-existing row to where the inserts leave it', () => {
 test('the planned write, and only the planned write, verifies', () => {
   const result = verify(before, withChange(3, 'Episode', 8), planOf([editOf(3, 'Episode', 8)]));
   assert.equal(result.ok, true, result.problems.join('; '));
-  assert.deepEqual(result.restores, []);
+  assert.equal(result.unexpected, 0);
 });
 
 // This is why the diff is on userEnteredValue and never effectiveValue: writing
@@ -59,11 +59,13 @@ test('a formula recalculating is not a change', () => {
 });
 
 // A concurrent human, or us being wrong about row alignment. Both mean stop.
-test('an unplanned change fails and is offered back for restore', () => {
+test('an unplanned change fails and is counted', () => {
   const result = verify(before, withChange(2, 'Episode', 99), planOf([editOf(3, 'Episode', 8)]));
   assert.equal(result.ok, false);
   assert.match(result.problems.join('; '), /D3: changed without being planned/);
-  assert.deepEqual(result.restores, [{ row: 2, column: before.columns.Episode, value: { numberValue: 6 } }]);
+  // The count is what tells a batch that never landed from one that landed
+  // wrongly; the cells themselves come back from the snapshot tab.
+  assert.equal(result.unexpected, 1);
 });
 
 test('a planned write that did not land fails', () => {
@@ -139,7 +141,7 @@ test('a one-row misalignment is caught, and the inserted row is offered for dele
   const result = verify(before, misaligned, plan);
   assert.equal(result.ok, false);
   assert.deepEqual(result.deleteRows, [4]);
-  assert.ok(result.restores.length > 0);
+  assert.ok(result.unexpected > 0);
 });
 
 test('a show row that lost its title fails, because it silently merges two blocks', () => {
@@ -204,7 +206,7 @@ test("a formula Sheets rewrote because the row moved is not an unplanned change"
   const grid = parseGrid(sheetSnapshot(rowsWithFormulas()));
   const result = verify(grid, sheetSnapshot(afterInsertAt3()), insertPlan(grid));
   assert.equal(result.ok, true, result.problems.join('; '));
-  assert.deepEqual(result.restores, []);
+  assert.equal(result.unexpected, 0);
   assert.deepEqual(result.deleteRows, []);
 });
 

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { a1, parseGrid, type Grid, type HeaderName } from '../src/sheet/grid.ts';
-import { assertPlanSafe, toRequests, toRollbackRequests, UnsafePlanError } from '../src/sheet/safety.ts';
+import { assertPlanSafe, deleteRowRequests, toRequests, UnsafePlanError } from '../src/sheet/safety.ts';
 import { dateSerial } from '../src/sheet/progress.ts';
 import type { CellEdit, RowInsert, SheetPlan } from '../src/sheet/plan.ts';
 import type { ExtendedValue } from '../src/sheets/types.ts';
@@ -193,18 +193,13 @@ test('an insert precedes its own fill, which shares the same row index', () => {
   assert.ok(kinds(requests).slice(1).every((k) => k === 'write@4'));
 });
 
-// deleteDimension shifts every row beneath it. Deleting first would land every
-// restore one row off, turning a failed verify into the corruption it undoes.
-test('a rollback restores every cell before it deletes any row', () => {
-  const requests = toRollbackRequests(1, [{ row: 2, column: 3, value: { numberValue: 3 } }, { row: 9, column: 3, value: undefined }], [4]);
-  assert.deepEqual(kinds(requests), ['write@2', 'write@9', 'delete']);
-});
-
-test('a rollback of a never-set cell clears it rather than writing a blank', () => {
-  const [request] = toRollbackRequests(1, [{ row: 2, column: 3, value: undefined }], []);
-  assert.ok(request && 'updateCells' in request);
-  assert.deepEqual(request.updateCells.rows[0]?.values, [{}]);
-  assert.equal(request.updateCells.fields, 'userEnteredValue');
+// deleteDimension shifts every row beneath it, so the deletes go bottom-up and
+// no index moves under one that has not run yet.
+test('row deletions are emitted descending', () => {
+  assert.deepEqual(
+    deleteRowRequests(1, [4, 40, 9]).map((r) => ('deleteDimension' in r ? r.deleteDimension.range.startIndex : -1)),
+    [40, 9, 4],
+  );
 });
 
 // Past the end of the snapshot both sides read as undefined, so the value

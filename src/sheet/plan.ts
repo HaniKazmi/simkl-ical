@@ -10,17 +10,30 @@
 
 import { config } from '../config.ts';
 import { a1, columnLetter, duplicateIds, idsFor, type ColumnMap, type Grid, type HeaderName, type SeasonRow, type ShowBlock } from './grid.ts';
-import {
-  courComplete,
-  runtimeDays,
-  seasonComplete,
-  seasonShapes,
-  watchSerial,
-  type SeasonShape,
-  type TitleProgress,
-} from './progress.ts';
-import type { CatalogueRequest, Catalogue } from '../sources/shows.ts';
+import { courComplete, runtimeDays, seasonComplete, watchSerial, type SeasonShape, type TitleProgress } from './progress.ts';
+import type { CatalogueRequest } from '../sources/shows.ts';
 import type { CellData, ExtendedValue } from '../sheets/types.ts';
+
+/**
+ * What one title's catalogue lookups reduce to. Everything the planner reads,
+ * and nothing else: the raw `/tv/episodes/{id}` array is only ever fed to
+ * `seasonShapes`, and the `extended=full` detail object is only ever asked for
+ * `status` and `runtime`. Deriving at fold-in time computes the shapes once per
+ * title instead of once per season row, and keeps per-episode descriptions and
+ * images out of a map that lives for the life of the process.
+ */
+export interface TitleCatalogue {
+  shapes: Map<number, SeasonShape>;
+  status?: string;
+  runtime?: number | null;
+}
+
+export interface CatalogueView {
+  titles: Map<number, TitleCatalogue>;
+  /** Ids whose lookup errored in a way worth retrying. */
+  failed: number[];
+  unavailable: number[];
+}
 
 const MS_PER_DAY = 86_400_000;
 
@@ -92,28 +105,29 @@ const latestOf = (progresses: TitleProgress[]): string | null =>
 
 const within = (iso: string | null, cutoffMs: number): boolean => iso !== null && Date.parse(iso) >= cutoffMs;
 
+/**
+ * Has anything in this block been watched recently enough to touch?
+ *
+ * One definition on purpose: the cut-off is what stops any run retro-editing
+ * years of history, and `planLookups` and `planSync` must never disagree about
+ * which blocks are in scope.
+ */
+const isRecent = (ids: number[], index: Map<number, TitleProgress>, cutoffMs: number): boolean =>
+  within(latestOf(ids.map((id) => index.get(id)).filter((p): p is TitleProgress => p !== undefined)), cutoffMs);
+
 // --- Row resolution --------------------------------------------------------
 
 /**
- * How a season row maps onto SIMKL, decided by **where its id sits** and never
- * by `Type`.
- *
- * - `cour`: the row carries its own id, so that entry *is* this row — an anime
- *   cour, Doctor Who's 2024 renumbering, Parasyte. Its own counters describe
- *   the whole season.
- * - `season`: the row inherits the show row's id, so the entry spans many
- *   seasons and the row is selected out of it by season number.
+ * What a season row resolves to. How it got there depends on **where its id
+ * sits**, never on `Type`: a row carrying its own id *is* that SIMKL entry (an
+ * anime cour, Doctor Who's 2024 renumbering, Parasyte) and its own counters
+ * describe the whole season, while a row inheriting the show row's id is
+ * selected out of a multi-season entry by season number.
  */
-type RowModel = 'cour' | 'season';
-
 interface ResolvedRow {
-  model: RowModel;
-  ids: number[];
-  progresses: TitleProgress[];
   watched: number;
   complete: boolean;
   lastWatchedAt: string | null;
-  firstWatchedAt: string | null;
 }
 
 const numberedSeasons = (progress: TitleProgress): number[] => [...progress.seasons.keys()];
@@ -129,7 +143,7 @@ const resolveRow = (
   block: ShowBlock,
   season: SeasonRow,
   index: Map<number, TitleProgress>,
-  catalogue: Catalogue,
+  catalogue: CatalogueView,
   duplicates: Set<number>,
 ): ResolvedRow | string | null => {
   const ids = idsFor(block, season);
@@ -159,19 +173,12 @@ const resolveRow = (
       return `${label}: SIMKL entry ${multi.map((p) => p.id).join(', ')} covers ${multi.map((p) => numberedSeasons(p).length).join(', ')} seasons, so the row is ambiguous`;
     }
     return {
-      model: 'cour',
-      ids,
-      progresses: resolved,
       // Summed across all ids: a split cour is one row.
       watched: resolved.reduce((total, p) => total + watchedIn(p), 0),
       // Only once *every* id is complete.
       complete: resolved.every((p) => courComplete(p)),
-      // Ordered list: the last id ends the row, the first starts it.
+      // An ordered list, so the last id is the one that ends the row.
       lastWatchedAt: resolved.at(-1)?.lastWatchedAt ?? null,
-      firstWatchedAt: [...(resolved[0]?.seasons.values() ?? [])].reduce<string | null>(
-        (earliest, s) => (s.firstWatchedAt && (!earliest || s.firstWatchedAt < earliest) ? s.firstWatchedAt : earliest),
-        null,
-      ),
     };
   }
 
@@ -180,15 +187,10 @@ const resolveRow = (
   const watched = progress.seasons.get(season.season);
   if (!watched || watched.watched === 0) return null;
 
-  const shapes = seasonShapes(catalogue.episodes.get(progress.id));
   return {
-    model: 'season',
-    ids,
-    progresses: resolved,
     watched: watched.watched,
-    complete: seasonComplete(shapes.get(season.season), watched.watched),
+    complete: seasonComplete(catalogue.titles.get(progress.id)?.shapes.get(season.season), watched.watched),
     lastWatchedAt: watched.lastWatchedAt,
-    firstWatchedAt: watched.firstWatchedAt,
   };
 };
 
@@ -303,10 +305,7 @@ export const planLookups = (
   const due = (id: number): boolean => needsLookup(stamps.get(id), index.get(id), nowMs, maxAgeMs);
 
   for (const block of grid.blocks) {
-    const progresses = blockIds(block)
-      .map((id) => index.get(id))
-      .filter((p): p is TitleProgress => p !== undefined);
-    if (!within(latestOf(progresses), cutoffMs)) continue;
+    if (!isRecent(blockIds(block), index, cutoffMs)) continue;
 
     const anime = block.ids.length === 0;
     // The episode list cannot be gated on "a season ended" — it is what
@@ -326,7 +325,7 @@ export const planLookups = (
 export const planSync = (
   grid: Grid,
   index: Map<number, TitleProgress>,
-  catalogue: Catalogue,
+  catalogue: CatalogueView,
   { now = new Date(), timezone = config.timezone, sinceDays = config.sheetSinceDays, maxInserts = config.sheetMaxInserts }: PlanOptions & { maxInserts?: number } = {},
 ): SheetPlan => {
   const plan: SheetPlan = { edits: [], inserts: [], skipped: [], notes: [] };
@@ -335,14 +334,13 @@ export const planSync = (
   const seen = new Set<number>();
 
   for (const block of grid.blocks) {
-    for (const id of blockIds(block)) seen.add(id);
+    const ids = blockIds(block);
+    for (const id of ids) seen.add(id);
 
-    const progresses = blockIds(block)
-      .map((id) => index.get(id))
-      .filter((p): p is TitleProgress => p !== undefined);
     // The cut-off applies uniformly, with no exemptions. A dormant sheet
     // produces zero edits, and no run can retro-edit years of history.
-    if (!within(latestOf(progresses), cutoffMs)) continue;
+    if (!isRecent(ids, index, cutoffMs)) continue;
+    const anime = block.ids.length === 0;
 
     // Every whole season the block already has a row for, computed up front and
     // independently of whether that row resolved. A row the planner declined to
@@ -383,15 +381,24 @@ export const planSync = (
     const sourceId = statusSource(block);
     const source = (sourceId === null ? null : index.get(sourceId)) ?? null;
     if (source) {
-      const shapes = seasonShapes(catalogue.episodes.get(source.id));
-      const status = deriveStatus(source, {
-        detailStatus: catalogue.details.get(source.id)?.status,
-        // Anime carries no episode list, so its own not-aired counter answers
-        // the same question for the cour.
-        latestSeasonAiring: shapes.size ? latestSeasonAiring(shapes) : source.notAiredCount > 0,
-      });
-      if (status !== null && status !== block.status) {
-        plan.edits.push(edit(grid, block.row, 'Status', str(status), `${block.title}: ${block.status ?? '(blank)'} -> ${status}`));
+      const entry = catalogue.titles.get(source.id);
+      // Which model applies is decided by where the ids sit — the same rule
+      // `planLookups` uses — and never by whether data happened to arrive.
+      // Anime asks its own not-aired counter because one entry is one cour. A
+      // live-action block with no shapes is a *failed lookup*, not a cour, and
+      // reading it as one would answer with a count that spans the whole show
+      // rather than the latest season. So it declines to write; `retry` is
+      // already set, and the next poll has the answer.
+      if (!anime && !entry?.shapes.size) {
+        plan.skipped.push(`${block.title}: no episode list came back, so Status is left alone`);
+      } else {
+        const status = deriveStatus(source, {
+          detailStatus: entry?.status,
+          latestSeasonAiring: anime ? source.notAiredCount > 0 : latestSeasonAiring(entry?.shapes ?? new Map()),
+        });
+        if (status !== null && status !== block.status) {
+          plan.edits.push(edit(grid, block.row, 'Status', str(status), `${block.title}: ${block.status ?? '(blank)'} -> ${status}`));
+        }
       }
     }
 
@@ -427,7 +434,7 @@ const planInsert = (
   block: ShowBlock,
   source: TitleProgress | null,
   covered: Set<number>,
-  catalogue: Catalogue,
+  catalogue: CatalogueView,
   { now, timezone, sinceDays }: Required<Omit<PlanOptions, never>>,
 ): RowInsert | string | null => {
   if (block.type !== 'show' || !source || !block.ids.length) return null;
@@ -440,7 +447,8 @@ const planInsert = (
   if (!candidate) return null;
 
   const label = `${block.title} S${candidate.number}`;
-  const runtime = runtimeDays(catalogue.details.get(source.id)?.runtime);
+  const entry = catalogue.titles.get(source.id);
+  const runtime = runtimeDays(entry?.runtime);
   if (runtime === null) return `${label}: would be added, but SIMKL gives no episode runtime for the Episodes column`;
 
   const start = watchSerial(candidate.firstWatchedAt, timezone);
@@ -459,8 +467,7 @@ const planInsert = (
     return `${label}: would be added, but there is no season row above the insertion point to inherit formats from`;
   }
 
-  const shapes = seasonShapes(catalogue.episodes.get(source.id));
-  const complete = seasonComplete(shapes.get(candidate.number), candidate.watched);
+  const complete = seasonComplete(entry?.shapes.get(candidate.number), candidate.watched);
   const end = complete ? watchSerial(candidate.lastWatchedAt, timezone) : null;
 
   const fill: CellEdit[] = [

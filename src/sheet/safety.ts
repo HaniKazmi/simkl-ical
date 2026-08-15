@@ -12,7 +12,7 @@
  */
 
 import { config } from '../config.ts';
-import { a1, isFormula, type Grid, type HeaderName } from './grid.ts';
+import { a1, isFormula, sameValue, type Grid, type HeaderName } from './grid.ts';
 import { dateSerial } from './progress.ts';
 import type { CellEdit, RowInsert, SheetPlan } from './plan.ts';
 import type { ExtendedValue, GridRange, SheetRequest } from '../sheets/types.ts';
@@ -38,17 +38,6 @@ export class UnsafePlanError extends Error {
 
 const refuse = (message: string): never => {
   throw new UnsafePlanError(message);
-};
-
-/** Structural, not `JSON.stringify` — key order is not part of a cell's value. */
-const sameValue = (a: ExtendedValue | undefined, b: ExtendedValue | undefined): boolean => {
-  if (a === undefined || b === undefined) return a === b;
-  return (
-    a.numberValue === b.numberValue &&
-    a.stringValue === b.stringValue &&
-    a.boolValue === b.boolValue &&
-    a.formulaValue === b.formulaValue
-  );
 };
 
 const describeValue = (value: ExtendedValue): string =>
@@ -259,34 +248,16 @@ export const restoreRequest = (fromSheetId: number, toSheetId: number, rowCount:
   },
 });
 
-export interface Restore {
-  row: number;
-  column: number;
-  value: ExtendedValue | undefined;
-}
-
 /**
- * Undo, from the *observed* diff rather than from the plan.
+ * Undo the structural half of a write: delete the rows it inserted.
  *
- * Rollback is not partial-write recovery — batchUpdate is atomic, so there is
- * never a half-applied state. It exists for a different failure: the plan was
- * wrong. That is why the plan cannot also be the authority on what to undo.
- *
- * Ordered restores-first, delete-last, for when both are unavoidable in one
- * batch: `deleteDimension` shifts every row beneath it, so deleting first would
- * land every restore below the insert one row off.
- *
- * **`SheetSync` deliberately never passes both.** It deletes in one batch,
- * re-reads, and only then computes and restores what still differs. Neither
- * order is safe in a single batch once formulas are involved — the delete
- * rewrites the relative references in everything it shifts, *including* text
- * written moments earlier in the same batch. Deleting first and re-reading
- * sidesteps that entirely, and it is also what puts the formulas back, since
- * Sheets rewrites them on the way out exactly as it did on the way in.
+ * Descending, so no index shifts under the deletes. There is no cell-restore
+ * counterpart — `SheetSync` restores from the snapshot tab instead, because
+ * putting individual cells back cannot be made safe alongside a delete: the
+ * delete rewrites the relative references in everything it shifts, including
+ * text written moments earlier in the same batch.
  */
-export const toRollbackRequests = (sheetId: number, restores: Restore[], deleteRows: number[]): SheetRequest[] => [
-  ...restores.map((r) => writeCell(sheetId, r.row, r.column, r.value)),
-  ...[...deleteRows]
+export const deleteRowRequests = (sheetId: number, rows: number[]): SheetRequest[] =>
+  [...rows]
     .sort((a, b) => b - a)
-    .map((row) => ({ deleteDimension: { range: { sheetId, dimension: 'ROWS' as const, startIndex: row, endIndex: row + 1 } } })),
-];
+    .map((row) => ({ deleteDimension: { range: { sheetId, dimension: 'ROWS' as const, startIndex: row, endIndex: row + 1 } } }));

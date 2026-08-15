@@ -4,15 +4,16 @@
  * The comparison is on `userEnteredValue`, never `effectiveValue`. Writing a
  * season's `Episode` recalculates five formulas on the show row above it, so
  * `effectiveValue` moves in cells nobody wrote and cannot be compared at all.
- * `userEnteredValue` changes **only when someone writes** — which turns
- * verification into an equality check rather than a heuristic, and makes any
- * unplanned change mean one of exactly two things: a concurrent human, or us
- * being wrong about row alignment. Both mean stop.
+ * `userEnteredValue` changes only when someone writes — while the grid holds
+ * still. That makes verification an equality check rather than a heuristic, and
+ * makes an unplanned change mean one of exactly two things: a concurrent human,
+ * or us being wrong about row alignment. Both mean stop. The one exception is a
+ * row insert, which makes Sheets rewrite formula text on its own; see
+ * `rewritten` below.
  */
 
 import { errorMessage } from '../errors.ts';
-import { a1, parseGrid, type Grid, type HeaderName } from './grid.ts';
-import type { Restore } from './safety.ts';
+import { a1, isFormulaValue, parseGrid, sameValue, type Grid, type HeaderName } from './grid.ts';
 import type { SheetPlan } from './plan.ts';
 import type { CellData, ExtendedValue } from '../sheets/types.ts';
 import type { SheetSnapshot } from '../sources/sheet.ts';
@@ -26,13 +27,6 @@ const INSPECTED: HeaderName[] = ['Show', 'Status', 'Season', 'Episode', 'Start',
 
 /** Where a pre-existing row ends up once the inserts have been applied. */
 export const shiftRow = (row: number, insertRows: number[]): number => row + insertRows.filter((at) => at <= row).length;
-
-const same = (a: ExtendedValue | undefined, b: ExtendedValue | undefined): boolean => {
-  if (a === undefined || b === undefined) return a === undefined && b === undefined;
-  return a.numberValue === b.numberValue && a.stringValue === b.stringValue && a.boolValue === b.boolValue && a.formulaValue === b.formulaValue;
-};
-
-const isFormula = (value: ExtendedValue | undefined): boolean => typeof value?.formulaValue === 'string';
 
 /**
  * Whether a formula's text changing is Sheets' doing rather than ours.
@@ -49,7 +43,7 @@ const isFormula = (value: ExtendedValue | undefined): boolean => typeof value?.f
  * not for its text. Literals stay strictly compared, which is what actually
  * catches a misalignment: every literal on a season row would move with it.
  */
-const rewritten = (was: ExtendedValue | undefined, now: ExtendedValue | undefined): boolean => isFormula(was) && isFormula(now);
+const rewritten = (was: ExtendedValue | undefined, now: ExtendedValue | undefined): boolean => isFormulaValue(was) && isFormulaValue(now);
 
 const cell = (snapshot: SheetSnapshot, row: number, column: number): CellData | undefined => snapshot.rows[row]?.[column];
 
@@ -59,15 +53,20 @@ const entered = (snapshot: SheetSnapshot, row: number, column: number): Extended
 export interface Verification {
   ok: boolean;
   problems: string[];
-  /** Cells to put back, in *post-insert* coordinates. Derived from what changed, not from the plan. */
-  restores: Restore[];
+  /**
+   * How many cells changed that nothing planned. The rollback restores from the
+   * snapshot tab wholesale, so it needs the count and not the cells — the only
+   * caller asks "did anything move at all", to tell a batch that never landed
+   * from one that landed wrongly.
+   */
+  unexpected: number;
   /** Rows the write created, and only ones this read positively identifies as ours. */
   deleteRows: number[];
 }
 
 export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Verification => {
   const problems: string[] = [];
-  const restores: Restore[] = [];
+  let unexpected = 0;
   const insertRows = plan.inserts.map((i) => i.row);
   const inserted = new Set(insertRows);
 
@@ -77,19 +76,19 @@ export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Ver
   try {
     afterGrid = parseGrid(after);
   } catch (err) {
-    return { ok: false, problems: [`the sheet no longer parses: ${errorMessage(err)}`], restores: [], deleteRows: [] };
+    return { ok: false, problems: [`the sheet no longer parses: ${errorMessage(err)}`], unexpected: 0, deleteRows: [] };
   }
   for (const header of INSPECTED) {
     if (afterGrid.columns[header] !== before.columns[header]) {
       problems.push(`the ${header} column moved during the write`);
     }
   }
-  if (problems.length) return { ok: false, problems, restores: [], deleteRows: [] };
+  if (problems.length) return { ok: false, problems, unexpected: 0, deleteRows: [] };
 
   const grew = after.rows.length - before.snapshot.rows.length;
   if (grew !== insertRows.length) {
     problems.push(`the sheet grew by ${grew} rows, not ${insertRows.length}`);
-    return { ok: false, problems, restores: [], deleteRows: [] };
+    return { ok: false, problems, unexpected: 0, deleteRows: [] };
   }
 
   const expected = new Map<string, ExtendedValue>();
@@ -99,7 +98,7 @@ export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Ver
   }
 
   const columns = Object.values(before.columns);
-  const inspected = INSPECTED.map((h) => before.columns[h]);
+  const inspected = new Set(INSPECTED.map((h) => before.columns[h]));
   // Only an insert moves rows, and only moved rows get their formulas rewritten.
   const structural = insertRows.length > 0;
 
@@ -114,25 +113,26 @@ export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Ver
       const plannedValue = expected.get(key);
 
       // The join key is never written by design, so any change to it means the
-      // rows are not the rows we think they are. Formulas are exempt for the
-      // same reason as below — 21 `Start` cells are formulas, and an `id` could
-      // be one too.
-      if (column === before.columns.id && !same(was, now) && !(structural && rewritten(was, now))) {
+      // rows are not the rows we think they are. No formula exemption here:
+      // measured against the live sheet, 0 of 1644 `id` cells are formulas
+      // (21 `Start` cells are, which is where the temptation came from), so
+      // this stays an unconditional equality check.
+      if (column === before.columns.id && !sameValue(was, now)) {
         problems.push(`${a1(target, column)}: the id changed`);
-        restores.push({ row: target, column, value: was });
+        unexpected += 1;
         continue;
       }
-      if (!inspected.includes(column)) continue;
+      if (!inspected.has(column)) continue;
 
       if (plannedValue) {
-        if (!same(now, plannedValue)) problems.push(`${a1(target, column)}: the planned write did not land`);
+        if (!sameValue(now, plannedValue)) problems.push(`${a1(target, column)}: the planned write did not land`);
         expected.delete(key);
         continue;
       }
       if (structural && rewritten(was, now)) continue;
-      if (!same(was, now)) {
+      if (!sameValue(was, now)) {
         problems.push(`${a1(target, column)}: changed without being planned`);
-        restores.push({ row: target, column, value: was });
+        unexpected += 1;
       }
     }
   }
@@ -144,11 +144,14 @@ export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Ver
       const key = `${row}:${column}`;
       const plannedValue = expected.get(key);
       if (plannedValue) {
-        if (!same(now, plannedValue)) problems.push(`${a1(row, column)}: the inserted row's ${column} did not take`);
+        if (!sameValue(now, plannedValue)) problems.push(`${a1(row, column)}: the inserted row's ${column} did not take`);
         expected.delete(key);
         continue;
       }
-      if (now !== undefined) problems.push(`${a1(row, column)}: the inserted row carries a value nothing planned`);
+      if (now !== undefined) {
+        problems.push(`${a1(row, column)}: the inserted row carries a value nothing planned`);
+        unexpected += 1;
+      }
     }
   }
 
@@ -170,5 +173,5 @@ export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Ver
     }
   }
 
-  return { ok: problems.length === 0, problems, restores, deleteRows: problems.length ? [...inserted] : [] };
+  return { ok: problems.length === 0, problems, unexpected, deleteRows: problems.length ? [...inserted] : [] };
 };

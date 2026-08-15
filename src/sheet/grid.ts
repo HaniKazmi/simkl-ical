@@ -7,7 +7,7 @@
  * module fails closed rather than guessing.
  */
 
-import type { CellData } from '../sheets/types.ts';
+import type { CellData, ExtendedValue } from '../sheets/types.ts';
 import type { SheetSnapshot } from '../sources/sheet.ts';
 
 /**
@@ -41,7 +41,24 @@ export class GridError extends Error {
  * like a formula result in `effectiveValue` and be a literal, and vice versa;
  * only what was typed says which.
  */
-export const isFormula = (cell: CellData | undefined): boolean => typeof cell?.userEnteredValue?.formulaValue === 'string';
+export const isFormulaValue = (value: ExtendedValue | undefined): boolean => typeof value?.formulaValue === 'string';
+
+export const isFormula = (cell: CellData | undefined): boolean => isFormulaValue(cell?.userEnteredValue);
+
+/**
+ * Whether two cell values are the same. Structural, not `JSON.stringify` — key
+ * order is not part of a value.
+ *
+ * One definition, because two consumers ask the same question for opposite
+ * reasons: the guard uses it for "the sheet still holds what the plan was built
+ * on", the verifier for "did anything change". `ExtendedValue` has five members
+ * and this compares four; if only one copy of that decision ever learned about
+ * `errorValue`, the guard would pass plans the verifier then reverts.
+ */
+export const sameValue = (a: ExtendedValue | undefined, b: ExtendedValue | undefined): boolean => {
+  if (a === undefined || b === undefined) return a === b;
+  return a.numberValue === b.numberValue && a.stringValue === b.stringValue && a.boolValue === b.boolValue && a.formulaValue === b.formulaValue;
+};
 
 /**
  * The computed value: a formula's result, or a literal's own value. Date
