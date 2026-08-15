@@ -56,7 +56,8 @@ docker compose up -d
 ```
 
 Secrets live in `simkl.secrets.env` (gitignored). Everything else — timezone, release
-country, grace window, published port — is set directly in `docker-compose.yml`, so the
+country, grace window, published port, and the optional [sheet
+sync](#google-sheet-sync-optional) — is set directly in `docker-compose.yml`, so the
 deployment is self-describing and safe to commit. Edit it there.
 
 Run the login **first**. `/healthz` answers `503` until a token exists, so a container
