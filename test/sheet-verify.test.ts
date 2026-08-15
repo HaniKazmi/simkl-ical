@@ -146,3 +146,93 @@ test('a show row that lost its title fails, because it silently merges two block
   const result = verify(before, withChange(1, 'Show', null), planOf([editOf(3, 'Episode', 8)]));
   assert.equal(result.ok, false);
 });
+
+// --- formula rewriting on insert ------------------------------------------
+//
+// The failure that corrupted the first real apply run. Inserting a row shifts
+// every row beneath it and Sheets rewrites the relative A1 references in every
+// affected formula. Verify read those rewrites as ~1500 unplanned changes, and
+// the rollback then wrote the pre-insert text back *and* deleted the row in one
+// batch — so the delete rewrote it again, one row off.
+//
+// The earlier insert tests missed it twice over: they appended at the end, so
+// nothing shifted, and their formulas carried no row numbers to rewrite.
+
+/** A block whose formulas name their own rows, the way the real sheet's do. */
+const rowsWithFormulas = (): CellSpec[][] => [
+  H,
+  ['Fargo', 'Ended', { formula: '=LET(h,MATCH("*",OFFSET($A2,1,0,40),0)-1,OFFSET($E2,h,0))', value: 2 }, { formula: '=LET(…$F2…)', value: 6 }, 45000, { formula: '=LET(…$H2…)' }, { formula: '=LET(…$F2…)', value: 12 }, { formula: '=LET(…$J2…)' }, 1, 'show'],
+  [null, null, 1, 6, 45000, 44000, 0.0153, { formula: '=G3*D3' }, null, null],
+  [null, null, 3, 4, 45500, null, 0.0153, { formula: '=G4*D4' }, null, null],
+];
+
+/** What Sheets returns after inserting at index 3: rows below shift and rewrite. */
+const afterInsertAt3 = (): CellSpec[][] => {
+  const rows = rowsWithFormulas();
+  const shifted: CellSpec[][] = [
+    ...rows.slice(0, 3),
+    [null, null, 2, 5, 45400, null, 0.0153, { formula: '=G4*D4' }, null, null], // the new row
+    [null, null, 3, 4, 45500, null, 0.0153, { formula: '=G5*D5' }, null, null], // was row 4, rewritten
+  ];
+  return shifted;
+};
+
+const insertPlan = (before: ReturnType<typeof parseGrid>): SheetPlan => ({
+  edits: [],
+  inserts: [
+    {
+      row: 3,
+      title: 'Fargo',
+      season: 2,
+      fill: (['Season', 'Episode', 'Start', 'Episodes', 'Length'] as HeaderName[]).map((field) => ({
+        row: 3,
+        column: before.columns[field],
+        field,
+        previous: undefined,
+        value: cellOf(afterInsertAt3()[3]![before.columns[field]]!).userEnteredValue!,
+        address: a1(3, before.columns[field]),
+        note: 'new',
+      })),
+      note: 'new row',
+    },
+  ],
+  skipped: [],
+  notes: [],
+});
+
+test("a formula Sheets rewrote because the row moved is not an unplanned change", () => {
+  const grid = parseGrid(sheetSnapshot(rowsWithFormulas()));
+  const result = verify(grid, sheetSnapshot(afterInsertAt3()), insertPlan(grid));
+  assert.equal(result.ok, true, result.problems.join('; '));
+  assert.deepEqual(result.restores, []);
+  assert.deepEqual(result.deleteRows, []);
+});
+
+// The exemption is narrow on purpose: it accepts a formula that is still a
+// formula, and nothing else. A literal moving is still what catches a
+// misalignment, and every literal on a season row moves with the row.
+test('the rewrite exemption does not cover a literal, or a formula replaced by one', () => {
+  const grid = parseGrid(sheetSnapshot(rowsWithFormulas()));
+
+  const literalMoved = afterInsertAt3();
+  literalMoved[4]![grid.columns.Start] = 99999;
+  const a = verify(grid, sheetSnapshot(literalMoved), insertPlan(grid));
+  assert.equal(a.ok, false);
+  assert.match(a.problems.join('; '), /changed without being planned/);
+
+  const flattened = afterInsertAt3();
+  flattened[4]![grid.columns.Length] = 42;
+  const b = verify(grid, sheetSnapshot(flattened), insertPlan(grid));
+  assert.equal(b.ok, false, 'a roll-up replaced by a frozen number must not pass');
+});
+
+// With no insert there is nothing to rewrite, so the strict comparison stands —
+// which is what the rollback relies on once the inserted row has been deleted.
+test('without an insert a changed formula is still a change', () => {
+  const grid = parseGrid(sheetSnapshot(rowsWithFormulas()));
+  const tampered = rowsWithFormulas();
+  tampered[3]![grid.columns.Length] = { formula: '=G99*D99' };
+  const result = verify(grid, sheetSnapshot(tampered), { edits: [], inserts: [], skipped: [], notes: [] });
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join('; '), /H4: changed without being planned/);
+});

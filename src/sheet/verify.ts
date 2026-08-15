@@ -32,6 +32,25 @@ const same = (a: ExtendedValue | undefined, b: ExtendedValue | undefined): boole
   return a.numberValue === b.numberValue && a.stringValue === b.stringValue && a.boolValue === b.boolValue && a.formulaValue === b.formulaValue;
 };
 
+const isFormula = (value: ExtendedValue | undefined): boolean => typeof value?.formulaValue === 'string';
+
+/**
+ * Whether a formula's text changing is Sheets' doing rather than ours.
+ *
+ * **`userEnteredValue` is only stable while the grid is.** Inserting a row
+ * shifts every row beneath it and Sheets rewrites the relative A1 references in
+ * every affected formula to match — `=I609*F609` becomes `=I610*F610`, and each
+ * show row's five roll-ups likewise. That is correct behaviour and there is
+ * nothing to verify about it; treating it as an unplanned change flags a
+ * thousand cells and, far worse, invites a rollback to write the pre-insert
+ * text back, which the accompanying delete then rewrites *again* — one row off.
+ *
+ * So across a structural change a formula is checked for still being a formula,
+ * not for its text. Literals stay strictly compared, which is what actually
+ * catches a misalignment: every literal on a season row would move with it.
+ */
+const rewritten = (was: ExtendedValue | undefined, now: ExtendedValue | undefined): boolean => isFormula(was) && isFormula(now);
+
 const cell = (snapshot: SheetSnapshot, row: number, column: number): CellData | undefined => snapshot.rows[row]?.[column];
 
 const entered = (snapshot: SheetSnapshot, row: number, column: number): ExtendedValue | undefined =>
@@ -81,6 +100,8 @@ export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Ver
 
   const columns = Object.values(before.columns);
   const inspected = INSPECTED.map((h) => before.columns[h]);
+  // Only an insert moves rows, and only moved rows get their formulas rewritten.
+  const structural = insertRows.length > 0;
 
   // --- Pre-existing rows: every inspected cell must be unchanged, or changed
   //     to exactly what was planned.
@@ -93,8 +114,10 @@ export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Ver
       const plannedValue = expected.get(key);
 
       // The join key is never written by design, so any change to it means the
-      // rows are not the rows we think they are.
-      if (column === before.columns.id && !same(was, now)) {
+      // rows are not the rows we think they are. Formulas are exempt for the
+      // same reason as below — 21 `Start` cells are formulas, and an `id` could
+      // be one too.
+      if (column === before.columns.id && !same(was, now) && !(structural && rewritten(was, now))) {
         problems.push(`${a1(target, column)}: the id changed`);
         restores.push({ row: target, column, value: was });
         continue;
@@ -106,6 +129,7 @@ export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Ver
         expected.delete(key);
         continue;
       }
+      if (structural && rewritten(was, now)) continue;
       if (!same(was, now)) {
         problems.push(`${a1(target, column)}: changed without being planned`);
         restores.push({ row: target, column, value: was });

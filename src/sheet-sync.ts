@@ -191,7 +191,13 @@ export class SheetSync {
       this.stamps.set(id, { watchedAt: index.get(id)?.lastWatchedAt ?? null, at });
     }
 
-    if (requests.length) this.log.info(`sheet sync: re-read ${requests.length} title catalogues`);
+    if (requests.length) {
+      // Titles, not requests: a live-action block emits two request records for
+      // one id — the episode list and the status lookup — which fetchCatalogue
+      // merges. Counting the records reads as twice as many shows as there are.
+      const titles = new Set(requests.map((r) => r.id)).size;
+      this.log.info(`sheet sync: re-read ${titles} title catalogues in ${fetched.episodes.size + fetched.details.size} calls`);
+    }
     if (fetched.unavailable.length) {
       this.log.warn(`${fetched.unavailable.length} SIMKL titles are gone upstream: ${fetched.unavailable.join(', ')}`);
     }
@@ -241,17 +247,31 @@ export class SheetSync {
     this.log.error(`sheet verify failed, rolling back: ${detail}`);
 
     try {
-      await applyRequests(toRollbackRequests(after.sheetId, verification.restores, verification.deleteRows), { signal });
-      const restored = await readSnapshot({ signal });
-      const outstanding = verification.restores.filter((r) => {
-        // Post-rollback the inserted rows are gone, so a restore below one has
-        // shifted back up by however many were deleted above it.
-        const row = r.row - verification.deleteRows.filter((at) => at < r.row).length;
-        const now = restored.rows[row]?.[r.column]?.userEnteredValue;
-        return JSON.stringify(now ?? null) !== JSON.stringify(r.value ?? null);
-      });
-      if (outstanding.length || restored.rows.length !== grid.snapshot.rows.length) {
-        throw new Error(`${outstanding.length} cells did not go back, and the sheet has ${restored.rows.length} rows against ${grid.snapshot.rows.length} before the write`);
+      let restored = after;
+
+      // Structure first, in its own batch. Deleting the inserted row is what
+      // puts every formula beneath it back, because Sheets rewrites the
+      // references on the way out exactly as it did on the way in. Restoring
+      // cells in the same batch cannot work: whatever the delete shifts, it
+      // rewrites — including text written moments earlier in that same batch.
+      if (verification.deleteRows.length) {
+        await applyRequests(toRollbackRequests(after.sheetId, [], verification.deleteRows), { signal });
+        restored = await readSnapshot({ signal });
+      }
+
+      // Only now, against a grid whose row indices match the original again,
+      // is it safe to ask what still differs. An empty plan makes `verify` a
+      // plain diff, and with no insert in it formulas are compared strictly —
+      // which is correct, because the delete has undone the rewriting.
+      const residual = verify(grid, restored, { edits: [], inserts: [], skipped: [], notes: [] });
+      if (residual.restores.length) {
+        await applyRequests(toRollbackRequests(restored.sheetId, residual.restores, []), { signal });
+        restored = await readSnapshot({ signal });
+      }
+
+      const confirmation = verify(grid, restored, { edits: [], inserts: [], skipped: [], notes: [] });
+      if (!confirmation.ok) {
+        throw new Error(`${confirmation.problems.length} cells did not go back (${confirmation.problems.slice(0, 5).join('; ')})`);
       }
     } catch (err) {
       // Nagging on every poll rather than scrolling away once: the repair is

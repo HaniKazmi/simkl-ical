@@ -272,3 +272,82 @@ test('a title that moved is re-read, and only that title', async () => {
     }),
   );
 });
+
+// The path that corrupted the first real apply run. A rollback that must both
+// delete an inserted row and restore cells has to do them in separate batches:
+// the delete rewrites the relative references in everything it shifts,
+// including anything written earlier in the same batch.
+test('a rollback involving an insert deletes first, in its own batch, then restores', async () => {
+  clearTokenCache();
+  // A Fargo block with no S2 row, so the plan inserts one mid-sheet.
+  const grid: CellSpec[][] = [
+    H,
+    show('Fargo', 'Watching', 3381),
+    [null, null, 1, 6, 45000, 44000, 0.0153, { formula: '=G3*D3' }, null, null],
+    [null, null, 3, 4, 45500, 44900, 0.0153, { formula: '=G4*D4' }, null, null],
+    show('Silo', 'Watching', 7000),
+    [null, null, 1, 1, 45600, null, 0.0153, { formula: '=G6*D6' }, null, null],
+  ];
+  const library = libraryOf(
+    { id: 3381, title: 'Fargo', status: 'watching', seasons: { 1: [daysAgo(400)], 2: [daysAgo(3), daysAgo(2)], 3: [daysAgo(300)] }, watched: 4, total: 4 },
+    { id: 7000, title: 'Silo', status: 'watching', seasons: { 1: [daysAgo(5)] }, watched: 1, total: 10, notAired: 9 },
+  );
+
+  const state: CellData[][] = grid.map((row) => row.map(cellOf));
+  // What was typed, which is all a write can restore — the fake server does not
+  // recompute effectiveValue the way Sheets does.
+  const typed = () => JSON.stringify(state.map((row) => row.map((cell) => cell.userEnteredValue ?? null)));
+  const original = typed();
+  const batches: string[][] = [];
+
+  const handler = (url: string, init?: RequestInit): Response => {
+    if (url.startsWith('https://oauth2.googleapis.com/token')) return jsonResponse({ access_token: 't', expires_in: 3600 });
+    if (url.includes(':batchUpdate')) {
+      const requests = (JSON.parse(String(init?.body)) as { requests: SheetRequest[] }).requests;
+      batches.push(requests.map((r) => ('insertDimension' in r ? 'insert' : 'deleteDimension' in r ? 'delete' : 'write')));
+      for (const request of requests) {
+        if ('updateCells' in request) {
+          const row = state[request.updateCells.range.startRowIndex ?? 0];
+          if (row) row[request.updateCells.range.startColumnIndex ?? 0] = request.updateCells.rows[0]?.values?.[0] ?? {};
+        } else if ('insertDimension' in request) {
+          state.splice(request.insertDimension.range.startIndex, 0, []);
+        } else {
+          state.splice(request.deleteDimension.range.startIndex, 1);
+        }
+      }
+      // Meddle once, on the first write only, so verify must fail.
+      if (batches.length === 1) state[state.length - 1]![3] = cellOf(999);
+      return jsonResponse({});
+    }
+    if (url.includes('sheets.googleapis.com')) {
+      return jsonResponse({
+        sheets: [{ properties: { sheetId: 1, title: 'Sheet1', gridProperties: { rowCount: state.length, columnCount: H.length } }, data: [{ rowData: state.map((row) => ({ values: row })) }] }],
+      });
+    }
+    if (url.includes('/tv/episodes/')) {
+      return jsonResponse([
+        { season: 1, episode: 1, type: 'episode', aired: true },
+        { season: 2, episode: 1, type: 'episode', aired: true },
+        { season: 2, episode: 2, type: 'episode', aired: true },
+        { season: 3, episode: 1, type: 'episode', aired: true },
+      ]);
+    }
+    if (url.includes('/tv/')) return jsonResponse({ status: 'airing', runtime: 45 });
+    throw new Error(`unexpected request: ${url}`);
+  };
+
+  await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL }, () =>
+    withFetch(handler, async () => {
+      const result = await new SheetSync({ logger: quiet }).run(library);
+      assert.equal(result.status, 'rolled-back', result.error ?? '');
+
+      // Batch 1 is the write. Batch 2 is the delete ALONE — no restores riding
+      // along with it. Batch 3 puts the cells back, against stable indices.
+      assert.ok(batches[0]?.includes('insert'), 'the write inserted');
+      assert.deepEqual(batches[1], ['delete'], 'the delete travels alone');
+      assert.ok(batches.slice(2).every((b) => b.every((k) => k === 'write')), 'nothing structural after the delete');
+
+      assert.equal(typed(), original, 'every cell holds exactly what it held before the write');
+    }),
+  );
+});

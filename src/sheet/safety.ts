@@ -232,9 +232,17 @@ export interface Restore {
  * never a half-applied state. It exists for a different failure: the plan was
  * wrong. That is why the plan cannot also be the authority on what to undo.
  *
- * Ordered restores-first, delete-last. `deleteDimension` shifts every row
- * beneath it, so deleting first would land every restore below the insert one
- * row off — turning a failed verify into the corruption it was undoing.
+ * Ordered restores-first, delete-last, for when both are unavoidable in one
+ * batch: `deleteDimension` shifts every row beneath it, so deleting first would
+ * land every restore below the insert one row off.
+ *
+ * **`SheetSync` deliberately never passes both.** It deletes in one batch,
+ * re-reads, and only then computes and restores what still differs. Neither
+ * order is safe in a single batch once formulas are involved — the delete
+ * rewrites the relative references in everything it shifts, *including* text
+ * written moments earlier in the same batch. Deleting first and re-reading
+ * sidesteps that entirely, and it is also what puts the formulas back, since
+ * Sheets rewrites them on the way out exactly as it did on the way in.
  */
 export const toRollbackRequests = (sheetId: number, restores: Restore[], deleteRows: number[]): SheetRequest[] => [
   ...restores.map((r) => writeCell(sheetId, r.row, r.column, r.value)),
