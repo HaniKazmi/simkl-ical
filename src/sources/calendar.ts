@@ -30,23 +30,15 @@ interface FetchedFile {
 
 interface FetchResult extends FetchedFile {
   /**
-   * True when the network failed and the cached copy was served instead.
-   *
-   * Without this the fallback below is indistinguishable from success, and a
-   * CDN that has been down for a month reports as healthy while the feed
-   * quietly empties out. A 304 is NOT stale: the CDN answered and confirmed
-   * the file has not changed.
+   * The network failed and the cached copy was served instead, so health can
+   * tell an outage from a quiet CDN. A 304 is not stale: the CDN answered.
    */
   stale: boolean;
 }
 
 /**
- * Process-lifetime cache, deliberately not on disk.
- *
- * It exists to make the 3-hourly conditional GET cheap — without it every
- * refresh would re-download several MB. Keeping it in memory means a restart
- * always resyncs from the CDN, which costs about a second and removes any
- * possibility of stale state outliving the process.
+ * Process-lifetime cache, deliberately not on disk: it makes the 3-hourly
+ * conditional GET cheap, while a restart always resyncs from the CDN.
  */
 const cache = new Map<string, FetchedFile>();
 
@@ -72,8 +64,8 @@ const fetchCached = async (url: string, key: string, { signal }: { signal?: Abor
   // 300s default.
   const res = await fetch(url, { headers, signal: withTimeout(signal, FETCH_TIMEOUT_MS) });
 
-  // A stale calendar beats no calendar, so every failure below falls back to the
-  // cache when there is one — but says so, rather than passing as a success.
+  // A stale calendar beats no calendar, so every failure below serves the cache
+  // when there is one — flagged stale rather than passing as a success.
   const fallback = (reason: string): FetchResult => {
     if (cached) return { ...cached, stale: true };
     throw new Error(`Calendar ${url} ${reason}`);
@@ -86,13 +78,12 @@ const fetchCached = async (url: string, key: string, { signal }: { signal?: Abor
   try {
     data = (await res.json()) as CalendarFile;
   } catch (err) {
-    // A 200 carrying an HTML interstitial would otherwise discard a good cache.
+    // An HTML interstitial served with a 200 must not discard a good cache.
     return fallback(`returned unparseable JSON: ${errorMessage(err)}`);
   }
 
-  // Parseable is not the same as usable. A 200 carrying `{}` or an error object
-  // would otherwise replace a good cache entry, render a near-empty feed, and
-  // get persisted over the last good copy.
+  // Parseable is not usable: a 200 carrying `{}` or an error object would
+  // replace a good cache entry and render a near-empty feed.
   if (!Array.isArray(data.calendar)) return fallback('returned JSON with no calendar array');
 
   const entry: FetchedFile = { data, lastModified: res.headers.get('last-modified') };
@@ -150,9 +141,8 @@ export const mergeCalendars = (parts: Array<CalendarFile | null | undefined>): C
 
   for (const part of parts) {
     for (const entry of part?.calendar ?? []) {
-      // The date is part of the key because entries without an `episode`
-      // object exist: keying on season/episode alone collapsed every undated
-      // airing of a show onto one slot before the join ever saw them.
+      // Keyed on the date when there is no `episode` object — some anime
+      // entries have none, and season/episode alone would collapse them all.
       const episodeKey = entry.episode ? `${entry.episode.season}-${entry.episode.episode}` : entry.date;
       entries.set(`${entry.simkl_id}-${episodeKey}`, entry);
     }
@@ -171,24 +161,21 @@ export interface CalendarOptions {
 }
 
 /**
- * One content type's calendar, widened backwards to cover the grace window.
- *
- * The rolling file only reaches about two days into the past, so a longer grace
- * window needs the monthly archives. Archives are merged first and the rolling
- * file last, so the freshest data wins on any overlap.
- */
-/**
- * A fetched calendar and how fresh it is.
- *
- * The freshness stays beside the payload rather than on it: `stale` is a fact
- * about this fetch, not about anything SIMKL sent, and simkl/types.ts holds
- * only the shapes SIMKL actually returns.
+ * A fetched calendar and how fresh it is. Freshness sits beside the payload
+ * rather than on it — simkl/types.ts holds only shapes SIMKL actually sends.
  */
 export interface CalendarResult {
   data: CalendarFile;
   stale: boolean;
 }
 
+/**
+ * One content type's calendar, widened backwards to cover the grace window.
+ *
+ * The rolling file only reaches about two days into the past, so a longer grace
+ * window needs the monthly archives. Archives are merged first and the rolling
+ * file last, so the freshest data wins on any overlap.
+ */
 export const fetchCalendar = async (
   type: CalendarType,
   { graceDays = config.graceDays, signal, now = new Date(), log }: CalendarOptions = {},
@@ -197,44 +184,35 @@ export const fetchCalendar = async (
 
   const months = graceDays > ROLLING_PAST_DAYS ? monthsBack(graceDays, now) : [];
 
-  // Concurrent: these are unauthenticated, CDN-cached files with no dependency
-  // between them, and they were only sequential by accident. At the 90-day
-  // ceiling that was five serial multi-MB round trips per calendar type.
-  // (The warning against parallelising applies to the authenticated sync
-  // endpoints in sources/library.ts, which stay serial.)
+  // Safe to parallelise: unauthenticated and CDN-cached. SIMKL's warning
+  // against it covers the authenticated sync endpoints, not these.
   const archives = await Promise.all(
     months.map(async ({ year, month }) => {
       try {
         return (await fetchArchive(type, year, month, { signal })).data;
       } catch (err) {
-        // A missing archive just narrows the window; the rolling file still
-        // works. Logged because silently serving a shorter grace window looks
-        // identical to a correct feed with nothing to show.
+        // A missing archive only narrows the window. Logged because a shorter
+        // grace window looks identical to a feed with nothing old to show.
         log?.(`archive ${year}/${month} ${type} unavailable, grace window narrowed: ${errorMessage(err)}`);
         return null;
       }
     }),
   );
 
-  // Only the rolling file's freshness is worth reporting. A closed month's
-  // archive never changes, so serving it from cache is not staleness.
+  // Only the rolling file's freshness matters: a closed month's archive never
+  // changes, so serving one from cache is not staleness.
   const rolling = await fetchRolling(type, { signal });
-  // Archives first, rolling last, so the freshest data wins on any overlap —
-  // Promise.all preserves input order, so that precedence is unchanged.
+  // Rolling last so it wins on overlap; Promise.all preserves input order.
   const parts: Array<CalendarFile | null> = [...archives, rolling.data];
 
-  // Every key still in play, so the eviction below keeps what this call needs.
   evictOutside([rollingKey(type), ...months.map((m) => archiveKey(type, m.year, m.month))], type);
 
   return { data: mergeCalendars(parts), stale: rolling.stale };
 };
 
 /**
- * Drop cached files this type no longer reads.
- *
- * The cache is keyed per archive month, so without this every month the process
- * survives permanently retains two more multi-MB parsed calendars it will never
- * request again — measured at roughly 4 MB apiece.
+ * Drop cached files outside the current window. The cache is keyed per archive
+ * month, and each retained month costs roughly 4 MB for the life of the process.
  */
 const evictOutside = (keep: string[], type: CalendarType): void => {
   const wanted = new Set(keep);
@@ -249,14 +227,12 @@ export type Calendars = Record<CalendarType, CalendarResult>;
 export const fetchAllCalendars = async ({ graceDays = config.graceDays, signal, now, log }: CalendarOptions = {}): Promise<Calendars> => {
   const types = Object.keys(CALENDAR_FILES) as CalendarType[];
   const results = await Promise.all(types.map((t) => fetchCalendar(t, { graceDays, signal, now, log })));
-  // Zipped with the types that produced them, rather than each result carrying
-  // its own `type` field purely so this line can read it back.
   return Object.fromEntries(types.map((t, i) => [t, results[i]!])) as Calendars;
 };
 
 /** True when any calendar was served from cache after the CDN failed. */
 export const anyStale = (calendars: Calendars): boolean => Object.values(calendars).some((c) => c.stale);
 
-/** Just the payloads, for the join — which has no use for how fresh they are. */
+/** Just the payloads, for the join, which has no use for freshness. */
 export const payloads = (calendars: Calendars): Record<CalendarType, CalendarFile> =>
   Object.fromEntries(Object.entries(calendars).map(([type, result]) => [type, result.data])) as Record<CalendarType, CalendarFile>;

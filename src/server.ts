@@ -21,16 +21,14 @@ export interface ServerOptions {
 
 export const buildServer = (state: FeedState, { logger = true, logStream }: ServerOptions = {}): FastifyInstance => {
   const app = Fastify({
-    // The feed token is a path parameter, and Fastify's default cap is 100
-    // characters. `openssl rand -hex 24` fits, but anyone who generated a
-    // longer one got a 414 and an unreachable feed with no useful explanation.
+    // The feed token is a path parameter and Fastify caps those at 100
+    // characters by default, which a longer token would exceed — a 414 rather
+    // than the 404 below, and an unreachable feed.
     routerOptions: { maxParamLength: 512 },
     logger: logger && {
       ...(logStream ? { stream: logStream } : {}),
-      // The feed token is a credential; keep it out of the logs. Only `req.url`
-      // matters: Fastify's request serializer emits no headers at all, so a
-      // rule for req.headers.authorization would be decoration rather than
-      // protection.
+      // The feed token is a credential and it sits in the path. Only `req.url`
+      // needs redacting: Fastify's request serializer emits no headers.
       redact: {
         paths: ['req.url'],
         censor: '[redacted]',
@@ -38,10 +36,9 @@ export const buildServer = (state: FeedState, { logger = true, logStream }: Serv
     },
   });
 
-  // Without this the claim below is false: a wrong token returned this body
-  // while any other path returned Fastify's default, which names the route.
-  // The two were trivially distinguishable, which is exactly what the 404 is
-  // supposed to prevent.
+  // Every miss answers identically. Fastify's default body names the route it
+  // failed to match, which would make a wrong token distinguishable from any
+  // other 404 — exactly what the 404 below is meant to prevent.
   app.setNotFoundHandler((_req, reply) => reply.code(404).send(NOT_FOUND));
 
   app.get('/healthz', async (_req, reply) => {

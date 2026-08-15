@@ -48,7 +48,7 @@ const FINALE_LABEL: Record<FinaleType, string> = {
 /**
  * Human label for a film's release type. Presentation, so it lives here with
  * the rest of the event composition rather than in the module that fetches
- * releases — that was the one dependency pointing from domain logic into I/O.
+ * releases.
  */
 const RELEASE_LABEL: Record<number, string> = {
   1: 'Premiere',
@@ -65,11 +65,9 @@ export const releaseLabel = (type: number | null | undefined): string =>
 const pad = (n: number): string => String(n).padStart(2, '0');
 
 /**
- * "S04E03", or "E08" for anime, which SIMKL numbers without a season.
- *
- * Returns null when there is no episode number at all — the anime calendar
- * carries occasional entries with no `episode` object, and formatting those
- * produced "Eundefined" in both the summary and the UID.
+ * "S04E03", or "E08" for anime, which SIMKL numbers without a season. Null when
+ * there is no episode number at all: the anime calendar carries occasional
+ * entries with no `episode` object.
  */
 export const episodeCode = (season: number | null | undefined, episode: number | null | undefined): string | null => {
   if (episode == null) return null;
@@ -80,9 +78,8 @@ export const episodeCode = (season: number | null | undefined, episode: number |
 export type EventKind = 'tv' | 'anime' | 'movie';
 
 /**
- * The one event shape. Declared rather than implied so the two constructors
- * below and the ICS renderer share a contract — these drifted apart once
- * already when films had their own inline builder.
+ * The one event shape, declared rather than implied so the two constructors
+ * below and the ICS renderer share a contract.
  */
 export interface FeedEvent {
   uid: string;
@@ -91,10 +88,7 @@ export interface FeedEvent {
   date: string;
   summary: string;
   episodeTitle: string | null;
-  /**
-   * One line of context: a broadcast network for episodes, a release type for
-   * films. Was called `network`, which was a lie on half its values.
-   */
+  /** One line of context: a network for episodes, a release type for films. */
   detail: string | null;
   runtime: string | null;
   url: string | null;
@@ -126,8 +120,8 @@ const makeEvent = ({
   episodeTitle = null,
   url = null,
 }: MakeEventInput): FeedEvent => ({
-  // Derived, never random: a fresh UID on every render makes clients duplicate
-  // events instead of updating them.
+  // Derived, never random: a fresh UID each render makes clients duplicate
+  // events rather than update them.
   uid,
   kind,
   date,
@@ -179,11 +173,9 @@ const buildFilmEvent = (release: MovieRelease): FeedEvent =>
   });
 
 /**
- * First episode of a show.
- *
- * The season must be 1 *or absent*: SIMKL's anime calendar carries no season
- * field at all — 0 of 572 live entries have one — so requiring `season === 1`
- * meant anime plan-to-watch could never match anything.
+ * First episode of a show. The season must be 1 *or absent*: SIMKL's anime
+ * calendar carries no season field at all, so requiring `season === 1` would
+ * never match anything anime.
  */
 const isPremiere = (entry: CalendarEntry): boolean => {
   const ep = entry.episode;
@@ -221,8 +213,8 @@ export const join = (
 ): FeedEvent[] => {
   const sets = {
     // Completed sits alongside watching: SIMKL marks an ongoing show completed
-    // once everything aired has been watched, so dropping it would lose the
-    // next season of anything between series.
+    // once everything aired has been watched, so dropping it loses the next
+    // season of anything between series.
     showsAiring: idSet(library.shows_watching, library.shows_completed),
     showsPlanned: idSet(library.shows_plantowatch),
     animeAiring: idSet(library.anime_watching, library.anime_completed),
@@ -240,7 +232,6 @@ export const join = (
     planned: Set<number>,
     kind: EventKind,
   ): void => {
-    // Hoisted: this was re-evaluated for every entry in the file.
     const metadata = calendar?.metadata;
     for (const entry of calendar?.calendar ?? []) {
       const id = entry.simkl_id;

@@ -44,10 +44,7 @@ test('saving leaves no temporary file behind', async () => {
   });
 });
 
-// The bug this guards: the temp path was a fixed `feed.ics.tmp`. Both refresh
-// timers end in saveFeed and coincide every six hours, so two overlapping saves
-// raced on one path — the second rename failed with ENOENT and the *first*
-// writer's content was left on disk, not the newer one.
+// Both refresh timers end in saveFeed and coincide every six hours.
 test('concurrent saves both succeed and the last writer wins', async () => {
   await withTempDataDir(async (dir) => {
     const big = `BEGIN:VCALENDAR\r\n${'A'.repeat(200_000)}\r\nEND:VCALENDAR`;
@@ -89,10 +86,7 @@ test('overlapping renders are serialised rather than racing', async () => {
 
 // --- serving the saved feed across a restart ------------------------------
 
-// This used to perform hydrate's body by hand and assert the assignments
-// happened, so hydrate() could have been emptied and it still passed. It now
-// calls the real thing, with the CDN stubbed out so the refresh it triggers
-// does not reach the network.
+// Calls the real hydrate, with the CDN stubbed so it stays off the network.
 test('the saved feed is served on boot', async () => {
   await withTempDataDir(async () => {
     await saveFeed(ICS);
@@ -156,9 +150,8 @@ test('a render with only calendars does not overwrite the served feed', async ()
     assert.equal(state.ics, ICS, 'the loaded feed must survive');
     assert.equal(state.renderedAt, null);
     assert.equal(state.health.servingCached, true);
-    // Without this the test cannot tell "render() correctly declined" from
-    // "render() threw on the way in" — safeRender leaves the same state either
-    // way, and only this distinguishes them.
+    // safeRender leaves identical state whether render declined or threw; only
+    // this distinguishes the two.
     assert.equal(state.errors.render, null, 'declining to render is not a failure');
   });
 });

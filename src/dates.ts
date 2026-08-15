@@ -1,18 +1,9 @@
-/**
- * Calendar-date arithmetic, with no join or SIMKL semantics.
- *
- * These lived in join.ts, which meant sources/movies.ts had to import the whole
- * join — config, presentation strings, the event constructor — to get one date
- * helper, and made the dependency between the domain module and sources/ point
- * both ways.
- */
+/** Calendar-date arithmetic, with no join or SIMKL semantics. */
 
 /**
- * Constructing an Intl.DateTimeFormat is ~20x the cost of using one (33.6µs
- * against 1.65µs, measured), and localDate is called once per calendar entry
- * that matched the library. The zone has to stay a parameter — join takes it as
- * an option and tests vary it — so the formatters are memoised per zone. There
- * is one per IANA zone the process ever sees, which in practice is one.
+ * Constructing an Intl.DateTimeFormat costs ~20x using one (33.6µs against
+ * 1.65µs), and localDate runs once per matched calendar entry. The zone stays a
+ * parameter, so formatters are memoised per zone — in practice, one.
  */
 const formatters = new Map<string, Intl.DateTimeFormat>();
 
@@ -29,9 +20,8 @@ const formatterFor = (timeZone: string): Intl.DateTimeFormat => {
 /**
  * Local calendar date (YYYY-MM-DD) for an instant, in a given IANA zone.
  *
- * This is the highest-risk conversion in the project. `iso.slice(0, 10)` is
- * wrong for any show airing in the US evening: a 9pm Tuesday ET broadcast is
- * stamped 01:00Z Wednesday, and naive slicing would put it on the wrong day.
+ * The highest-risk conversion in the project: `iso.slice(0, 10)` is wrong for
+ * any US evening broadcast, which is stamped the following day in UTC.
  */
 export const localDate = (iso: string, timeZone: string): string => formatterFor(timeZone).format(new Date(iso));
 

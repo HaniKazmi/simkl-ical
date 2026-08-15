@@ -12,10 +12,9 @@ const RETRYABLE = new Set([408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524
  * Statuses meaning the resource will never resolve, however often we ask —
  * typically merged into another id or deleted upstream.
  *
- * Deliberately narrow, and deliberately here rather than at the call site: this
- * answers a different question from RETRYABLE ("will this ever succeed later?"
- * against "should I try again within this call?"), but the two must stay
- * disjoint, and that invariant is only visible with both sets in one file.
+ * Deliberately narrow, and kept beside RETRYABLE: the two answer different
+ * questions ("will this ever succeed?" against "retry within this call?") but
+ * must stay disjoint, which is only visible with both in one file.
  */
 const GONE = new Set([404, 410]);
 
@@ -33,17 +32,15 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 const backoffMs = (attempt: number): number => 2 ** (attempt - 1) * config.retryBaseMs;
 
 /**
- * How long to wait before the next attempt.
- *
- * Cloudflare answers a 429 with `Retry-After`, and retrying sooner than asked
- * can extend the throttle. Both forms are allowed: a delay in seconds, or an
- * HTTP date. Anything unparseable or negative falls back to the usual backoff.
+ * How long to wait before the next attempt. Cloudflare answers a 429 with
+ * `Retry-After` and retrying sooner can extend the throttle. Both forms are
+ * accepted — seconds or an HTTP date — and anything unusable falls back to the
+ * exponential backoff.
  */
 export const retryDelayMs = (res: Response, attempt: number): number => {
+  // Blank as well as absent: Number('') is 0, which would mean "retry now"
+  // against a server that just asked us to slow down.
   const header = res.headers.get('retry-after');
-  // Blank as well as absent: Number('') is 0, so a malformed `Retry-After:`
-  // with no value would otherwise mean "retry immediately" against a server
-  // that has just asked us to slow down.
   if (header === null || header.trim() === '') return backoffMs(attempt);
 
   const seconds = Number(header);
@@ -65,9 +62,8 @@ export class SimklError extends Error {
 }
 
 /**
- * A revoked or invalid token surfaces as this, so callers can distinguish
- * "you need to log in again" from "SIMKL is having a bad day" and keep
- * serving the last good snapshot instead of emptying the feed.
+ * A revoked or invalid token, so callers can tell "log in again" from "SIMKL is
+ * having a bad day" and keep serving the last good snapshot.
  */
 export class SimklAuthError extends SimklError {
   constructor(message: string, status?: number, body?: string) {
@@ -77,13 +73,12 @@ export class SimklAuthError extends SimklError {
 }
 
 /**
- * How a caller should treat a failure it could not avoid.
+ * How a caller should treat a failure apiGet could not retry away.
  *
- * - `account`: nothing to do with the resource asked for — a revoked token or a
- *   rejected client id. Callers doing per-item work must let this propagate
- *   rather than record it against the item.
- * - `gone`: this id is settled. Retrying it never starts working.
- * - `transient`: worth trying again later, after apiGet's own retries.
+ * - `account`: a revoked token or rejected client id, not a fact about the
+ *   resource; callers doing per-item work must let it propagate.
+ * - `gone`: settled. Retrying never starts working.
+ * - `transient`: worth trying again later.
  */
 export type FailureKind = 'account' | 'gone' | 'transient';
 
@@ -131,15 +126,11 @@ export const apiGet = async <T>(path: string, { token, params = {}, signal }: Ap
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     let res: Response;
     try {
-      // Both signals, not one or the other: `signal ?? timeout` meant any
-      // caller passing a signal silently gave up the 30s timeout and inherited
-      // undici's 300s default instead.
       res = await fetch(url, { headers, signal: withTimeout(signal, TIMEOUT_MS) });
     } catch (err) {
       if (signal?.aborted) throw err;
       lastError = err;
-      // Guarded like the HTTP-status path below: sleeping after the last
-      // attempt burns 16s of dead wait per call during a network outage.
+      // Guarded: sleeping after the final attempt is dead wait.
       if (attempt < MAX_ATTEMPTS) await sleep(backoffMs(attempt));
       continue;
     }
@@ -148,9 +139,8 @@ export const apiGet = async <T>(path: string, { token, params = {}, signal }: Ap
       try {
         return (await res.json()) as T;
       } catch (err) {
-        // A 200 carrying a Cloudflare interstitial used to escape as a bare
-        // SyntaxError — unwrapped and unretried, unlike the same case on the
-        // CDN path. It is transient, so it belongs in the retry loop.
+        // A 200 carrying a Cloudflare interstitial. Transient, so it belongs in
+        // the retry loop rather than escaping as a bare SyntaxError.
         lastError = new SimklError(`SIMKL returned unparseable JSON for ${path}: ${errorMessage(err)}`, res.status);
         if (attempt < MAX_ATTEMPTS) await sleep(backoffMs(attempt));
         continue;

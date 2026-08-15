@@ -14,12 +14,10 @@ if (!process.env.SIMKL_CLIENT_ID) {
 /**
  * An integer from the environment, clamped to a range it makes sense in.
  *
- * Unclamped, every one of these had a way to break the service quietly:
- * GRACE_DAYS=-1 puts the cutoff in the future and empties the feed,
- * GRACE_DAYS=400 pulls fourteen multi-MB archives sequentially every refresh,
- * and CALENDAR_REFRESH_MS=0 turns setInterval into a tight loop against the
- * CDN. Out-of-range values are corrected rather than fatal, because a running
- * feed with a sane default beats a container that will not boot.
+ * Unclamped these break the service quietly — a negative GRACE_DAYS empties the
+ * feed, a zero interval is a tight loop against the CDN. Out-of-range values
+ * are corrected rather than fatal: a running feed beats a container that will
+ * not boot.
  */
 const int = (value: string | undefined, fallback: number, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}): number => {
   const n = Number.parseInt(value ?? '', 10);
@@ -29,7 +27,7 @@ const int = (value: string | undefined, fallback: number, { min = 0, max = Numbe
 
 /**
  * The version from package.json, which the Dockerfile copies into the image
- * alongside src/ — it is needed at runtime for "type": "module" regardless.
+ * alongside src/ — it is needed at runtime for "type": "module" anyway.
  */
 const packageVersion = (): string => {
   try {
@@ -58,8 +56,7 @@ export interface Config {
 
 /**
  * Build the config from an environment. Separate from the singleton below so
- * the parsing and clamping can be exercised directly, rather than by spawning a
- * fresh process per assertion.
+ * the parsing and clamping can be tested without a fresh process.
  */
 export const buildConfig = (env: NodeJS.ProcessEnv): Config => ({
   clientId: env.SIMKL_CLIENT_ID,
@@ -69,19 +66,15 @@ export const buildConfig = (env: NodeJS.ProcessEnv): Config => ({
   // Which country's cinema dates to use for film releases. Release dates vary by
   // territory — Dune: Part Three opens 18 Dec in GB and the US but 16 Dec in BE.
   releaseCountry: env.RELEASE_COUNTRY || 'GB',
-  // min 0, not 1: PORT=0 is the standard "bind an ephemeral port" idiom.
+  // min 0: PORT=0 is the standard "bind an ephemeral port" idiom.
   port: int(env.PORT, 3000, { min: 0, max: 65535 }),
-  // How long a recently-aired episode lingers in the feed. Deliberately not
-  // filtered by watch state: the calendar is a record of what aired, so nothing
-  // should vanish the moment it airs.
-  // Capped at 90: each extra month in the window is another multi-MB archive
-  // fetched sequentially on every refresh.
+  // How long a recently-aired episode lingers. Deliberately not filtered by
+  // watch state: the calendar records what aired. Capped at 90 because each
+  // extra month in the window is another multi-MB archive per refresh.
   graceDays: int(env.GRACE_DAYS, 14, { min: 0, max: 90 }),
 
   appName: 'simkl-ical',
-  // Read, not repeated. This was hardcoded '0.1.0' while the repo was tagged
-  // v0.2.0, so SIMKL was told the wrong version in every app-version parameter
-  // and User-Agent — two sources of truth for one number.
+  // Read rather than repeated: SIMKL is told this in every request.
   appVersion: packageVersion(),
 
   // The CDN files regenerate every 6h; polling at 3h with a conditional GET
@@ -97,19 +90,16 @@ export const buildConfig = (env: NodeJS.ProcessEnv): Config => ({
   // by id and a plan-to-watch film list is short.
   movieRefreshMs: int(env.MOVIE_REFRESH_MS, 24 * 60 * 60 * 1000, { min: 60_000 }),
   // First step of the API retry backoff, doubling each attempt: 1s, 2s, 4s, 8s.
-  // Configurable mainly so the retry tests do not spend 15 seconds asleep;
-  // lowering it in production only makes a struggling API struggle harder.
+  // Configurable mainly for tests; lowering it in production only makes a
+  // struggling API struggle harder.
   retryBaseMs: int(env.RETRY_BASE_MS, 1000, { min: 1 }),
 });
 
 export const config: Config = buildConfig(process.env);
 
 /**
- * Fail loudly at boot on an unusable timezone.
- *
- * Without this a bad TZ only surfaces once a library snapshot exists, so a
- * fresh install starts fine and then crash-loops on its next restart with a
- * bare RangeError from deep inside the join.
+ * Fail loudly at boot on an unusable timezone. Otherwise a bad TZ surfaces as a
+ * bare RangeError from deep inside the join, on the first render.
  */
 export const requireValidTimezone = (timeZone: string = config.timezone): string => {
   try {

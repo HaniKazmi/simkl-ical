@@ -40,8 +40,8 @@ test('episode title is in the description, never the summary', () => {
   assert.match(ics, /Our Flag Means Medical Coverage/);
 });
 
-// The link belongs to the URL property; repeating it in DESCRIPTION just makes
-// every event's body longer for no added information.
+// The link belongs to the URL property; repeating it in DESCRIPTION adds
+// length and no information.
 test('the simkl link is a URL property, not duplicated into the description', () => {
   const ics = renderIcs([event]).replace(/\r\n /g, '');
   assert.match(ics, /URL;VALUE=URI:https:\/\/simkl\.com\/tv\/3407/);
@@ -76,8 +76,7 @@ test('an empty feed is still a valid calendar', () => {
   assert.ok(!ics.includes('BEGIN:VEVENT'));
 });
 
-// An event with no episode title, network or runtime was emitting a bare
-// `DESCRIPTION:` line rather than omitting the property.
+// An event with nothing to describe must omit the property, not send it empty.
 test('an event with nothing to describe omits DESCRIPTION entirely', () => {
   const bare: FeedEvent = { ...event, episodeTitle: null, detail: null, runtime: null };
   const ics = renderIcs([bare]);

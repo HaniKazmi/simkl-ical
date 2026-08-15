@@ -9,12 +9,9 @@ const dateOnly = (ymd: string, addDays = 0): Date => {
 };
 
 /**
- * Episode titles are deliberately kept out of SUMMARY — a calendar surfaces
- * them without the user choosing to look, and they occasionally spoil. The
- * title lives here, where clients only show it on tap.
- *
- * The simkl.com link is not repeated here: it is already carried by the event's
- * URL property, which clients render as their own link affordance.
+ * Episode titles stay out of SUMMARY — a calendar surfaces those without the
+ * user choosing to look, and they occasionally spoil. The simkl.com link is not
+ * repeated here either; it is already the event's URL property.
  */
 const description = (event: FeedEvent): string | undefined => {
   const lines: string[] = [];
@@ -23,8 +20,7 @@ const description = (event: FeedEvent): string | undefined => {
   const facts = [event.detail, event.runtime].filter(Boolean);
   if (facts.length) lines.push(facts.join(' · '));
 
-  // undefined, not '': an event with no title, network or runtime was emitting
-  // a bare `DESCRIPTION:` line rather than omitting the property.
+  // undefined, not '', so the property is omitted rather than sent empty.
   return lines.length ? lines.join('\n') : undefined;
 };
 
@@ -37,11 +33,9 @@ export const renderIcs = (events: FeedEvent[], { name = 'SIMKL', timezone = conf
   const cal = ical({
     name,
     prodId: { company: 'simkl-ical', product: 'simkl-ical', language: 'EN' },
-    // Deliberately no calendar-level `timezone`: setting one makes
-    // ical-generator emit a floating DTSTAMP, but RFC 5545 requires DTSTAMP in
-    // UTC with a Z suffix, and strict parsers reject it without. Every event
-    // here is all-day, so the only thing lost is the X-WR-TIMEZONE hint, which
-    // is added back below.
+    // No calendar-level `timezone`: it makes ical-generator emit a floating
+    // DTSTAMP, which RFC 5545 requires in UTC. Every event here is all-day, so
+    // only the X-WR-TIMEZONE hint is lost, and that is added back below.
     ttl: 6 * 60 * 60,
     method: ICalCalendarMethod.PUBLISH,
   });

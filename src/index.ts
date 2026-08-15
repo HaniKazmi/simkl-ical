@@ -35,16 +35,14 @@ void (async () => {
     state.errors.render = `startup: ${errorMessage(err)}`;
     app.log.error(`warm-up failed: ${errorStack(err)}`);
   } finally {
-    // In `finally` on purpose. Starting the timers only on the success path
-    // meant one bad warm-up left the process serving a boot-time snapshot
-    // forever, with nothing scheduled to ever retry.
+    // In `finally` on purpose: a failed warm-up must still leave something
+    // scheduled to retry, rather than serving a boot-time snapshot forever.
     state.start();
   }
 })();
 
-// Guarded and in a finally. An app.close() rejection used to surface as an
-// unhandled rejection — a non-zero exit and a stack trace on an ordinary
-// shutdown — and a second SIGTERM started a second concurrent close.
+// Guarded, so a second signal does not start a second concurrent close, and in
+// a finally, so a close rejection still exits cleanly.
 let shuttingDown = false;
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, async () => {

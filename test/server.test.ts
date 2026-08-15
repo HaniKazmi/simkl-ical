@@ -47,9 +47,8 @@ test('a wrong token is a 404', async () => {
   });
 });
 
-// The bug this guards: timingSafeEqual throws on unequal lengths. The length
-// check in tokenMatches is what keeps a short token a 404 rather than a 500,
-// and nothing exercised it — removing the guard left the suite green.
+// timingSafeEqual throws on unequal lengths, so the length check in
+// tokenMatches is what keeps a short token a 404 rather than a 500.
 test('a token of the wrong length is a 404, not a 500', async () => {
   await withServer(async (app) => {
     for (const wrong of ['x', 'a'.repeat(47), 'a'.repeat(49), 'a'.repeat(400)]) {
@@ -59,8 +58,8 @@ test('a token of the wrong length is a 404, not a 500', async () => {
   });
 });
 
-// Fastify caps path parameters at 100 characters by default, so a token longer
-// than that produced a 414 and an unreachable feed rather than a 404.
+// Fastify caps path parameters at 100 characters by default, which a longer
+// token would exceed — a 414 and an unreachable feed.
 test('a longer feed token is usable', async () => {
   const long = 'c'.repeat(128); // e.g. openssl rand -hex 64
   await withServer(
@@ -90,9 +89,8 @@ test('with no token configured the feed is unreachable rather than open', async 
   );
 });
 
-// 404 rather than 401 only hides the route if every 404 looks the same. It did
-// not: a wrong token returned {"error":"Not found"} while any other path
-// returned Fastify's default body, which names the route it failed to match.
+// 404 rather than 401 only hides the route if every 404 looks the same;
+// Fastify's default body names the route it failed to match.
 test('a wrong token is indistinguishable from any other missing path', async () => {
   await withServer(async (app) => {
     const wrongToken = await app.inject({ method: 'GET', url: '/nope/feed.ics' });
@@ -133,8 +131,8 @@ test('healthz needs no token and leaks no credential', async () => {
 });
 
 // The token sits in the URL path, so request logging would write it to disk on
-// every poll. Fastify's serializer emits no headers, so `req.url` is the only
-// path that matters — and it is the one that has to work.
+// every poll. Fastify's serializer emits no headers, so `req.url` is the one
+// that has to work.
 test('the feed token never reaches the logs', async () => {
   const lines: string[] = [];
   const stream = new Writable({

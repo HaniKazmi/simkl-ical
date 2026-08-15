@@ -32,11 +32,8 @@ export interface Pin {
 }
 
 /**
- * Start the device flow.
- *
- * Note: SIMKL returns the literal string "DEVICE_CODE" for `device_code` —
- * it is a placeholder, not a real code. Polling is keyed on `user_code`,
- * which is the value shown to the user. Verified against the live API.
+ * Start the device flow. SIMKL returns the literal string "DEVICE_CODE" for
+ * `device_code` — a placeholder. Polling is keyed on `user_code`.
  */
 export const requestPin = async (): Promise<Pin> => {
   const res = await apiGet<PinResponse>('/oauth/pin');

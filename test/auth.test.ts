@@ -24,16 +24,10 @@ test('the token records when it was saved', async () => {
   });
 });
 
-// The bug behind these two: writeFile created the file at 0666 & ~umask —
-// typically 0644 — and only a following chmod narrowed it, leaving a window
-// where the token was world-readable.
-//
-// Worth stating plainly: that window is not observable from outside the process
-// without mocking the filesystem, so no test here can catch a revert to
-// write-then-chmod. What they do catch is the mode going missing altogether,
-// which is the mutation that leaves the token exposed at rest. The window
-// itself is closed structurally instead — writeToken renames a fresh 0600 inode
-// into place, so there is no moment at which a wider mode exists to observe.
+// writeFile creates at 0666 & ~umask, so narrowing with a later chmod leaves a
+// window where the token is world-readable. That window is not observable from
+// outside the process, so these catch the mode going missing altogether; the
+// window itself is closed structurally, by renaming a fresh 0600 inode.
 test('a freshly created token file is 0600 from the moment it exists', async () => {
   await withTempDataDir(async (dir) => {
     await writeToken('secret');
@@ -41,9 +35,8 @@ test('a freshly created token file is 0600 from the moment it exists', async () 
   });
 });
 
-// This is the assertion that actually pins the write-and-rename: a chmod-based
-// implementation would narrow the file after creating it, and `mode` alone does
-// nothing to a file that already exists. Only replacing the inode gets both.
+// The assertion that pins the write-and-rename: `mode` alone does nothing to a
+// file that already exists, so only replacing the inode tightens it.
 test('replacing a loose token file leaves it 0600, not 0644', async () => {
   await withTempDataDir(async (dir) => {
     const path = join(dir, 'token.json');
@@ -76,8 +69,8 @@ test('a token file with no access_token reads as null', async () => {
   });
 });
 
-// Only ENOENT is swallowed. A truncated file must surface, because silently
-// treating it as "no token" would hide a real problem behind a login prompt.
+// Only ENOENT is swallowed: treating a truncated file as "no token" would hide
+// a real problem behind a login prompt.
 test('an unreadable token file throws rather than reading as absent', async () => {
   await withTempDataDir(async (dir) => {
     await writeFile(join(dir, 'token.json'), '{ truncated');

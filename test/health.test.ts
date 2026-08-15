@@ -23,8 +23,7 @@ test('nothing rendered yet is unhealthy', () => {
   assert.equal(new FeedState({ logger: quiet }).health.ok, false);
 });
 
-// The bug this guards: `ok` used to be `renderedAt !== null`, which never went
-// false again. A revoked token then read as healthy indefinitely.
+// A revoked token must eventually read as unhealthy.
 test('a feed that has stopped polling goes unhealthy', () => {
   const state = rendered();
   state.polledAt = ago(config.activitiesPollMs * 4);
@@ -33,8 +32,7 @@ test('a feed that has stopped polling goes unhealthy', () => {
   assert.equal(state.health.stale, true);
 });
 
-// The two timers are independent. A shared error slot meant each cleared the
-// other's failure, leaving health unhealthy with no stated reason.
+// The two timers are independent, so neither may clear the other's failure.
 test('a calendar success does not erase a library failure', () => {
   const state = rendered();
   state.errors.library = 'AUTH: SIMKL rejected the token (401)';
@@ -58,11 +56,8 @@ test('stale calendars go unhealthy', () => {
   assert.equal(state.health.ok, false);
 });
 
-// The bug this guards: fetchCached falls back to its cache on any CDN failure
-// and returned it as a success, so refreshCalendars advanced calendarsAt and
-// cleared errors.calendar on every cycle. A CDN down for a month therefore read
-// as perfectly healthy while the feed quietly emptied out. Health is now keyed
-// on when the CDN last actually answered, which the fallback does not advance.
+// fetchCached serves its cache on any CDN failure, so refresh attempts keep
+// "succeeding". Health is keyed on when the CDN last actually answered.
 test('a CDN outage is unhealthy even though refreshes keep "succeeding"', () => {
   const state = rendered();
   state.calendarsAt = new Date().toISOString(); // attempts keep happening...
@@ -71,9 +66,8 @@ test('a CDN outage is unhealthy even though refreshes keep "succeeding"', () => 
   assert.equal(state.health.stale, true);
 });
 
-// The other half of the same class: safeRender catches, records the failure and
-// returns, leaving the previous feed serving forever. `ok` ignored errors.render
-// entirely, so one malformed calendar entry froze the feed behind a green check.
+// safeRender records a failure and returns, leaving the previous feed serving.
+// One malformed calendar entry is enough, so `ok` must consult errors.render.
 test('a render that keeps failing is unhealthy', () => {
   const state = rendered();
   assert.equal(state.health.ok, true, 'precondition');
@@ -99,8 +93,8 @@ test('an old library sync time alone does not mean unhealthy', () => {
   assert.equal(state.health.ok, true);
 });
 
-// readToken only swallows ENOENT. A truncated token.json threw SyntaxError
-// straight out of the method, and from the timer that killed the process.
+// readToken only swallows ENOENT, so a truncated token.json throws — from a
+// timer, that would take the process down.
 test('an unreadable token file degrades the feed rather than throwing', async () => {
   await withTempDataDir(async (dir) => {
     await writeFile(join(dir, 'token.json'), '{ truncated');
@@ -111,9 +105,7 @@ test('an unreadable token file degrades the feed rather than throwing', async ()
   });
 });
 
-// Asserting on values, not on key presence: `tsc` already proves the Health
-// interface has these fields, so checking `key in health` proved nothing that
-// the typechecker had not, and passed with every value null or swapped.
+// On values, not key presence — tsc already proves the fields exist.
 test('health reports the timestamps a human would want', () => {
   const state = rendered();
   state.events = [];

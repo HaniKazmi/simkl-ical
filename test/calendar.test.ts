@@ -42,9 +42,8 @@ test('monthsBack crosses a year boundary', () => {
   ]);
 });
 
-// Was a loop asserting 1 <= month <= 12, which is vacuous if monthsBack returns
-// nothing at all. The real property is that a 90-day window spans exactly the
-// four months it touches, in order, with no padding in the URLs they build.
+// A 90-day window spans exactly the four months it touches, in order, with no
+// padding in the URLs they build.
 test('a long window spans every month it touches, oldest first', () => {
   const months = monthsBack(90, new Date('2026-08-10T12:00:00Z'));
   assert.deepEqual(months, [
@@ -107,16 +106,14 @@ test('merging tolerates missing or empty parts', () => {
 
 // --- fetching, caching and the staleness signal ---------------------------
 
-// The cache is module state shared by every test in this file; a test that
-// forgot to clear it inherited another's entries and failed confusingly.
+// The cache is module state shared by every test in this file.
 beforeEach(clearCache);
 
 const entry = (id: number, date: string) => ({ simkl_id: id, date, finale_type: null });
 const GOOD = calendarFile([entry(1, '2026-08-01T20:00:00Z')]);
 
-// The bug this guards: fetchCached returned its cached copy on any CDN failure
-// and the caller could not tell that from a real fetch, so refreshCalendars
-// reported every cycle of a month-long outage as a success.
+// A failure must be distinguishable from a real fetch, or an outage reports as
+// a success on every cycle.
 test('a CDN failure serves the cached copy but reports it as stale', async () => {
   let calls = 0;
   await withFetch(
@@ -162,9 +159,8 @@ test('a conditional GET is sent once a Last-Modified is known', async () => {
   );
 });
 
-// A 200 is not the same as a usable payload. Without a shape check, a body of
-// `{}` replaced a good cache entry, rendered a near-empty feed, and safeRender
-// then persisted it over the last good copy on disk.
+// A 200 is not a usable payload: `{}` would replace a good cache entry and
+// render a near-empty feed.
 test('a parseable 200 with no calendar array falls back instead of replacing the cache', async () => {
   let calls = 0;
   await withFetch(
@@ -187,9 +183,8 @@ test('a first fetch with nothing cached still throws rather than inventing a fee
   );
 });
 
-// The cache is keyed per archive month and was only ever written to, so every
-// month the process survived permanently retained two more multi-MB parsed
-// calendars it would never request again.
+// Keyed per archive month, so without eviction every month the process
+// survives retains two more multi-MB parsed calendars.
 test('archives outside the grace window are evicted from the cache', async () => {
   await withFetch(
     () => jsonResponse(GOOD),
@@ -221,8 +216,8 @@ test('evicting one calendar type leaves the other alone', async () => {
   );
 });
 
-// A missing archive silently narrows the grace window, which looks identical to
-// a correct feed with nothing old to show.
+// A missing archive narrows the grace window, which looks identical to a feed
+// with nothing old to show.
 test('an unavailable archive is reported rather than swallowed', async () => {
   const logged: string[] = [];
   await withFetch(

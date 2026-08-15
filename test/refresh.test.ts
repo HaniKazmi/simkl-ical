@@ -113,9 +113,8 @@ test('refetching one list leaves the others in place', async () => {
   });
 });
 
-// The bug this guards, from commit 2cde00e: recording the signature after a
-// failed lookup would mark the film list current despite unresolved dates, and
-// nothing would retry until the user next added or removed a title.
+// Recording the signature after a failed lookup would mark the film list
+// current despite unresolved dates, and nothing would retry.
 test('a transient film failure leaves the list stale so the next poll retries', async () => {
   await withToken(async (state) => {
     await prime(state, activities(), { movieStatus: 500 });
@@ -128,8 +127,8 @@ test('a transient film failure leaves the list stale so the next poll retries', 
   });
 });
 
-// The other half: a 404 fails identically forever, so treating it as retryable
-// refetched the whole film list on every poll for the life of the process.
+// A 404 fails identically forever, so treating it as retryable would refetch
+// the whole film list on every poll.
 test('a permanently gone film does not cause a refetch loop', async () => {
   await withToken(async (state) => {
     await prime(state, activities(), { movieStatus: 404 });
@@ -141,8 +140,8 @@ test('a permanently gone film does not cause a refetch loop', async () => {
   });
 });
 
-// Nothing in the library moves when a studio delays a release, so without an
-// age-based trigger the feed keeps a stale date until the film vanishes.
+// Nothing in the library moves when a studio delays a release, so only the
+// age-based trigger catches it.
 test('film dates are re-resolved once they age out, with no library change', async () => {
   await withToken(async (state) => {
     await prime(state);
@@ -214,11 +213,9 @@ test('a successful poll clears an earlier library failure', async () => {
   });
 });
 
-// The bug this guards: filmsResolvedAt was stamped whether or not the lookups
-// succeeded. The signature rollback that normally forces a retry cannot help
-// when the round was triggered by age rather than a list change — the signature
-// never moved, so there is nothing to roll back — and the fresh timestamp made
-// filmsDue() false, so the early return skipped the retry for another 24 hours.
+// The signature rollback cannot force a retry when the round was triggered by
+// age rather than a list change, since the signature never moved. Only
+// withholding the timestamp keeps the next poll trying.
 test('a failed daily re-read retries on the next poll, not in another day', async () => {
   await withToken(async (state) => {
     await prime(state);
@@ -228,8 +225,8 @@ test('a failed daily re-read retries on the next poll, not in another day', asyn
 
     await withFetch(api(activities(), { movieStatus: 500 }), async (calls) => {
       await state.refreshLibraryIfChanged();
-      // More than one: a 500 is retryable, so apiGet exhausts its five attempts
-      // before giving up. What matters here is that the re-read was attempted.
+      // A 500 is retryable, so apiGet spends all five attempts; what matters is
+      // that the re-read happened at all.
       assert.ok(lookups(calls).length >= 1, 'the re-read was attempted');
     });
     assert.notEqual(state.filmsResolvedAt, before, 'precondition: it was aged');
@@ -258,7 +255,7 @@ test('a successful daily re-read does reset the clock', async () => {
   });
 });
 
-// A rate limit is an account-wide condition, not a fact about these films.
+// A rate limit is account-wide, not a fact about these films.
 test('a sustained rate limit keeps the films and retries rather than dropping them', async () => {
   await withToken(async (state) => {
     await prime(state);
@@ -275,8 +272,8 @@ test('a sustained rate limit keeps the films and retries rather than dropping th
   });
 });
 
-// An auth failure during film lookups must surface as an auth failure, not be
-// filed against individual films and silently swallowed.
+// An auth failure during film lookups must surface as one, not be filed
+// against individual films.
 test('a revoked token during film lookups is reported as AUTH', async () => {
   await withToken(async (state) => {
     await withFetch(

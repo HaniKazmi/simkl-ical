@@ -69,9 +69,8 @@ test('extra params are appended, and null or undefined ones are dropped', async 
 
 // --- error classification -------------------------------------------------
 
-// Callers distinguish "you need to log in again" from "SIMKL is having a bad
-// day" so a revoked token keeps serving the last good feed instead of emptying
-// it. Getting this wrong in either direction is a user-visible failure.
+// Callers distinguish "log in again" from "SIMKL is having a bad day", so a
+// revoked token keeps serving the last good feed instead of emptying it.
 for (const status of [401, 403]) {
   test(`a ${status} is an auth error and is not retried`, async () => {
     await withFetch(
@@ -158,8 +157,8 @@ test('a caller-supplied abort is not retried', async () => {
   );
 });
 
-// A 200 carrying an HTML interstitial used to escape the retry loop as a bare
-// SyntaxError, unwrapped and unretried, unlike the equivalent CDN path.
+// A 200 carrying an HTML interstitial is transient, so it belongs in the retry
+// loop rather than escaping as a bare SyntaxError.
 test('an unparseable success is wrapped as a SimklError and retried', async () => {
   let calls = 0;
   await withFetch(
@@ -182,11 +181,11 @@ test('an unparseable success that never recovers throws a SimklError', async () 
   );
 });
 
-// SIMKL sits behind Cloudflare, which uses 429 with a Retry-After. Ignoring it
-// and retrying on our own schedule can extend the throttle.
+// SIMKL sits behind Cloudflare, which answers 429 with Retry-After; retrying
+// sooner than asked can extend the throttle.
 test('Retry-After on a 429 is honoured over the default backoff', async () => {
-  // A backoff long enough that honouring the header is unmistakable. The rest
-  // of this file runs with retryBaseMs at 1, which would hide the difference.
+  // Long enough that honouring the header is unmistakable; the file-wide
+  // retryBaseMs of 1 would hide the difference.
   let calls = 0;
   const started = Date.now();
   await withConfig({ retryBaseMs: 5_000 }, async () => {
@@ -201,8 +200,7 @@ test('Retry-After on a 429 is honoured over the default backoff', async () => {
   });
 });
 
-// The rest of the Retry-After behaviour is a pure calculation, tested directly
-// rather than by sleeping through it.
+// The rest is a pure calculation, tested directly rather than by sleeping.
 const with429 = (headers: Record<string, string> = {}) => new Response('slow down', { status: 429, headers });
 
 test('a missing Retry-After falls back to the exponential backoff', async () => {
@@ -224,7 +222,7 @@ test('Retry-After as an HTTP date is honoured', () => {
   assert.ok(delay > 0 && delay <= 2000, `expected roughly 2s, got ${delay}`);
 });
 
-// A header of hours would otherwise stall a whole refresh cycle.
+// A header of hours would stall a whole refresh cycle.
 test('an absurd Retry-After is capped at a minute', () => {
   assert.equal(retryDelayMs(with429({ 'retry-after': '99999' }), 1), 60_000);
 });
@@ -236,8 +234,8 @@ test('a nonsense or past Retry-After falls back to the backoff', async () => {
   });
 });
 
-// Number('') is 0 and finite, so a header present but empty meant "retry
-// immediately" against a server that had just asked us to slow down.
+// Number('') is 0 and finite, so a present-but-empty header would mean "retry
+// now" against a server asking us to slow down.
 test('a blank Retry-After falls back to the backoff rather than meaning zero', async () => {
   await withConfig({ retryBaseMs: 1000 }, () => {
     assert.equal(retryDelayMs(with429({ 'retry-after': '' }), 1), 1000);

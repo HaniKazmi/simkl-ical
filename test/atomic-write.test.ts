@@ -40,9 +40,8 @@ test('the file is created at the requested mode, never wider', async () => {
   });
 });
 
-// `mode` on writeFile does nothing to a file that already exists, so an
-// implementation that wrote in place would leave a loose file loose. Renaming a
-// fresh inode over it is what makes this hold.
+// `mode` does nothing to a file that already exists, so writing in place would
+// leave a loose file loose; renaming a fresh inode over it is what holds.
 test('replacing a loose file tightens it', async () => {
   await withDir(async (dir) => {
     const path = join(dir, 'a.txt');
@@ -54,10 +53,9 @@ test('replacing a loose file tightens it', async () => {
   });
 });
 
-// The bug this guards: a temp path shared between concurrent writers. The loser
-// renames a file the winner has already moved away and fails with ENOENT.
-// saveFeed serialises its own callers so it would not hit this, but writeToken
-// does not, and this is the shared primitive underneath both.
+// With a shared temp path the loser renames a file the winner has already moved
+// away, and fails with ENOENT. saveFeed serialises its own callers, but
+// writeToken does not, and this is the primitive underneath both.
 test('concurrent writers to one path do not collide', async () => {
   await withDir(async (dir) => {
     const path = join(dir, 'a.txt');

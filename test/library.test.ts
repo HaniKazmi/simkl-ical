@@ -36,10 +36,8 @@ test('the list set covers watching, plan-to-watch and completed', () => {
   ]);
 });
 
-// Asserting against literal expected signatures, not against listSignatures'
-// own output. Comparing f(a) to f(a) passes even if the function returns a
-// constant, which is exactly the failure mode that matters here: a signature
-// that never varies would gate every list off forever.
+// Against literal expected signatures, not listSignatures' own output —
+// comparing f(a) to f(a) passes even for a function returning a constant.
 test('a signature is built from the status and removal timestamps only', () => {
   const acts = activities();
   assert.equal(
@@ -126,11 +124,8 @@ test('an unknown list counts as stale, so a cold start fetches everything', () =
   assert.equal(staleLists(activities(), undefined).length, LISTS.length);
 });
 
-// Was "signatures are stable regardless of API key order", which asserted a
-// property of JavaScript — named property reads are order-independent — rather
-// than anything the code does. What is worth pinning is that the fields the
-// signature deliberately ignores really are ignored: a scrobbler reporting
-// progress must not trigger a refetch that renders byte-identical output.
+// The fields the signature deliberately ignores must really be ignored: a
+// scrobbler reporting progress must not trigger a byte-identical re-render.
 test('only the fields that can move an item between lists count', () => {
   const before = listSignatures(activities());
 

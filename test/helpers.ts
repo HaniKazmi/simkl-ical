@@ -1,12 +1,9 @@
 /**
  * Shared test fixtures.
  *
- * Two of these exist to stop a whole class of accident rather than to save
- * typing. `withTempDataDir` was duplicated across two files; more importantly
- * `config.dataDir` defaults to ./data, which on a real checkout holds a live
- * OAuth token — so any test that builds a FeedState without overriding it would
- * make authenticated calls to SIMKL. `withFetch` closes the same hole for the
- * network: nothing in the suite should ever reach the real CDN or API.
+ * `withTempDataDir` and `withFetch` exist to stop accidents, not to save
+ * typing: `config.dataDir` defaults to ./data, which on a real checkout holds a
+ * live OAuth token, and nothing in the suite should reach the real CDN or API.
  */
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -15,9 +12,8 @@ import { config, type Config } from '../src/config.ts';
 import type { Calendars } from '../src/sources/calendar.ts';
 import type { CalendarEntry, CalendarFile, ShowMetadata } from '../src/simkl/types.ts';
 
-// Done here rather than in each test file, for the reason above: a new test
-// file that forgets these reaches the real API, or sleeps 15s per retry path
-// with nothing pointing at the cause. Every test file imports this module.
+// Here rather than per file, for the same reason: a file that forgets these
+// reaches the real API, or sleeps 15s per retry path.
 config.clientId ??= 'test-client-id';
 config.retryBaseMs = 1;
 
@@ -36,11 +32,8 @@ export const recorder = () => {
 };
 
 /**
- * Override config for the duration of `fn`, restoring it afterwards.
- *
- * config is a process-wide singleton and node:test files share it, so a missed
- * restore silently changes behaviour elsewhere. One helper beats hand-written
- * try/finally blocks at every call site.
+ * Override config for the duration of `fn`, restoring it afterwards. config is
+ * a process-wide singleton, so a missed restore changes behaviour elsewhere.
  */
 export const withConfig = async (overrides: Partial<Config>, fn: () => void | Promise<void>): Promise<void> => {
   const keys = Object.keys(overrides) as Array<keyof Config>;
@@ -84,11 +77,9 @@ export const withTempDataDir = async (fn: (dir: string) => Promise<void>): Promi
 export type FetchHandler = (url: string, init?: RequestInit) => Response | Promise<Response>;
 
 /**
- * Replace global fetch for the duration of `fn`, and record every URL asked for.
- *
- * The call log is what most of these tests actually assert on — that a poll made
- * one request rather than eight, or that a failure was retried the right number
- * of times.
+ * Replace global fetch for the duration of `fn`, recording every URL asked for.
+ * The call log is what most tests assert on: that a poll made one request
+ * rather than eight, or retried the right number of times.
  */
 export const withFetch = async (handler: FetchHandler, fn: (calls: string[]) => Promise<void>): Promise<void> => {
   const original = globalThis.fetch;

@@ -23,11 +23,8 @@ test('a missing client id says which file to fill in', async () => {
 
 // --- parsing and clamping -------------------------------------------------
 
-// Through buildConfig directly. These used to spawn a fresh Node process per
-// assertion, because config was only reachable as a singleton built at import;
-// six sequential execFileSync calls came to roughly 72% of the suite's runtime.
-
-// Every one of these had a way to break the service quietly if left unbounded.
+// Through buildConfig directly, so no child process is needed. Every one of
+// these breaks the service quietly if left unbounded.
 test('the intervals cannot be set low enough to hammer the APIs', () => {
   const c = buildConfig({ CALENDAR_REFRESH_MS: '0', ACTIVITIES_POLL_MS: '-1', MOVIE_REFRESH_MS: '10' });
   assert.equal(c.calendarRefreshMs, 60_000, 'a zero interval is a tight loop against the CDN');
@@ -40,9 +37,8 @@ test('the grace window stays in a range the archives can serve', () => {
   assert.equal(buildConfig({ GRACE_DAYS: '400' }).graceDays, 90, 'each extra month is another multi-MB archive');
 });
 
-// PORT=0 is the standard "bind an ephemeral port" idiom. Clamping the minimum
-// to 1 silently rewrote it to a port the unprivileged container user cannot
-// bind — a crash loop on EACCES with no hint that the value had been changed.
+// PORT=0 is the standard "bind an ephemeral port" idiom; clamping it to 1
+// would give the container a port its unprivileged user cannot bind.
 test('PORT=0 is preserved, not clamped up to 1', () => {
   assert.equal(buildConfig({ PORT: '0' }).port, 0);
   assert.equal(buildConfig({ PORT: '99999' }).port, 65535);
@@ -61,8 +57,7 @@ test('an unset environment yields the documented defaults', () => {
   assert.equal(c.port, 3000);
 });
 
-// This was hardcoded '0.1.0' while the repo was tagged v0.2.0, so SIMKL was
-// told the wrong version in every request.
+// SIMKL is told this in every request, so it must not drift from the package.
 test('the reported version matches package.json', async () => {
   const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(config.appVersion, pkg.version);
@@ -70,8 +65,8 @@ test('the reported version matches package.json', async () => {
 
 // --- cancellation ---------------------------------------------------------
 
-// `signal ?? AbortSignal.timeout(ms)` reads as a default but is an override: a
-// caller passing a signal silently gave up the timeout.
+// `signal ?? AbortSignal.timeout(ms)` reads as a default but is an override,
+// dropping the timeout whenever a caller passes a signal.
 test('a caller signal does not disable the request timeout', async () => {
   const combined = withTimeout(new AbortController().signal, 10);
   assert.equal(combined.aborted, false);

@@ -155,9 +155,8 @@ test('an empty film list yields an empty map and counts as complete', () => {
 
 const NOW = { now: new Date('2026-08-15T12:00:00Z') };
 
-// The bug this guards: `.find` took whichever entry the API listed first, so a
-// 1977 original run beat a 2027 re-release. That date then fell behind the
-// join's cutoff and the film silently never appeared at all.
+// Array order carries no meaning, so an original run must not beat a
+// re-release — the old date falls behind the cutoff and the film disappears.
 test('a re-release beats an original run that has already happened', () => {
   const movie: MovieDetail = {
     title: 'Star Wars',
@@ -216,8 +215,7 @@ test('a film entirely in the past keeps its most recent date', () => {
   assert.equal(pickReleaseDate(movie, 'GB', NOW)!.date, '1997-01-31');
 });
 
-// The last-resort loop took the first entry of any remaining type, so whether a
-// viewer got a premiere or a DVD date came down to the API's array order.
+// The last resort must choose by type too, not by whichever came first.
 test('the last-resort choice is by type, not by position', () => {
   const results = [
     { type: 5, release_date: '2028-01-01' }, // physical
@@ -232,8 +230,7 @@ test('the last-resort choice is by type, not by position', () => {
   assert.equal(a.type, 5, 'physical is a date you can act on; a premiere is a screening');
 });
 
-// RELEASE_COUNTRY is compared exactly against iso_3166_1, so a lowercase value
-// matched nothing and fell silently through to the US dates.
+// iso_3166_1 is matched exactly, so a lowercase value would fall through to US.
 test('the release country is matched case-insensitively', () => {
   assert.equal(pickReleaseDate(duneThree, 'gb', NOW)!.date, pickReleaseDate(duneThree, 'GB', NOW)!.date);
   assert.equal(pickReleaseDate(duneThree, 'gb', NOW)!.country, 'GB');
@@ -241,10 +238,8 @@ test('the release country is matched case-insensitively', () => {
 
 // --- permanent versus transient lookup failures ---------------------------
 
-// The bug this guards: any thrown error counted as `failed`, which withheld the
-// movies signature so the list stayed stale. A 404 — a film merged or deleted
-// upstream — fails identically every time, so every poll refetched the whole
-// film list and re-looked-up every title, forever.
+// A 404 fails identically every time, so counting it as retryable refetches
+// the whole film list on every poll forever.
 test('a permanently gone film does not hold the list stale', () => {
   const { releases, complete } = reconcileReleases(new Map(), [1, 2], lookups([[1, release(1)]], [], [2]));
   assert.equal(complete, true, 'a 4xx is settled, not a retry');
@@ -332,10 +327,8 @@ test('an empty id list makes no requests at all', async () => {
 
 // --- what counts as permanently gone --------------------------------------
 
-// The bug this guards: the predicate was `status >= 400 && status < 500`, which
-// swallowed the statuses apiGet had already retried to exhaustion. A sustained
-// 429 filed every film as "gone", reported the round complete, and dropped the
-// lot from the feed for a full movieRefreshMs with health still green.
+// These reach the caller only after apiGet has exhausted its own retries, so
+// filing them as "gone" would drop every film for a full movieRefreshMs.
 for (const status of [408, 429]) {
   test(`a ${status} stays retryable rather than counting as gone`, async () => {
     await withFetch(
@@ -362,8 +355,7 @@ for (const status of [404, 410]) {
   });
 }
 
-// An account-wide problem is not a fact about any one film, and filing it per
-// id swallowed the "re-run npm run login" message entirely.
+// An account-wide problem is not a fact about any one film.
 for (const status of [401, 403, 412]) {
   test(`a ${status} propagates rather than being filed against a film`, async () => {
     await withFetch(
@@ -377,9 +369,8 @@ for (const status of [401, 403, 412]) {
 
 // --- release types we have no name for ------------------------------------
 
-// The rewrite enumerated types 1-6 exhaustively, where the code it replaced
-// ended with a catch-all over any dated entry. An unrecognised type therefore
-// fell through to `released`, which the docstring itself calls unreliable.
+// An unrecognised type is still real data, and beats falling through to the
+// unreliable `released`.
 test('an unrecognised release type still beats the unreliable released field', () => {
   const movie: MovieDetail = {
     title: 'x',
@@ -407,10 +398,8 @@ test('a known type is still preferred over an unrecognised one', () => {
   assert.equal(pickReleaseDate(movie, 'GB', NOW)!.type, 3);
 });
 
-// "Has this happened yet" must be answered in the viewer's timezone, the same
-// way the join answers it. Computing it in UTC put a viewer far enough east on
-// yesterday's date, so a release that had already passed locally could still be
-// chosen as the next one.
+// "Has this happened yet" is answered in the viewer's zone, as the join does.
+// In UTC, a viewer far enough east sits on yesterday's date.
 test('whether a date has passed is judged in the viewer timezone, not UTC', () => {
   // 12:00Z is already the 16th in Auckland and still the 15th in UTC.
   const now = { now: new Date('2026-08-15T12:00:00Z') };

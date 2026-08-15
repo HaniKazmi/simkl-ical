@@ -27,9 +27,8 @@ export interface Health {
   events: number;
   calendarsRefreshedAt: string | null;
   /**
-   * Last time the CDN actually answered, as distinct from the last refresh
-   * attempt. These diverge exactly when the CDN is down and cached calendars
-   * are being served, which is the case `calendarsRefreshedAt` alone hides.
+   * Last time the CDN actually answered, as distinct from the last attempt.
+   * The two diverge while cached calendars are being served.
    */
   calendarsFreshAt: string | null;
   librarySyncedAt: string | null;
@@ -62,19 +61,16 @@ export class FeedState {
   library: Library | null = null;
   movieReleases = new Map<number, MovieRelease>();
   listSignatures: Record<string, string> = {};
+  // calendarsAt advances on every attempt, including ones served from cache
+  // after a failure; only calendarsFreshAt means the CDN answered.
   calendarsAt: string | null = null;
-  // Only advanced when the CDN actually answered. calendarsAt advances on every
-  // attempt, including the ones served from cache after a failure, so it cannot
-  // be used to detect an outage — which is what it was previously asked to do.
   calendarsFreshAt: string | null = null;
   libraryAt: string | null = null;
   filmsResolvedAt: string | null = null;
   polledAt: string | null = null;
   renderedAt: string | null = null;
   servingCached = false;
-  // One slot per subsystem. A single shared slot meant the calendar timer and
-  // the library timer cleared each other's failures on success, so a revoked
-  // token showed as unhealthy with no stated reason.
+  // One slot per subsystem: the two timers must not clear each other's failures.
   errors: SubsystemErrors = { calendar: null, library: null, render: null };
   timers: NodeJS.Timeout[] = [];
   /** Tail of the render chain; see safeRender. Never rejects. */
@@ -88,25 +84,19 @@ export class FeedState {
   }
 
   /**
-   * Healthy means "rendered recently, rendering successfully, and still hearing
-   * from both SIMKL and the CDN".
+   * Healthy means rendered recently, rendering successfully, and still hearing
+   * from both SIMKL and the CDN.
    *
-   * `libraryAt` deliberately is not used: with per-list gating it only advances
-   * when something actually changes, so it can be days old on a correct system.
-   * `polledAt` tracks the activities call itself, which is what stops if a token
-   * is revoked — otherwise the endpoint reported healthy forever once it had
-   * rendered even once.
-   *
-   * `errors.render` and the age of `renderedAt` are both folded in. Without
-   * them a render that throws on every cycle — one malformed calendar entry is
-   * enough — served a frozen feed behind a green healthcheck indefinitely.
+   * `libraryAt` is deliberately not consulted: with per-list gating it only
+   * advances when something changes, so it can be days old on a correct system.
+   * `polledAt` tracks the activities call, which is what stops when a token is
+   * revoked.
    */
   get health(): Health {
     const stalePoll = ageOf(this.polledAt) > config.activitiesPollMs * 3;
-    // Keyed on freshness, not on the attempt: see calendarsFreshAt above.
     const staleCalendars = ageOf(this.calendarsFreshAt) > config.calendarRefreshMs * 3;
-    // A render happens on every calendar refresh, so anything older than a few
-    // cycles means renders have stopped even if none of them reported an error.
+    // A render happens on every calendar refresh, so an old renderedAt means
+    // rendering has stopped even when nothing reported an error.
     const staleRender = ageOf(this.renderedAt) > config.calendarRefreshMs * 3;
 
     return {
@@ -119,9 +109,9 @@ export class FeedState {
       renderedAt: this.renderedAt,
       servingCached: this.servingCached,
       stale: stalePoll || staleCalendars || staleRender || undefined,
-      // Kept as a single headline value for the common case; `errors` carries
-      // the detail. Library problems outrank calendar ones — a stale calendar
-      // still renders, a revoked token eventually will not.
+      // A single headline value; `errors` carries the detail. Library problems
+      // outrank calendar ones: a stale calendar still renders, a revoked token
+      // eventually will not.
       lastError: this.errors.library ?? this.errors.calendar ?? this.errors.render ?? null,
       errors: this.errors,
       timezone: config.timezone,
@@ -132,9 +122,8 @@ export class FeedState {
    * Render if both halves of the join are available, containing any failure in
    * errors.render rather than the caller's slot, and persist what was produced.
    *
-   * Serialised through a promise chain. Both refresh timers end here, and at the
-   * default 3h/2h intervals they coincide every six hours; overlapping runs
-   * raced on the save and could leave the older render on disk.
+   * Serialised: both refresh timers end here and coincide every six hours at
+   * the default intervals, and overlapping runs would race on the save.
    */
   safeRender(): Promise<void> {
     this.rendering = this.rendering.then(() => this.renderAndSave());
@@ -163,9 +152,9 @@ export class FeedState {
   }
 
   /**
-   * Returns whether a render actually happened. A feed is only replaced once
-   * both the calendars and the library are present, so a partial refresh never
-   * overwrites a complete feed loaded from disk.
+   * Returns whether a render happened. The feed is replaced only once both
+   * halves are present, so a partial refresh never overwrites a complete feed
+   * loaded from disk.
    */
   render(): boolean {
     if (!this.calendars || !this.library) return false;
@@ -177,9 +166,9 @@ export class FeedState {
   }
 
   /**
-   * Serve the last feed immediately on boot, and keep serving it until a
-   * complete fresh one is rendered. Nothing else is restored: every restart
-   * resyncs from scratch, so no stale control state can outlive the process.
+   * Serve the last feed on boot and keep serving it until a complete fresh one
+   * is rendered. Nothing else is restored, so no control state outlives the
+   * process.
    */
   async hydrate(): Promise<void> {
     const saved = await loadFeed();
@@ -200,9 +189,7 @@ export class FeedState {
       this.calendarsAt = new Date().toISOString();
 
       if (anyStale(this.calendars)) {
-        // Deliberately not treated as a success. Serving the cached copy is the
-        // right behaviour, but reporting it as fresh is what let a month-long
-        // CDN outage pass as healthy while the feed emptied out.
+        // Serving the cached copy is right; reporting it as fresh is not.
         const since = this.calendarsFreshAt ?? 'startup';
         this.errors.calendar = `serving cached calendars — the CDN has not answered since ${since}`;
         this.log.warn(this.errors.calendar);
@@ -220,13 +207,9 @@ export class FeedState {
   }
 
   /**
-   * Whether the cached film release dates have aged out.
-   *
-   * Nothing in the library moves when a studio shifts a release, so gating film
-   * lookups purely on list changes meant a delayed film kept its old date until
-   * that date fell behind the join's cutoff — at which point it disappeared
-   * from the feed and never came back short of a restart. Once a day is cheap:
-   * the lookups are CDN-cached by id and the list is short.
+   * Whether the cached film release dates have aged out. Nothing in the library
+   * moves when a studio shifts a release, so list changes alone would never
+   * trigger a re-read; daily is cheap, as the lookups are CDN-cached by id.
    */
   private filmsDue(): boolean {
     return ageOf(this.filmsResolvedAt) > config.movieRefreshMs;
@@ -238,17 +221,13 @@ export class FeedState {
    */
   private async resolveFilms(): Promise<boolean> {
     const filmIds = [...idSet(this.library?.movies_plantowatch)];
-    // No guard for the empty case: fetchMovieReleases([]) spawns no workers and
-    // makes no requests, so the branch that used to be here bought nothing.
     const lookups = await fetchMovieReleases(filmIds, { signal: this.aborter.signal });
     const { releases, complete } = reconcileReleases(this.movieReleases, filmIds, lookups);
     this.movieReleases = releases;
 
-    // Only stamped on a complete round. Stamping regardless meant a failed
-    // daily re-read pushed the next attempt out another full movieRefreshMs —
-    // the signature rollback in the caller cannot help when the round was
-    // triggered by age rather than a list change, because the signature never
-    // moved in the first place.
+    // Only on a complete round: stamping regardless would defer the retry by a
+    // full movieRefreshMs, and the caller's signature rollback cannot help when
+    // the round was triggered by age rather than by a list change.
     if (complete) this.filmsResolvedAt = new Date().toISOString();
 
     if (filmIds.length) this.log.info(`resolved ${lookups.releases.size}/${filmIds.length} film release dates`);
@@ -265,9 +244,8 @@ export class FeedState {
    */
   async refreshLibraryIfChanged({ force = false }: { force?: boolean } = {}): Promise<void> {
     try {
-      // Inside the try: readToken only swallows ENOENT, so a truncated or
-      // unreadable token.json threw straight out of this method and, from the
-      // timer, took the process down with it.
+      // Inside the try: readToken only swallows ENOENT, so an unreadable
+      // token.json must degrade the feed rather than escape to the timer.
       const token = await readToken();
       if (!token) {
         this.errors.library = 'no token — run `npm run login`';
@@ -281,8 +259,8 @@ export class FeedState {
       this.errors.library = null;
 
       const stale = force || !this.library ? LISTS : staleLists(activities, this.listSignatures);
-      // Film dates age out on their own schedule, so a poll with no list changes
-      // still has work to do once a day — see filmsDue.
+      // Film dates age out on their own schedule, so a poll with no list
+      // changes still has work to do once a day.
       const filmsDue = force || this.filmsDue();
       if (!stale.length && !filmsDue) return;
 
@@ -293,20 +271,16 @@ export class FeedState {
         this.library = library;
       }
 
-      // Release dates are re-read when the film list itself changed, and
-      // otherwise only once a day. Marking an episode watched must not drag
-      // eleven film lookups along with it — but the dates are not stable
-      // either: a studio delaying a film produces no library activity at all,
-      // so the feed kept the old date until it fell behind the cutoff and the
-      // film silently vanished until a restart.
+      // Re-read when the film list changed, and otherwise once a day. Marking
+      // an episode watched must not drag eleven film lookups along with it.
       const filmsComplete =
         stale.some((l) => l.key === 'movies_plantowatch') || filmsDue ? await this.resolveFilms() : true;
 
       const signatures = listSignatures(activities);
       if (!filmsComplete) {
-        // Recording the current signature here would mark the film list current
-        // despite unresolved lookups, and nothing would retry until the user
-        // next added or removed a title. Leave it stale instead.
+        // Leave the film list stale: recording the current signature would mark
+        // it current despite unresolved lookups, and nothing would retry until
+        // the user next added or removed a title.
         signatures.movies_plantowatch = this.listSignatures.movies_plantowatch;
         this.log.warn('some film lookups failed; will retry on the next poll');
       }
@@ -328,11 +302,9 @@ export class FeedState {
   }
 
   /**
-   * Run `job` on an interval, skipping a tick if the previous one is still
-   * going. setInterval does not wait, so a refresh slower than its own period —
-   * seven sequential list calls during a SIMKL brownout will do it — would
-   * otherwise overlap itself and interleave writes to library, movieReleases
-   * and listSignatures, letting an older run overwrite a newer signature set.
+   * Run `job` on an interval, skipping a tick while the previous one is still
+   * going. setInterval does not wait, and a refresh slower than its own period
+   * would interleave writes to library, movieReleases and listSignatures.
    */
   private schedule(name: string, job: () => Promise<void>, everyMs: number): void {
     let running = false;
@@ -358,11 +330,8 @@ export class FeedState {
   }
 
   /**
-   * Stop refreshing and cancel anything in flight.
-   *
-   * Aborting matters on shutdown: a calendar refresh can be several MB into a
-   * multi-minute fetch, and without this the process waits for it before the
-   * server can close.
+   * Stop refreshing and cancel anything in flight — a calendar refresh can be
+   * several MB into a fetch, and shutdown should not wait for it.
    */
   stop(): void {
     for (const t of this.timers) clearInterval(t);

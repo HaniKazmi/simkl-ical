@@ -39,19 +39,13 @@ export const getActivities = (token: string, { signal }: { signal?: AbortSignal 
   apiGet<Activities>('/sync/activities', { token, signal });
 
 /**
- * Change key for a single list.
+ * Change key for a single list, so each can be gated individually — marking an
+ * episode watched refetches only `shows/watching`.
  *
- * Activities carries a timestamp per status, so each list can be gated
- * individually — marking an episode watched moves only `tv_shows.watching` and
- * therefore refetches only `shows/watching`, leaving the 118 KB
- * `anime/completed` list alone.
- *
- * `removed_from_list` is folded in because a removal is only reported there,
- * not against the status the item left. It is per-category, so a removal
- * refetches every list in that category — rare enough not to matter.
- *
- * Deliberately ignores `playback` (moves whenever a scrobbler reports progress),
- * `rated_at`, and the `all` roll-up: none of them can change the feed.
+ * `removed_from_list` is folded in because a removal is reported only there,
+ * never against the status the item left; being per-category, it invalidates
+ * the whole category. `playback`, `rated_at` and the `all` roll-up are ignored:
+ * none can change the feed.
  */
 export const listSignature = (activities: Activities | null | undefined, { type, status }: Pick<ListDefinition, 'type' | 'status'>): string => {
   const source = (activities?.[ACTIVITY_CATEGORY[type]] ?? {}) as CategoryActivity;
@@ -79,9 +73,8 @@ const fetchList = (
 ): Promise<ListResponse> => apiGet<ListResponse>(`/sync/all-items/${type}/${status}`, { token, signal });
 
 /**
- * Fetch the given lists sequentially. The SIMKL docs specifically warn against
- * parallelising uncached sync endpoints, and a handful of serial requests take
- * well under a second.
+ * Sequential on purpose: the SIMKL docs warn against parallelising uncached
+ * sync endpoints, and a handful of serial requests take well under a second.
  */
 export const fetchLists = async (
   token: string,
