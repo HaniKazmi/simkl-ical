@@ -75,7 +75,12 @@ Why each piece is the way it is:
   date string that `08/15` and `15/08` misparse identically for twelve days a month.
 - **Verification diffs `userEnteredValue`, never `effectiveValue`.** Writing one cell recalculates
   five formulas, so `effectiveValue` moves in cells nobody wrote. `userEnteredValue` changes only
-  when someone writes, which turns verification into an equality check.
+  when someone writes — **while the grid holds still**. Inserting a row is the exception, and it
+  cost a corrupted sheet to learn: Sheets rewrites the relative A1 references in every formula the
+  insert shifts, so `=I609*F609` becomes `=I610*F610` with nobody having typed anything. Across an
+  insert, a formula is therefore checked for still *being* a formula rather than for its text.
+  Literals stay strictly compared, and they are what catches a misalignment — every literal on a
+  season row moves with the row.
 - **A write is never retried.** `batchUpdate` is atomic but not idempotent — a retried
   `insertDimension` inserts two rows. Reads opt into retry; writes never do.
 - **Catalogue lookups are gated per title, by watch activity.** `/sync/activities` resolves to a
@@ -97,8 +102,12 @@ Why each piece is the way it is:
   rather than from the plan.
 - **Request order is load-bearing**: edits to pre-existing rows (descending), then the
   `insertDimension`, then the new row's fill — which shares a row index with the insert, so any
-  "edits before inserts" rule overwrites a real row. Rollbacks go the other way: all restores first,
-  `deleteDimension` last.
+  "edits before inserts" rule overwrites a real row.
+- **A rollback splits into separate batches**: delete, re-read, then restore. No single ordering is
+  safe once formulas are involved, because `deleteDimension` rewrites the references in everything
+  it shifts — including text written moments earlier in the same batch. Deleting first also does
+  most of the work, since Sheets rewrites the formulas back on the way out exactly as it did on the
+  way in, leaving a plain diff against stable indices (`verify` with an empty plan).
 
 ## No build step
 
