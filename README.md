@@ -105,7 +105,7 @@ along on the library fetch the feed already makes.
 | `SHEET_SINCE_DAYS`               | `90`       | Nothing is touched without watch activity this recent           |
 | `SHEET_MAX_EDITS`                | `30`       | Over budget refuses the whole plan rather than trimming it      |
 | `SHEET_MAX_ROWS`                 | `20`       | Distinct rows in one run                                        |
-| `SHEET_MAX_INSERTS`              | `1`        | One new season row per run                                      |
+| `SHEET_MAX_INSERTS`              | `1`        | `0` or `1` only — a batch with more inserts is refused outright  |
 
 The default mode writes nothing. Point it at the real sheet, read a run's report in the log, and
 only then share the spreadsheet with the service account's `client_email` as **Editor** and switch
