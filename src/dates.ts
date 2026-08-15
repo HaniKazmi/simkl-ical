@@ -32,6 +32,8 @@ export const localDate = (iso: string, timeZone: string): string => formatterFor
  */
 export const releaseDate = (value: string): string => value.slice(0, 10);
 
+export const MS_PER_DAY = 86_400_000;
+
 /**
  * Shift a YYYY-MM-DD date by whole days. Arithmetic is done at UTC noon so a
  * DST transition can never push the result onto the neighbouring day.

@@ -36,8 +36,6 @@ export interface CellData {
    * so it can never be used as evidence that nobody wrote anything.
    */
   effectiveValue?: ExtendedValue;
-  /** What the sheet displays. Logs and reports only. */
-  formattedValue?: string;
 }
 
 export interface RowData {

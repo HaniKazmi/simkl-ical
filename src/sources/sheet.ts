@@ -29,12 +29,15 @@ export interface SheetSnapshot {
   readAt: number;
 }
 
-export const readSnapshot = async (
-  { spreadsheetId = config.sheetId, title = config.sheetName, signal }: { spreadsheetId?: string; title?: string; signal?: AbortSignal } = {},
-): Promise<SheetSnapshot> => {
-  if (!spreadsheetId) throw new Error('SHEET_ID is not set.');
+/** The configured spreadsheet, or a clear failure. One copy of the check. */
+const target = (): string => {
+  if (!config.sheetId) throw new Error('SHEET_ID is not set.');
+  return encodeURIComponent(config.sheetId);
+};
 
-  const response = await sheetsRequest<SpreadsheetResponse>(encodeURIComponent(spreadsheetId), {
+export const readSnapshot = async ({ signal }: { signal?: AbortSignal } = {}): Promise<SheetSnapshot> => {
+  const title = config.sheetName;
+  const response = await sheetsRequest<SpreadsheetResponse>(target(), {
     // The tab name is a range, and one containing a space needs quoting.
     params: { includeGridData: 'true', ranges: `'${title.replaceAll("'", "''")}'` },
     retry: true,
@@ -73,12 +76,11 @@ export const readSnapshot = async (
  */
 export const applyRequests = async (
   requests: SheetRequest[],
-  { spreadsheetId = config.sheetId, signal }: { spreadsheetId?: string; signal?: AbortSignal } = {},
+  { signal }: { signal?: AbortSignal } = {},
 ): Promise<BatchUpdateResponse> => {
-  if (!spreadsheetId) throw new Error('SHEET_ID is not set.');
   if (!requests.length) return {};
 
-  return await sheetsRequest<BatchUpdateResponse>(`${encodeURIComponent(spreadsheetId)}:batchUpdate`, {
+  return await sheetsRequest<BatchUpdateResponse>(`${target()}:batchUpdate`, {
     method: 'POST',
     body: { requests, includeSpreadsheetInResponse: false },
     signal,
@@ -89,11 +91,8 @@ export const applyRequests = async (
  * Every tab's id and title, and nothing else. Used to find backup tabs — both
  * the one this run made and any a frozen run left behind.
  */
-export const listSheets = async (
-  { spreadsheetId = config.sheetId, signal }: { spreadsheetId?: string; signal?: AbortSignal } = {},
-): Promise<Array<{ sheetId: number; title: string }>> => {
-  if (!spreadsheetId) throw new Error('SHEET_ID is not set.');
-  const response = await sheetsRequest<SpreadsheetResponse>(encodeURIComponent(spreadsheetId), {
+export const listSheets = async ({ signal }: { signal?: AbortSignal } = {}): Promise<Array<{ sheetId: number; title: string }>> => {
+  const response = await sheetsRequest<SpreadsheetResponse>(target(), {
     params: { fields: 'sheets.properties(sheetId,title)' },
     retry: true,
     signal,

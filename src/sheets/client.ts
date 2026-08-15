@@ -8,6 +8,7 @@
  * writes never do.
  */
 
+import { backoffMs, HttpError, retryDelayMs, sleep } from '../backoff.ts';
 import { config } from '../config.ts';
 import { errorMessage } from '../errors.ts';
 import { withTimeout } from '../signals.ts';
@@ -18,25 +19,15 @@ const API_BASE = 'https://sheets.googleapis.com/v4/spreadsheets/';
 const RETRYABLE = new Set([408, 429, 500, 502, 503, 504]);
 
 const MAX_ATTEMPTS = 4;
-const MAX_RETRY_AFTER_MS = 60_000;
 
 // The grid read is a megabyte or so; generous, but bounded, so a hung
 // connection cannot stall a poll until undici's 300s default.
 const TIMEOUT_MS = 60_000;
 
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-
-const backoffMs = (attempt: number): number => 2 ** (attempt - 1) * config.retryBaseMs;
-
-export class SheetsError extends Error {
-  status: number | undefined;
-  body: string | undefined;
-
+export class SheetsError extends HttpError {
   constructor(message: string, status?: number, body?: string) {
-    super(message);
+    super(message, status, body);
     this.name = 'SheetsError';
-    this.status = status;
-    this.body = body;
   }
 }
 
@@ -61,15 +52,6 @@ const describe = (status: number, body: string): string => {
     // Not JSON — an HTML error page from a proxy. The status is all there is.
   }
   return `${status}`;
-};
-
-const retryDelayMs = (res: Response, attempt: number): number => {
-  const header = res.headers.get('retry-after');
-  if (header === null || header.trim() === '') return backoffMs(attempt);
-  const seconds = Number(header);
-  const ms = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header) - Date.now();
-  if (!Number.isFinite(ms) || ms < 0) return backoffMs(attempt);
-  return Math.min(ms, MAX_RETRY_AFTER_MS);
 };
 
 export interface SheetsRequestOptions {

@@ -154,18 +154,19 @@ export const resolveColumns = (headerCells: CellData[], width: number): ColumnMa
 export interface SeasonRow {
   /** Zero-based index into `snapshot.rows`. */
   row: number;
-  /** The season label. `4.5` is a special and is never inserted or added to. */
+  /**
+   * The season label, or null if unparseable. A fractional one (`4.5`) is a
+   * special: never inserted, and never added to. Callers test that themselves
+   * with `Number.isInteger` — carrying a `fractional` flag alongside would be
+   * a second copy of the same one-line rule.
+   */
   season: number | null;
-  fractional: boolean;
   /** Episodes *watched* — a count, not the highest episode number. */
   episode: number | null;
-  start: number | null;
   /** Date serial, or null when blank. A set end date freezes the row forever. */
   end: number | null;
   /** SIMKL ids, in release order. A row can carry several when a cour was split. */
   ids: number[];
-  /** The `Episodes` column here means per-episode runtime, as a day fraction. */
-  runtimeDays: number | null;
 }
 
 export interface ShowBlock {
@@ -181,7 +182,6 @@ export interface ShowBlock {
 
 export interface Grid {
   snapshot: SheetSnapshot;
-  headerRow: number;
   columns: ColumnMap;
   blocks: ShowBlock[];
 }
@@ -244,20 +244,16 @@ export const parseGrid = (snapshot: SheetSnapshot): Grid => {
       throw new GridError(`${a1(row, columns.Season)} is a season row with no show row above it.`);
     }
 
-    const season = numberOf(cells[columns.Season]);
     block.seasons.push({
       row,
-      season,
-      fractional: season !== null && !Number.isInteger(season),
+      season: numberOf(cells[columns.Season]),
       episode: numberOf(cells[columns.Episode]),
-      start: numberOf(cells[columns.Start]),
       end: isBlank(cells[columns.End]) ? null : numberOf(cells[columns.End]),
       ids: parseIds(cells[columns.id]),
-      runtimeDays: numberOf(cells[columns.Episodes]),
     });
   }
 
-  return { snapshot, headerRow, columns, blocks };
+  return { snapshot, columns, blocks };
 };
 
 /**

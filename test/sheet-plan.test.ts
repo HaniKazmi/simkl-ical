@@ -4,16 +4,15 @@ import { parseGrid } from '../src/sheet/grid.ts';
 import { deriveStatus, needsLookup, planLookups, planSync, statusSource, type CatalogueView, type TitleCatalogue } from '../src/sheet/plan.ts';
 import { dateSerial, indexLibrary, seasonShapes } from '../src/sheet/progress.ts';
 import type { EpisodeDetail, ShowDetail } from '../src/simkl/types.ts';
-import { daysAgo, libraryItem, sheetSnapshot, SHEET_HEADERS, type CellSpec, type ItemSpec } from './helpers.ts';
+import { daysAgo, libraryItem, sheetSnapshot, SHEET_HEADERS, type CellSpec, type ItemSpec, seasonRow, showRow } from './helpers.ts';
 
 const H = SHEET_HEADERS;
 const TZ = 'Europe/London';
 const DAY = 86_400_000;
 
-const show = (title: string, status: string | null, id: number | string | null, type = 'show'): CellSpec[] =>
-  [title, status, { formula: '=LET(…)', value: 1 }, { formula: '=LET(…)', value: 1 }, 45000, { formula: '=LET(…)' }, { formula: '=LET(…)' }, { formula: '=LET(…)' }, id, type];
+const show = showRow;
 const season = (n: number, episodes: number | null, end: number | null, id: number | string | null = null): CellSpec[] =>
-  [null, null, n, episodes, 45000, end, 0.0153, { formula: '=G*F' }, id, null];
+  seasonRow(n, episodes, end, { id });
 
 /** `n` episodes of which `aired` have aired, all in one season. */
 const eps = (number: number, total: number, aired = total): EpisodeDetail[] =>

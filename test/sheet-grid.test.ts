@@ -1,14 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { columnLetter, duplicateIds, findHeaderRow, GridError, idsFor, parseGrid, parseIds, resolveColumns } from '../src/sheet/grid.ts';
-import { cellOf, sheetSnapshot, SHEET_HEADERS, type CellSpec } from './helpers.ts';
+import { cellOf, sheetSnapshot, SHEET_HEADERS, type CellSpec, seasonRow, showRow } from './helpers.ts';
 
 const H = SHEET_HEADERS;
-//                       Show    Status     Season Episode Start End   Episodes Length id    Type
-const show = (title: string, status: string | null, id: number | string | null, type: string): CellSpec[] =>
-  [title, status, { formula: '=LET(…)', value: 3 }, { formula: '=LET(…)', value: 8 }, 45000, { formula: '=LET(…)' }, { formula: '=LET(…)' }, { formula: '=LET(…)' }, id, type];
+const show = showRow;
 const season = (n: number, episodes: number, start: number, end: number | null, id: number | string | null = null): CellSpec[] =>
-  [null, null, n, episodes, start, end, 0.028, { formula: '=G*F' }, id, null];
+  seasonRow(n, episodes, end, { id, start });
 
 // --- base 26 ---------------------------------------------------------------
 
@@ -94,9 +92,9 @@ test('trailing blank rows are the sheet tail, not data', () => {
   assert.equal(grid.blocks[0]?.seasons.length, 1);
 });
 
-test('a fractional season label is marked, because specials are never inserted or added to', () => {
+test('a fractional season label parses as itself, so callers can refuse it', () => {
   const grid = parseGrid(sheetSnapshot([H, show('Doctor Who', 'Ended', 8530, 'show'), season(13.5, 1, 45000, 45001)]));
-  assert.equal(grid.blocks[0]?.seasons[0]?.fractional, true);
+  assert.equal(grid.blocks[0]?.seasons[0]?.season, 13.5);
 });
 
 // --- ids -------------------------------------------------------------------

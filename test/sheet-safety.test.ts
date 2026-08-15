@@ -5,15 +5,13 @@ import { assertPlanSafe, deleteRowRequests, toRequests, UnsafePlanError } from '
 import { dateSerial } from '../src/sheet/progress.ts';
 import type { CellEdit, RowInsert, SheetPlan } from '../src/sheet/plan.ts';
 import type { ExtendedValue } from '../src/sheets/types.ts';
-import { sheetSnapshot, SHEET_HEADERS, type CellSpec } from './helpers.ts';
+import { sheetSnapshot, SHEET_HEADERS, type CellSpec, seasonRow, showRow } from './helpers.ts';
 
 const H = SHEET_HEADERS;
 const TODAY = dateSerial(new Date().toISOString().slice(0, 10));
 
-const show = (title: string, status: string): CellSpec[] =>
-  [title, status, { formula: '=LET(…)', value: 1 }, { formula: '=LET(…)', value: 1 }, 45000, { formula: '=LET(…)' }, { formula: '=LET(…)' }, { formula: '=LET(…)' }, 1, 'show'];
-const season = (n: number, episodes: number | null, end: number | null): CellSpec[] =>
-  [null, null, n, episodes, 45000, end, 0.0153, { formula: '=G*F' }, null, null];
+const show = (title: string, status: string): CellSpec[] => showRow(title, status, 1);
+const season = seasonRow;
 
 //  row 0 header | 1 show | 2 season 1 (closed) | 3 season 2 (open)
 const grid: Grid = parseGrid(sheetSnapshot([H, show('Fargo', 'Ended'), season(1, 6, 44000), season(2, 3, null)]));
@@ -91,9 +89,9 @@ test('a cell that has moved under the plan is refused', () => {
   refuses(planOf([cell(3, 'Episode', { numberValue: 8 }, { numberValue: 99 })]), /no longer holds what the plan was built on/);
 });
 
-test('an address that does not match its own target is refused', () => {
-  const bad = { ...cell(3, 'Episode', { numberValue: 8 }), address: 'Z1' };
-  refuses(planOf([bad]), /does not match the target/);
+// The column is the write coordinate, so a plan whose column disagrees with the
+// resolved header map would write to the wrong cell.
+test('a target whose column does not match the resolved header map is refused', () => {
   const displaced = { ...cell(3, 'Episode', { numberValue: 8 }), column: 99 };
   refuses(planOf([displaced]), /does not match the resolved position/);
 });

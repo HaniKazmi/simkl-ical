@@ -12,9 +12,10 @@
  */
 
 import { config } from '../config.ts';
-import { a1, isFormula, sameValue, type Grid, type HeaderName } from './grid.ts';
+import { isFormula, sameValue, type Grid, type HeaderName } from './grid.ts';
+import { shiftDate } from '../dates.ts';
 import { dateSerial } from './progress.ts';
-import type { CellEdit, RowInsert, SheetPlan } from './plan.ts';
+import type { CellEdit, SheetPlan } from './plan.ts';
 import type { ExtendedValue, GridRange, SheetRequest } from '../sheets/types.ts';
 
 /** What the sync may write to a row that already exists. */
@@ -36,7 +37,10 @@ export class UnsafePlanError extends Error {
   }
 }
 
-const refuse = (message: string): never => {
+// Annotated on the variable, not the arrow: only that form makes TypeScript
+// narrow at the call sites, which is what lets the checks below read as
+// straight-line assertions rather than defensive `?.` chains.
+const refuse: (message: string) => never = (message) => {
   throw new UnsafePlanError(message);
 };
 
@@ -55,7 +59,8 @@ export const assertPlanSafe = (
   grid: Grid,
   { maxEdits = config.sheetMaxEdits, maxRows = config.sheetMaxRows, maxInserts = config.sheetMaxInserts, now = new Date() }: SafetyLimits = {},
 ): void => {
-  const maxSerial = dateSerial(new Date(now.getTime() + 86_400_000).toISOString().slice(0, 10));
+  // Tomorrow, via the shared date arithmetic rather than slicing an instant.
+  const maxSerial = dateSerial(shiftDate(now.toISOString().slice(0, 10), 1));
   const showRows = new Set(grid.blocks.map((b) => b.row));
   const seasonRows = new Map(grid.blocks.flatMap((b) => b.seasons.map((s) => [s.row, s] as const)));
 
@@ -78,7 +83,6 @@ export const assertPlanSafe = (
     if (cell.column !== grid.columns[cell.field]) {
       refuse(`${where}: column ${cell.column} does not match the resolved position of ${cell.field}.`);
     }
-    if (cell.address !== a1(cell.row, cell.column)) refuse(`${where}: the address does not match the target.`);
 
     const value = cell.value;
     if (value.numberValue !== undefined && !Number.isFinite(value.numberValue)) refuse(`${where}: not a finite number.`);
@@ -120,16 +124,14 @@ export const assertPlanSafe = (
     const season = seasonRows.get(cell.row);
     if (!season) refuse(`${where}: ${cell.field} may only be written on a season row.`);
     // A dated season is closed by the user's decision and never revisited.
-    if (season?.end !== null) refuse(`${where}: the season already has an end date.`);
+    if (season.end !== null) refuse(`${where}: the season already has an end date.`);
 
     if (cell.field === 'Episode') {
       const next = cell.value.numberValue;
       if (next === undefined || !Number.isInteger(next) || next < 1) refuse(`${where}: an episode count must be a positive whole number.`);
       // Never backwards. The user's rule, and the reason a wrong-but-larger
       // number is the dangerous failure rather than a wrong-but-smaller one.
-      if (next !== undefined && next <= (season?.episode ?? 0)) {
-        refuse(`${where}: ${next} would not increase the count of ${season?.episode ?? 0}.`);
-      }
+      if (next <= (season.episode ?? 0)) refuse(`${where}: ${next} would not increase the count of ${season.episode ?? 0}.`);
     }
   }
 
@@ -145,7 +147,7 @@ export const assertPlanSafe = (
     // above — a show row's formats render a correct date serial as `46265`.
     const block = grid.blocks.findLast((b) => b.row < insert.row);
     if (!block || block.title !== insert.title) refuse(`${where}: the insertion point is not inside ${insert.title}'s block.`);
-    if (!block?.seasons.some((s) => s.row < insert.row)) {
+    if (!block.seasons.some((s) => s.row < insert.row)) {
       refuse(`${where}: no season row above the insertion point to inherit formats from.`);
     }
     for (const cell of insert.fill) {
@@ -208,11 +210,8 @@ export const toRequests = (plan: SheetPlan, grid: Grid): SheetRequest[] => {
   return requests;
 };
 
-/**
- * Prefix for the snapshot tabs the sync makes before writing. Strict, because
- * it is the sole basis on which a tab gets deleted.
- */
-export const BACKUP_PREFIX = '_sync-backup-';
+/** Prefix for the snapshot tabs the sync makes before writing. */
+const BACKUP_PREFIX = '_sync-backup-';
 
 export const backupName = (now: Date): string => `${BACKUP_PREFIX}${now.toISOString().replaceAll(':', '-').replace('.', '-')}`;
 

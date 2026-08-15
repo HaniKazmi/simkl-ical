@@ -4,7 +4,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import { SheetSync } from '../src/sheet-sync.ts';
 import { clearTokenCache } from '../src/sheets/auth.ts';
 import type { CellData, SheetRequest } from '../src/sheets/types.ts';
-import { cellOf, daysAgo, jsonResponse, libraryOf, quiet, recorder, sheetSnapshot, SHEET_HEADERS, withConfig, withFetch, type CellSpec } from './helpers.ts';
+import { cellOf, daysAgo, jsonResponse, libraryOf, quiet, recorder, sheetSnapshot, SHEET_HEADERS, withConfig, withFetch, type CellSpec, seasonRow, showRow } from './helpers.ts';
 
 const H = SHEET_HEADERS;
 
@@ -17,10 +17,8 @@ const { privateKey } = generateKeyPairSync('rsa', {
 });
 const CREDENTIAL = Buffer.from(JSON.stringify({ client_email: 'sa@example.test', private_key: privateKey })).toString('base64');
 
-const show = (title: string, status: string, id: number): CellSpec[] =>
-  [title, status, { formula: '=LET(…)', value: 1 }, { formula: '=LET(…)', value: 6 }, 45000, { formula: '=LET(…)' }, { formula: '=LET(…)' }, { formula: '=LET(…)' }, id, 'show'];
-const season = (n: number, episodes: number | null, end: number | null): CellSpec[] =>
-  [null, null, n, episodes, 45000, end, 0.0153, { formula: '=G*F' }, null, null];
+const show = showRow;
+const season = seasonRow;
 
 const GRID: CellSpec[][] = [H, show('Fargo', 'Watching', 3381), season(1, 6, 44000), season(2, 3, null)];
 

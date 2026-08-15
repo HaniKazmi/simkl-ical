@@ -9,6 +9,7 @@
  */
 
 import { config } from '../config.ts';
+import { MS_PER_DAY } from '../dates.ts';
 import { a1, columnLetter, duplicateIds, idsFor, type ColumnMap, type Grid, type HeaderName, type SeasonRow, type ShowBlock } from './grid.ts';
 import { courComplete, runtimeDays, seasonComplete, watchSerial, type SeasonShape, type TitleProgress } from './progress.ts';
 import type { CatalogueRequest } from '../sources/shows.ts';
@@ -34,8 +35,6 @@ export interface CatalogueView {
   failed: number[];
   unavailable: number[];
 }
-
-const MS_PER_DAY = 86_400_000;
 
 export interface CellEdit {
   /** Zero-based, in the snapshot the plan was built from. */
@@ -435,7 +434,7 @@ const planInsert = (
   source: TitleProgress | null,
   covered: Set<number>,
   catalogue: CatalogueView,
-  { now, timezone, sinceDays }: Required<Omit<PlanOptions, never>>,
+  { now, timezone, sinceDays }: Required<PlanOptions>,
 ): RowInsert | string | null => {
   if (block.type !== 'show' || !source || !block.ids.length) return null;
   const cutoffMs = now.getTime() - sinceDays * MS_PER_DAY;
@@ -470,7 +469,7 @@ const planInsert = (
   const complete = seasonComplete(entry?.shapes.get(candidate.number), candidate.watched);
   const end = complete ? watchSerial(candidate.lastWatchedAt, timezone) : null;
 
-  const fill: CellEdit[] = [
+  const cells: Array<{ field: HeaderName; value: ExtendedValue }> = [
     { field: 'Season', value: num(candidate.number) },
     { field: 'Episode', value: num(candidate.watched) },
     { field: 'Start', value: num(start) },
@@ -481,15 +480,16 @@ const planInsert = (
       // formula so it keeps tracking the count the way every other row does.
       value: { formulaValue: `=${columnLetter(grid.columns.Episodes)}${row + 1}*${columnLetter(grid.columns.Episode)}${row + 1}` },
     },
-    ...(end === null ? [] : [{ field: 'End' as HeaderName, value: num(end) }]),
-  ].map(({ field, value }) => ({
+    ...(end === null ? [] : [{ field: 'End' as const, value: num(end) }]),
+  ];
+  const fill: CellEdit[] = cells.map(({ field, value }) => ({
     row,
-    column: grid.columns[field as HeaderName],
-    field: field as HeaderName,
+    column: grid.columns[field],
+    field,
     // The row does not exist yet, so there is nothing it was.
     previous: undefined,
     value,
-    address: a1(row, grid.columns[field as HeaderName]),
+    address: a1(row, grid.columns[field]),
     note: `${label}: new row`,
   }));
 

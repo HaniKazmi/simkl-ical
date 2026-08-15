@@ -12,14 +12,13 @@
  * count of 331, and season 0 holds exactly 7.
  */
 
-import { localDate } from '../dates.ts';
+import { localDate, MS_PER_DAY } from '../dates.ts';
 import type { EpisodeDetail, Library, LibraryItem, ListKey } from '../simkl/types.ts';
 
 // --- Timestamps ------------------------------------------------------------
 
 /** Sheets counts days from 1899-12-30. */
 const EPOCH_MS = Date.UTC(1899, 11, 30);
-const MS_PER_DAY = 86_400_000;
 
 /**
  * A usable ISO instant, or null.

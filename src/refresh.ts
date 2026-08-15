@@ -278,6 +278,9 @@ export class FeedState {
    * lists — see listSignature in sources/library.ts.
    */
   async refreshLibraryIfChanged({ force = false }: { force?: boolean } = {}): Promise<void> {
+    // Whether anything the feed is built from moved. Declared out here because
+    // the render below sits outside the try, and a failed poll must not claim it.
+    let refetched = false;
     try {
       // Inside the try: readToken only swallows ENOENT, so an unreadable
       // token.json must degrade the feed rather than escape to the timer.
@@ -300,6 +303,7 @@ export class FeedState {
       // The retry term is a boolean, and false when the sync is unconfigured,
       // so a quiet poll still makes exactly one request.
       if (!stale.length && !filmsDue && !this.sheetRetryPending) return;
+      refetched = stale.length > 0 || filmsDue;
 
       if (stale.length) {
         this.log.info(`refetching ${stale.length}/${LISTS.length} lists: ${stale.map((l) => l.key).join(', ')}`);
@@ -338,7 +342,11 @@ export class FeedState {
       );
     }
 
-    await this.safeRender();
+    // Only when something the feed is built from actually moved. A poll that
+    // fell through purely to retry the sheet would otherwise re-join, re-render
+    // and rewrite an identical feed to disk; the calendar timer still renders
+    // on its own schedule, so nothing goes stale.
+    if (refetched) await this.safeRender();
     await this.syncSheet();
   }
 

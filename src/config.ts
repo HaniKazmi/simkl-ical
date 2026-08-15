@@ -56,7 +56,7 @@ const packageVersion = (): string => {
  */
 export type SheetSyncMode = 'off' | 'report' | 'apply';
 
-export const SHEET_SYNC_MODES: readonly SheetSyncMode[] = ['off', 'report', 'apply'];
+const SHEET_SYNC_MODES: readonly SheetSyncMode[] = ['off', 'report', 'apply'];
 
 export interface Config {
   clientId: string | undefined;

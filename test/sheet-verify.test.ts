@@ -3,14 +3,12 @@ import assert from 'node:assert/strict';
 import { a1, parseGrid, type HeaderName } from '../src/sheet/grid.ts';
 import { shiftRow, verify } from '../src/sheet/verify.ts';
 import type { CellEdit, SheetPlan } from '../src/sheet/plan.ts';
-import { cellOf, sheetSnapshot, SHEET_HEADERS, type CellSpec } from './helpers.ts';
+import { cellOf, sheetSnapshot, SHEET_HEADERS, type CellSpec, seasonRow, showRow } from './helpers.ts';
 
 const H = SHEET_HEADERS;
 
-const show = (title: string, status: string): CellSpec[] =>
-  [title, status, { formula: '=LET(…)', value: 1 }, { formula: '=LET(…)', value: 6 }, 45000, { formula: '=LET(…)' }, { formula: '=LET(…)', value: 6 }, { formula: '=LET(…)' }, 1, 'show'];
-const season = (n: number, episodes: number | null, end: number | null): CellSpec[] =>
-  [null, null, n, episodes, 45000, end, 0.0153, { formula: '=G*F' }, null, null];
+const show = (title: string, status: string): CellSpec[] => showRow(title, status, 1);
+const season = seasonRow;
 
 const ROWS: CellSpec[][] = [H, show('Fargo', 'Ended'), season(1, 6, 44000), season(2, 3, null)];
 const before = parseGrid(sheetSnapshot(ROWS));
