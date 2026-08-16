@@ -45,14 +45,26 @@ const signature = (activities: Activities | null | undefined, fields: readonly (
 export const librarySignature = (activities: Activities | null | undefined): string => signature(activities, STATUSES);
 
 /**
- * Whether anything was removed, per category.
+ * When each category last had something removed from it.
  *
- * Gated separately from `librarySignature` because a removal moves this and
- * nothing else — the item simply stops existing, so no status timestamp
- * advances and no delta record is ever produced for it.
+ * Tracked per category rather than as one string because a removal moves this
+ * and nothing else — the item simply stops existing, so no status timestamp
+ * advances and no delta record is ever produced for it — and because *which*
+ * category moved is what makes a truncated membership response detectable.
  */
-export const removalSignature = (activities: Activities | null | undefined): string =>
-  signature(activities, ['removed_from_list']);
+export const removalStamps = (activities: Activities | null | undefined): Record<SyncType, string> =>
+  Object.fromEntries(
+    TYPES.map((type) => {
+      const source = (activities?.[ACTIVITY_CATEGORY[type]] ?? {}) as CategoryActivity;
+      return [type, source.removed_from_list ?? ''];
+    }),
+  ) as Record<SyncType, string>;
+
+/** The categories whose removal stamp has moved since the ones held. */
+export const movedRemovals = (
+  previous: Record<SyncType, string>,
+  current: Record<SyncType, string>,
+): Set<SyncType> => new Set(TYPES.filter((type) => previous[type] !== current[type]));
 
 /**
  * The watermark, backed off by a second, which is what `date_from` should ask
@@ -142,15 +154,25 @@ export const membershipIds = (response: AllItemsResponse | null | undefined): Se
 };
 
 /**
- * Drop everything the membership set no longer names — unless doing so would
- * drop most of the library.
+ * Drop everything the membership set no longer names, within the categories
+ * that actually reported a removal.
  *
- * A truncated or empty response is indistinguishable from "the user cleared
- * their account", and applying one empties the feed. Refusing costs a stale
- * removal that the next poll retries; applying one costs the feed. The refusal
- * lives here, in the only function that deletes, so no caller can reach the
- * delete without it. Reporting `applied` rather than acting on it keeps what
- * happens next — the log line, the withheld watermark — in the shell.
+ * `within` is the discriminator, and it is the only one available. A category
+ * holding nothing is *omitted* from the response rather than sent empty, so a
+ * truncated payload and a category the user emptied are the same bytes. What
+ * separates them is `removed_from_list`: emptying a category moves that
+ * category's stamp, and a truncated response does not move anything. So a
+ * category nobody reported a removal for is left alone entirely, however many
+ * of its ids the response failed to mention.
+ *
+ * Within a category that did report one, dropping more than half of what is
+ * held is still refused — the stamp says *something* went, not that everything
+ * did, and applying a partial payload there empties the feed of that type.
+ * Refusing costs a stale removal the next poll retries.
+ *
+ * The refusal lives here, in the only function that deletes, so no caller can
+ * reach the delete without it. Reporting `applied` rather than acting on it
+ * keeps what happens next — the log line, the withheld stamp — in the shell.
  *
  * The same Map comes back when nothing goes, so a poll that reconciled and
  * found nothing removed does not churn the library or force a re-render.
@@ -158,10 +180,24 @@ export const membershipIds = (response: AllItemsResponse | null | undefined): Se
 export const retainOnly = (
   library: Library,
   keep: Set<number>,
+  within: Set<SyncType>,
 ): { library: Library; removed: number; applied: boolean } => {
-  const gone = [...library.keys()].filter((id) => !keep.has(id));
-  if (library.size && (!keep.size || gone.length > library.size / 2)) return { library, removed: 0, applied: false };
+  const gone: number[] = [];
+  const held = new Map<SyncType, number>();
+  const going = new Map<SyncType, number>();
+  for (const [id, entry] of library) {
+    if (!within.has(entry.type)) continue;
+    held.set(entry.type, (held.get(entry.type) ?? 0) + 1);
+    if (keep.has(id)) continue;
+    going.set(entry.type, (going.get(entry.type) ?? 0) + 1);
+    gone.push(id);
+  }
+
+  for (const [type, count] of held) {
+    if ((going.get(type) ?? 0) > count / 2) return { library, removed: 0, applied: false };
+  }
   if (!gone.length) return { library, removed: 0, applied: true };
+
   const next: Library = new Map(library);
   for (const id of gone) next.delete(id);
   return { library: next, removed: gone.length, applied: true };

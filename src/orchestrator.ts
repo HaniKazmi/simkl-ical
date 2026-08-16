@@ -16,10 +16,10 @@ import { ageOf } from './shared/dates.ts';
 import { errorMessage } from './shared/errors.ts';
 import type { Logger } from './shared/logger.ts';
 import { fetchAllItems, fetchMembership, getActivities } from './api/simkl/lists.ts';
-import { deltaFrom, librarySignature, membershipIds, mergeDelta, removalSignature, retainOnly, toLibrary } from './library.ts';
+import { deltaFrom, librarySignature, membershipIds, mergeDelta, movedRemovals, removalStamps, retainOnly, toLibrary } from './library.ts';
 import { readToken } from './api/simkl/auth.ts';
 import { SimklAuthError } from './api/simkl/client.ts';
-import type { Library } from './api/simkl/types.ts';
+import type { Library, SyncType } from './api/simkl/types.ts';
 import { Feed } from './feed/feed.ts';
 import { SheetSync, type SheetSyncStatus } from './sheet/sync.ts';
 
@@ -118,7 +118,11 @@ export class Orchestrator {
    */
   syncedAll: string | null = null;
   librarySignature = '';
-  removalSignature = '';
+  /**
+   * Per category, because which one moved is what tells a truncated membership
+   * response from a category the user emptied — see `retainOnly`.
+   */
+  removalAt: Record<SyncType, string> = { shows: '', anime: '', movies: '' };
   libraryAt: string | null = null;
   polledAt: string | null = null;
   /** The two failures this layer owns; `Feed` holds the other two. */
@@ -271,14 +275,15 @@ export class Orchestrator {
       // Read once each: both are pure functions of the same payload, and the
       // branches below store what the comparison already computed.
       const signature = librarySignature(activities);
-      const removalsAt = removalSignature(activities);
+      const stamps = removalStamps(activities);
+      const removedFrom = movedRemovals(this.removalAt, stamps);
       // What the gate itself said, separately from what gets pulled. The two
       // diverge on a forced poll, which pulls everything while the signature
       // still matches — reporting that as a change would be one that did not
       // happen. A cold start has no signature to compare against, and no
       // watermark to ask a delta from, so it pulls whole.
       const changed = this.librarySignature !== signature;
-      const removals = this.removalSignature !== removalsAt;
+      const removals = removedFrom.size > 0;
       const full = force || !this.library || !this.syncedAll;
       // Film dates move on their own schedule, so a poll with no library change
       // still has work to do when one comes into range. Read once: the second
@@ -315,8 +320,13 @@ export class Orchestrator {
         gate.updated = this.library.size;
         reshaped = this.library.size;
         // A full pull *is* the membership set, so removals need no second call.
-        this.removalSignature = removalsAt;
-        this.syncedAll = activities.all ?? null;
+        this.removalAt = stamps;
+        // Never back to null. `full` is partly `!this.syncedAll`, so a null
+        // watermark makes the next poll full too, and the one after that —
+        // the whole library every half hour, which is the burst SIMKL answers
+        // with `401 user_token_failed`. A local stamp is safe because the
+        // delta asks from a second behind it.
+        this.syncedAll = activities.all ?? this.syncedAll ?? new Date().toISOString();
         this.librarySignature = signature;
       } else if (changed) {
         // A second behind the watermark, because `date_from` is compared
@@ -339,14 +349,14 @@ export class Orchestrator {
       // removed between them goes.
       if (removals && !full) {
         const keep = membershipIds(await fetchMembership(token, { signal }));
-        const diff = retainOnly(this.library!, keep);
+        const diff = retainOnly(this.library!, keep, removedFrom);
         this.library = diff.library;
         gate.removed = diff.removed;
         if (!diff.applied) {
           // The signature is left unadvanced, so the next poll asks again.
           this.log.warn('membership response would drop most of the library; not applying it');
         } else {
-          this.removalSignature = removalsAt;
+          this.removalAt = stamps;
           if (diff.removed) {
             this.log.info(`${diff.removed} ${diff.removed === 1 ? 'title' : 'titles'} removed from the library`);
           }

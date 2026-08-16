@@ -197,6 +197,26 @@ test('the delta asks from one second behind the watermark', async () => {
   });
 });
 
+// A brand-new SIMKL account reports `null` for every activity timestamp,
+// including the top-level one. Storing that as the watermark would leave `full`
+// true — it is partly `!syncedAll` — so every poll would pull the whole library
+// forever, which is the burst answered with `401 user_token_failed`.
+test('a missing activities.all does not make every poll a full pull', async () => {
+  await withToken(async (state) => {
+    const undated = { ...activities(), all: undefined };
+    await withFetch(api(undated), async (calls) => {
+      await state.refreshLibraryIfChanged();
+      assert.equal(pulls(calls).length, 1, 'the cold start still pulls');
+    });
+    assert.ok(state.syncedAll, 'and it leaves a watermark behind rather than null');
+
+    await withFetch(api(undated), async (calls) => {
+      await state.refreshLibraryIfChanged();
+      assert.equal(pulls(calls).length, 0, 'so the next poll is quiet, not another full pull');
+    });
+  });
+});
+
 // The reason the trigger is the status signature rather than activities.all,
 // which rolls playback up with everything else.
 test('a scrobble moves activities.all and still pulls nothing', async () => {
@@ -215,16 +235,39 @@ test('a scrobble moves activities.all and still pulls nothing', async () => {
 // membership set is the only way to learn what went.
 test('a removal costs one extra request and drops the title', async () => {
   await withToken(async (state) => {
-    await prime(state);
-    assert.equal(state.library?.size, 2);
+    // Two films, so dropping one is a proportion the guard lets through.
+    const twoFilms = {
+      ...libraryBody,
+      movies: [...libraryBody.movies, { movie: { title: 'Another Film', ids: { simkl: 301 } }, status: 'plantowatch' }],
+    };
+    await withFetch(api(activities(), { body: twoFilms }), () => state.refreshLibraryIfChanged());
+    assert.equal(state.library?.size, 3);
 
     const removed = activities({ movies: { removed_from_list: '2026-08-15T18:00:00Z' } });
-    await withFetch(api(removed, { membership: { shows: [{ show: { ids: { simkl: 100 } } }] } }), async (calls) => {
+    const membership = { shows: [{ show: { ids: { simkl: 100 } } }], movies: [{ movie: { ids: { simkl: 300 } } }] };
+    await withFetch(api(removed, { membership }), async (calls) => {
       await state.refreshLibraryIfChanged();
       assert.equal(calls.length, 2, `activities and one membership pull, got ${calls.join(', ')}`);
       assert.equal(memberships(calls).length, 1);
     });
-    assert.deepEqual([...(state.library?.keys() ?? [])], [100], 'the film is gone');
+    assert.deepEqual([...(state.library?.keys() ?? [])].sort((a, b) => a - b), [100, 300], 'the removed film is gone');
+  });
+});
+
+// A category omitted from the payload is the same bytes whether SIMKL truncated
+// it or the user emptied it, so a category that reported no removal is never
+// deleted from — however much of it the response failed to mention.
+test('a category that reported no removal survives being absent from the membership set', async () => {
+  await withToken(async (state) => {
+    await prime(state);
+    assert.equal(state.library?.size, 2);
+
+    // Only shows reported a removal; the payload omits movies entirely.
+    const removed = activities({ tv_shows: { removed_from_list: '2026-08-15T18:00:00Z' } });
+    const truncated = { shows: [{ show: { ids: { simkl: 100 } } }] };
+    await withFetch(api(removed, { membership: truncated }), () => state.refreshLibraryIfChanged());
+
+    assert.deepEqual([...(state.library?.keys() ?? [])].sort((a, b) => a - b), [100, 300], 'the film is untouched');
   });
 });
 

@@ -7,12 +7,13 @@ import {
   librarySignature,
   membershipIds,
   mergeDelta,
-  removalSignature,
+  movedRemovals,
+  removalStamps,
   retainOnly,
   toLibrary,
 } from '../src/library.ts';
 import { libraryItem } from './helpers.ts';
-import type { Activities, AllItemsResponse, Library } from '../src/api/simkl/types.ts';
+import type { Activities, AllItemsResponse, Library, SyncType } from '../src/api/simkl/types.ts';
 
 /** The fixture always populates every category, so tests can mutate them freely. */
 type FullActivities = Activities & Required<Pick<Activities, 'tv_shows' | 'anime' | 'movies'>>;
@@ -80,11 +81,11 @@ test('a status timestamp in one category is distinguishable from the same one in
 
 // A removal moves this and nothing else, which is why it is gated on its own.
 test('a removal moves the removal signature and leaves the library signature alone', () => {
-  const before = { library: librarySignature(activities()), removal: removalSignature(activities()) };
+  const before = { library: librarySignature(activities()), removal: removalStamps(activities()) };
   const after = activities();
   after.movies.removed_from_list = '2026-08-11T09:00:00Z';
   assert.equal(librarySignature(after), before.library);
-  assert.notEqual(removalSignature(after), before.removal);
+  assert.equal(movedRemovals(before.removal, removalStamps(after)).size, 1);
 });
 
 // --- The watermark ---------------------------------------------------------
@@ -249,38 +250,90 @@ test('membership ids read every type of a simkl_ids_only response', () => {
   assert.deepEqual([...ids].sort((a, b) => a - b), [1, 2, 3]);
 });
 
+const ALL: Set<SyncType> = new Set(['shows', 'anime', 'movies']);
+
 test('reconciling drops exactly what the membership set omits', () => {
   const base = toLibrary(shows(1, 2, 3));
-  const { library, removed } = retainOnly(base, new Set([1, 3]));
+  const { library, removed } = retainOnly(base, new Set([1, 3]), ALL);
   assert.equal(removed, 1);
   assert.deepEqual([...library.keys()], [1, 3]);
 });
 
 test('reconciling that removes nothing returns the same library', () => {
   const base = toLibrary(shows(1, 2));
-  const { library, removed } = retainOnly(base, new Set([1, 2, 99]));
+  const { library, removed } = retainOnly(base, new Set([1, 2, 99]), ALL);
   assert.equal(removed, 0);
   assert.equal(library, base, 'so a quiet reconcile does not force a re-render');
 });
 
 // A truncated response is indistinguishable from a cleared account, and
 // applying one empties the feed. Refusing costs a retry on the next poll.
-test('a membership response that would empty the library is refused, and drops nothing', () => {
+test('a membership response that would empty a category is refused, and drops nothing', () => {
   const base = toLibrary(shows(1, 2, 3));
-  const { library, removed, applied } = retainOnly(base, new Set());
+  const { library, removed, applied } = retainOnly(base, new Set(), ALL);
   assert.equal(applied, false);
   assert.equal(removed, 0);
   assert.equal(library, base, 'the refusal must not churn the library either');
 });
 
-test('a membership response that would drop most of the library is refused', () => {
+test('a membership response that would drop most of a category is refused', () => {
   const base = toLibrary(shows(1, 2, 3, 4));
-  assert.equal(retainOnly(base, new Set([1])).applied, false);
-  assert.equal(retainOnly(base, new Set([1, 2, 3])).applied, true);
+  assert.equal(retainOnly(base, new Set([1]), ALL).applied, false);
+  assert.equal(retainOnly(base, new Set([1, 2, 3]), ALL).applied, true);
+});
+
+// The threshold is `> half`, so losing exactly half is allowed through.
+test('dropping exactly half of a category is applied', () => {
+  const base = toLibrary(shows(1, 2, 3, 4));
+  assert.equal(retainOnly(base, new Set([1, 2]), ALL).applied, true);
 });
 
 test('an empty membership response against an empty library is not a fault', () => {
-  assert.equal(retainOnly(new Map() as Library, new Set()).applied, true);
+  assert.equal(retainOnly(new Map() as Library, new Set(), ALL).applied, true);
+});
+
+// The case a global proportion cannot see. A category omitted from the payload
+// reads as "every id in it is gone"; if the other categories are intact it is a
+// minority of the library, so a whole-library threshold waves it through and
+// the stamp advances, meaning it never retries.
+test('a category missing from the response is left alone when it reported no removal', () => {
+  const base = toLibrary({
+    shows: [libraryItem({ id: 1 }), libraryItem({ id: 2 })],
+    anime: [libraryItem({ id: 3 }), libraryItem({ id: 4 })],
+    movies: [libraryItem({ id: 5 }), libraryItem({ id: 6 })],
+  });
+  // Anime omitted entirely, and only movies reported a removal.
+  const keep = new Set([1, 2, 5]);
+  const { library, removed, applied } = retainOnly(base, keep, new Set<SyncType>(['movies']));
+
+  assert.equal(applied, true, 'the category that did report one still reconciles');
+  assert.equal(removed, 1, 'only the film');
+  assert.deepEqual([...library.keys()].sort((a, b) => a - b), [1, 2, 3, 4, 5], 'every anime survives');
+});
+
+// And when the truncated category *is* the one that reported a removal, the
+// proportional guard inside it catches the payload instead.
+test('a category that reported a removal but came back empty is refused', () => {
+  const base = toLibrary({
+    shows: [libraryItem({ id: 1 })],
+    anime: [libraryItem({ id: 3 }), libraryItem({ id: 4 })],
+  });
+  const refused = retainOnly(base, new Set([1]), new Set<SyncType>(['anime']));
+  assert.equal(refused.applied, false);
+  assert.equal(refused.library.size, 3);
+});
+
+// --- Removal stamps --------------------------------------------------------
+
+test('a removal in one category is not read as a removal in another', () => {
+  const before = removalStamps(activities());
+  const after = activities();
+  after.movies.removed_from_list = '2026-08-11T09:00:00Z';
+  assert.deepEqual([...movedRemovals(before, removalStamps(after))], ['movies']);
+});
+
+test('nothing moving means no category to reconcile', () => {
+  assert.equal(movedRemovals(removalStamps(activities()), removalStamps(activities())).size, 0);
 });
 
 // --- Counts ----------------------------------------------------------------
