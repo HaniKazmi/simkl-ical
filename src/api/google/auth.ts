@@ -14,6 +14,7 @@ import { readFileSync } from 'node:fs';
 import { config } from '../../shared/config.ts';
 import { withTimeout } from '../../shared/signals.ts';
 import { errorMessage } from '../../shared/errors.ts';
+import { beginRequest, readBody } from '../requests.ts';
 
 const TIMEOUT_MS = 30_000;
 
@@ -86,6 +87,9 @@ export const exchangeToken = async (key: ServiceAccountKey, { signal }: { signal
   const signingInput = `${header}.${claims}`;
   const signature = createSign('RSA-SHA256').update(signingInput).sign(key.private_key, 'base64url');
 
+  // Logged like every other outbound call: this one's failure — a bad key, clock
+  // skew — is what has to be told apart from a credential the sheet rejected.
+  const finish = beginRequest({ service: 'sheets', component: 'auth', method: 'POST', url: TOKEN_URL });
   const response = await fetch(TOKEN_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -101,10 +105,20 @@ export const exchangeToken = async (key: ServiceAccountKey, { signal }: { signal
     signal: withTimeout(signal, TIMEOUT_MS),
   });
 
-  const body = (await response.json().catch(() => ({}))) as { access_token?: string; expires_in?: number; error_description?: string };
-  if (!response.ok || !body.access_token) {
-    throw new Error(`Google token exchange failed (${response.status}): ${body.error_description ?? JSON.stringify(body)}`);
+  const read = await readBody(response);
+  let body: { access_token?: string; expires_in?: number; error_description?: string } = {};
+  try {
+    body = JSON.parse(read.text) as typeof body;
+  } catch {
+    // Left empty: the throw below reports the status and the raw body, which is
+    // more use than a parser complaint about Google's error page.
   }
+  if (!response.ok || !body.access_token) {
+    const reason = read.failure ?? body.error_description ?? JSON.stringify(body);
+    finish({ status: response.status, bytes: read.bytes, error: reason });
+    throw new Error(`Google token exchange failed (${response.status}): ${reason}`);
+  }
+  finish({ status: response.status, bytes: read.bytes, error: null });
   // Google says an hour today. Taking it from the response rather than assuming
   // means a shorter-lived token is never served past its expiry. Note what the
   // margin does at the short end: anything at or under five minutes is written
