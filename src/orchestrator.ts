@@ -15,7 +15,8 @@ import { config, sheetSyncConfigured } from './shared/config.ts';
 import { ageOf } from './shared/dates.ts';
 import { errorMessage } from './shared/errors.ts';
 import type { Logger } from './shared/logger.ts';
-import { fetchLists, getActivities, listSignatures, pruneSuperseded, staleLists, LISTS } from './shared/library.ts';
+import { fetchLists, getActivities } from './api/simkl/lists.ts';
+import { listSignatures, pruneSuperseded, staleLists, LISTS } from './library.ts';
 import { readToken } from './api/simkl/auth.ts';
 import { SimklAuthError } from './api/simkl/client.ts';
 import type { Library } from './api/simkl/types.ts';
@@ -185,7 +186,7 @@ export class Orchestrator {
   /**
    * One cheap request decides whether the library calls are worth making.
    * The signature covers only the timestamps that can move an item between
-   * lists — see listSignature in shared/library.ts.
+   * lists — see listSignature in library.ts.
    */
   async refreshLibraryIfChanged({ force = false }: { force?: boolean } = {}): Promise<void> {
     const { signal } = this.aborter;
