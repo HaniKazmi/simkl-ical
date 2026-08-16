@@ -16,7 +16,7 @@ import { buildHealth, type Health } from './health.ts';
 import { errorMessage } from './shared/errors.ts';
 import type { Logger } from './shared/logger.ts';
 import { fetchAllItems, fetchMembership, getActivities } from './api/simkl/lists.ts';
-import { deltaFrom, evaluateGate, libraryCounts, membershipIds, mergeDelta, retainOnly, toLibrary, watermarkOf } from './library.ts';
+import { countDeltas, deltaFrom, evaluateGate, libraryCounts, membershipIds, mergeDelta, retainOnly, toLibrary, watermarkOf } from './library.ts';
 import { readToken } from './api/simkl/auth.ts';
 import { SimklAuthError } from './api/simkl/client.ts';
 import type { SyncType } from './api/simkl/types.ts';
@@ -244,18 +244,17 @@ export class Orchestrator {
       // and marking an episode watched moves `updated` without moving this.
       let reshaped = 0;
       let pulled = false;
-      // Taken before the pull replaces the library. `libraryCounts` is memoised
-      // on the library's identity and every merge builds a new Map, so this is
-      // a lookup rather than a walk.
-      const before = libraryCounts(this.library);
-      // A first load is not movement. Without this a cold start reports every
-      // count arriving from zero, which is true and says nothing — the library
-      // did not move, it appeared. A resync escalation still reports real
-      // deltas, because that one does have a previous library to compare.
-      const hadLibrary = this.library !== null;
       // The retry term is a boolean, and false when the sync is unconfigured,
       // so a quiet poll still makes exactly one request.
       if (!full && !changed && !removals && !filmsDue && !this.sheetRetryPending) return;
+
+      // Taken before the pull replaces the library, and null when there was no
+      // library to move: a first load is not movement, and a cold start would
+      // otherwise report every count arriving from zero — true, and saying
+      // nothing. A resync escalation still reports real deltas, having a
+      // previous library to compare. `libraryCounts` is memoised on the
+      // library's identity, so this is a lookup rather than a walk.
+      const before = this.library && libraryCounts(this.library);
 
       // Each watermark advances only once the call that consumed it has
       // returned. Advancing before would skip the change permanently, since
@@ -327,19 +326,12 @@ export class Orchestrator {
       // Deliberately not `gate.updated`: watching an episode rewrites a record
       // the feed cannot see any of, so rendering on it re-joins to the identical
       // event set and rewrites the file for a fresh DTSTAMP and nothing else.
+      shouldRender = pulled || reshaped > 0 || gate.removed > 0 || filmsDue;
+
       if (pulled || gate.updated > 0 || gate.removed > 0) {
-        const after = libraryCounts(this.library);
-        const deltas: Record<string, number> = {};
-        if (hadLibrary) {
-          for (const key of Object.keys(after)) {
-            const delta = (after[key] ?? 0) - (before[key] ?? 0);
-            if (delta !== 0) deltas[key] = delta;
-          }
-        }
+        const deltas = before === null ? {} : countDeltas(before, libraryCounts(this.library));
         this.lastMovement = { at: new Date().toISOString(), deltas, updated: gate.updated, removed: gate.removed };
       }
-
-      shouldRender = pulled || reshaped > 0 || gate.removed > 0 || filmsDue;
 
       // Re-read when the film list changed, and otherwise when one comes into
       // range. Marking an episode watched must not drag every film lookup along.

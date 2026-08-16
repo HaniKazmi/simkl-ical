@@ -11,7 +11,7 @@
  */
 
 import { config } from '../shared/config.ts';
-import { describeUrl, recordRequest, type RequestComponent } from './requests.ts';
+import { beginRequest, type RequestComponent } from './requests.ts';
 import { errorMessage } from '../shared/errors.ts';
 import { withTimeout } from '../shared/signals.ts';
 
@@ -80,20 +80,8 @@ export const fetchCached = async <T>(url: string, key: string, { component, vali
   const headers: Record<string, string> = { 'User-Agent': `${config.appName}/${config.appVersion}` };
   if (cached?.lastModified) headers['If-Modified-Since'] = cached.lastModified;
 
-  const started = Date.now();
-  const log = (status: number | null, bytes: number | null, error: string | null): void =>
-    recordRequest({
-      at: new Date().toISOString(),
-      service: 'cdn',
-      component,
-      method: 'GET',
-      path: describeUrl(url),
-      status,
-      ms: Date.now() - started,
-      bytes,
-      attempts: 1,
-      error,
-    });
+  const finish = beginRequest({ service: 'cdn', component, method: 'GET', url });
+  const log = (status: number | null, bytes: number | null, error: string | null): void => finish({ status, bytes, error });
 
   // Stale data beats no data, so every failure below serves the cache when
   // there is one — flagged stale rather than passing as a success.

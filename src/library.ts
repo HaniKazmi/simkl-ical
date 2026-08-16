@@ -348,6 +348,44 @@ export const COUNT_KEYS: string[] = [
  */
 const countsFor = new WeakMap<Library, Record<string, number>>();
 
+/**
+ * The same counts folded to one total per type.
+ *
+ * Here rather than in the status page for the reason `COUNT_KEYS` gives just
+ * above: this module owns how the library is counted, and the key format is its
+ * own. Derived from `TYPES` rather than by splitting the key, so adding a type
+ * moves this with `COUNT_KEYS` instead of silently dropping the new one into
+ * `other` — where it would read as an unrecognised status rather than a missing
+ * row, on the one panel whose job is noticing the library is the wrong size.
+ */
+export const totalsByType = (counts: Record<string, number>): Record<string, number> => {
+  const totals: Record<string, number> = Object.fromEntries(TYPES.map((type) => [type, 0]));
+  let other = 0;
+  for (const [key, count] of Object.entries(counts)) {
+    const type = key.slice(0, key.indexOf('/'));
+    if (Object.hasOwn(totals, type)) totals[type] = (totals[type] ?? 0) + count;
+    else other += count;
+  }
+  return { ...totals, other };
+};
+
+/**
+ * Which counts moved between two snapshots, and by how much. A count that did
+ * not move is not news, so zeroes are left out.
+ *
+ * Over `COUNT_KEYS` rather than over either argument's keys: both are produced
+ * by `libraryCounts`, which seeds every key, but a caller holding an older
+ * snapshot should not silently lose a key the newer one gained.
+ */
+export const countDeltas = (before: Record<string, number>, after: Record<string, number>): Record<string, number> => {
+  const deltas: Record<string, number> = {};
+  for (const key of COUNT_KEYS) {
+    const delta = (after[key] ?? 0) - (before[key] ?? 0);
+    if (delta !== 0) deltas[key] = delta;
+  }
+  return deltas;
+};
+
 export const libraryCounts = (library: Library | null): Record<string, number> => {
   const cached = library && countsFor.get(library);
   if (cached) return cached;

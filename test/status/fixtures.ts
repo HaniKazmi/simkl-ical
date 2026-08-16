@@ -13,6 +13,7 @@
  */
 
 import type { SheetRunRecord } from '../../src/sheet/io/journal.ts';
+import type { RequestRecord } from '../../src/api/requests.ts';
 import type { StatusInput } from '../../src/status/1-model.ts';
 
 export const MINUTE = 60_000;
@@ -77,5 +78,29 @@ export const runRecord = (over: Partial<SheetRunRecord> = {}): SheetRunRecord =>
   inserts: [],
   error: null,
   repeats: 1,
+  ...over,
+});
+
+/** A recorded request, for the suites that render or model one. */
+export const request = (over: Partial<RequestRecord> = {}): RequestRecord => ({
+  at: before(2 * MINUTE),
+  service: 'simkl',
+  component: 'poll',
+  method: 'GET',
+  path: '/sync/activities',
+  status: 200,
+  ms: 120,
+  bytes: 1100,
+  attempts: 1,
+  error: null,
+  ...over,
+});
+
+/** How the library last moved. Empty deltas is the common poll, not an edge. */
+export const moved = (over: Partial<NonNullable<StatusInput['movement']>> = {}): NonNullable<StatusInput['movement']> => ({
+  at: before(2 * MINUTE),
+  deltas: {},
+  updated: 0,
+  removed: 0,
   ...over,
 });

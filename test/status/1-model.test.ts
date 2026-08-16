@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildModel, duration } from '../../src/status/1-model.ts';
-import { before, input, COLD, DAY, HOUR, MINUTE, runRecord } from './fixtures.ts';
+import { before, input, moved, request, COLD, DAY, HOUR, MINUTE, runRecord } from './fixtures.ts';
 
 test('duration reads at a glance rather than to the second', () => {
   assert.equal(duration(30_000), '30s');
@@ -136,13 +136,6 @@ test('the freeze message is carried whole', () => {
 // at all. That is `updated` versus `reshaped`, which the render gate keys on,
 // finally visible to a reader.
 
-const moved = (over: Partial<NonNullable<Parameters<typeof buildModel>[0]['movement']>> = {}) => ({
-  at: before(2 * MINUTE),
-  deltas: {},
-  updated: 0,
-  removed: 0,
-  ...over,
-});
 
 test('watching episodes reports work done and no movement between statuses', () => {
   const model = buildModel(input({ movement: moved({ updated: 14 }) }));
@@ -177,19 +170,6 @@ test('a library that has never moved says so rather than showing an empty change
 
 // --- the request log -------------------------------------------------------
 
-const request = (over: Partial<Parameters<typeof buildModel>[0]['requests'][number]> = {}) => ({
-  at: before(2 * MINUTE),
-  service: 'simkl' as const,
-  component: 'poll' as const,
-  method: 'GET',
-  path: '/sync/activities',
-  status: 200,
-  ms: 120,
-  bytes: 1100,
-  attempts: 1,
-  error: null,
-  ...over,
-});
 
 test('a size reads at a glance rather than in bytes', () => {
   const model = buildModel(input({ requests: [request({ bytes: 900 }), request({ bytes: 21_504 }), request({ bytes: 2_516_582 })] }));

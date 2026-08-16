@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { escapeHtml, html, raw, renderPage, toHtml } from '../../src/status/2-html.ts';
 import { buildModel, type StatusInput } from '../../src/status/1-model.ts';
-import { before, COLD, MINUTE } from './fixtures.ts';
+import { COLD, MINUTE, before, moved, request } from './fixtures.ts';
 
 test('escapeHtml covers every character that can break out of markup', () => {
   assert.equal(escapeHtml(`<script>"x" & 'y'</script>`), '&lt;script&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/script&gt;');
@@ -145,20 +145,7 @@ test('the page is inert: no script, no form, no off-origin request', () => {
 test('a failing request renders its body inert', () => {
   const payload = `</td></tr><script>alert(1)</script>`;
   const rendered = page({
-    requests: [
-      {
-        at: before(MINUTE),
-        service: 'simkl',
-        component: 'poll',
-        method: 'GET',
-        path: `/sync/activities?evil=${payload}`,
-        status: 401,
-        ms: 90,
-        bytes: 40,
-        attempts: 5,
-        error: payload,
-      },
-    ],
+    requests: [request({ at: before(MINUTE), path: `/sync/activities?evil=${payload}`, status: 401, attempts: 5, error: payload })],
   });
 
   assert.ok(!rendered.includes('<script>'), 'the body must not open a tag');
@@ -169,14 +156,14 @@ test('a failing request renders its body inert', () => {
 
 test('an empty request log renders the section rather than breaking the page', () => {
   const rendered = page({ requests: [] });
-  assert.match(rendered, /nothing requested yet/);
+  assert.match(rendered, /Nothing requested yet/);
   assert.ok(!rendered.includes('undefined'));
 });
 
 // The change line is the part that says whether anything actually happened.
 test('the library movement reaches the page', () => {
   const rendered = page({
-    movement: { at: before(MINUTE), deltas: { 'shows/watching': -1, 'shows/completed': 1 }, updated: 3, removed: 0 },
+    movement: moved({ at: before(MINUTE), deltas: { 'shows/watching': -1, 'shows/completed': 1 }, updated: 3 }),
   });
   assert.match(rendered, /shows\/watching \u22121/);
   assert.match(rendered, /shows\/completed \+1/);
