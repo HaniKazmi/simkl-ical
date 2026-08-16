@@ -22,20 +22,20 @@
  * `errors.sheet` and `/healthz`.
  */
 
-import { backoffMs, sleep } from '../api/backoff.ts';
 import { config } from '../shared/config.ts';
 import { errorMessage } from '../shared/errors.ts';
 import type { Logger } from '../shared/logger.ts';
 import { SheetsAccessError } from '../api/google/client.ts';
 import type { Library } from '../library.ts';
 // The steps, in the order this file runs them.
-import { applyRequests, listSheets, readSnapshot, type SheetSnapshot } from './io/spreadsheet.ts';
+import { applyRequests, readSnapshot, type SheetSnapshot } from './io/spreadsheet.ts';
 import { fetchCatalogue } from './io/catalogue.ts';
 import { parseGrid, type Grid } from './2-grid.ts';
 import { indexLibrary, seasonShapes, type TitleProgress } from './1-progress.ts';
 import { describePlan, planLookups, planRecord, planSync, type CatalogueStamp, type CatalogueView, type PlanRecord, type SheetPlan, type TitleCatalogue } from './3-plan.ts';
 import { assertPlanSafe, UnsafePlanError } from './4-guard.ts';
-import { backupName, backupRequest, deleteRowRequests, deleteSheetRequest, isBackupTab, renameSheetRequest, repairName, restoreRequest, toRequests } from './5-requests.ts';
+import { backupRequest, deleteRowRequests, restoreRequest, toRequests } from './5-requests.ts';
+import { backupName, discardBackup, findBackup, isBackupTab, markForRepair, sweepBackups } from './backups.ts';
 import { verify, type Verification } from './6-verify.ts';
 import { appendSheetRun, loadSheetRuns } from './io/journal.ts';
 
@@ -195,8 +195,15 @@ export class SheetSync {
       const snapshot = await readSnapshot({ signal });
       const grid = parseGrid(snapshot);
 
-      const catalogue = await this.catalogueFor(grid, index, signal);
-      const plan = planSync(grid, index, catalogue);
+      // One instant for both, threaded rather than defaulted. `planLookups`
+      // and `planSync` must agree about which blocks are in scope, and they are
+      // separated here by the entire catalogue fetch — two `new Date()`
+      // defaults would put that fetch's duration between the two answers, so a
+      // block sitting on the activity cut-off could be looked up and then
+      // planned as out of scope, or the reverse.
+      const now = new Date();
+      const catalogue = await this.catalogueFor(grid, index, signal, now);
+      const plan = planSync(grid, index, catalogue, { now });
       lines = describePlan(plan, grid.columns);
       // Once per scope: five separate calls read as five projections a reader
       // has to confirm are the same one.
@@ -259,8 +266,8 @@ export class SheetSync {
    * Stamping happens here rather than at the end of the run, so the FRESH
    * retry loop's second pass asks for nothing: it has already been read.
    */
-  private async catalogueFor(grid: Grid, index: Map<number, TitleProgress>, signal: AbortSignal | undefined): Promise<CatalogueView> {
-    const requests = planLookups(grid, index, { stamps: this.stamps, maxAgeMs: CATALOGUE_MAX_AGE_MS });
+  private async catalogueFor(grid: Grid, index: Map<number, TitleProgress>, signal: AbortSignal | undefined, now: Date): Promise<CatalogueView> {
+    const requests = planLookups(grid, index, { now, stamps: this.stamps, maxAgeMs: CATALOGUE_MAX_AGE_MS });
     const fetched = await fetchCatalogue(requests, { signal });
 
     // Derive on the way in: the shapes are computed once per title here rather
@@ -326,13 +333,7 @@ export class SheetSync {
     // Caught here rather than allowed to unwind, which would abandon the cycle
     // before the verify read and leave the next poll re-planning against a
     // write nobody ever inspected.
-    if (backupId === undefined) {
-      try {
-        backupId = (await listSheets({ signal })).find((s) => s.title === name)?.sheetId;
-      } catch (err) {
-        this.log.warn(`could not list the tabs to find the snapshot: ${errorMessage(err)}`);
-      }
-    }
+    if (backupId === undefined) backupId = await findBackup(name, this.log, signal);
 
     // Guarded for the same reason the listing above is, and with more at stake:
     // the batch has already gone out. Unwound, this lands in `run()`'s catch,
@@ -356,7 +357,7 @@ export class SheetSync {
 
     if (verification.ok) {
       if (writeError) this.log.warn(`the sheet write reported "${writeError}" but landed exactly as planned`);
-      await this.sweepBackups(signal);
+      await sweepBackups(this.log, signal);
       this.report(`sheet sync applied ${plan.edits.length} edits and ${plan.inserts.length} inserts`, lines);
       return idle({ status: 'applied', plan: record, lines, retry });
     }
@@ -373,88 +374,13 @@ export class SheetSync {
       // new row a concurrent edit disturbed in this same window reads as false,
       // and the row count is the only independent witness to that. A leftover
       // tab is swept by the next clean run; a discarded snapshot is gone.
-      if (after.rows.length === grid.snapshot.rows.length) await this.discardBackup(backupId, signal);
+      if (after.rows.length === grid.snapshot.rows.length) await discardBackup(backupId, this.log, signal);
       return idle({ status: 'failed', plan: record, lines, error: writeError, retry: true });
     }
 
     // Stamped here rather than passed in: rollback reports what was planned and
     // never reasons about it, so it has no business taking it as an argument.
     return { ...(await this.rollback(grid, after, verification, lines, backupId, name, retry, signal)), plan: record };
-  }
-
-  /** Best effort: a leftover snapshot tab is untidy, never dangerous. */
-  private async discardBackup(backupId: number | undefined, signal: AbortSignal | undefined): Promise<void> {
-    if (backupId === undefined) return;
-    try {
-      await applyRequests([deleteSheetRequest(backupId)], { signal });
-    } catch (err) {
-      this.log.warn(`could not remove the backup tab (harmless, delete it by hand): ${errorMessage(err)}`);
-    }
-  }
-
-  /**
-   * Drop every snapshot tab, not just this run's.
-   *
-   * Only reached after a write verified clean, which is the one moment the
-   * sheet is known good — so an older snapshot describes a state nobody chose
-   * to restore. Without this they only accumulate: the write batch always makes
-   * one, and any failure between the write and the verify read leaves it behind
-   * with nothing to remove it. Each is a full copy of a 1644-row tab, against a
-   * 10M-cell ceiling for the whole spreadsheet.
-   *
-   * A frozen run's snapshot is deliberately *not* in this namespace — it is
-   * renamed to `_sync-REPAIR-…` on the way into the freeze, so that a restart,
-   * which clears `frozen`, cannot let a later clean write sweep away the one
-   * tab the user was told to repair from.
-   */
-  private async sweepBackups(signal: AbortSignal | undefined): Promise<void> {
-    try {
-      const stale = (await listSheets({ signal })).filter((s) => isBackupTab(s.title));
-      if (!stale.length) return;
-      await applyRequests(stale.map((s) => deleteSheetRequest(s.sheetId)), { signal });
-      if (stale.length > 1) this.log.warn(`removed ${stale.length} snapshot tabs, ${stale.length - 1} left over by an earlier run`);
-    } catch (err) {
-      this.log.warn(`could not remove the backup tabs (harmless, delete them by hand): ${errorMessage(err)}`);
-    }
-  }
-
-  /**
-   * Move a frozen run's snapshot out of the swept namespace, and report what it
-   * ended up called — the original name if it could not be moved.
-   *
-   * The id is looked up again when the caller has none, because "no id" is not
-   * "no tab": the reply carrying it can be lost to a timeout on a batch that
-   * landed, and the listing that would have recovered it can fail on its own.
-   * Leaving the tab under the swept name in that case hands the user a repair
-   * target that the next clean run deletes.
-   *
-   * Worth retrying, which no other write here gets: renaming a tab to a fixed
-   * title is idempotent — unlike `insertDimension`, a repeat is the same result
-   * — and this is the one moment the tab's survival is the difference between a
-   * copy-paste repair and version-history archaeology.
-   */
-  private async markForRepair(backupId: number | undefined, name: string, signal: AbortSignal | undefined): Promise<string> {
-    let id = backupId;
-    if (id === undefined) {
-      try {
-        id = (await listSheets({ signal })).find((s) => s.title === name)?.sheetId;
-      } catch (err) {
-        this.log.warn(`could not list the tabs to find the snapshot: ${errorMessage(err)}`);
-      }
-    }
-    if (id === undefined) return name;
-
-    const title = repairName(name);
-    for (let attempt = 1; attempt <= 2; attempt += 1) {
-      try {
-        await applyRequests([renameSheetRequest(id, title)], { signal });
-        return title;
-      } catch (err) {
-        if (attempt < 2) await sleep(backoffMs(attempt));
-        else this.log.warn(`could not rename the snapshot tab to "${title}": ${errorMessage(err)}`);
-      }
-    }
-    return name;
   }
 
   private async rollback(
@@ -511,14 +437,14 @@ export class SheetSync {
       if (!confirmation.ok) {
         throw new Error(`${confirmation.problems.length} cells did not go back (${confirmation.problems.slice(0, 5).join('; ')})`);
       }
-      await this.discardBackup(backupId, signal);
+      await discardBackup(backupId, this.log, signal);
     } catch (err) {
       // The snapshot tab is left in place, and renamed first. It holds the
       // sheet exactly as it was before the write, which makes the manual repair
       // a copy rather than an archaeology exercise in version history — and the
       // rename is what keeps a later clean run's sweep from taking it, since a
       // restart in between forgets that any of this happened.
-      const tab = await this.markForRepair(backupId, name, signal);
+      const tab = await markForRepair(backupId, name, this.log, signal);
       // Still in the swept namespace, so the safety the rename buys is not
       // there and the user has to be told the deadline they are working to.
       const urgency = isBackupTab(tab)

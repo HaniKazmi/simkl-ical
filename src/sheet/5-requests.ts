@@ -69,7 +69,6 @@ export const toRequests = (plan: SheetPlan, grid: Grid): SheetRequest[] => {
  * Prefix for the snapshot tabs the sync makes before writing. Strict, because
  * it is the sole basis on which a tab is later swept.
  */
-export const BACKUP_PREFIX = '_sync-backup-';
 
 /**
  * Where a snapshot is moved to when the run it belongs to freezes: out of the
@@ -81,13 +80,9 @@ export const BACKUP_PREFIX = '_sync-backup-';
  * sweep it away — and it is the only thing that makes the repair a copy rather
  * than an archaeology exercise in version history.
  */
-export const REPAIR_PREFIX = '_sync-REPAIR-';
 
-export const isBackupTab = (title: string): boolean => title.startsWith(BACKUP_PREFIX);
 
-export const backupName = (now: Date): string => `${BACKUP_PREFIX}${now.toISOString().replaceAll(':', '-').replace('.', '-')}`;
 
-export const repairName = (backup: string): string => backup.replace(BACKUP_PREFIX, REPAIR_PREFIX);
 
 /** `fields: 'title'` so the tab keeps its position, colour and grid size. */
 export const renameSheetRequest = (sheetId: number, title: string): SheetRequest => ({
