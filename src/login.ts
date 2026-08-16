@@ -8,8 +8,8 @@ import { login, writeToken, readToken } from './simkl/auth.ts';
 import { errorMessage } from './errors.ts';
 
 // --force first, and the read inside a try: `readToken` rethrows anything that
-// is not ENOENT, so a corrupt or unreadable token.json crashed here — in the
-// one command that exists to replace it.
+// is not ENOENT, so a corrupt or unreadable token.json would crash the one
+// command that exists to replace it.
 if (!process.argv.includes('--force')) {
   let existing: string | null = null;
   try {

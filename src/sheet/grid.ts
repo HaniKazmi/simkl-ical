@@ -270,7 +270,7 @@ export const parseGrid = (snapshot: SheetSnapshot): Grid => {
  * Never inferred from `Type`. Both exceptions exist in the sheet today —
  * Doctor Who carries ids in *both* places (so precedence matters) and Parasyte
  * carries one *only* on a season row despite reading `Type=show` (so location
- * cannot be inferred). This is also the rule the backfill populated under.
+ * cannot be inferred).
  */
 export const idsFor = (block: ShowBlock, season: SeasonRow): number[] => (season.ids.length ? season.ids : block.ids);
 

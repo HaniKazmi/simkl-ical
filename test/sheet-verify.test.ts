@@ -176,14 +176,14 @@ test('a show row that lost its title fails, because it silently merges two block
 
 // --- formula rewriting on insert ------------------------------------------
 //
-// The failure that corrupted the first real apply run. Inserting a row shifts
-// every row beneath it and Sheets rewrites the relative A1 references in every
-// affected formula. Verify read those rewrites as ~1500 unplanned changes, and
-// the rollback then wrote the pre-insert text back *and* deleted the row in one
-// batch — so the delete rewrote it again, one row off.
+// Inserting a row shifts every row beneath it, and Sheets rewrites the relative
+// A1 references in every formula it shifts. Read as unplanned changes those are
+// ~1500 of them, and the rollback they invite writes the pre-insert text back
+// alongside the delete that shifts it again — one row off.
 //
-// The earlier insert tests missed it twice over: they appended at the end, so
-// nothing shifted, and their formulas carried no row numbers to rewrite.
+// Two things make a fixture blind to this, and both are easy to write by
+// accident: appending at the end, so nothing shifts, and formulas with no row
+// numbers in them to rewrite. The fixtures below have neither.
 
 /** A block whose formulas name their own rows, the way the real sheet's do. */
 const rowsWithFormulas = (): CellSpec[][] => [
@@ -272,8 +272,8 @@ test('a write that never went out reads as not landed', () => {
   assert.equal(result.landed, false);
 });
 
-// The case that made `unexpected` the wrong signal: the batch landed and broke
-// a roll-up, so nothing *unplanned* moved, yet skipping the rollback here would
+// Why counting unplanned changes cannot answer it: the batch landed and broke a
+// roll-up, so nothing *unplanned* moved, yet skipping the rollback here would
 // also discard the only snapshot of the pre-write state.
 test('a landed write that broke a formula still reads as landed', () => {
   const rows = ROWS.map((r) => [...r]);

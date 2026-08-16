@@ -452,8 +452,8 @@ export const planSync = (
 
   // Titles SIMKL knows about with no row at all. Reported, never added: a new
   // show is the user's call, and a new anime cour is a separate SIMKL title
-  // whose romaji name needed 24 hand-written overrides to match during the
-  // backfill. The auto-sync must never title-match.
+  // under a romaji name that mostly does not match what the sheet calls the
+  // series. Matching on title is unreliable enough that this must never try.
   for (const progress of index.values()) {
     if (seen.has(progress.id) || !within(progress.lastWatchedAt, cutoffMs)) continue;
     plan.notes.push(`${progress.title} (simkl ${progress.id}) has recent activity and no row — add it by hand if you want it tracked`);

@@ -344,9 +344,9 @@ test('a sheet failure is never filed as a library error, and the feed still rend
 });
 
 // The sheet is built entirely from the library, so a failed library refresh has
-// nothing new for it to see. Running it anyway meant a full grid read and
-// re-plan on every poll for the duration of a SIMKL outage — the quiet-poll
-// early return was skipped, because the try had already thrown past it.
+// nothing new for it to see. Running it anyway costs a full grid read and
+// re-plan on every poll for the duration of a SIMKL outage: the quiet-poll early
+// return cannot prevent that, because the throw goes straight past it.
 test('a failed library refresh skips the sheet sync entirely', async () => {
   await withToken(async (state) => {
     state.calendars = emptyCalendars();

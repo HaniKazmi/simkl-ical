@@ -35,9 +35,9 @@ export const shiftRow = (row: number, insertRows: number[]): number => row + ins
  * shifts every row beneath it and Sheets rewrites the relative A1 references in
  * every affected formula to match — `=I609*F609` becomes `=I610*F610`, and each
  * show row's five roll-ups likewise. That is correct behaviour and there is
- * nothing to verify about it; treating it as an unplanned change flags a
+ * nothing to verify about it. Treating it as an unplanned change flags a
  * thousand cells and, far worse, invites a rollback to write the pre-insert
- * text back, which the accompanying delete then rewrites *again* — one row off.
+ * text back — which the accompanying delete then rewrites *again*, one row off.
  *
  * So across a structural change a formula is checked for still being a formula,
  * not for its text. Literals stay strictly compared, which is what actually
@@ -81,14 +81,17 @@ export interface Verification {
    * Whether any part of the write reached the sheet.
    *
    * Answered from the planned writes themselves — are they present? — because
-   * that is the actual question. Counting *unplanned* changes instead gets it
-   * backwards for a batch that landed and broke a formula: nothing unplanned
-   * moved, yet the write is very much there. Row growth is not the answer
-   * either, and reading it as one is what turned a single transient 503 on a
-   * plan containing an insert into a permanent freeze over an untouched sheet:
-   * `batchUpdate` is atomic, so none of the planned writes being present means
-   * the batch never went out, whatever the row count says. Conservatively true
-   * only when the sheet could not be inspected at all.
+   * that is the actual question. Two tempting proxies both get it wrong.
+   * Counting *unplanned* changes is backwards for a batch that landed and broke
+   * a formula: nothing unplanned moved, yet the write is very much there. Row
+   * growth is worse: for a plan containing an insert, a batch that failed
+   * atomically leaves the count unchanged, so growth reads as "nothing landed"
+   * only by coincidence and as "it landed" whenever a human inserts a row in
+   * the same window — and a false "it landed" sends the caller looking for a
+   * snapshot tab that rode the same failed batch, which is a permanent freeze
+   * over an untouched sheet. `batchUpdate` is atomic, so none of the planned
+   * writes being present means the batch never went out, whatever the row count
+   * says. Conservatively true only when the sheet could not be inspected at all.
    */
   landed: boolean;
   /** Rows the write created, and only ones this read positively identifies as ours. */
@@ -149,10 +152,9 @@ export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Ver
       const plannedValue = expected.get(key);
 
       // The join key is never written by design, so any change to it means the
-      // rows are not the rows we think they are. No formula exemption here:
-      // measured against the live sheet, 0 of 1644 `id` cells are formulas
-      // (21 `Start` cells are, which is where the temptation came from), so
-      // this stays an unconditional equality check.
+      // rows are not the rows we think they are. No formula exemption, because
+      // there is nothing to exempt: on the live sheet 0 of 1644 `id` cells are
+      // formulas. 21 `Start` cells are, which is a different column.
       if (column === before.columns.id && !sameValue(was, now)) {
         problems.push(`${a1(target, column)}: the id changed`);
         continue;

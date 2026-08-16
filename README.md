@@ -296,8 +296,8 @@ only titles whose watch time actually moved are re-read, so a warm run is nearer
 <details>
 <summary><b>Notes on the SIMKL API</b></summary>
 
-Things that cost time to discover, recorded in case they're useful to anyone else building
-against this API:
+Behaviour the published docs don't cover or contradict, recorded in case it's useful to
+anyone else building against this API:
 
 - **The library's id field is `ids.simkl`; the calendar's is `simkl_id`.** Bridging the two
   names is the entire join. Empty lists come back as `{}`, not `{shows: []}`.

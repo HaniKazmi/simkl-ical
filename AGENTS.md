@@ -63,12 +63,13 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   frozen number, and nothing would ever notice.
 - **Ask the plan, not the grid.** Whether a write landed and which rows a rollback may delete are
   both answered from the planned writes — is this cell present where it was planned? Row growth
-  answers neither: `batchUpdate` is atomic, and reading growth as "it landed" turned one transient
-  503 into a permanent freeze over a sheet nothing had touched.
+  answers neither: `batchUpdate` is atomic, and an insert whose batch failed leaves the count
+  unchanged. Reading growth as "it landed" freezes the process over an untouched sheet.
 - **`userEnteredValue` is only stable while the grid is.** Inserting a row makes Sheets rewrite the
   relative A1 references in every formula it shifts, so the verifier compares formulas for still
-  *being* formulas across an insert rather than for their text. Learning this cost a corrupted
-  sheet; do not tighten it back without reading `src/sheet/verify.ts`.
+  *being* formulas across an insert rather than for their text. Tightening that back to text
+  equality is the one change here that can corrupt the sheet outright — read
+  `src/sheet/verify.ts` before going near it.
 - **One inserted row per run is an invariant, not a setting.** Plan indices are pre-write and
   `insertDimension` applies cumulatively, so a second insert would land a row high;
   `assertPlanSafe` refuses it outright.

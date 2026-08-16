@@ -368,10 +368,10 @@ export class SheetSync {
       // restore from is a one-way change made in the exact state where the plan
       // is already known to be wrong about the grid.
       //
-      // There is deliberately no cell-level fallback either: putting cells back
-      // individually is the mechanism that produced a one-row misalignment once
-      // already, and running it in the one state nobody has exercised — a
-      // landed write whose snapshot cannot be found — is worse than stopping.
+      // There is deliberately no cell-level fallback either. Putting cells back
+      // individually cannot be made safe alongside the delete that must
+      // accompany it, and this — a landed write whose snapshot cannot be found
+      // — is the least exercised state in the subsystem. Stopping is better.
       if (backupId === undefined) throw new Error('the write landed but its snapshot tab could not be found');
 
       let restored = after;
@@ -395,8 +395,8 @@ export class SheetSync {
       // the seconds-wide window between the batch and the verify read is inside
       // the pasted range, so it is reverted along with ours, and the confirming
       // verify below — which compares against the pre-write grid the restored
-      // tab now matches — will report a clean rollback. A per-cell revert was
-      // considered and rejected as too fragile to be worth closing that window.
+      // tab now matches — reports a clean rollback. Closing that window needs a
+      // per-cell revert, which is not safe enough to be worth it.
       await applyRequests([restoreRequest(backupId, restored.sheetId, grid.snapshot.rowCount, grid.snapshot.columnCount)], { signal });
       restored = await readSnapshot({ signal });
 

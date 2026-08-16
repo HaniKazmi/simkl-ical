@@ -5,10 +5,10 @@ import { resolve } from 'node:path';
 // Node 20.6+ loads .env with --env-file, but doing it here keeps `node src/x.ts`
 // working without callers remembering the flag.
 //
-// Unconditional: `loadEnvFile` leaves anything already in the environment
-// alone, so there is nothing for a guard to protect. Gating it on
-// SIMKL_CLIENT_ID meant an environment that exported only that one variable
-// silently skipped the whole file, dropping FEED_TOKEN, SHEET_ID and TZ.
+// Unconditional, because `loadEnvFile` leaves anything already in the
+// environment alone: there is nothing for a guard to protect, and any guard on
+// a single variable skips the whole file — FEED_TOKEN, SHEET_ID, TZ — for an
+// environment that happens to set that one.
 try {
   process.loadEnvFile(resolve(import.meta.dirname, '../.env'));
 } catch {
@@ -42,8 +42,8 @@ const oneOf = <T extends string>(value: string | undefined, allowed: readonly T[
 /**
  * `~/x` → `$HOME/x`. A shell expands this before the process ever sees it, but
  * a value read from `.env` or a compose file arrives verbatim — and
- * `.env.example` suggests a `~/` path for the credential, which then failed
- * with ENOENT once per sheet run.
+ * `.env.example` suggests a `~/` path for the credential, which would otherwise
+ * be an ENOENT once per sheet run.
  */
 const expandHome = (path: string): string => (path === '~' || path.startsWith('~/') ? resolve(homedir(), path.slice(2)) : path);
 

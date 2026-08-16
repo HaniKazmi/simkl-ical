@@ -93,8 +93,8 @@ const idOf = (item: LibraryItem): number | null => {
  *
  * Counted with a null filter on `watched_at`. SIMKL's reference says
  * `include_all_episodes=yes` can fill in virtual rows stamped with the show's
- * last-watched time; measurement across 196 items did not reproduce it, but the
- * filter is free and the entire value of the sync rests on this number.
+ * last-watched time. Live data does not appear to do it, but the filter is free
+ * and the entire value of the sync rests on this number.
  */
 export const seasonsOf = (item: LibraryItem): Map<number, SeasonProgress> => {
   const out = new Map<number, SeasonProgress>();
@@ -203,10 +203,9 @@ export const seasonShapes = (episodes: EpisodeDetail[] | null | undefined): Map<
  * Whether a season is finished and finished being watched.
  *
  * `aired === total` is not optional. "Every aired episode watched" is the
- * tempting test and it is actively dangerous: Silo S3 was 7 aired of 10, all
- * watched, and the naive rule stamps a permanent end date on a season with
- * three episodes still to come — permanent because a dated season is never
- * touched again.
+ * tempting test and it is actively dangerous: a season 7 aired of 10 and all 7
+ * watched — Silo S3, mid-run — takes a permanent end date with three episodes
+ * still to come. Permanent, because a dated season is never touched again.
  */
 export const seasonComplete = (shape: SeasonShape | undefined, watched: number): boolean =>
   shape !== undefined && shape.total > 0 && shape.aired === shape.total && watched >= shape.total;

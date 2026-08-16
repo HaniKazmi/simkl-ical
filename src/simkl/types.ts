@@ -1,9 +1,10 @@
 /**
  * Shapes of the SIMKL payloads this service consumes.
  *
- * These are written from live responses, not the published docs, which differ
- * in several places that cost real debugging time. Where a field is optional or
- * nullable here it is because it genuinely is — each one has caused a bug.
+ * These are written from live responses, not the published docs, which the
+ * payloads contradict in several places. Where a field is optional or nullable
+ * here it is because live data makes it so, never as defensive typing — there
+ * is no compiler at runtime, so narrowing one is a crash rather than an error.
  */
 
 // --- Calendar (public CDN) -------------------------------------------------
@@ -25,8 +26,8 @@ export interface CalendarEntry {
   date: string;
   finale_type: FinaleType | null;
   /**
-   * Absent on some anime entries. Formatting a missing one produced
-   * "Eundefined" in both summaries and UIDs.
+   * Absent on some anime entries. Formatting a missing one yields "Eundefined"
+   * in both the summary and the UID.
    */
   episode?: CalendarEpisode;
 }
@@ -69,8 +70,9 @@ export interface LibraryTitle {
  * One watched episode, from `include_all_episodes=yes`.
  *
  * `watched_at` is nullable because the docs say unwatched rows can be filled in
- * — see the measurement in the sheet-sync notes, which did not reproduce it.
- * Counting still filters on it: the whole sync rests on that number.
+ * with the show's last-watched time. Live data does not appear to do it, but
+ * counting filters on the field regardless: the whole sync rests on that number
+ * and the filter is free.
  */
 export interface WatchedEpisode {
   number: number;

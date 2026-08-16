@@ -168,7 +168,7 @@ restarts **from the read**, not from the write.
   "edits before inserts" rule overwrites a real row.
 - **The write batch snapshots the tab first.** `duplicateSheet` leads the same atomic batch, so
   there is no state in which the sheet changed but nothing recorded what it looked like. It is
-  server-side, so a 1600-row copy costs no data transfer. Named versions were the obvious
+  server-side, so a 1600-row copy costs no data transfer. Named versions would be the obvious
   alternative and are reachable from no API at all.
 - **A clean run leaves no snapshot behind, and a frozen one renames its out of reach.** Every
   `_sync-backup-…` tab goes once a write verifies — they are full tab copies against a 10M-cell
@@ -178,18 +178,17 @@ restarts **from the read**, not from the write.
   what it is to whoever opens the spreadsheet next. That rename is the only write in the subsystem
   allowed a second attempt: renaming to a fixed title is idempotent, unlike everything else here.
 
-## Verification, and what it cost to learn
+## Verification
 
 **The diff is on `userEnteredValue`, never `effectiveValue`.** Writing one cell recalculates five
 formulas, so `effectiveValue` moves in cells nobody wrote and cannot be compared.
 
-`userEnteredValue` changes only when someone writes — **while the grid holds still**. Inserting a
-row is the exception, and finding that out cost a corrupted sheet: Sheets rewrites the relative A1
+`userEnteredValue` changes only when someone writes — **while the grid holds still**. An insert is
+the exception, and it is the sharpest edge in the subsystem: Sheets rewrites the relative A1
 references in every formula the insert shifts, so `=I609*F609` becomes `=I610*F610` with nobody
-having typed anything. Verify read ~1500 of those as unplanned changes, and the rollback then wrote
-the pre-insert text back *and* deleted the row in one batch — so the delete rewrote that text again
-on the way out, one row off. A false positive became the exact corruption the design exists to
-prevent.
+having typed anything. Compared as text, that is ~1500 unplanned changes on a sheet this size — and
+the rollback a false positive invites writes the pre-insert text back alongside the delete that
+shifts it again, one row off. The check meant to catch corruption becomes the thing that causes it.
 
 So across an insert a formula is checked for still *being* a formula rather than for its text.
 Literals stay strictly compared, and they are what catches a misalignment — every literal on a
@@ -205,22 +204,24 @@ cells that changed, and it cannot be off by a row.
 
 Two questions decide whether any of that happens, and both are answered from the **planned writes**
 rather than from the shape of the grid. *Did anything land?* — `batchUpdate` is atomic, so none of
-them being present means the batch never went out, and inferring it from row growth instead turned
-a single transient 503 on a plan containing an insert into a permanent freeze over an untouched
-sheet. *Which rows may be deleted?* — only ones where every planned cell is present at exactly the
-planned index. `insertDimension` lands where it is told, so anything less is a pre-existing row, and
-a grid confused enough to disagree restores wholesale or freezes rather than guessing.
+them being present means the batch never went out. Row growth cannot answer it: an atomic failure
+on a plan containing an insert leaves the count unchanged, and a concurrent human insert moves it
+without any of ours landing. Answering it wrongly in that direction sends the rollback looking for a
+snapshot tab that rode the same failed batch, which is a permanent freeze over an untouched sheet.
+*Which rows may be deleted?* — only ones where every planned cell is present at exactly the planned
+index. `insertDimension` lands where it is told, so anything less is a pre-existing row, and a grid
+confused enough to disagree restores wholesale or freezes rather than guessing.
 
 The wholesale restore has one accepted cost: a human edit landing in the seconds-wide window
 between the batch and the verify read sits inside the pasted range, so it is reverted along with
-ours, and the confirming verify reports a clean rollback. A per-cell revert would close that window
-and was rejected as too fragile to be worth it — it is the mechanism that misaligned the sheet once
-already.
+ours, and the confirming verify reports a clean rollback. Closing that window needs a per-cell
+revert, which is the mechanism a one-row misalignment lives in — not worth it for a window this
+narrow.
 
 If the write landed and no snapshot can be found, the sync **freezes** rather than falling back to
-putting cells back individually — that is the mechanism that produced the misalignment once, and
-running it in the least-exercised state there is would be worse than stopping. The frozen message
-names the `_sync-REPAIR-…` tab, and repeats on every poll until the process is restarted.
+putting cells back individually — that is the mechanism a one-row misalignment lives in, and running
+it in the least-exercised state there is would be worse than stopping. The frozen message names the
+`_sync-REPAIR-…` tab, and repeats on every poll until the process is restarted.
 
 ## Catalogue lookups
 
@@ -243,6 +244,6 @@ raw payloads, so per-episode descriptions and images do not accumulate for the l
 ## Further reading
 
 `README.md` has two collapsed sections worth reading before touching the refresh logic: the
-API-call budget per event type, and a list of SIMKL API quirks that cost real time to discover.
+API-call budget per event type, and the SIMKL API behaviour its published docs do not cover.
 Upstream API references, and what they do not offer, are listed at the end of
 [AGENTS.md](AGENTS.md).

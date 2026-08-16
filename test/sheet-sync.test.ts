@@ -227,10 +227,11 @@ test('a 500 on the write is never retried, and the re-read settles what happened
   });
 });
 
-// A plan containing an insert used to read the sheet's unchanged row count as
-// proof the write had landed, go looking for the snapshot tab that rode the
-// same failed batch, and freeze the process for good — over a sheet a single
-// transient 503 had left completely untouched.
+// An atomic failure on a plan containing an insert leaves the row count
+// unchanged, which is the one shape in which "did it land" is easy to answer
+// backwards. Getting it wrong here costs everything: the snapshot tab rode the
+// same failed batch, so the rollback finds nothing and freezes the process for
+// good — over a sheet a single transient 503 left completely untouched.
 test('a 500 on a write that inserts a row fails cleanly instead of freezing', async () => {
   clearTokenCache();
   const grid: CellSpec[][] = [H, show('Fargo', 'Watching', 3381), season(1, 6, 44000)];
@@ -365,10 +366,9 @@ test('a title that moved is re-read, and only that title', async () => {
   );
 });
 
-// The path that corrupted the first real apply run. A rollback that must both
-// delete an inserted row and put cells back has to do them in separate batches:
-// the delete rewrites the relative references in everything it shifts,
-// including anything written earlier in the same batch.
+// A rollback that must both delete an inserted row and put cells back has to do
+// them in separate batches: the delete rewrites the relative references in
+// everything it shifts, including anything written earlier in the same batch.
 test('a rollback involving an insert deletes first, then restores from the backup tab', async () => {
   clearTokenCache();
   // A Fargo block with no S2 row, so the plan inserts one mid-sheet.
