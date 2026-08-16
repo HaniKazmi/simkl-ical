@@ -235,13 +235,40 @@ or decorators. `erasableSyntaxOnly` in `tsconfig.json` makes any of those a comp
 rather than a runtime failure. Import specifiers carry the real extension
 (`import './config.ts'`), as Node requires.
 
-Routes: `GET /:token/feed.ics` and `GET /healthz`. Health is unauthenticated and reports the
-event count, the last refresh, sync and render times, whether the feed is still the one
-loaded from disk, the sheet sync's state, and a per-subsystem error breakdown. It answers
+Routes: `GET /:token/feed.ics` and `GET /healthz`. Health is unauthenticated, and answers
 `503` rather than `200` whenever the feed has stopped moving — a revoked token, a CDN that
 has stopped answering, or a render that keeps throwing — so "the container is up" and "the
-feed is current" are not the same signal. A sheet-sync failure is reported but never makes it
-`503`: it cannot affect the feed, and restarting the container would not fix it.
+feed is current" are not the same signal.
+
+One block per subsystem, each with its own timestamps and its own error, plus `problems`:
+everything wrong right now, worst first, and empty when there is nothing to say.
+
+```json
+{
+  "ok": false,
+  "timezone": "Europe/London",
+  "problems": ["no token — run `npm run login`", "nothing has been rendered yet"],
+  "library": { "polledAt": "…", "syncedAt": "…", "error": "no token — run `npm run login`" },
+  "feed": {
+    "events": 48,
+    "renderedAt": null,
+    "servingCached": true,
+    "error": null,
+    "calendars": { "attemptedAt": "…", "freshAt": "…", "error": null }
+  },
+  "sheet": {
+    "configured": true, "mode": "apply", "status": "applied",
+    "lastRunAt": "…", "frozen": false, "error": null
+  }
+}
+```
+
+`attemptedAt` and `freshAt` differ on purpose: a CDN failure is served from cache, so refreshes
+keep succeeding while nothing fresh arrives, and only `freshAt` catches that. `syncedAt` moves
+only when a list actually changed, so it being days old is normal.
+
+A sheet-sync failure is reported in `sheet.error` but is deliberately absent from `problems` and
+never makes it `503`: it cannot affect the feed, and restarting the container would not fix it.
 
 If your token is ever revoked the last good feed keeps serving and the error is logged;
 re-authorise with `npm run login -- --force`.
