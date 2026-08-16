@@ -4,6 +4,7 @@ import { writeFileAtomic } from '../../shared/atomic-write.ts';
 import { config } from '../../shared/config.ts';
 import { apiGet } from './client.ts';
 import type { PinResponse } from './types.ts';
+import { nowIso } from '../../shared/dates.ts';
 
 const tokenPath = (): string => join(config.dataDir, 'token.json');
 
@@ -20,7 +21,7 @@ export const readToken = async (): Promise<string | null> => {
 /** Save the access token 0600, never exposing it more widely — see writeFileAtomic. */
 export const writeToken = async (accessToken: string): Promise<string> => {
   const path = tokenPath();
-  await writeFileAtomic(path, JSON.stringify({ access_token: accessToken, saved_at: new Date().toISOString() }, null, 2));
+  await writeFileAtomic(path, JSON.stringify({ access_token: accessToken, saved_at: nowIso() }, null, 2));
   return path;
 };
 

@@ -43,8 +43,10 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
 - **Every date and duration is a Temporal value.** A moment is a `Temporal.Instant`, a local calendar
   date a `Temporal.PlainDate`, a span or an interval a `Temporal.Duration`. ISO strings survive only
   where they cross a boundary — persisted JSON, HTTP params, `/healthz` — and are parsed at the first
-  consumer. `Date` is gone from `src/` apart from `Retry-After`, which may be an RFC 7231 HTTP-date
-  that Temporal cannot parse, and `ageOf`'s epoch subtraction.
+  consumer, and written through `nowIso()` so every stored timestamp keeps one width. `Date` survives
+  in three places only: `Retry-After`, which may be an RFC 7231 HTTP-date Temporal cannot parse, and
+  the Google token cache and SIMKL device-flow deadline, which are process-internal epoch-millisecond
+  countdowns with no zone and no calendar in them.
 - **Build durations from days and below, never years, months or weeks.** `Duration.compare`, `total`
   and `round` require a `relativeTo` anchor exactly when one of those three is nonzero; below that a
   day is exactly 24 hours and the operations are total. It also keeps the sheet's 90-day recency

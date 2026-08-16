@@ -63,6 +63,20 @@ export const plainDateIn = (at: Temporal.Instant, timeZone: string): Temporal.Pl
 export const releaseDate = (value: string): Temporal.PlainDate => plainDateFrom(value.slice(0, 10));
 
 /**
+ * An instant as the ISO string the published and persisted fields carry.
+ *
+ * One place decides the shape, because it has to match across files written at
+ * different times: `Instant.toString()` omits a zero fractional part, so a
+ * timestamp stamped on the second would be narrower than its neighbours. Pinning
+ * milliseconds is also exactly what `Date.toISOString()` wrote, so nothing on
+ * disk or in the `/healthz` contract changes width.
+ */
+export const isoOf = (at: Temporal.Instant): string => at.toString({ smallestUnit: 'millisecond' });
+
+/** The current instant, for a field that is reported rather than computed with. */
+export const nowIso = (): string => isoOf(Temporal.Now.instant());
+
+/**
  * Age of an ISO timestamp in ms; never-set reads as infinitely old.
  *
  * Shared because both halves ask it of their own clocks — health of the poll
@@ -75,5 +89,5 @@ export const ageOf = (iso: string | null): number => {
   // Unusable reads as infinitely old, not as fresh. Every consumer compares
   // with `>`, so a timestamp that answered zero would silently claim the thing
   // it stamps is up to date.
-  return at === null ? Infinity : Date.now() - at.epochMilliseconds;
+  return at === null ? Infinity : Temporal.Now.instant().epochMilliseconds - at.epochMilliseconds;
 };

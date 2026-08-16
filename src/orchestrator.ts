@@ -23,6 +23,7 @@ import type { SyncType } from './api/simkl/types.ts';
 import type { Library } from './library.ts';
 import { Feed } from './feed/feed.ts';
 import { SheetSync } from './sheet/sync.ts';
+import { nowIso } from './shared/dates.ts';
 
 /**
  * How the library's shape changed on a poll that changed it.
@@ -100,7 +101,7 @@ export class Orchestrator {
    * next fires: that comes from the last run plus the interval, which needs no
    * state and stays right across a skipped tick.
    */
-  readonly startedAt = new Date().toISOString();
+  readonly startedAt = nowIso();
   /**
    * What the last activities gate decided, for the status page. Null until the
    * first successful poll — which is not the same as "nothing moved", and the
@@ -211,7 +212,7 @@ export class Orchestrator {
       }
 
       const activities = await getActivities(token, { signal });
-      this.polledAt = new Date().toISOString();
+      this.polledAt = nowIso();
       // The poll itself succeeded, so any earlier failure is now history.
       this.errors.library = null;
 
@@ -283,7 +284,7 @@ export class Orchestrator {
         // `401 user_token_failed`. The clock is the last resort and only
         // reachable on an account with no activity of any kind, where an empty
         // library means there is nothing for a slightly wrong instant to miss.
-        this.syncedAll = watermarkOf(activities) ?? this.syncedAll ?? new Date().toISOString();
+        this.syncedAll = watermarkOf(activities) ?? this.syncedAll ?? nowIso();
         this.librarySignature = signature;
       } else if (changed) {
         // A second behind the watermark, because `date_from` is compared
@@ -330,7 +331,7 @@ export class Orchestrator {
 
       if (pulled || gate.updated > 0 || gate.removed > 0) {
         const deltas = before === null ? {} : countDeltas(before, libraryCounts(this.library));
-        this.lastMovement = { at: new Date().toISOString(), deltas, updated: gate.updated, removed: gate.removed };
+        this.lastMovement = { at: nowIso(), deltas, updated: gate.updated, removed: gate.removed };
       }
 
       // Re-read when the film list changed, and otherwise when one comes into
@@ -348,7 +349,7 @@ export class Orchestrator {
       // Only when the library actually moved. A poll that fell through purely
       // to retry the sheet would otherwise report librarySyncedAt as now, which
       // contradicts what that field means.
-      if (gate.updated > 0 || gate.removed > 0) this.libraryAt = new Date().toISOString();
+      if (gate.updated > 0 || gate.removed > 0) this.libraryAt = nowIso();
     } catch (err) {
       // Shutdown is not a failure: `stop()` aborts every in-flight fetch, and
       // reporting that as a library error is the last thing written to the log.

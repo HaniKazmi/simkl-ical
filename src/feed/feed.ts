@@ -18,6 +18,7 @@ import { fetchMovieReleases, filmDue, reconcileReleases } from './io/movies.ts';
 import { join, plannedFilmIds, type FeedEvent } from './1-join.ts';
 import { renderIcs } from './2-ics.ts';
 import { loadFeed, saveFeed } from './io/store.ts';
+import { isoOf, nowIso } from '../shared/dates.ts';
 
 /** Shown as the calendar's name in every client. */
 const FEED_NAME = 'SIMKL – Upcoming';
@@ -109,7 +110,7 @@ export class Feed {
   async refreshCalendars({ signal }: { signal: AbortSignal }): Promise<void> {
     try {
       this.calendars = await fetchAllCalendars({ signal, log: (message) => this.log.warn(message) });
-      this.calendarsAt = new Date().toISOString();
+      this.calendarsAt = nowIso();
 
       if (anyChanged(this.calendars)) this.calendarsChangedAt = this.calendarsAt;
 
@@ -176,10 +177,9 @@ export class Feed {
     const planned = new Set(filmIds);
     for (const id of this.filmStamps.keys()) if (!planned.has(id)) this.filmStamps.delete(id);
 
-    // Pinned to milliseconds: `Instant.toString()` omits a zero fractional
-    // part where `Date.toISOString()` always wrote `.000Z`, and these strings
-    // are rendered and persisted beside ones written elsewhere.
-    if (complete) this.filmsResolvedAt = now.toString({ smallestUnit: 'millisecond' });
+    // The threaded instant, not a fresh read: the round is stamped with when it
+    // started, which is what `filmDue` measures its floor from.
+    if (complete) this.filmsResolvedAt = isoOf(now);
 
     if (due.length) this.log.info(`resolved ${lookups.releases.size}/${due.length} film release dates`);
     if (lookups.unavailable.length) {
@@ -234,7 +234,7 @@ export class Feed {
     if (!this.calendars || !library) return false;
     this.events = join(payloads(this.calendars), library, { movieReleases: this.movieReleases });
     this.ics = renderIcs(this.events, { name: FEED_NAME });
-    this.renderedAt = new Date().toISOString();
+    this.renderedAt = nowIso();
     this.log.info(`rendered ${this.events.length} events`);
     return true;
   }
