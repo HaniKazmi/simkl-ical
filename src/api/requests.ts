@@ -85,6 +85,35 @@ export const describeUrl = (url: string | URL): string => {
   return query ? `${parsed.pathname}?${query}` : parsed.pathname;
 };
 
+/**
+ * Start timing a call, and get back the one function that records it.
+ *
+ * Shared because all three transports were assembling the same eleven-field
+ * record from the same four constants — so a new field, or a different notion
+ * of when `at` is stamped, had to be made in three places and would drift in
+ * silence. What genuinely differs between them is the attempt bookkeeping,
+ * which stays with each.
+ */
+export const beginRequest = (
+  init: { service: RequestService; component: RequestComponent; method: string; url: string | URL },
+): ((outcome: { status: number | null; bytes: number | null; error: string | null; attempts?: number }) => void) => {
+  const started = Date.now();
+  const path = describeUrl(init.url);
+  return ({ status, bytes, error, attempts = 1 }) =>
+    recordRequest({
+      at: new Date().toISOString(),
+      service: init.service,
+      component: init.component,
+      method: init.method,
+      path,
+      status,
+      ms: Date.now() - started,
+      bytes,
+      attempts,
+      error,
+    });
+};
+
 /** Newest first, because that is the order it is read in. */
 export const recordRequest = (record: RequestRecord): void => {
   records.unshift({ ...record, error: record.error === null ? null : truncate(record.error) });

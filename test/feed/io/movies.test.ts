@@ -4,6 +4,7 @@ import { FILM_HORIZON_DAYS, fetchMovieReleases, filmDue, pickReleaseDate, reconc
 import { releaseLabel } from '../../../src/feed/1-join.ts';
 import type { MovieDetail } from '../../../src/api/simkl/types.ts';
 import type { MovieRelease } from '../../../src/feed/io/movies.ts';
+import { clearRequests, recentRequests } from '../../../src/api/requests.ts';
 import { jsonResponse, withFetch } from '../../helpers.ts';
 
 // Shape taken from a real /movies/2242503 response. Note `released` is two days
@@ -497,4 +498,16 @@ test('the horizon is measured in the viewer\'s timezone', () => {
   const onTheEdge = { ...release(1), date: '2026-09-14' };
   assert.equal(filmDue(aged, onTheEdge, DUE_NOW, { ...OPTS, horizonDays: 30 }), true);
   assert.equal(filmDue(aged, onTheEdge, DUE_NOW, { ...OPTS, horizonDays: 29 }), false);
+});
+
+// The label that actually goes out, asserted where the module that sets it
+// lives. A type can force a label to be present; only this says it is right.
+test('a film lookup is recorded against the feed', async () => {
+  clearRequests();
+  await withFetch(
+    () => jsonResponse(duneThree),
+    async () => void (await fetchMovieReleases([174094])),
+  );
+  assert.equal(recentRequests()[0]?.component, 'films');
+  assert.equal(recentRequests()[0]?.service, 'simkl');
 });

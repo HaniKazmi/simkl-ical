@@ -1,5 +1,5 @@
 import { backoffMs, HttpError, retryDelayMs, sleep } from '../backoff.ts';
-import { describeUrl, recordRequest, type RequestComponent } from '../requests.ts';
+import { beginRequest, type RequestComponent } from '../requests.ts';
 import { config, requireClientId } from '../../shared/config.ts';
 import { errorMessage } from '../../shared/errors.ts';
 import { withTimeout } from '../../shared/signals.ts';
@@ -98,75 +98,75 @@ export const apiGet = async <T>(path: string, { component, token, params = {}, s
   if (token) headers.Authorization = `Bearer ${token}`;
 
   // One record per call rather than per attempt: the retries are the fact worth
-  // surfacing, and this loop spends up to five of them without saying so.
-  const started = Date.now();
+  // surfacing, and this loop spends up to five of them without saying so. It is
+  // written once on the way out, from whatever the last attempt saw — so a new
+  // exit added below cannot forget to record, which six hand-placed calls could.
+  const finish = beginRequest({ service: 'simkl', component, method: 'GET', url });
   let attempts = 0;
-  const log = (status: number | null, bytes: number | null, error: string | null): void =>
-    recordRequest({
-      at: new Date().toISOString(),
-      service: 'simkl',
-      component,
-      method: 'GET',
-      path: describeUrl(url),
-      status,
-      ms: Date.now() - started,
-      bytes,
-      attempts,
-      error,
-    });
+  let status: number | null = null;
+  let bytes: number | null = null;
+  let failure: string | null = null;
 
   let lastError: unknown;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
-    attempts = attempt;
-    let res: Response;
-    try {
-      res = await fetch(url, { headers, signal: withTimeout(signal, TIMEOUT_MS) });
-    } catch (err) {
-      if (signal?.aborted) throw err;
-      lastError = err;
-      // Guarded: sleeping after the final attempt is dead wait.
-      if (attempt < MAX_ATTEMPTS) await sleep(backoffMs(attempt));
-      else log(null, null, errorMessage(err));
-      continue;
-    }
+  try {
+    while (attempts < MAX_ATTEMPTS) {
+      attempts += 1;
+      status = null;
+      bytes = null;
+      failure = null;
 
-    if (res.ok) {
-      // Read as text so the size is known. `res.json()` does this internally,
-      // so it is the same allocation, and the parse below keeps the same guard.
-      const text = await res.text().catch(() => '');
+      let res: Response;
       try {
-        const data = JSON.parse(text) as T;
-        log(res.status, text.length, null);
-        return data;
+        res = await fetch(url, { headers, signal: withTimeout(signal, TIMEOUT_MS) });
       } catch (err) {
-        // A 200 carrying a Cloudflare interstitial. Transient, so it belongs in
-        // the retry loop rather than escaping as a bare SyntaxError.
-        lastError = new SimklError(`SIMKL returned unparseable JSON for ${path}: ${errorMessage(err)}`, res.status);
-        if (attempt < MAX_ATTEMPTS) await sleep(backoffMs(attempt));
-        else log(res.status, text.length, errorMessage(lastError));
+        if (signal?.aborted) throw err;
+        lastError = err;
+        failure = errorMessage(err);
+        // Guarded: sleeping after the final attempt is dead wait.
+        if (attempts < MAX_ATTEMPTS) await sleep(backoffMs(attempts));
         continue;
       }
+
+      status = res.status;
+
+      if (res.ok) {
+        // Read as text so the size is known. `res.json()` does exactly this
+        // internally, so it is the same work, and the parse keeps its guard.
+        const text = await res.text().catch(() => '');
+        bytes = text.length;
+        try {
+          return JSON.parse(text) as T;
+        } catch (err) {
+          // A 200 carrying a Cloudflare interstitial. Transient, so it belongs
+          // in the retry loop rather than escaping as a bare SyntaxError.
+          lastError = new SimklError(`SIMKL returned unparseable JSON for ${path}: ${errorMessage(err)}`, res.status);
+          failure = errorMessage(lastError);
+          if (attempts < MAX_ATTEMPTS) await sleep(backoffMs(attempts));
+          continue;
+        }
+      }
+
+      const body = await res.text().catch(() => '');
+      bytes = body.length;
+      failure = body || `SIMKL ${res.status} for ${path}`;
+
+      if (res.status === 401 || res.status === 403) {
+        throw new SimklAuthError(`SIMKL rejected the token (${res.status})`, res.status, body);
+      }
+      if (res.status === 412) {
+        throw new SimklError('client_id rejected or throttled (412)', res.status, body);
+      }
+      if (!RETRYABLE.has(res.status)) {
+        throw new SimklError(`SIMKL ${res.status} for ${path}`, res.status, body);
+      }
+
+      lastError = new SimklError(`SIMKL ${res.status} for ${path}`, res.status, body);
+      if (attempts < MAX_ATTEMPTS) await sleep(retryDelayMs(res, attempts));
     }
 
-    const body = await res.text().catch(() => '');
-
-    if (res.status === 401 || res.status === 403) {
-      log(res.status, body.length, body || `SIMKL rejected the token (${res.status})`);
-      throw new SimklAuthError(`SIMKL rejected the token (${res.status})`, res.status, body);
-    }
-    if (res.status === 412) {
-      log(res.status, body.length, body || 'client_id rejected or throttled (412)');
-      throw new SimklError('client_id rejected or throttled (412)', res.status, body);
-    }
-    if (!RETRYABLE.has(res.status)) {
-      log(res.status, body.length, body || `SIMKL ${res.status} for ${path}`);
-      throw new SimklError(`SIMKL ${res.status} for ${path}`, res.status, body);
-    }
-
-    lastError = new SimklError(`SIMKL ${res.status} for ${path}`, res.status, body);
-    if (attempt < MAX_ATTEMPTS) await sleep(retryDelayMs(res, attempt));
-    else log(res.status, body.length, body || `SIMKL ${res.status} for ${path}`);
+    throw lastError;
+  } finally {
+    // A call the caller cancelled is not an outcome worth a row.
+    if (!signal?.aborted) finish({ status, bytes, error: failure, attempts });
   }
-
-  throw lastError;
 };

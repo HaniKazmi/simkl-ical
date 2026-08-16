@@ -100,7 +100,7 @@ th{text-align:left;font-size:10px;letter-spacing:.13em;text-transform:uppercase;
 font-weight:600;padding:0 8px 7px 0;border-bottom:1px solid var(--line)}
 td{padding:4px 8px 4px 0;border-bottom:1px solid var(--panel);font-size:12.5px}
 tr:last-child td{border-bottom:0}
-.num{text-align:right;width:64px}.bar{width:110px}.bar span{display:block;height:6px;border-radius:2px;background:var(--accent);opacity:.5}
+.num{text-align:right;width:64px}
 .dim{color:var(--faint)}
 .totals{display:flex;flex-wrap:wrap;gap:0 1.1rem;padding:.5rem .9rem;border-bottom:1px solid var(--line)}
 .tot b{font-weight:600;color:var(--faint)}
@@ -294,12 +294,12 @@ ${model.problems.length === 0 ? null : html`<div class="problems"><ul>${model.pr
     <span class="sum">every outbound call, newest first</span>
   </div>
   ${model.requests.length === 0
-    ? html`<div class="moved dim">nothing requested yet</div>`
+    ? html`<p class="dim">Nothing requested yet.</p>`
     : html`<table>
         <thead><tr><th>From</th><th></th><th>Path</th><th class="num">Status</th><th class="num">Size</th><th class="num">Took</th><th>When</th></tr></thead>
         <tbody>${requestRows(model)}</tbody>
       </table>`}
-  ${model.requests.filter((r) => r.error !== null).slice(0, 3).map((r) => html`<div class="msg">${r.path} — ${r.error}</div>`)}
+  ${model.requestErrors.map((error) => html`<div class="msg">${error}</div>`)}
 </section>
 
 <footer>Read-only. Nothing on this page triggers a fetch.</footer>

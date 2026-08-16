@@ -10,6 +10,7 @@
 
 import { MS_PER_DAY } from '../shared/dates.ts';
 import type { SheetSyncMode } from '../shared/config.ts';
+import { totalsByType } from '../library.ts';
 import type { RequestRecord } from '../api/requests.ts';
 import type { SheetRunRecord } from '../sheet/io/journal.ts';
 import type { SheetSyncStatus } from '../sheet/sync.ts';
@@ -143,6 +144,8 @@ export interface StatusModel {
     runs: RunView[];
   };
   requests: RequestView[];
+  /** The recent failures worth putting in front of a reader, already capped. */
+  requestErrors: string[];
 }
 
 const MINUTE = 60_000;
@@ -224,33 +227,20 @@ const gateDetail = (gate: StatusInput['gate']): string => {
   return parts.length ? parts.join(' · ') : 'nothing moved';
 };
 
-/** `+1` / `−1`, with a real minus sign rather than a hyphen. */
 /**
- * Totals per type rather than per status.
+ * The totals, named for a reader.
  *
- * The per-status breakdown was fourteen rows that move perhaps twice a week,
- * and eleven of them are usually the same number. Three totals answer the
- * question the section is actually for — is the library the size I expect,
- * which is what would catch a bad full pull — and leave the space to what
- * changed. `other` appears only when it is not zero, since it exists to keep
- * the rows summing rather than to be read.
+ * `library.ts` owns the arithmetic and the key scheme; this owns that the page
+ * says "films" where SIMKL says "movies", and that a zero `other` is noise
+ * rather than news — it exists to keep the rows summing, not to be read.
  */
-const typeTotals = (counts: Record<string, number>): CountRow[] => {
-  const totals = new Map<string, number>([
-    ['shows', 0],
-    ['anime', 0],
-    ['films', 0],
-  ]);
-  let other = 0;
-  for (const [key, count] of Object.entries(counts)) {
-    const type = key.startsWith('movies/') ? 'films' : key.split('/')[0];
-    if (type === undefined || !totals.has(type)) other += count;
-    else totals.set(type, (totals.get(type) ?? 0) + count);
-  }
-  const rows = [...totals].map(([key, count]) => ({ key, count }));
+const countRows = (counts: Record<string, number>): CountRow[] => {
+  const { other, ...types } = totalsByType(counts);
+  const rows = Object.entries(types).map(([key, count]) => ({ key: key === 'movies' ? 'films' : key, count }));
   return other ? [...rows, { key: 'other', count: other }] : rows;
 };
 
+/** `+1` / `−1`, with a real minus sign rather than a hyphen. */
 const signed = (n: number): string => (n > 0 ? `+${n}` : `\u2212${Math.abs(n)}`);
 
 /**
@@ -284,7 +274,6 @@ const size = (bytes: number | null): string => {
 
 export const buildModel = (input: StatusInput): StatusModel => {
   const { now } = input;
-  const counts = Object.entries(input.counts);
   // One instant, three places: the join, the render and the section heading all
   // describe the same moment.
   const rendered = stamp(input.renderedAt, now);
@@ -304,8 +293,8 @@ export const buildModel = (input: StatusInput): StatusModel => {
     library: {
       polled: stamp(input.polledAt, now),
       error: input.libraryError,
-      total: counts.reduce((sum, [, n]) => sum + n, 0),
-      counts: typeTotals(input.counts),
+      total: Object.values(input.counts).reduce((sum, n) => sum + n, 0),
+      counts: countRows(input.counts),
       gate: gateDetail(input.gate),
       movement: movementView(input.movement, now),
       due: due(input.polledAt, input.activitiesPollMs, now),
@@ -333,7 +322,15 @@ export const buildModel = (input: StatusInput): StatusModel => {
       filmsDue: input.filmsDue,
     },
 
+    // No reverse: the request log is already newest first, unlike the run
+    // journal below, which is a file appended to and so stores oldest first.
     requests: input.requests.map((request) => ({ ...request, at: stamp(request.at, now), size: size(request.bytes) })),
+    // Capped here rather than in the template: which failures to show is a
+    // decision, and the template's job is turning a list into rows.
+    requestErrors: input.requests
+      .filter((request) => request.error !== null)
+      .slice(0, 3)
+      .map((request) => `${request.path} — ${request.error}`),
 
     sheet: {
       configured: input.sheetConfigured,

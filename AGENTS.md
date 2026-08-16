@@ -136,10 +136,10 @@ needs it**, and **is it transport or business logic**.
 | `src/shared/` | Used by both halves, and with no feature knowledge at all: config, dates, errors, logger, signals, atomic-write |
 | `src/health.ts` | The state projection both `/healthz` and the status page read. Pure; `buildHealth` takes flat state, `healthResponse` narrows it to the endpoint's contract |
 | `src/library.ts` | How the library is gated, merged and read: the signatures, the delta merge, the removal diff, the counts. Beside the orchestrator, which is the only thing that owns a library |
-| `src/api/` | Every HTTP client, and no domain rules. `backoff.ts`, `cdn.ts`, `simkl/`, `google/`. `simkl/types.ts` holds only shapes SIMKL sends; anything this service derives lives with the module that derives it |
+| `src/api/` | Every HTTP client, and no domain rules. `backoff.ts`, `cdn.ts`, `requests.ts`, `simkl/`, `google/`. `simkl/types.ts` holds only shapes SIMKL sends; anything this service derives lives with the module that derives it. `requests.ts` is the one exception to "no domain rules": `RequestComponent` names the callers, because which part of the service asked is not a fact any transport holds |
 | `src/feed/` | iCal only |
 | `src/sheet/` | Google Sheet sync only |
-| `src/status/` | The HTML status page. Reads both halves; `server.ts` is its only reader |
+| `src/status/` | The HTML status page. Reads both halves and the request log; `server.ts` is its only reader |
 
 `src/status/` is a **layer**, not a fourth peer: it sits above both halves and below `server.ts`,
 may read from either, and names `Orchestrator` as a *type only*. **Nothing in `feed/`, `sheet/`,
@@ -181,7 +181,7 @@ the process, and the rest carries its pipeline position in the filename, so `ls`
 | --- | --- |
 | MODEL | `1-model.ts` — a `StatusInput` of plain data → a `StatusModel`. Pure |
 | RENDER | `2-html.ts` — a `StatusModel` → one self-contained page. Pure; owns `html`/`raw`/`escapeHtml` |
-| — | `status.ts` — the shell: the only file here that names `Orchestrator`, and the only one that reads the clock |
+| — | `status.ts` — the shell: the only file here that names `Orchestrator`, the only one that reads the clock, and the only one that reaches past both halves to `api/requests.ts` |
 
 Layering runs downward only, and everything numbered stays pure — those modules take options with
 config-backed defaults rather than reading `config` mid-body.

@@ -320,6 +320,7 @@ test('a 304 is recorded as an answer carrying no body', async () => {
   assert.equal(log[1]?.status, 200);
   assert.ok((log[1]?.bytes ?? 0) > 0, 'the first fetch did download a body');
   assert.equal(log[0]?.service, 'cdn');
+  assert.equal(log[0]?.component, 'calendars', 'and says which part of the service asked');
 });
 
 // Serving a stale cache is a success to the caller and a failure upstream. The
