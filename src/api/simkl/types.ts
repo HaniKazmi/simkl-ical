@@ -5,6 +5,11 @@
  * payloads contradict in several places. Where a field is optional or nullable
  * here it is because live data makes it so, never as defensive typing — there
  * is no compiler at runtime, so narrowing one is a crash rather than an error.
+ *
+ * Only what SIMKL sends. A shape this service derives lives with the module
+ * that derives it — the library model beside `library.ts`, a resolved film
+ * release beside the lookup that builds one — because the rule above is only
+ * useful while it is true of everything here.
  */
 
 // --- Calendar (public CDN) -------------------------------------------------
@@ -127,32 +132,6 @@ export interface AllItemsResponse {
 
 export type SyncType = 'shows' | 'anime' | 'movies';
 
-/**
- * One library record, and the type it belongs to.
- *
- * `type` is the only thing not derivable from the item: an anime record is a
- * show record with an extra `anime_type` field, and both nest their title under
- * `show`. Which top-level key of the response it arrived under is the answer,
- * and it is needed downstream — the feed picks a calendar with it, the sheet
- * skips films with it.
- *
- * `status` is deliberately *not* copied up here. `itemStatus` reads it from the
- * item, and a second copy is one that can disagree with the payload it was
- * built from — the class of bug this whole model exists to remove.
- */
-export interface LibraryEntry {
-  type: SyncType;
-  item: LibraryItem;
-}
-
-/**
- * The user's library: one authoritative record per SIMKL id.
- *
- * A delta returns each changed item once, carrying its current `status`, so an
- * item cannot be present twice and cannot disagree with itself. List membership
- * is not a thing this model can represent, which is the point.
- */
-export type Library = Map<number, LibraryEntry>;
 
 /**
  * Per-status last-modified timestamps. `movies` carries no `watching` or `hold`
@@ -234,15 +213,6 @@ export interface ShowDetail {
   ids?: LibraryIds;
 }
 
-/** A film's resolved release, as stored and persisted. */
-export interface MovieRelease {
-  simkl_id: number;
-  title: string;
-  date: string;
-  releaseType: number | null;
-  runtime: string | null;
-  url: string;
-}
 
 // --- Auth ------------------------------------------------------------------
 

@@ -133,7 +133,7 @@ needs it**, and **is it transport or business logic**.
 | `src/shared/` | Used by both halves, and with no feature knowledge at all: config, dates, errors, logger, signals, atomic-write |
 | `src/health.ts` | The state projection both `/healthz` and the status page read. Pure; `buildHealth` takes flat state, `healthResponse` narrows it to the endpoint's contract |
 | `src/library.ts` | How the library is gated, merged and read: the signatures, the delta merge, the removal diff, the counts. Beside the orchestrator, which is the only thing that owns a library |
-| `src/api/` | Every HTTP client, and no domain rules. `backoff.ts`, `cdn.ts`, `simkl/`, `google/` |
+| `src/api/` | Every HTTP client, and no domain rules. `backoff.ts`, `cdn.ts`, `simkl/`, `google/`. `simkl/types.ts` holds only shapes SIMKL sends; anything this service derives lives with the module that derives it |
 | `src/feed/` | iCal only |
 | `src/sheet/` | Google Sheet sync only |
 | `src/status/` | The HTML status page. Reads both halves; `server.ts` is its only reader |

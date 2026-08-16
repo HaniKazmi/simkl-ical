@@ -13,7 +13,8 @@ import {
   toLibrary,
 } from '../src/library.ts';
 import { libraryItem } from './helpers.ts';
-import type { Activities, AllItemsResponse, Library, SyncType } from '../src/api/simkl/types.ts';
+import type { Activities, AllItemsResponse, SyncType } from '../src/api/simkl/types.ts';
+import type { Library } from '../src/library.ts';
 
 /** The fixture always populates every category, so tests can mutate them freely. */
 type FullActivities = Activities & Required<Pick<Activities, 'tv_shows' | 'anime' | 'movies'>>;

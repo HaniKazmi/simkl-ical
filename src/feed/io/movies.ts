@@ -8,7 +8,23 @@ import { apiGet } from '../../api/simkl/client.ts';
 import { lookupPool } from '../../api/simkl/pool.ts';
 import { localDateOf, releaseDate, shiftDate } from '../../shared/dates.ts';
 import { config } from '../../shared/config.ts';
-import type { MovieDetail, MovieRelease, ReleaseDateResult } from '../../api/simkl/types.ts';
+import type { MovieDetail, ReleaseDateResult } from '../../api/simkl/types.ts';
+
+/**
+ * A film's resolved release date, as the feed holds it.
+ *
+ * Built here from `/movies/{id}` rather than sent by SIMKL in this shape, which
+ * is why it does not live with the payload types: those are written from live
+ * responses, and a field is optional there only because live data made it so.
+ */
+export interface MovieRelease {
+  simkl_id: number;
+  title: string;
+  date: string;
+  releaseType: number | null;
+  runtime: string | null;
+  url: string;
+}
 
 /**
  * TMDB-style release types, as used by SIMKL's `release_dates`.

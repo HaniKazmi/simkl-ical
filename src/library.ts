@@ -12,7 +12,35 @@
  */
 
 import { itemSimklId, itemStatus } from './api/simkl/item.ts';
-import type { Activities, AllItemsResponse, CategoryActivity, Library, LibraryItem, SyncType } from './api/simkl/types.ts';
+import type { Activities, AllItemsResponse, CategoryActivity, LibraryItem, SyncType } from './api/simkl/types.ts';
+
+/**
+ * One library record, and the type it belongs to.
+ *
+ * `type` is the only thing not derivable from the item: an anime record is a
+ * show record with an extra `anime_type` field, and both nest their title under
+ * `show`. Which top-level key of the response it arrived under is the answer,
+ * and it is needed downstream — the feed picks a calendar with it, the sheet
+ * skips films with it.
+ *
+ * `status` is deliberately *not* copied up here. `itemStatus` reads it from the
+ * item, and a second copy is one that can disagree with the payload it was
+ * built from — the class of bug this whole model exists to remove.
+ */
+export interface LibraryEntry {
+  type: SyncType;
+  item: LibraryItem;
+}
+
+/**
+ * The user's library: one authoritative record per SIMKL id.
+ *
+ * A delta returns each changed item once, carrying its current `status`, so an
+ * item cannot be present twice and cannot disagree with itself. List membership
+ * is not a thing this model can represent, which is the point.
+ */
+export type Library = Map<number, LibraryEntry>;
+
 
 /** The activities payload names the show category `tv_shows`; the sync path uses `shows`. */
 const ACTIVITY_CATEGORY: Record<SyncType, keyof Activities> = {

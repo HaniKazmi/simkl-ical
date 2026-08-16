@@ -10,13 +10,13 @@ import { itemStatus } from '../api/simkl/item.ts';
 import type {
   CalendarEntry,
   FinaleType,
-  Library,
   CalendarFile,
   CalendarType,
-  MovieRelease,
   ShowMetadata,
   SyncType,
 } from '../api/simkl/types.ts';
+import type { Library } from '../library.ts';
+import type { MovieRelease } from './io/movies.ts';
 
 /**
  * Statuses whose upcoming episodes do not belong in the feed.

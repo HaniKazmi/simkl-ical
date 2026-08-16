@@ -10,7 +10,8 @@
 
 import { errorMessage } from '../shared/errors.ts';
 import type { Logger } from '../shared/logger.ts';
-import type { Library, MovieRelease } from '../api/simkl/types.ts';
+import type { Library } from '../library.ts';
+import type { MovieRelease } from './io/movies.ts';
 // The pipeline, in the order this file runs it.
 import { anyChanged, anyStale, fetchAllCalendars, payloads, type Calendars } from './io/calendar.ts';
 import { fetchMovieReleases, filmDue, reconcileReleases } from './io/movies.ts';
