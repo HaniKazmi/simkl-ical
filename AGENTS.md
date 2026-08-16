@@ -22,7 +22,7 @@ npm run login                              # SIMKL device/PIN flow; writes data/
 npm run login -- --force                   # re-authorise over an existing token (the `--` is required)
 npm test                                   # whole suite (node --test)
 npm run typecheck                          # tsc --noEmit; the only "build" that exists
-node --test test/join.test.ts              # one file
+node --test test/feed/1-join.test.ts       # one file
 node --test --test-name-pattern 'grace'    # one test by name
 ```
 
@@ -35,7 +35,7 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
 
 - **Erasable syntax only.** Node strips the types; there is no compiler. No enums, namespaces,
   parameter properties or decorators.
-- **Import specifiers carry the real extension** — `import { config } from './config.ts'` — and
+- **Import specifiers carry the real extension** — `import { config } from '../shared/config.ts'` — and
   type-only imports must say `import type`.
 - **Never slice an ISO airdate.** Airdates are UTC instants; `iso.slice(0, 10)` is wrong for ~19%
   of entries in `America/New_York`. Use `localDate()`.
@@ -72,7 +72,7 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   relative A1 references in every formula it shifts, so the verifier compares formulas for still
   *being* formulas across an insert rather than for their text. Tightening that back to text
   equality is the one change here that can corrupt the sheet outright — read
-  `src/sheet/verify.ts` before going near it.
+  `src/sheet/6-verify.ts` before going near it.
 - **One inserted row per run is an invariant, not a setting.** Plan indices are pre-write and
   `insertDimension` applies cumulatively, so a second insert would land a row high;
   `assertPlanSafe` refuses it outright.
@@ -83,20 +83,63 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
 
 ## Where things live
 
+Four buckets, and the folder a file sits in answers two questions: **which half of the project
+needs it**, and **is it transport or business logic**.
+
 | Path | Role |
 | --- | --- |
-| `src/refresh.ts` | `FeedState` — the whole orchestration; the only thing that mutates |
-| `src/join.ts`, `src/ics.ts` | Pure: calendars + library + releases → events → ICS string |
-| `src/sources/` | One module per upstream (CDN calendars, OAuth library, film releases, show catalogue, the sheet) |
-| `src/simkl/` | SIMKL transport: error classification, device-flow auth, the per-title lookup pool, item field readers, API types |
-| `src/sheets/` | Google transport: service-account JWT, Sheets requests, API types |
-| `src/backoff.ts` | Retry timing and the `HttpError` base, shared by both transports |
-| `src/sheet/` | Pure: grid → blocks → plan → guard → requests → verify |
-| `src/sheet-sync.ts` | The write protocol. The only thing that writes to the spreadsheet |
-| `src/server.ts` | Fastify; two routes, no state of its own |
+| `src/orchestrator.ts` | `Orchestrator` — the poll, the timers, `/healthz`; owns the library and drives both halves |
+| `src/server.ts`, `src/index.ts`, `src/login.ts` | Fastify (two routes, no state of its own), boot, and the device-flow CLI |
+| `src/shared/` | Used by both halves, no feature knowledge: config, dates, errors, logger, signals, atomic-write — plus `library.ts`, the one shared *domain* module |
+| `src/api/` | Every HTTP client, and no domain rules. `backoff.ts`, `cdn.ts`, `simkl/`, `google/` |
+| `src/feed/` | iCal only |
+| `src/sheet/` | Google Sheet sync only |
 
-Layering runs downward only, and `join`/`ics`/`sheet/*` stay pure — they take options with
+Each half is an **impure shell around a numbered pure core**: `io/` holds whatever talks outside
+the process, and the rest carries its pipeline position in the filename, so `ls` prints the order.
+
+`src/feed/` — FETCH → JOIN → RENDER → SAVE
+
+| Step | Module |
+| --- | --- |
+| FETCH | `io/calendar.ts` (CDN airdates), `io/movies.ts` (per-title film releases) |
+| JOIN | `1-join.ts` — calendars × library × releases → events |
+| RENDER | `2-ics.ts` — events → an ICS string |
+| SAVE | `io/store.ts` — the rendered feed on disk, and back on boot |
+| — | `feed.ts` — the cycle that runs them |
+
+`src/sheet/` — READ → PARSE → PLAN → GUARD → BUILD → APPLY → VERIFY → ROLLBACK
+
+| Step | Module |
+| --- | --- |
+| READ | `io/spreadsheet.ts` (the tab), `io/catalogue.ts` (SIMKL per-title) |
+| PARSE | `1-grid.ts` — snapshot → blocks; `2-progress.ts` — library → what was watched |
+| PLAN | `3-plan.ts` — grid + library + catalogue → a plan |
+| GUARD | `4-guard.ts` — refuse a plan that does not re-derive |
+| BUILD | `5-requests.ts` — a plan → one ordered batch |
+| APPLY | `io/spreadsheet.ts` again |
+| VERIFY | `6-verify.ts` — did the write do exactly what was planned |
+| ROLLBACK | `5-requests.ts` again, in separate batches |
+| — | `sync.ts` — the protocol that runs them |
+
+Layering runs downward only, and everything numbered stays pure — those modules take options with
 config-backed defaults rather than reading `config` mid-body.
+
+Renumbering on insertion is the cost of this, and is the right move when it comes up: appending a
+step out of order forfeits the only thing the scheme buys. One number is already approximate —
+`5-requests.ts` builds the write batch *and* the rollback requests that run after `6-verify.ts`.
+
+Where a sheet run stopped is `SheetSyncStatus`, which `/healthz` reports as `sheet.status`:
+
+| Status | Reached after |
+| --- | --- |
+| `idle` | PLAN produced nothing to write |
+| `reported` | GUARD passed, and `report` mode stops there |
+| `refused` | GUARD threw — nothing was written |
+| `failed` | the batch errored and VERIFY found none of it in the sheet |
+| `applied` | VERIFY passed |
+| `rolled-back` | VERIFY failed and the snapshot went back cleanly |
+| `frozen` | the rollback did not complete; no further writes this process |
 
 ## Tests
 
@@ -115,13 +158,18 @@ config-backed defaults rather than reading `config` mid-body.
   `userEnteredValue.formulaValue` distinguishes a formula, and a formula target must be refused
   unconditionally.
 
-`sources/calendar.ts` keeps a module-level cache; call `clearCache()` in tests that touch it, and
-`clearTokenCache()` from `sheets/auth.ts` in tests that reach Google. `sources/shows.ts` has no
-cache of its own — `SheetSync` retains catalogue results and decides when to re-read.
+`api/cdn.ts` keeps a module-level cache, re-exported through `feed/io/calendar.ts` so a test
+clears the one it actually uses; call `clearCache()` in tests that touch it, and
+`clearTokenCache()` from `api/google/auth.ts` in tests that reach Google. `sheet/io/catalogue.ts`
+has no cache of its own — `SheetSync` retains catalogue results and decides when to re-read.
 
-The sheet sync's tests are weighted towards `sheet-safety.test.ts` on purpose: a one-row
-misalignment is the only catastrophic failure the feature has, and the guards and the request
-ordering are what prevent it.
+`api/cdn.ts` has no test of its own: every path through it is exercised by
+`test/feed/io/calendar.test.ts`, which is the only caller and the one that knows what a usable
+payload looks like.
+
+The sheet sync's tests are weighted towards `4-guard.test.ts` and `5-requests.test.ts` on purpose:
+a one-row misalignment is the only catastrophic failure the feature has, and the guard and the
+request ordering are what prevent it.
 
 ## CI
 
@@ -140,7 +188,7 @@ being made.
 SIMKL documents its API in an agent-readable form at <https://api.simkl.org/llms.txt>. It covers
 every upstream this project touches — PIN device flow, `/sync/activities`, `/sync/all-items`, the
 calendar files, per-title lookups — along with the rate limits. Read it before changing anything in
-`src/simkl/` or `src/sources/`; `src/simkl/types.ts` still wins on payload *shape*, because it is
+`src/api/simkl/` or the `io/` modules; `src/api/simkl/types.ts` still wins on payload *shape*, because it is
 written from live responses and the docs disagree in places.
 
 Google's Sheets API is at <https://developers.google.com/workspace/sheets/api/reference/rest>.
