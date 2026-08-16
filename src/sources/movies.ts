@@ -1,7 +1,7 @@
 import { apiGet } from '../simkl/client.ts';
 import { lookupPool } from '../simkl/pool.ts';
-import { localDate, releaseDate } from '../dates.ts';
-import { config } from '../config.ts';
+import { localDate, releaseDate } from '../shared/dates.ts';
+import { config } from '../shared/config.ts';
 import type { MovieDetail, MovieRelease, ReleaseDateResult } from '../simkl/types.ts';
 
 /**

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chmod, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { writeFileAtomic } from '../src/atomic-write.ts';
+import { writeFileAtomic } from '../../src/shared/atomic-write.ts';
 
 const withDir = async (fn: (dir: string) => Promise<void>): Promise<void> => {
   const dir = await mkdtemp(join(tmpdir(), 'simkl-ical-atomic-'));

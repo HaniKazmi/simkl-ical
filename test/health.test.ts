@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { FeedState } from '../src/refresh.ts';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { config } from '../src/config.ts';
+import { config } from '../src/shared/config.ts';
 import { ago, emptyCalendars, quiet, withTempDataDir } from './helpers.ts';
 
 const rendered = () => {

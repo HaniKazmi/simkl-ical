@@ -12,7 +12,7 @@
  * count of 331, and season 0 holds exactly 7.
  */
 
-import { localDate, MS_PER_DAY } from '../dates.ts';
+import { localDate, MS_PER_DAY } from '../shared/dates.ts';
 import { itemSimklId, itemStatus } from '../simkl/item.ts';
 import type { EpisodeDetail, Library, LibraryItem, ListKey } from '../simkl/types.ts';
 

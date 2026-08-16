@@ -8,8 +8,8 @@
  * sheet is either hand-maintained or a formula that rolls up by itself.
  */
 
-import { config } from '../config.ts';
-import { MS_PER_DAY } from '../dates.ts';
+import { config } from '../shared/config.ts';
+import { MS_PER_DAY } from '../shared/dates.ts';
 import { a1, columnLetter, duplicateIds, idsFor, type ColumnMap, type Grid, type HeaderName, type SeasonRow, type ShowBlock } from './grid.ts';
 import { courComplete, runtimeDays, seasonComplete, watchSerial, type SeasonShape, type TitleProgress } from './progress.ts';
 import type { CatalogueRequest } from '../sources/shows.ts';

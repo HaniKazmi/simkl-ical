@@ -35,6 +35,16 @@ export const releaseDate = (value: string): string => value.slice(0, 10);
 export const MS_PER_DAY = 86_400_000;
 
 /**
+ * Age of an ISO timestamp in ms; never-set reads as infinitely old.
+ *
+ * Shared because both halves ask it of their own clocks — health of the poll
+ * and the last render, the feed of when film dates were last resolved. A second
+ * copy is the kind that drifts silently, since `null` meaning *infinitely* old
+ * rather than zero is the whole point and is easy to get backwards.
+ */
+export const ageOf = (iso: string | null): number => (iso ? Date.now() - Date.parse(iso) : Infinity);
+
+/**
  * Shift a YYYY-MM-DD date by whole days. Arithmetic is done at UTC noon so a
  * DST transition can never push the result onto the neighbouring day.
  */

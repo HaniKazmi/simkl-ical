@@ -12,7 +12,7 @@
  * `rewritten` below.
  */
 
-import { errorMessage } from '../errors.ts';
+import { errorMessage } from '../shared/errors.ts';
 import { a1, isFormulaValue, parseGrid, sameValue, type Grid, type HeaderName } from './grid.ts';
 import type { CellEdit, RowInsert, SheetPlan } from './plan.ts';
 import type { CellData, ExtendedValue } from '../sheets/types.ts';

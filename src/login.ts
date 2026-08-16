@@ -5,7 +5,7 @@
 //   npm run login
 //   docker compose run --rm simkl-ical npm run login
 import { login, writeToken, readToken } from './simkl/auth.ts';
-import { errorMessage } from './errors.ts';
+import { errorMessage } from './shared/errors.ts';
 
 // --force first, and the read inside a try: `readToken` rethrows anything that
 // is not ENOENT, so a corrupt or unreadable token.json would crash the one

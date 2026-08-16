@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmod, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { config } from '../src/config.ts';
+import { config } from '../src/shared/config.ts';
 import { login, pollPin, readToken, requestPin, writeToken } from '../src/simkl/auth.ts';
 import { jsonResponse, withFetch, withTempDataDir } from './helpers.ts';
 

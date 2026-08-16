@@ -1,7 +1,7 @@
 import { backoffMs, HttpError, retryDelayMs, sleep } from '../backoff.ts';
-import { config, requireClientId } from '../config.ts';
-import { errorMessage } from '../errors.ts';
-import { withTimeout } from '../signals.ts';
+import { config, requireClientId } from '../shared/config.ts';
+import { errorMessage } from '../shared/errors.ts';
+import { withTimeout } from '../shared/signals.ts';
 
 export { retryDelayMs };
 
