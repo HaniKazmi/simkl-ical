@@ -190,7 +190,7 @@ the report names the one it deferred, and the sync asks for the next poll rather
 
 The sheet has to hold up its end: each show row's derived cells are self-sizing formulas over the
 season rows beneath it, and that is what makes the show row read-only to the sync. See
-[ARCHITECTURE.md](ARCHITECTURE.md#the-sheet-sync).
+[ARCHITECTURE.md](ARCHITECTURE.md#the-sheets-sharp-edges).
 
 ## Behind a reverse proxy
 
