@@ -169,6 +169,7 @@ the process, and the rest carries its pipeline position in the filename, so `ls`
 | APPLY | `io/spreadsheet.ts` again |
 | VERIFY | `6-verify.ts` — did the write do exactly what was planned |
 | ROLLBACK | `5-requests.ts` again, in separate batches |
+| — | `backups.ts` — the snapshot tab's whole life: what it is called, how it is found, and the three ways it ends |
 | — | `sync.ts` — the protocol that runs them |
 
 `src/status/` — MODEL → RENDER
