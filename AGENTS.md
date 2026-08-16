@@ -45,22 +45,39 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   reported by `/healthz`; the process stays up and keeps serving the last good feed.
 - **The feed is only replaced when both halves of the join are present**, so a partial refresh
   never overwrites a complete feed loaded from disk.
-- **Never poll `/sync/all-items` directly.** Gate it on `/sync/activities` and refetch only the
-  lists whose signature changed — that is what `staleLists()` is for. SIMKL answers a burst of
+- **Never pull the whole library on a timer.** Gate on `/sync/activities` and ask for a delta —
+  `/sync/all-items?date_from=…`, one request returning only what changed. SIMKL answers a burst of
   uncached sync calls with `401 user_token_failed`, not a `429`, so the symptom looks like a dead
   token rather than a rate limit. It clears on its own — the same token works again minutes later,
   so wait it out rather than reaching for `npm run login`; re-authorising fixes nothing the wait
   would not. This applies to ad-hoc inspection scripts too, not just the refresh path.
-  `LISTS` covers 11 lists rather than the feed's 7 because the sheet sync needs `hold` and
-  `dropped`: for it, "absent from every list" has to mean *no information*. Widening it further
-  costs call budget for nothing — the gate is what makes 11 affordable, not the count.
-- **A list is where an item was found; `item.status` is where it belongs.** SIMKL reports a move
-  against the destination list only, and `listSignature` advances only for the destination, so the
-  source list is never refetched and the item sits in both forever. Anything asking "is this still
-  being watched" must read `status` — `join`'s id sets and `indexLibrary`'s tie-break both do. But
-  `status` alone cannot settle it: a stale copy of a dropped show and a fresh copy of an un-dropped
-  one are the same bytes. Only the poll knows which list it just fetched, so `pruneSuperseded`
-  evicts the stale membership there, at the one point the answer exists.
+- **The gate and the watermark are different timestamps.** `librarySignature` triggers the pull and
+  covers the five status timestamps only; `activities.all` is what goes out as `date_from`. Gating
+  on `all` instead would pull a delta on every poll, because it rolls up `playback` — a scrobbler
+  reporting progress moves it continuously and changes nothing the feed or the sheet can see.
+- **Ask for a second more than you need.** `date_from` is compared strictly greater at one-second
+  granularity, so passing back `activities.all` verbatim returns nothing at all, and a write landing
+  in that same second but committed after the activities read would never be asked for again.
+  `deltaFrom` backs the watermark off by a second; `mergeDelta` is an idempotent upsert so the
+  overlap is free. A watermark also advances only *after* the call that consumed it returns.
+- **`removed_from_list` is not a status, and removals are in no delta.** A removal moves that
+  timestamp and nothing else, so the only way to learn what went is to pull the membership set
+  (`extended=simkl_ids_only`, 47 KB for 741 items) and intersect. Two traps: a membership response
+  that would drop most of the library is refused rather than applied, because a truncated response
+  and a cleared account are the same bytes; and `/sync/all-items/{type}/{status}` **fails open** —
+  an unrecognised status segment returns every item of that type instead of a 404, so
+  `/sync/all-items/movies/removed_from_list` is a full-library download, not an error.
+- **`item.status` is the only membership there is.** The library is one record per SIMKL id, so a
+  move is a replacement and no stale copy survives to disagree. The one thing a record cannot supply
+  is its *type*: an anime record is a show record plus `anime_type`, and both nest their title under
+  `show`, so `LibraryEntry.type` has to come from the top-level response key it arrived under.
+  The feed's airing rule is negative — a record with no `status` is still a title we hold — and its
+  film rule is positive, because the library retains every completed film and a negative rule there
+  would sweep hundreds of them into the feed and into a per-title lookup each.
+- **`extended` does nothing on the per-title endpoints.** `/movies/{id}`, `/tv/{id}`, `/anime/{id}`
+  and `/tv/episodes/{id}` return byte-identical responses with and without it. On `/sync/all-items`
+  it is the gatekeeper: `extended=full` alone turns on `seasons[]`, and `episode_watched_at=yes` and
+  `include_all_episodes=yes` are no-ops without it. `ids.simkl` needs none of them.
 - **Never write a formula cell, and never write a show row except `Status`.** Every derived cell on
   a show row rolls up from the season rows beneath it. Writing one replaces a live roll-up with a
   frozen number, and nothing would ever notice.
@@ -105,7 +122,7 @@ needs it**, and **is it transport or business logic**.
 | `src/orchestrator.ts` | `Orchestrator` — the poll, the timers, `/healthz`; owns the library and drives both halves |
 | `src/server.ts`, `src/index.ts`, `src/login.ts` | Fastify (three routes, no state of its own), boot, and the device-flow CLI |
 | `src/shared/` | Used by both halves, and with no feature knowledge at all: config, dates, errors, logger, signals, atomic-write |
-| `src/library.ts` | Which SIMKL lists are read and how a change is detected. Beside the orchestrator, which is the only thing that owns a library |
+| `src/library.ts` | How the library is gated, merged and read: the signatures, the delta merge, the removal diff, the counts. Beside the orchestrator, which is the only thing that owns a library |
 | `src/api/` | Every HTTP client, and no domain rules. `backoff.ts`, `cdn.ts`, `simkl/`, `google/` |
 | `src/feed/` | iCal only |
 | `src/sheet/` | Google Sheet sync only |

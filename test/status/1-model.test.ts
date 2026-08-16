@@ -20,7 +20,7 @@ test('the cold state models without throwing', () => {
   assert.equal(model.uptime, null);
   assert.equal(model.library.polled.label, 'never');
   assert.equal(model.library.total, 0);
-  assert.deepEqual(model.library.lists, []);
+  assert.deepEqual(model.library.counts, []);
   assert.equal(model.feed.rendered.label, 'never');
   assert.deepEqual(model.sheet.runs, []);
   assert.ok(!JSON.stringify(model).includes('NaN'));
@@ -46,40 +46,36 @@ test('something that has never run is due now, not overdue', () => {
   assert.deepEqual(buildModel(COLD).library.due, { label: 'due now' });
 });
 
-test('list rows carry the gate outcome and a share of the largest', () => {
+const GATE = { pull: 'delta' as const, updated: 1, removed: 0 };
+
+test('count rows carry a share of the largest', () => {
   const model = buildModel(
-    input({
-      counts: { shows_watching: 47, shows_completed: 412, shows_dropped: 0 },
-      gate: { moved: ['shows_watching'], refetched: ['shows_watching'] },
-    }),
+    input({ counts: { 'shows/watching': 47, 'shows/completed': 412, 'shows/dropped': 0 }, gate: GATE }),
   );
 
   assert.equal(model.library.total, 459);
-  assert.equal(model.library.moved, 1);
-  assert.deepEqual(
-    model.library.lists.map((l) => [l.key, l.state]),
-    [
-      ['shows_watching', 'refetched'],
-      ['shows_completed', 'unchanged'],
-      ['shows_dropped', 'unchanged'],
-    ],
-  );
-  assert.equal(model.library.lists[1]?.share, 1, 'the largest fills the bar');
-  assert.ok(Math.abs((model.library.lists[0]?.share ?? 0) - 47 / 412) < 1e-9);
+  assert.deepEqual(model.library.counts.map((c) => c.key), ['shows/watching', 'shows/completed', 'shows/dropped']);
+  assert.equal(model.library.counts[1]?.share, 1, 'the largest fills the bar');
+  assert.ok(Math.abs((model.library.counts[0]?.share ?? 0) - 47 / 412) < 1e-9);
 });
 
-// Before the first poll there is no gate, and "unchanged" would be a claim
-// about a comparison that never happened.
-test('with no gate yet every list is unknown rather than unchanged', () => {
-  const model = buildModel(input({ counts: { shows_watching: 3 }, gate: null }));
-  assert.equal(model.library.lists[0]?.state, 'unknown');
-  assert.equal(model.library.gated, false);
+// Before the first poll nothing is known, which is a different claim from
+// nothing having moved.
+test('with no gate yet the page says so rather than claiming nothing moved', () => {
+  const model = buildModel(input({ counts: { 'shows/watching': 3 }, gate: null }));
+  assert.equal(model.library.gate, 'not polled yet');
 });
 
 test('a gate where nothing moved is still a gate', () => {
-  const model = buildModel(input({ counts: { shows_watching: 3 }, gate: { moved: [], refetched: [] } }));
-  assert.equal(model.library.lists[0]?.state, 'unchanged');
-  assert.equal(model.library.gated, true, 'which is what makes "nothing moved" sayable');
+  const quietGate = { ...GATE, pull: 'none' as const, updated: 0 };
+  const model = buildModel(input({ counts: { 'shows/watching': 3 }, gate: quietGate }));
+  assert.equal(model.library.gate, 'nothing moved', 'a gate that ran and found nothing is not "not polled yet"');
+});
+
+test('the gate line names what the pull carried', () => {
+  assert.equal(buildModel(input({ gate: GATE })).library.gate, '1 updated');
+  assert.equal(buildModel(input({ gate: { ...GATE, removed: 2 } })).library.gate, '1 updated · 2 removed');
+  assert.equal(buildModel(input({ gate: { ...GATE, pull: 'full' } })).library.gate, 'full resync');
 });
 
 // The distinction the notModified plumbing exists for: at an interval matched

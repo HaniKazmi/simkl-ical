@@ -1,10 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fetchMovieReleases, pickReleaseDate, reconcileReleases } from '../../../src/feed/io/movies.ts';
+import { FILM_HORIZON_DAYS, fetchMovieReleases, filmDue, pickReleaseDate, reconcileReleases } from '../../../src/feed/io/movies.ts';
 import { releaseLabel } from '../../../src/feed/1-join.ts';
 import type { MovieDetail, MovieRelease } from '../../../src/api/simkl/types.ts';
 import { jsonResponse, withFetch } from '../../helpers.ts';
-import { config } from '../../../src/shared/config.ts';
 
 // Shape taken from a real /movies/2242503 response. Note `released` is two days
 // earlier than every country's actual theatrical date — this is not a typo in
@@ -104,14 +103,14 @@ const lookups = (releases: Array<[number, MovieRelease]>, failed: number[] = [],
   ({ releases: new Map(releases), failed, unavailable });
 
 test('all lookups resolving reports complete', () => {
-  const { releases, complete } = reconcileReleases(new Map(), [1, 2], lookups([[1, release(1)], [2, release(2)]]));
+  const { releases, complete } = reconcileReleases(new Map(), [1, 2], new Set([1, 2]), lookups([[1, release(1)], [2, release(2)]]));
   assert.equal(complete, true);
   assert.equal(releases.size, 2);
 });
 
 test('a failed lookup keeps its previous value and reports incomplete', () => {
   const previous = new Map([[1, release(1)], [2, release(2)]]);
-  const { releases, complete } = reconcileReleases(previous, [1, 2], lookups([[1, release(1)]], [2]));
+  const { releases, complete } = reconcileReleases(previous, [1, 2], new Set([1, 2]), lookups([[1, release(1)]], [2]));
   assert.equal(complete, false, 'so the list stays stale and retries');
   assert.equal(releases.size, 2, 'the unresolved film is not lost');
   assert.equal(releases.get(2)!.title, 'Film 2');
@@ -119,7 +118,7 @@ test('a failed lookup keeps its previous value and reports incomplete', () => {
 
 test('a total failure keeps everything and reports incomplete', () => {
   const previous = new Map([[1, release(1)]]);
-  const { releases, complete } = reconcileReleases(previous, [1], lookups([], [1]));
+  const { releases, complete } = reconcileReleases(previous, [1], new Set([1]), lookups([], [1]));
   assert.equal(complete, false);
   assert.equal(releases.get(1)!.title, 'Film 1');
 });
@@ -127,26 +126,38 @@ test('a total failure keeps everything and reports incomplete', () => {
 // A film with no announced release date is a settled answer, not a failure.
 // Treating it as one made every poll refetch the whole film list forever.
 test('a film with no announced date does not mark the round incomplete', () => {
-  const { releases, complete } = reconcileReleases(new Map(), [1, 2], lookups([[1, release(1)]]));
+  const { releases, complete } = reconcileReleases(new Map(), [1, 2], new Set([1, 2]), lookups([[1, release(1)]]));
   assert.equal(complete, true, 'the undated film must not cause a permanent refetch loop');
   assert.deepEqual([...releases.keys()], [1]);
 });
 
 test('a film that loses its date is dropped rather than kept stale', () => {
   const previous = new Map([[1, release(1)]]);
-  const { releases, complete } = reconcileReleases(previous, [1], lookups([]));
+  const { releases, complete } = reconcileReleases(previous, [1], new Set([1]), lookups([]));
   assert.equal(complete, true);
   assert.equal(releases.size, 0, 'the date genuinely went away');
 });
 
+// A round is deliberately partial — a film dated a year out is not re-read
+// daily — so anything not asked about has to keep the date it already had.
+// Conflating "on the list" with "asked this round" empties the feed of every
+// film outside the refresh window on the first partial round.
+test('a film that was not asked about keeps its date', () => {
+  const previous = new Map([[1, release(1)], [2, release(2)]]);
+  const { releases, complete } = reconcileReleases(previous, [1, 2], new Set([1]), lookups([[1, release(1)]]));
+  assert.equal(complete, true);
+  assert.equal(releases.size, 2, 'the skipped film is not treated as undated');
+  assert.equal(releases.get(2)!.title, 'Film 2');
+});
+
 test('films dropped from the list are dropped from the map', () => {
   const previous = new Map([[1, release(1)], [2, release(2)]]);
-  const { releases } = reconcileReleases(previous, [1], lookups([[1, release(1)]]));
+  const { releases } = reconcileReleases(previous, [1], new Set([1]), lookups([[1, release(1)]]));
   assert.deepEqual([...releases.keys()], [1]);
 });
 
 test('an empty film list yields an empty map and counts as complete', () => {
-  const { releases, complete } = reconcileReleases(new Map([[1, release(1)]]), [], lookups([]));
+  const { releases, complete } = reconcileReleases(new Map([[1, release(1)]]), [], new Set([]), lookups([]));
   assert.equal(releases.size, 0);
   assert.equal(complete, true);
 });
@@ -241,19 +252,19 @@ test('the release country is matched case-insensitively', () => {
 // A 404 fails identically every time, so counting it as retryable refetches
 // the whole film list on every poll forever.
 test('a permanently gone film does not hold the list stale', () => {
-  const { releases, complete } = reconcileReleases(new Map(), [1, 2], lookups([[1, release(1)]], [], [2]));
+  const { releases, complete } = reconcileReleases(new Map(), [1, 2], new Set([1, 2]), lookups([[1, release(1)]], [], [2]));
   assert.equal(complete, true, 'a 4xx is settled, not a retry');
   assert.deepEqual([...releases.keys()], [1]);
 });
 
 test('a gone film keeps a date already known for it', () => {
   const previous = new Map([[2, release(2)]]);
-  const { releases } = reconcileReleases(previous, [2], lookups([], [], [2]));
+  const { releases } = reconcileReleases(previous, [2], new Set([2]), lookups([], [], [2]));
   assert.equal(releases.get(2), previous.get(2), 'a cached date beats no date');
 });
 
 test('a transient failure still holds the list stale', () => {
-  const { complete } = reconcileReleases(new Map(), [1], lookups([], [1]));
+  const { complete } = reconcileReleases(new Map(), [1], new Set([1]), lookups([], [1]));
   assert.equal(complete, false);
 });
 
@@ -427,4 +438,62 @@ test('whether a date has passed is judged in the viewer timezone, not UTC', () =
     '2026-08-15',
     'but is still today in UTC',
   );
+});
+
+// --- when a film's date is worth re-reading --------------------------------
+//
+// The floor and the horizon answer two different questions, and the order
+// matters: the floor bounds how often any one film is asked about at all, and
+// only past it does the horizon decide whether asking would learn anything.
+
+const DUE_NOW = new Date('2026-08-15T12:00:00Z');
+const DAY_MS = 24 * 60 * 60 * 1000;
+const OPTS = { refreshMs: DAY_MS, timezone: 'Europe/London' };
+/** A release `days` from NOW, so a fixture can sit either side of the horizon. */
+const dated = (days: number): MovieRelease => ({
+  ...release(1),
+  date: new Date(DUE_NOW.getTime() + days * DAY_MS).toISOString().slice(0, 10),
+});
+
+test('a film never asked about is due', () => {
+  assert.equal(filmDue(undefined, undefined, DUE_NOW, OPTS), true);
+});
+
+// The poll runs far more often than release dates change.
+test('a film asked about within the floor is not due, however imminent', () => {
+  const justAsked = DUE_NOW.getTime() - 1000;
+  assert.equal(filmDue(justAsked, dated(1), DUE_NOW, OPTS), false, 'even releasing tomorrow');
+  assert.equal(filmDue(justAsked, undefined, DUE_NOW, OPTS), false, 'even with no announced date');
+});
+
+// Absent from the release map means resolved with no announced date — the one
+// answer worth re-asking whatever the calendar says.
+test('past the floor, a film with no announced date is due', () => {
+  assert.equal(filmDue(DUE_NOW.getTime() - DAY_MS - 1000, undefined, DUE_NOW, OPTS), true);
+});
+
+test('past the floor, the horizon decides', () => {
+  const aged = DUE_NOW.getTime() - DAY_MS - 1000;
+  assert.equal(filmDue(aged, dated(FILM_HORIZON_DAYS - 1), DUE_NOW, OPTS), true, 'inside the horizon');
+  assert.equal(filmDue(aged, dated(FILM_HORIZON_DAYS + 1), DUE_NOW, OPTS), false, 'beyond it');
+});
+
+// A date that has passed may have been pushed back, so it stays worth asking.
+test('a release already past is still due', () => {
+  assert.equal(filmDue(DUE_NOW.getTime() - DAY_MS - 1000, dated(-30), DUE_NOW, OPTS), true);
+});
+
+// The boundary is inclusive: a film landing exactly on the horizon is still
+// close enough for a studio to move.
+test('the horizon boundary is inclusive', () => {
+  assert.equal(filmDue(DUE_NOW.getTime() - DAY_MS - 1000, dated(FILM_HORIZON_DAYS), DUE_NOW, OPTS), true);
+});
+
+// The horizon is counted in the viewer's zone for the same reason the join is:
+// a UTC instant is a different local date for a fifth of the day.
+test('the horizon is measured in the viewer\'s timezone', () => {
+  const aged = DUE_NOW.getTime() - DAY_MS - 1000;
+  const onTheEdge = { ...release(1), date: '2026-09-14' };
+  assert.equal(filmDue(aged, onTheEdge, DUE_NOW, { ...OPTS, horizonDays: 30 }), true);
+  assert.equal(filmDue(aged, onTheEdge, DUE_NOW, { ...OPTS, horizonDays: 29 }), false);
 });

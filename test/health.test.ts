@@ -168,7 +168,7 @@ test('the payload keys are in a stable, documented order', () => {
 test('the event count reflects what was actually joined', () => {
   const state = rendered();
   state.feed.calendars = emptyCalendars();
-  state.library = { shows_watching: {} };
+  state.library = new Map();
   state.feed.render(state.library);
   assert.equal(state.health.feed.events, 0);
 });

@@ -6,7 +6,7 @@
 
 import { apiGet } from '../../api/simkl/client.ts';
 import { lookupPool } from '../../api/simkl/pool.ts';
-import { localDate, releaseDate } from '../../shared/dates.ts';
+import { localDate, releaseDate, shiftDate } from '../../shared/dates.ts';
 import { config } from '../../shared/config.ts';
 import type { MovieDetail, MovieRelease, ReleaseDateResult } from '../../api/simkl/types.ts';
 
@@ -114,31 +114,91 @@ export interface Reconciled {
 }
 
 /**
+ * How close a release has to be before its date is worth re-reading.
+ *
+ * A month is roughly the point at which a studio stops moving a date, so
+ * anything further out answers the same thing every day. Not a config knob:
+ * this is a fact about how release dates firm up, not an operator preference.
+ */
+export const FILM_HORIZON_DAYS = 30;
+
+/**
+ * Whether one film's release date is worth asking about again.
+ *
+ * Two questions, in order: has it been asked about recently, and is its date
+ * close enough to still move? `refreshMs` is the floor, so a film is never
+ * looked up more than once per interval however imminent it is — the poll runs
+ * far more often than the dates change. Past that floor, only a film with no
+ * known date or one dated inside the horizon is re-read; a date already past
+ * counts, since it may have been pushed back. Everything further out waits for
+ * the calendar to reach it.
+ *
+ * `release` absent means resolved with no announced date, which is the one
+ * answer worth re-asking whatever the calendar says. `stamp` absent means never
+ * asked; a retryable failure leaves the previous stamp unrefreshed, so the film
+ * is still past the floor and the next poll asks again.
+ *
+ * The known hole: a film dated eight months out that is pulled *forward* to
+ * next week is not noticed, because only today advances toward the stale date.
+ *
+ * Pure, and takes its bounds as options with config-backed defaults, so the rule
+ * can be exercised at its edges without a populated `Feed`.
+ */
+export const filmDue = (
+  stamp: number | undefined,
+  release: MovieRelease | undefined,
+  now: Date,
+  {
+    refreshMs = config.movieRefreshMs,
+    horizonDays = FILM_HORIZON_DAYS,
+    timezone = config.timezone,
+  }: { refreshMs?: number; horizonDays?: number; timezone?: string } = {},
+): boolean => {
+  if (stamp === undefined) return true;
+  if (now.getTime() - stamp <= refreshMs) return false;
+  if (!release) return true;
+  return release.date <= shiftDate(localDate(now.toISOString(), timezone), horizonDays);
+};
+
+/**
  * Fold a round of lookups into what we already had.
  *
- * Films no longer on the list are dropped. An id whose lookup errored keeps its
- * previous value rather than vanishing; an id that simply has no announced date
- * is allowed to disappear, because that is the true answer.
+ * `ids` is everything on plan-to-watch and decides what survives; `requested` is
+ * the subset this round actually asked about. The two are different because a
+ * round is deliberately partial — a film dated a year out is not re-read every
+ * day — and conflating them drops the cached date of every film that was
+ * skipped, which is most of them.
+ *
+ * So: a film no longer on the list goes. A film that was asked about and came
+ * back with no announced date goes, because that is the true answer. A film that
+ * was asked about and errored keeps what it had, and so does one that was never
+ * asked.
  */
 export const reconcileReleases = (
   previous: Map<number, MovieRelease>,
   ids: number[],
+  requested: Set<number>,
   { releases: fetched, failed, unavailable }: MovieLookups,
 ): Reconciled => {
   // Both kinds of error keep what was already known — a cached date beats no
   // date. Only the retryable ones make the round incomplete.
-  const keepPrevious = new Set([...failed, ...unavailable]);
+  const errored = new Set([...failed, ...unavailable]);
   const releases = new Map<number, MovieRelease>();
   for (const id of ids) {
-    const release = fetched.get(id) ?? (keepPrevious.has(id) ? previous.get(id) : undefined);
+    const settled = requested.has(id) && !errored.has(id);
+    const release = fetched.get(id) ?? (settled ? undefined : previous.get(id));
     if (release) releases.set(id, release);
   }
   return { releases, complete: failed.length === 0 };
 };
 
-/** Detail lookups need no token — client_id is enough, and they are CDN-cached by id. */
+/**
+ * Detail lookups need no token — client_id is enough, and they are CDN-cached by
+ * id. No `extended` either: this endpoint always returns the whole record, and
+ * the parameter is accepted for compatibility while changing nothing.
+ */
 const fetchMovie = (id: number, { signal }: { signal?: AbortSignal } = {}): Promise<MovieDetail> =>
-  apiGet<MovieDetail>(`/movies/${id}`, { params: { extended: 'full' }, signal });
+  apiGet<MovieDetail>(`/movies/${id}`, { signal });
 
 /**
  * Release dates for a set of film ids, keyed by id.

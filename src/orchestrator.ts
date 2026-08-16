@@ -15,8 +15,8 @@ import { config, sheetSyncConfigured } from './shared/config.ts';
 import { ageOf } from './shared/dates.ts';
 import { errorMessage } from './shared/errors.ts';
 import type { Logger } from './shared/logger.ts';
-import { fetchLists, getActivities } from './api/simkl/lists.ts';
-import { listSignatures, pruneSuperseded, staleLists, LISTS } from './library.ts';
+import { fetchAllItems, fetchMembership, getActivities } from './api/simkl/lists.ts';
+import { deltaFrom, librarySignature, membershipIds, mergeDelta, removalSignature, retainOnly, toLibrary } from './library.ts';
 import { readToken } from './api/simkl/auth.ts';
 import { SimklAuthError } from './api/simkl/client.ts';
 import type { Library } from './api/simkl/types.ts';
@@ -83,10 +83,16 @@ export interface SheetHealth {
 
 /** What one activities gate decided. */
 export interface GateOutcome {
-  /** Lists whose signature differed from the one held — what the gate said. */
-  moved: string[];
-  /** What was actually refetched. Wider than `moved` on a cold or forced poll. */
-  refetched: string[];
+  /** The status signature differed — what the gate itself said. */
+  changed: boolean;
+  /** What was actually pulled. Wider than `changed` on a cold or forced poll. */
+  pull: 'none' | 'delta' | 'full';
+  /** Whether the membership diff ran, which `removed_from_list` gates on its own. */
+  removals: boolean;
+  /** Records the pull added or replaced. */
+  updated: number;
+  /** Records the membership diff dropped. */
+  removed: number;
 }
 
 export interface OrchestratorErrors {
@@ -101,7 +107,18 @@ export class Orchestrator {
   /** Null unless a spreadsheet *and* a credential were both supplied. */
   sheetSync: SheetSync | null = null;
   library: Library | null = null;
-  listSignatures: Record<string, string> = {};
+  /**
+   * The three watermarks the poll gates on, all in memory. Nothing here is
+   * persisted: `data/` holds the token, the rendered feed and an observational
+   * journal, so a restart is a cold start — which is now two requests.
+   *
+   * `syncedAll` is the `activities.all` of the poll whose data is already
+   * merged, and is what `date_from` gets, verbatim. It is deliberately not the
+   * trigger — see `librarySignature`.
+   */
+  syncedAll: string | null = null;
+  librarySignature = '';
+  removalSignature = '';
   libraryAt: string | null = null;
   polledAt: string | null = null;
   /** The two failures this layer owns; `Feed` holds the other two. */
@@ -121,8 +138,9 @@ export class Orchestrator {
   /**
    * Whether the last sheet sync wants another go. A boolean, not an interval:
    * the sheet has no upstream clock of its own — everything it writes derives
-   * from watch state, and `staleLists` already detects that. This exists only
-   * so a failed write is not stranded until the user next watches something.
+   * from watch state, and the activities gate already detects that. This exists
+   * only so a failed write is not stranded until the user next watches
+   * something.
    */
   sheetRetryPending = false;
   timers: NodeJS.Timeout[] = [];
@@ -223,16 +241,18 @@ export class Orchestrator {
   }
 
   /**
-   * One cheap request decides whether the library calls are worth making.
-   * The signature covers only the timestamps that can move an item between
-   * lists — see listSignature in library.ts.
+   * One cheap request decides whether the library call is worth making, and a
+   * second one asks only for what changed.
+   *
+   * A quiet poll is one request; a poll where something moved is two; one where
+   * something was also removed is three. The signature covers only the
+   * timestamps that can move an item — see `librarySignature` in library.ts.
    */
   async refreshLibraryIfChanged({ force = false }: { force?: boolean } = {}): Promise<void> {
     const { signal } = this.aborter;
     // Whether anything the feed is built from moved. Declared out here because
     // the render below sits outside the try, and a failed poll must not claim it.
-    let refetched = false;
-    let libraryFailed = false;
+    let shouldRender = false;
     try {
       // Inside the try: readToken only swallows ENOENT, so an unreadable
       // token.json must degrade the feed rather than escape to the timer.
@@ -248,64 +268,102 @@ export class Orchestrator {
       // The poll itself succeeded, so any earlier failure is now history.
       this.errors.library = null;
 
-      // What the gate itself said, separately from what gets refetched. The two
-      // diverge only on a forced poll, which refetches everything while every
-      // signature still matches — reporting that as "eleven lists moved" would
-      // be eleven changes that did not happen. A cold start has no signatures to
-      // compare against, so everything genuinely is news and both are the full
-      // set.
-      const moved = staleLists(activities, this.listSignatures);
-      const stale = force || !this.library ? LISTS : moved;
+      // Read once each: both are pure functions of the same payload, and the
+      // branches below store what the comparison already computed.
+      const signature = librarySignature(activities);
+      const removalsAt = removalSignature(activities);
+      // What the gate itself said, separately from what gets pulled. The two
+      // diverge on a forced poll, which pulls everything while the signature
+      // still matches — reporting that as a change would be one that did not
+      // happen. A cold start has no signature to compare against, and no
+      // watermark to ask a delta from, so it pulls whole.
+      const changed = this.librarySignature !== signature;
+      const removals = this.removalSignature !== removalsAt;
+      const full = force || !this.library || !this.syncedAll;
+      // Film dates move on their own schedule, so a poll with no library change
+      // still has work to do when one comes into range. Read once: the second
+      // read would come after `resolveFilms` had stamped the ids it asked about.
+      const filmsDue = force || this.feed.filmsDue(this.library);
+
       // Above the early return below, which a quiet poll takes. Recorded after
       // it, the page could only ever show a gate where something moved — exactly
-      // backwards, since nothing moving is the healthy steady state.
-      this.lastGate = { moved: moved.map((l) => l.key), refetched: stale.map((l) => l.key) };
-      // Film dates age out on their own schedule, so a poll with no list
-      // changes still has work to do once a day. Read once: the second read
-      // would come after `resolveFilms` had stamped `filmsResolvedAt`.
-      const filmsDue = force || this.feed.filmsDue();
+      // backwards, since nothing moving is the healthy steady state. The counts
+      // are written into it where they are produced, so there is one gate object
+      // and no second literal to keep in step with this one.
+      const gate: GateOutcome = { changed, pull: full ? 'full' : changed ? 'delta' : 'none', removals, updated: 0, removed: 0 };
+      this.lastGate = gate;
       // The retry term is a boolean, and false when the sync is unconfigured,
       // so a quiet poll still makes exactly one request.
-      if (!stale.length && !filmsDue && !this.sheetRetryPending) return;
-      refetched = stale.length > 0 || filmsDue;
+      if (!full && !changed && !removals && !filmsDue && !this.sheetRetryPending) return;
 
-      if (stale.length) {
-        this.log.info(`refetching ${stale.length}/${LISTS.length} lists: ${stale.map((l) => l.key).join(', ')}`);
-        const library: Library = this.library ?? {};
-        Object.assign(library, await fetchLists(token, stale, { signal }));
-        // Which lists are fresh is known here and nowhere else, and it is the
-        // only thing that can tell a stale copy of a moved title from the
-        // current one — see pruneSuperseded.
-        //
-        // This *reassigns* `this.library`, so every read of it below must stay
-        // where it is. Hoisting one to the top of the method would hand the feed
-        // the pre-fetch library: a feed one poll behind, intermittently, and
-        // only when a list moved.
-        this.library = pruneSuperseded(library, stale);
+      // Each watermark advances only once the call that consumed it has
+      // returned. Advancing before would skip the change permanently, since
+      // nothing else will ever report it again.
+      //
+      // Both branches *reassign* `this.library`, so every read of it below must
+      // stay where it is. Hoisting one to the top of the method would hand the
+      // feed the pre-pull library: a feed one poll behind, intermittently, and
+      // only when something moved.
+      if (full) {
+        this.log.info('pulling the whole library');
+        this.library = toLibrary(await fetchAllItems(token, { signal }));
+        gate.updated = this.library.size;
+        // A full pull *is* the membership set, so removals need no second call.
+        this.removalSignature = removalsAt;
+        this.syncedAll = activities.all ?? null;
+        this.librarySignature = signature;
+      } else if (changed) {
+        // A second behind the watermark, because `date_from` is compared
+        // strictly greater at one-second granularity: a change written in the
+        // same second as `activities.all` but committed after this poll read it
+        // would otherwise never be asked for again. The merge is an idempotent
+        // upsert, so the overlap costs a re-sent record and nothing else.
+        const dateFrom = deltaFrom(this.syncedAll);
+        ({ library: this.library, updated: gate.updated } = mergeDelta(
+          this.library!,
+          await fetchAllItems(token, { dateFrom, signal }),
+        ));
+        this.log.info(`${gate.updated} ${gate.updated === 1 ? 'record' : 'records'} changed since ${dateFrom}`);
+        this.syncedAll = activities.all ?? this.syncedAll;
+        this.librarySignature = signature;
       }
 
-      // Re-read when the film list changed, and otherwise once a day. Marking
-      // an episode watched must not drag eleven film lookups along with it.
-      const filmsComplete =
-        stale.some((l) => l.key === 'movies_plantowatch') || filmsDue
-          ? await this.feed.resolveFilms(this.library, { signal })
-          : true;
-
-      const signatures = listSignatures(activities);
-      if (!filmsComplete) {
-        // Leave the film list stale: recording the current signature would mark
-        // it current despite unresolved lookups, and nothing would retry until
-        // the user next added or removed a title.
-        signatures.movies_plantowatch = this.listSignatures.movies_plantowatch;
-        this.log.warn('some film lookups failed; will retry on the next poll');
+      // After the delta, never before: the membership response is then the
+      // fresher of the two, so a title added between the calls survives and one
+      // removed between them goes.
+      if (removals && !full) {
+        const keep = membershipIds(await fetchMembership(token, { signal }));
+        const diff = retainOnly(this.library!, keep);
+        this.library = diff.library;
+        gate.removed = diff.removed;
+        if (!diff.applied) {
+          // The signature is left unadvanced, so the next poll asks again.
+          this.log.warn('membership response would drop most of the library; not applying it');
+        } else {
+          this.removalSignature = removalsAt;
+          if (diff.removed) {
+            this.log.info(`${diff.removed} ${diff.removed === 1 ? 'title' : 'titles'} removed from the library`);
+          }
+        }
       }
-      this.listSignatures = signatures;
-      // Only when a list actually moved. A poll that fell through purely to
-      // retry the sheet would otherwise report librarySyncedAt as now, which
+
+      shouldRender = gate.updated > 0 || gate.removed > 0 || filmsDue;
+
+      // Re-read when the film list changed, and otherwise when one comes into
+      // range. Marking an episode watched must not drag every film lookup along.
+      //
+      // A failed lookup needs no flag here: it does not refresh that film's
+      // stamp, so `filmsDue` is already true on the next poll for exactly the
+      // films that failed.
+      if (gate.updated > 0 || filmsDue) {
+        const complete = await this.feed.resolveFilms(this.library, { signal });
+        if (!complete) this.log.warn('some film lookups failed; will retry on the next poll');
+      }
+      // Only when the library actually moved. A poll that fell through purely
+      // to retry the sheet would otherwise report librarySyncedAt as now, which
       // contradicts what that field means.
-      if (stale.length) this.libraryAt = new Date().toISOString();
+      if (gate.updated > 0 || gate.removed > 0) this.libraryAt = new Date().toISOString();
     } catch (err) {
-      libraryFailed = true;
       // A revoked token must not empty the feed — keep serving the last render.
       const prefix = err instanceof SimklAuthError ? 'AUTH' : 'library';
       this.errors.library = `${prefix}: ${errorMessage(err)}`;
@@ -324,19 +382,19 @@ export class Orchestrator {
     // fell through purely to retry the sheet would otherwise re-join, re-render
     // and rewrite an identical feed to disk; the calendar timer still renders
     // on its own schedule, so nothing goes stale.
-    if (refetched) await this.feed.safeRender(this.library);
+    if (shouldRender) await this.feed.safeRender(this.library);
     // The sheet is built entirely from the library, so if the library refresh
     // threw there is nothing new for the sync to see — and running it anyway
     // means a full grid read and re-plan on every poll of a SIMKL outage, plus
     // a REFUSED line in the log for each one.
-    if (!libraryFailed) await this.syncSheet();
+    if (!this.errors.library) await this.syncSheet();
   }
 
   /**
    * The sheet write, after the render and outside the library `try`.
    *
    * Outside, so a Sheets failure is never filed as `errors.library`, never
-   * touches `listSignatures`, and never holds the feed up. After, so the feed —
+   * touches the watermarks, and never holds the feed up. After, so the feed —
    * which is the service's actual job — is already out before a spreadsheet is
    * touched.
    */
@@ -350,10 +408,9 @@ export class Orchestrator {
   /**
    * Run `job` on an interval, skipping a tick while the previous one is still
    * going. setInterval does not wait, and a refresh slower than its own period
-   * would interleave writes to `library` and `listSignatures` here, and to
-   * `movieReleases` and `filmsResolvedAt` on the feed — a cross-object
-   * invariant now, held by the fact that the library timer is the sole writer
-   * of all four.
+   * would interleave writes to `library` and the three watermarks here, and to
+   * `movieReleases` and `filmStamps` on the feed — a cross-object invariant now,
+   * held by the fact that the library timer is the sole writer of all of them.
    */
   private schedule(name: string, job: () => Promise<void>, everyMs: number): void {
     let running = false;

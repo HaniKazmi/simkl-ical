@@ -19,8 +19,8 @@
  */
 
 import { localDate, MS_PER_DAY } from '../shared/dates.ts';
-import { itemSimklId, itemStatus } from '../api/simkl/item.ts';
-import type { EpisodeDetail, Library, LibraryItem, ListKey } from '../api/simkl/types.ts';
+import { itemStatus } from '../api/simkl/item.ts';
+import type { EpisodeDetail, Library, LibraryItem } from '../api/simkl/types.ts';
 
 // --- Timestamps ------------------------------------------------------------
 
@@ -76,11 +76,7 @@ export interface SeasonProgress {
 export interface TitleProgress {
   id: number;
   title: string;
-  /**
-   * `item.status`, never which list it arrived in. List membership goes stale:
-   * a move is reported only against the list it moved *to*, so an un-dropped
-   * show sits in both `watching` and `dropped` until something else evicts it.
-   */
+  /** `item.status` — the only membership there is, one record per title. */
   status: string | null;
   lastWatchedAt: string | null;
   watchedCount: number;
@@ -122,48 +118,23 @@ export const seasonsOf = (item: LibraryItem): Map<number, SeasonProgress> => {
  * Films are skipped: they have no seasons, so the whole block model is
  * inapplicable.
  *
- * A title appearing in two lists — which happens, because a move is only
- * reported against its destination — keeps whichever entry has the later
- * `last_watched_at`. On a tie the copy whose list matches the item's own
- * `status` wins, because that is the field that says which list is current.
- * Without that tie-break the first list in `LISTS` order wins, which is
- * `watching`: a watching→dropped move with no new watches leaves both copies
- * carrying the same timestamp, and the sheet keeps saying Watching forever.
+ * One record per title, so there is nothing to reconcile here: a status move
+ * arrives as a replacement of the record, not as a second copy alongside it.
  */
 export const indexLibrary = (library: Library | null | undefined): Map<number, TitleProgress> => {
   const out = new Map<number, TitleProgress>();
-  if (!library) return out;
-  const picked = new Map<number, { at: string; authoritative: boolean }>();
-
-  for (const [key, list] of Object.entries(library) as Array<[ListKey, Library[ListKey]]>) {
-    if (key.startsWith('movies_')) continue;
-    // `shows_dropped` → `dropped`, the status this list *is*.
-    const listStatus = key.slice(key.indexOf('_') + 1);
-
-    for (const item of [...(list?.shows ?? []), ...(list?.anime ?? [])]) {
-      const id = itemSimklId(item);
-      if (id === null) continue;
-
-      const lastWatchedAt = normaliseInstant(item.last_watched_at);
-      const status = itemStatus(item);
-      const at = lastWatchedAt ?? '';
-      const authoritative = status === listStatus;
-
-      const current = picked.get(id);
-      if (current && (current.at > at || (current.at === at && (current.authoritative || !authoritative)))) continue;
-      picked.set(id, { at, authoritative });
-
-      out.set(id, {
-        id,
-        title: item.show?.title ?? item.movie?.title ?? String(id),
-        status,
-        lastWatchedAt,
-        watchedCount: item.watched_episodes_count ?? 0,
-        totalCount: item.total_episodes_count ?? 0,
-        notAiredCount: item.not_aired_episodes_count ?? 0,
-        seasons: seasonsOf(item),
-      });
-    }
+  for (const [id, { type, item }] of library ?? []) {
+    if (type === 'movies') continue;
+    out.set(id, {
+      id,
+      title: item.show?.title ?? item.movie?.title ?? String(id),
+      status: itemStatus(item),
+      lastWatchedAt: normaliseInstant(item.last_watched_at),
+      watchedCount: item.watched_episodes_count ?? 0,
+      totalCount: item.total_episodes_count ?? 0,
+      notAiredCount: item.not_aired_episodes_count ?? 0,
+      seasons: seasonsOf(item),
+    });
   }
   return out;
 };

@@ -53,7 +53,7 @@ export const COLD: StatusInput = {
   calendarRefreshMs: 6 * HOUR,
   films: 0,
   filmsResolvedAt: null,
-  movieRefreshMs: DAY,
+  filmsDue: false,
   sheetConfigured: false,
   sheetMode: 'off',
   sheetTab: 'Sheet1',

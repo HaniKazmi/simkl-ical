@@ -129,14 +129,17 @@ export const buildConfig = (env: NodeJS.ProcessEnv): Config => ({
   // only some regenerations. `/healthz` keys its staleness alarms off this, so
   // raising it also raises how long a wedged render stays invisible.
   calendarRefreshMs: int(env.CALENDAR_REFRESH_MS, 6 * 60 * 60 * 1000, { min: 60_000 }),
-  // One tiny request that gates the five expensive library calls. Two hours:
-  // list membership changes rarely, and a slightly stale feed is invisible next
-  // to a calendar client that polls on its own schedule anyway.
-  activitiesPollMs: int(env.ACTIVITIES_POLL_MS, 2 * 60 * 60 * 1000, { min: 60_000 }),
-  // How often to re-read film release dates regardless of library activity. A
-  // studio moving a release changes nothing in your library, so nothing else
-  // would ever trigger the re-read. Daily, because the lookups are CDN-cached
-  // by id and a plan-to-watch film list is short.
+  // One tiny request that gates the library pull, and on a quiet poll the only
+  // request made at all. Half an hour: a poll where something moved costs one
+  // small delta rather than the whole library, so polling often is cheaper here
+  // than polling rarely was, and the feed tracks what you watch far more
+  // closely. `/healthz` keys its staleness alarm off this at three intervals.
+  activitiesPollMs: int(env.ACTIVITIES_POLL_MS, 30 * 60 * 1000, { min: 60_000 }),
+  // The floor on how often any one film's release date is re-read. A studio
+  // moving a release changes nothing in your library, so nothing else would ever
+  // trigger the re-read; but the poll runs far more often than dates change, so
+  // this bounds it per film. Which films are due past that floor is a separate
+  // question, and the rule that answers it is `filmDue` in feed/io/movies.ts.
   movieRefreshMs: int(env.MOVIE_REFRESH_MS, 24 * 60 * 60 * 1000, { min: 60_000 }),
   // First step of the API retry backoff, doubling each attempt: 1s, 2s, 4s, 8s.
   // Configurable mainly for tests; lowering it in production only makes a

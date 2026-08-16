@@ -13,7 +13,7 @@
  */
 
 import { config } from '../shared/config.ts';
-import { listCounts } from '../library.ts';
+import { libraryCounts } from '../library.ts';
 import { sheetRuns } from '../sheet/io/journal.ts';
 import type { Orchestrator } from '../orchestrator.ts';
 import { buildModel } from './1-model.ts';
@@ -35,7 +35,7 @@ export const renderStatus = (state: Orchestrator, { now = Date.now() }: { now?: 
 
       polledAt: state.polledAt,
       libraryError: state.errors.library,
-      counts: listCounts(state.library),
+      counts: libraryCounts(state.library),
       gate: state.lastGate,
       activitiesPollMs: config.activitiesPollMs,
 
@@ -49,7 +49,10 @@ export const renderStatus = (state: Orchestrator, { now = Date.now() }: { now?: 
       calendarRefreshMs: config.calendarRefreshMs,
       films: feed.movieReleases.size,
       filmsResolvedAt: feed.filmsResolvedAt,
-      movieRefreshMs: config.movieRefreshMs,
+      // Asked of `Feed`, which owns the rule. Re-deriving it here from
+      // `filmsResolvedAt` and an interval would describe the whole-list clock
+      // the per-film horizon replaced.
+      filmsDue: feed.filmsDue(state.library),
 
       sheetConfigured: sheetSync !== null,
       sheetMode: config.sheetSyncMode,

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { SheetSync } from '../../src/sheet/sync.ts';
 import { clearTokenCache } from '../../src/api/google/auth.ts';
 import type { CellData, SheetRequest } from '../../src/api/google/types.ts';
-import { cellOf, daysAgo, jsonResponse, libraryOf, quiet, recorder, sheetSnapshot, SHEET_HEADERS, withConfig, withFetch, withFreshJournal, type CellSpec, seasonRow, showRow } from '../helpers.ts';
+import { cellOf, daysAgo, jsonResponse, libraryOf, quiet, recorder, SHEET_HEADERS, withConfig, withFetch, withFreshJournal, type CellSpec, seasonRow, showRow } from '../helpers.ts';
 import { sheetRuns } from '../../src/sheet/io/journal.ts';
 
 const H = SHEET_HEADERS;
@@ -202,7 +202,7 @@ test('apply mode writes exactly what it planned and verifies it', async () => {
 // Rollback exists for one failure: our plan was wrong. That is why the rollback
 // set comes from the observed diff — the plan is the thing under suspicion.
 test('a write that does not verify is rolled back exactly once', async () => {
-  await run('apply', { meddle: (state) => void (state[2]![3] = cellOf(99)) }, (result, calls, sheet) => {
+  await run('apply', { meddle: (state) => void (state[2]![3] = cellOf(99)) }, (result, _calls, sheet) => {
     assert.equal(result.status, 'rolled-back');
     assert.match(result.error ?? '', /changed without being planned/);
     // The run that had to be undone is the one whose detail matters most, so it

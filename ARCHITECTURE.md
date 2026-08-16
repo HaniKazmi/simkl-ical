@@ -7,7 +7,7 @@ Two data sources that are useless alone, joined on the SIMKL id:
 
 ```
 data.simkl.in/calendar/v2/*.json   (public CDN, airdates, whole database)  ─┐
-api.simkl.com/sync/all-items/…     (OAuth, your library, no dates)         ─┤─ join ─→ ICS
+api.simkl.com/sync/all-items        (OAuth, your library, no dates)         ─┤─ join ─→ ICS
 api.simkl.com/movies/{id}          (per-film release dates)                ─┘
 ```
 
@@ -74,11 +74,13 @@ expensive or the thing it fetches rarely changes.
 | Call | Fires when | Request |
 | --- | --- | --- |
 | Airdate calendars | calendar timer, **6h** | `GET data.simkl.in/calendar/v2/{tv,anime}.json`, plus `…/{year}/{month}/{tv,anime}.json` per month the grace window reaches — conditional on `If-Modified-Since`, so `304` unless the CDN regenerated |
-| Activities gate | library timer, **2h** | `GET api.simkl.com/sync/activities` |
-| One library list | its signature moved in the gate above | `GET /sync/all-items/{type}/{status}?extended=full&episode_watched_at=yes&include_all_episodes=yes` |
-| Film release date | the film list moved, else **daily** | `GET /movies/{id}?extended=full` — one per plan-to-watch film, 4 at a time |
+| Activities gate | library timer, **30m** | `GET api.simkl.com/sync/activities` |
+| Library delta | a status timestamp moved in the gate above | `GET /sync/all-items?date_from={watermark − 1s}&extended=full&episode_watched_at=yes&include_all_episodes=yes` |
+| Whole library | cold start, or a forced poll | the same call without `date_from` |
+| Membership set | `removed_from_list` moved | `GET /sync/all-items?extended=simkl_ids_only` — ids alone, to diff against |
+| Film release date | a film is new, undated, or dated inside **30 days**; at most once per **24h** each | `GET /movies/{id}` — 4 at a time |
 | A title's episode list | that title's `lastWatchedAt` moved, else after **24h** | `GET /tv/episodes/{id}` |
-| A title's status | same trigger as its episode list | `GET /tv/{id}?extended=full`, or `/anime/{id}` for a cour |
+| A title's status | same trigger as its episode list | `GET /tv/{id}`, or `/anime/{id}` for a cour |
 | Read the spreadsheet | start of every sheet-sync run, and again to verify a write | `GET sheets.googleapis.com/v4/spreadsheets/{id}?ranges='Sheet1'&fields=…` |
 | Write the spreadsheet | a plan passed the guard, in `apply` mode only | `POST …/spreadsheets/{id}:batchUpdate` |
 | List the tabs | after a write, to find or sweep the snapshot tab | `GET …/spreadsheets/{id}?fields=sheets.properties(sheetId,title)` |
@@ -89,24 +91,33 @@ Every SIMKL request also carries `client_id`, `app-name` and `app-version` as qu
 a `simkl-api-key` header; authenticated ones add a bearer token.
 
 **`/sync/activities` is what makes this cheap.** It returns a last-modified timestamp per category,
-so a poll where nothing moved costs exactly **one request** — the gate itself. Each list has its own
-signature: its status timestamp plus `removed_from_list`, which is per-category and so invalidates
-the whole category. `playback` and `rated_at` are deliberately excluded, or a scrobbler reporting
-progress would trigger a refetch that renders byte-identical output.
+so a poll where nothing moved costs exactly **one request** — the gate itself. Two signatures come
+off it, and they answer different questions. `librarySignature` is the five status timestamps across
+all three categories, and it decides whether to pull; `playback` and `rated_at` are deliberately
+excluded, or a scrobbler reporting progress would pull a delta that renders byte-identical output.
+`removalSignature` is `removed_from_list` per category, and it gates the membership pull on its own,
+because a removal moves that timestamp and produces no delta record at all.
+
+`activities.all` is neither of those. It is the **watermark** — what goes back out as `date_from` —
+and it rolls `playback` up with everything else, which is exactly why it cannot also be the trigger.
 
 Three things sit on their own clocks because **nothing in the library moves when they change**, so
 there is no signature to gate on: a studio delaying a film, a network renewing a show, and a token
-expiring. Hence the daily film clock, the 24h catalogue ceiling, and the 5-minute token margin.
+expiring. Hence the film horizon, the 24h catalogue ceiling, and the 5-minute token margin.
 
 Without the per-title catalogue gate, watching one episode would re-read the catalogue of every
 eligible show — about 35 calls for a one-cell edit on a 300-row sheet. With it, a warm run makes
 roughly two.
 
-`LISTS` covers 11 lists where the feed needs 7; the sheet sync needs `hold` and `dropped` so that
-"absent from every list" can mean *no information*. The gate is what makes 11 affordable.
+One type-less call returns all three types and every status, so the sheet sync's need for `hold` and
+`dropped` — without which "absent from the library" cannot mean *no information* — costs nothing over
+what the feed alone would fetch. The cold pull carries roughly 330 completed films the feed never
+looks at; they are kept rather than filtered because the membership set the removal diff intersects
+against contains them too, and because a film moving `plantowatch → completed` arrives as exactly the
+`completed` record a filter would drop, leaving the stale copy behind.
 
 README has the same thing cut by user action rather than by call — one request when nothing changed,
-12 on a cold start.
+two on a cold start.
 
 ---
 
@@ -129,9 +140,9 @@ exactly what differs between them.
 ## Invariants
 
 - **One owner per piece of state.** The library is *passed* to `Feed`, never stored there, so a poll
-  cannot end up with two copies that disagree — which matters because `pruneSuperseded` returns a
-  new object when it evicts anything. Each half owns its own error slots, so the two timers
-  *cannot* clear each other's failures.
+  cannot end up with two copies that disagree — which matters because the merge and the removal diff
+  each return a new Map, replacing the library in one assignment. Each half owns its own error slots,
+  so the two timers *cannot* clear each other's failures.
 - **A calendar render reads the library after its own fetch, not before.** The fetch is several MB;
   the library poll runs throughout; and this render is queued last, so a value captured before the
   fetch would overwrite the poll's correct render and stand until the next refresh.
@@ -149,18 +160,23 @@ exactly what differs between them.
   fetched.
 - **The library says `ids.simkl`, the calendar says `simkl_id`.** `itemSimklId` bridges them; that
   is the entire join.
-- **List membership is not status.** A move is reported against the destination only, so a show
-  moved to `dropped` sits in `watching` indefinitely and `item.status` is what says which is
-  current. Status alone cannot settle it though — a stale `watching` copy beside a fresh `dropped`
-  one is identical, field for field, to the reverse — so `pruneSuperseded` evicts in the poll, the
-  one place that knows which list it just fetched. `completed` is left lingering deliberately:
-  everything it contributes is already dated and ages out on its own.
+- **One record per id, and `item.status` is what it says.** A delta returns each changed item once
+  carrying its current status, and the records are complete rather than partial patches — a changed
+  show arrives with its full `seasons[]` — so a merge is a plain upsert and a move is a replacement.
+  Nothing can hold two copies of a title that disagree. `completed` counts as airing deliberately:
+  SIMKL marks an ongoing show completed the moment you catch up, which is when its next season
+  matters most.
+- **Removals are the exception, and are in no delta.** `removed_from_list` says one happened but not
+  what went, so the library is intersected with an `extended=simkl_ids_only` pull. A response that
+  would drop most of the library is refused and retried rather than applied: a truncated response and
+  a cleared account are the same bytes, and applying the wrong one empties the feed.
 - **UIDs are derived, never random**, or clients duplicate events instead of updating them.
 - **Three files are persisted**, all 0600 through `writeFileAtomic`: `token.json`, `feed.ics`, and
   `sheet-runs.json`. The third is **observational, never control** — written by the sheet half and
   read only by the status page. *Nothing in `src/` may read it to decide what to do*: not to skip a
   run, not to arm a retry, not to remember a freeze. No control state outlives the process, so a
-  restart still resyncs everything, because no decision consults it.
+  restart still resyncs everything, because no decision consults it. The delta watermark is held the
+  same way — in memory only — so a restart is a cold start, and a cold start is two requests.
 - **Every numeric setting is clamped** rather than validated fatally: a running feed beats a
   container that will not boot.
 
