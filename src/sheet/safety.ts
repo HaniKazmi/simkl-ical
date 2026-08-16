@@ -16,7 +16,7 @@ import { isBlank, isFormula, numberOf, sameValue, type Grid, type HeaderName } f
 import { shiftDate } from '../shared/dates.ts';
 import { dateSerial } from './progress.ts';
 import type { CellEdit, SheetPlan } from './plan.ts';
-import type { ExtendedValue, GridRange, SheetRequest } from '../sheets/types.ts';
+import type { ExtendedValue, GridRange, SheetRequest } from '../api/google/types.ts';
 
 /** What the sync may write to a row that already exists. */
 const EDIT_FIELDS = new Set<HeaderName>(['Status', 'Episode', 'End']);

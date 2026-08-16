@@ -11,8 +11,8 @@
  */
 
 import { config } from '../shared/config.ts';
-import { sheetsRequest } from '../sheets/client.ts';
-import type { BatchUpdateResponse, CellData, SheetRequest, SpreadsheetResponse } from '../sheets/types.ts';
+import { sheetsRequest } from '../api/google/client.ts';
+import type { BatchUpdateResponse, CellData, SheetRequest, SpreadsheetResponse } from '../api/google/types.ts';
 
 /**
  * One tab, as read. `rows` is ragged — the API omits trailing blanks — so every

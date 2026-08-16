@@ -13,7 +13,7 @@ import { MS_PER_DAY } from '../shared/dates.ts';
 import { a1, columnLetter, duplicateIds, idsFor, type ColumnMap, type Grid, type HeaderName, type SeasonRow, type ShowBlock } from './grid.ts';
 import { courComplete, runtimeDays, seasonComplete, watchSerial, type SeasonShape, type TitleProgress } from './progress.ts';
 import type { CatalogueRequest } from '../sources/shows.ts';
-import type { CellData, ExtendedValue } from '../sheets/types.ts';
+import type { CellData, ExtendedValue } from '../api/google/types.ts';
 
 /**
  * What one title's catalogue lookups reduce to. Everything the planner reads,

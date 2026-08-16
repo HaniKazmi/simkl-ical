@@ -16,9 +16,9 @@
  * is allowed — unlike the sync endpoints, which must stay sequential.
  */
 
-import { apiGet } from '../simkl/client.ts';
-import { lookupPool } from '../simkl/pool.ts';
-import type { EpisodeDetail, ShowDetail } from '../simkl/types.ts';
+import { apiGet } from '../api/simkl/client.ts';
+import { lookupPool } from '../api/simkl/pool.ts';
+import type { EpisodeDetail, ShowDetail } from '../api/simkl/types.ts';
 
 /**
  * No cache here, deliberately — the same division as `movies.ts`, where the

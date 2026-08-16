@@ -7,7 +7,7 @@
  * module fails closed rather than guessing.
  */
 
-import type { CellData, ExtendedValue } from '../sheets/types.ts';
+import type { CellData, ExtendedValue } from '../api/google/types.ts';
 import type { SheetSnapshot } from '../sources/sheet.ts';
 
 /**

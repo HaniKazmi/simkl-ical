@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { config } from '../src/shared/config.ts';
-import { apiGet, retryDelayMs, SimklAuthError, SimklError } from '../src/simkl/client.ts';
-import { jsonResponse, withConfig, withFetch } from './helpers.ts';
+import { config } from '../../../src/shared/config.ts';
+import { apiGet, retryDelayMs, SimklAuthError, SimklError } from '../../../src/api/simkl/client.ts';
+import { jsonResponse, withConfig, withFetch } from '../../helpers.ts';
 
 
 test('a successful call returns the parsed body', async () => {

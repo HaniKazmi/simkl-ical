@@ -1,8 +1,8 @@
-import { apiGet } from '../simkl/client.ts';
-import { lookupPool } from '../simkl/pool.ts';
+import { apiGet } from '../api/simkl/client.ts';
+import { lookupPool } from '../api/simkl/pool.ts';
 import { localDate, releaseDate } from '../shared/dates.ts';
 import { config } from '../shared/config.ts';
-import type { MovieDetail, MovieRelease, ReleaseDateResult } from '../simkl/types.ts';
+import type { MovieDetail, MovieRelease, ReleaseDateResult } from '../api/simkl/types.ts';
 
 /**
  * TMDB-style release types, as used by SIMKL's `release_dates`.

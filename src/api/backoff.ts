@@ -8,7 +8,7 @@
  * which statuses retry, how a status maps to an error) stays in each client.
  */
 
-import { config } from './shared/config.ts';
+import { config } from '../shared/config.ts';
 
 /** Ceiling on a server-requested wait, so a hostile header cannot stall a refresh. */
 export const MAX_RETRY_AFTER_MS = 60_000;

@@ -13,8 +13,8 @@
  */
 
 import { localDate, MS_PER_DAY } from '../shared/dates.ts';
-import { itemSimklId, itemStatus } from '../simkl/item.ts';
-import type { EpisodeDetail, Library, LibraryItem, ListKey } from '../simkl/types.ts';
+import { itemSimklId, itemStatus } from '../api/simkl/item.ts';
+import type { EpisodeDetail, Library, LibraryItem, ListKey } from '../api/simkl/types.ts';
 
 // --- Timestamps ------------------------------------------------------------
 

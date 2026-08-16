@@ -10,7 +10,7 @@ import {
   cachedKeys,
   clearCache,
 } from '../src/sources/calendar.ts';
-import type { CalendarFile } from '../src/simkl/types.ts';
+import type { CalendarFile } from '../src/api/simkl/types.ts';
 import { calendarFile, jsonResponse, withFetch } from './helpers.ts';
 
 test('archive URLs use an unpadded month', () => {

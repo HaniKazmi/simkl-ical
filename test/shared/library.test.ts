@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { listSignature, listSignatures, pruneSuperseded, staleLists, LISTS } from '../../src/shared/library.ts';
-import { itemSimklId } from '../../src/simkl/item.ts';
-import type { Activities, ListDefinition } from '../../src/simkl/types.ts';
+import { itemSimklId } from '../../src/api/simkl/item.ts';
+import type { Activities, ListDefinition } from '../../src/api/simkl/types.ts';
 
 /** The fixture always populates every category, so tests can mutate them freely. */
 type FullActivities = Activities & Required<Pick<Activities, 'tv_shows' | 'anime' | 'movies'>>;
