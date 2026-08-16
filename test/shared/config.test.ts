@@ -79,10 +79,18 @@ test('the reported version matches package.json', async () => {
 
 // `signal ?? AbortSignal.timeout(ms)` reads as a default but is an override,
 // dropping the timeout whenever a caller passes a signal.
+// Awaited on the signal itself rather than slept past: a fixed margin against
+// a real timer is the classic once-a-quarter flake on a loaded runner.
+const aborted = (signal: AbortSignal): Promise<void> =>
+  new Promise((resolve) => {
+    if (signal.aborted) return resolve();
+    signal.addEventListener('abort', () => resolve(), { once: true });
+  });
+
 test('a caller signal does not disable the request timeout', async () => {
   const combined = withTimeout(new AbortController().signal, 10);
   assert.equal(combined.aborted, false);
-  await new Promise((r) => setTimeout(r, 30));
+  await aborted(combined);
   assert.equal(combined.aborted, true, 'the timeout must still fire');
 });
 
@@ -95,7 +103,7 @@ test('a caller signal still cancels', () => {
 
 test('with no caller signal the timeout alone applies', async () => {
   const combined = withTimeout(undefined, 10);
-  await new Promise((r) => setTimeout(r, 30));
+  await aborted(combined);
   assert.equal(combined.aborted, true);
 });
 
