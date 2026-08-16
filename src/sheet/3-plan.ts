@@ -114,6 +114,15 @@ const latestOf = (progresses: TitleProgress[]): string | null =>
 const within = (iso: string | null, cutoffMs: number): boolean => iso !== null && Date.parse(iso) >= cutoffMs;
 
 /**
+ * The instant before which a block is out of scope.
+ *
+ * One copy because `planLookups` and `planSync` must agree about which blocks
+ * are in scope, and three hand-written copies of the same arithmetic is how
+ * they would stop agreeing.
+ */
+const cutoffFrom = (now: Date, sinceDays: number): number => now.getTime() - sinceDays * MS_PER_DAY;
+
+/**
  * Has anything in this block been watched recently enough to touch?
  *
  * One definition on purpose: the cut-off is what stops any run retro-editing
@@ -321,7 +330,7 @@ export const planLookups = (
   index: Map<number, TitleProgress>,
   { now = new Date(), sinceDays = config.sheetSinceDays, stamps = new Map<number, CatalogueStamp>(), maxAgeMs = Infinity }: LookupOptions = {},
 ): CatalogueRequest[] => {
-  const cutoffMs = now.getTime() - sinceDays * MS_PER_DAY;
+  const cutoffMs = cutoffFrom(now, sinceDays);
   const nowMs = now.getTime();
   const requests: CatalogueRequest[] = [];
   const due = (id: number): boolean => needsLookup(stamps.get(id), index.get(id), nowMs, maxAgeMs);
@@ -351,7 +360,7 @@ export const planSync = (
   { now = new Date(), timezone = config.timezone, sinceDays = config.sheetSinceDays }: PlanOptions = {},
 ): SheetPlan => {
   const plan: SheetPlan = { edits: [], inserts: [], skipped: [], notes: [], deferred: 0 };
-  const cutoffMs = now.getTime() - sinceDays * MS_PER_DAY;
+  const cutoffMs = cutoffFrom(now, sinceDays);
   const duplicates = duplicateIds(grid.blocks);
   const seen = new Set<number>();
 
@@ -492,7 +501,7 @@ const planInsert = (
   { now, timezone, sinceDays }: Required<PlanOptions>,
 ): RowInsert | string | null => {
   if (block.type !== 'show' || !source || !block.ids.length) return null;
-  const cutoffMs = now.getTime() - sinceDays * MS_PER_DAY;
+  const cutoffMs = cutoffFrom(now, sinceDays);
 
   const candidates = [...source.seasons.values()]
     .filter((s) => s.watched > 0 && !covered.has(s.number) && within(s.lastWatchedAt, cutoffMs))

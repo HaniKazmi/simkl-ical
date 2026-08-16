@@ -3,7 +3,6 @@ import { config, requireClientId } from '../../shared/config.ts';
 import { errorMessage } from '../../shared/errors.ts';
 import { withTimeout } from '../../shared/signals.ts';
 
-export { retryDelayMs };
 
 const API_BASE = 'https://api.simkl.com';
 

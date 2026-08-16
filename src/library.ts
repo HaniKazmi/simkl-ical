@@ -240,7 +240,8 @@ export const libraryCounts = (library: Library | null): Record<string, number> =
   for (const key of COUNT_KEYS) counts[key] = 0;
   for (const entry of library?.values() ?? []) {
     const key = `${entry.type}/${itemStatus(entry.item) ?? ''}`;
-    counts[Object.hasOwn(counts, key) ? key : 'other'] += 1;
+    const bucket = Object.hasOwn(counts, key) ? key : 'other';
+    counts[bucket] = (counts[bucket] ?? 0) + 1;
   }
 
   if (library) countsFor.set(library, counts);

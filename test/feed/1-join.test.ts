@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { airingIds, itemSimklId, plannedIds, episodeCode, join } from '../../src/feed/1-join.ts';
+import { airingIds, plannedIds, episodeCode, join } from '../../src/feed/1-join.ts';
+import { itemSimklId } from '../../src/api/simkl/item.ts';
 import { localDate, releaseDate, shiftDate } from '../../src/shared/dates.ts';
 import type { CalendarEntry, CalendarFile, CalendarType, Library, LibraryEntry, LibraryItem, MovieRelease } from '../../src/api/simkl/types.ts';
 import { calendarOf } from '../helpers.ts';
@@ -161,7 +162,7 @@ test('a record carrying no status is treated as still followed', () => {
 test('watching shows contribute every upcoming episode', () => {
   const events = join(calendars([tvEntry(100, 4, 3, '2026-08-15T20:00:00Z')]), library, { timezone: 'Europe/London', now: NOW });
   assert.equal(events.length, 1);
-  assert.equal(events[0].summary, 'Watched Show – S04E03');
+  assert.equal(events[0]?.summary, 'Watched Show – S04E03');
 });
 
 test('plan-to-watch contributes premieres only', () => {
@@ -171,7 +172,7 @@ test('plan-to-watch contributes premieres only', () => {
     { timezone: 'Europe/London', now: NOW },
   );
   assert.equal(events.length, 1);
-  assert.equal(events[0].summary, 'Planned Show – S01E01');
+  assert.equal(events[0]?.summary, 'Planned Show – S01E01');
 });
 
 // SIMKL marks an ongoing show completed once everything aired has been watched,
@@ -180,7 +181,7 @@ test('plan-to-watch contributes premieres only', () => {
 test('completed shows still contribute upcoming episodes', () => {
   const events = join(calendars([tvEntry(400, 4, 1, '2026-08-15T20:00:00Z')]), library, { timezone: 'Europe/London', now: NOW });
   assert.equal(events.length, 1);
-  assert.equal(events[0].summary, 'Completed Show – S04E01');
+  assert.equal(events[0]?.summary, 'Completed Show – S04E01');
 });
 
 test('completed shows are not limited to premieres the way plan-to-watch is', () => {
@@ -205,7 +206,7 @@ test('anime plan-to-watch premieres match despite having no season', () => {
   };
   const events = join(cals, animeLibrary, { timezone: 'Europe/London', now: NOW });
   assert.equal(events.length, 1, 'only the premiere');
-  assert.equal(events[0].summary, 'Some Anime – E01');
+  assert.equal(events[0]?.summary, 'Some Anime – E01');
 });
 
 test('an entry with no episode object gets a date-keyed uid, not "Eundefined"', () => {
@@ -223,8 +224,8 @@ test('an entry with no episode object gets a date-keyed uid, not "Eundefined"', 
     assert.ok(!event.uid.includes('undefined'), event.uid);
     assert.ok(!event.summary.includes('undefined'), event.summary);
   }
-  assert.equal(events[0].summary, 'Some Anime');
-  assert.equal(events[0].uid, 'simkl-600-20260827@simkl-ical');
+  assert.equal(events[0]?.summary, 'Some Anime');
+  assert.equal(events[0]?.uid, 'simkl-600-20260827@simkl-ical');
 });
 
 // A future date is always inside the grace window, so without this a dropped or
@@ -302,7 +303,7 @@ test('an already-watched episode still lingers', () => {
 test('a recently released film lingers too', () => {
   const events = join(calendars(), library, { timezone: 'Europe/London', now: NOW, graceDays: 14, movieReleases: filmReleases('2026-08-05') });
   assert.equal(events.length, 1);
-  assert.equal(events[0].date, '2026-08-05');
+  assert.equal(events[0]?.date, '2026-08-05');
 });
 
 test('shiftDate crosses month and year boundaries', () => {
@@ -320,13 +321,13 @@ test('shiftDate is unaffected by DST transitions', () => {
 
 test('finale type decorates the summary', () => {
   const events = join(calendars([tvEntry(100, 3, 8, '2026-08-15T20:00:00Z', 2)]), library, { timezone: 'Europe/London', now: NOW });
-  assert.equal(events[0].summary, 'Watched Show – S03E08 (Season finale)');
+  assert.equal(events[0]?.summary, 'Watched Show – S03E08 (Season finale)');
 });
 
 test('episode titles stay out of the summary', () => {
   const events = join(calendars([tvEntry(100, 4, 3, '2026-08-15T20:00:00Z')]), library, { timezone: 'Europe/London', now: NOW });
-  assert.ok(!events[0].summary.includes('Ep 3'));
-  assert.equal(events[0].episodeTitle, 'Ep 3');
+  assert.ok(!events[0]?.summary.includes('Ep 3'));
+  assert.equal(events[0]?.episodeTitle, 'Ep 3');
 });
 
 const filmReleases = (date: string): Map<number, MovieRelease> =>
@@ -335,16 +336,16 @@ const filmReleases = (date: string): Map<number, MovieRelease> =>
 test('plan-to-watch films are included by release date', () => {
   const events = join(calendars(), library, { timezone: 'Europe/London', now: NOW, movieReleases: filmReleases('2026-08-20') });
   assert.equal(events.length, 1);
-  assert.equal(events[0].kind, 'movie');
-  assert.equal(events[0].date, '2026-08-20');
-  assert.equal(events[0].summary, 'Planned Film');
-  assert.equal(events[0].detail, 'In cinemas');
+  assert.equal(events[0]?.kind, 'movie');
+  assert.equal(events[0]?.date, '2026-08-20');
+  assert.equal(events[0]?.summary, 'Planned Film');
+  assert.equal(events[0]?.detail, 'In cinemas');
 });
 
 test('films far beyond the 33-day calendar window still appear', () => {
   const events = join(calendars(), library, { timezone: 'Europe/London', now: NOW, movieReleases: filmReleases('2027-04-30') });
   assert.equal(events.length, 1);
-  assert.equal(events[0].date, '2027-04-30');
+  assert.equal(events[0]?.date, '2027-04-30');
 });
 
 test('films already released are dropped', () => {
