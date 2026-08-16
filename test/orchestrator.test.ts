@@ -4,7 +4,7 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { config } from '../src/shared/config.ts';
 import { Orchestrator } from '../src/orchestrator.ts';
-import { LISTS } from '../src/shared/library.ts';
+import { LISTS } from '../src/library.ts';
 import { ago, emptyCalendars, jsonResponse, quiet, recorder, withConfig, withFetch, withTempDataDir } from './helpers.ts';
 
 const T = '2026-08-15T12:00:00Z';

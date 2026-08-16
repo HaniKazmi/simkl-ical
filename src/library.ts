@@ -1,15 +1,14 @@
-import { apiGet } from '../api/simkl/client.ts';
-import { itemSimklId, itemStatus } from '../api/simkl/item.ts';
-import type {
-  Activities,
-  CategoryActivity,
-  Library,
-  LibraryItem,
-  ListDefinition,
-  ListResponse,
-  SyncStatus,
-  SyncType,
-} from '../api/simkl/types.ts';
+/**
+ * Which SIMKL lists this service reads, and how it decides they moved.
+ *
+ * The library is the one input both halves consume — the feed joins it against
+ * the airdate calendars, the sheet sync derives every write from it — but only
+ * the orchestrator owns it, so this sits beside the orchestrator rather than in
+ * `shared/`. Pure: the calls themselves are in `api/simkl/lists.ts`.
+ */
+
+import { itemSimklId, itemStatus } from './api/simkl/item.ts';
+import type { Activities, CategoryActivity, LibraryItem, ListDefinition, ListResponse, Library, SyncType } from './api/simkl/types.ts';
 
 /**
  * The lists that feed the calendar and the sheet sync. Anime is a separate
@@ -48,10 +47,6 @@ const ACTIVITY_CATEGORY: Record<SyncType, keyof Activities> = {
   movies: 'movies',
 };
 
-/** Last-modified timestamps per category. Cheap gate for the expensive list fetches. */
-export const getActivities = (token: string, { signal }: { signal?: AbortSignal } = {}): Promise<Activities> =>
-  apiGet<Activities>('/sync/activities', { token, signal });
-
 /**
  * Change key for a single list, so each can be gated individually — marking an
  * episode watched refetches only `shows/watching`.
@@ -78,28 +73,6 @@ export const staleLists = (activities: Activities | null | undefined, previous: 
   const current = listSignatures(activities);
   return LISTS.filter((list) => current[list.key] !== previous[list.key]);
 };
-
-/**
- * The extended params are unconditional, not gated on whether the sheet sync is
- * configured. Behaviour that varies with an unrelated env var is how you get a
- * bug that only reproduces on the machine holding the credentials.
- *
- * `extended=full` keeps `ids.simkl`, so the feed join is untouched;
- * `include_all_episodes=yes` is *required* for the completed and dropped lists,
- * where `seasons[]` is otherwise absent entirely. The cost is bandwidth only —
- * 227 KB to 716 KB on a cold refresh, and zero extra requests.
- */
-const fetchList = (
-  token: string,
-  type: SyncType,
-  status: SyncStatus,
-  { signal }: { signal?: AbortSignal } = {},
-): Promise<ListResponse> =>
-  apiGet<ListResponse>(`/sync/all-items/${type}/${status}`, {
-    token,
-    params: { extended: 'full', episode_watched_at: 'yes', include_all_episodes: 'yes' },
-    signal,
-  });
 
 /**
  * Drop list membership that this poll's refetch has superseded.
@@ -162,18 +135,3 @@ const without = (response: ListResponse | undefined, drop: (item: LibraryItem) =
   return changed ? next : undefined;
 };
 
-/**
- * Sequential on purpose: the SIMKL docs warn against parallelising uncached
- * sync endpoints, and a handful of serial requests take well under a second.
- */
-export const fetchLists = async (
-  token: string,
-  lists: ListDefinition[],
-  { signal }: { signal?: AbortSignal } = {},
-): Promise<Library> => {
-  const out: Library = {};
-  for (const { key, type, status } of lists) {
-    out[key] = await fetchList(token, type, status, { signal });
-  }
-  return out;
-};

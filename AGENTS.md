@@ -90,7 +90,8 @@ needs it**, and **is it transport or business logic**.
 | --- | --- |
 | `src/orchestrator.ts` | `Orchestrator` — the poll, the timers, `/healthz`; owns the library and drives both halves |
 | `src/server.ts`, `src/index.ts`, `src/login.ts` | Fastify (two routes, no state of its own), boot, and the device-flow CLI |
-| `src/shared/` | Used by both halves, no feature knowledge: config, dates, errors, logger, signals, atomic-write — plus `library.ts`, the one shared *domain* module |
+| `src/shared/` | Used by both halves, and with no feature knowledge at all: config, dates, errors, logger, signals, atomic-write |
+| `src/library.ts` | Which SIMKL lists are read and how a change is detected. Beside the orchestrator, which is the only thing that owns a library |
 | `src/api/` | Every HTTP client, and no domain rules. `backoff.ts`, `cdn.ts`, `simkl/`, `google/` |
 | `src/feed/` | iCal only |
 | `src/sheet/` | Google Sheet sync only |

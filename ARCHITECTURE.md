@@ -28,9 +28,12 @@ a convention, and what `/healthz` then simply reports.
 
 Layering, downward only:
 
-- `src/shared/` — used by both halves, with no feature knowledge: config, dates, errors, logger,
-  signals, atomic-write. Plus `library.ts`, the one piece of shared *domain* — SIMKL list
-  definitions, activity gating, and the eviction of membership a refetch superseded.
+- `src/shared/` — used by both halves, with no feature knowledge at all: config, dates, errors,
+  logger, signals, atomic-write. Nothing in here knows what a SIMKL list is.
+- `src/library.ts` — which lists are read, how a change is detected, and what a refetch supersedes.
+  Beside `orchestrator.ts` because the orchestrator is the only thing that owns a library; the two
+  halves are handed the value rather than importing this. The calls it describes live in
+  `api/simkl/lists.ts`, which is transport and nothing else.
 - `src/api/` — every HTTP client, and no domain rules. `backoff.ts` holds retry timing and the
   `HttpError` base, shared because `retryDelayMs` encodes two things that are easy to get subtly
   wrong (a blank `Retry-After` is not zero; the header may be an HTTP date) and a second copy means
