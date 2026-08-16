@@ -4,7 +4,7 @@ import { SheetSync, type SheetSyncStatus } from './sheet-sync.ts';
 import { readToken } from './simkl/auth.ts';
 import { SimklAuthError } from './simkl/client.ts';
 import { anyStale, fetchAllCalendars, payloads, type Calendars } from './sources/calendar.ts';
-import { fetchLists, getActivities, listSignatures, staleLists, LISTS } from './sources/library.ts';
+import { fetchLists, getActivities, listSignatures, pruneSuperseded, staleLists, LISTS } from './sources/library.ts';
 import { fetchMovieReleases, reconcileReleases } from './sources/movies.ts';
 import { join, idSet, type FeedEvent } from './join.ts';
 import { renderIcs } from './ics.ts';
@@ -310,7 +310,10 @@ export class FeedState {
         this.log.info(`refetching ${stale.length}/${LISTS.length} lists: ${stale.map((l) => l.key).join(', ')}`);
         const library: Library = this.library ?? {};
         Object.assign(library, await fetchLists(token, stale, { signal: this.aborter.signal }));
-        this.library = library;
+        // Which lists are fresh is known here and nowhere else, and it is the
+        // only thing that can tell a stale copy of a moved title from the
+        // current one — see pruneSuperseded.
+        this.library = pruneSuperseded(library, stale);
       }
 
       // Re-read when the film list changed, and otherwise once a day. Marking

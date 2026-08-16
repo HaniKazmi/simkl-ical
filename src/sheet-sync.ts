@@ -10,6 +10,7 @@
  * `errors.sheet` and `/healthz`.
  */
 
+import { backoffMs, sleep } from './backoff.ts';
 import { config } from './config.ts';
 import { errorMessage } from './errors.ts';
 import { parseGrid, type Grid } from './sheet/grid.ts';
@@ -112,8 +113,13 @@ export class SheetSync {
       // for another poll only arms the retry every two hours for a week. It
       // still lands in `errors.sheet` and `/healthz` on every run — "say it
       // once" here means stop the retry loop, not stop reporting.
-      const retry = !(err instanceof SheetsAccessError);
-      return this.record(idle({ status: 'failed', error: message, retry }));
+      //
+      // A 401 is not that, despite sharing the class: the transport clears the
+      // token cache on its way out, so the next poll signs a fresh assertion
+      // and recovers on its own. Without the retry it would not get one until
+      // some list happened to move.
+      const permanent = err instanceof SheetsAccessError && err.status !== 401;
+      return this.record(idle({ status: 'failed', error: message, retry: !permanent }));
     }
   }
 
@@ -283,7 +289,12 @@ export class SheetSync {
     // "never landed" would skip the rollback *and* discard the only snapshot.
     if (writeError && !verification.landed) {
       this.log.error(`sheet write failed and nothing changed: ${writeError}`);
-      await this.discardBackup(backupId, signal);
+      // Tidied only when the sheet's own shape agrees nothing happened.
+      // `landed` is answered from the planned writes, so a landed insert whose
+      // new row a concurrent edit disturbed in this same window reads as false,
+      // and the row count is the only independent witness to that. A leftover
+      // tab is swept by the next clean run; a discarded snapshot is gone.
+      if (after.rows.length === grid.snapshot.rows.length) await this.discardBackup(backupId, signal);
       return idle({ status: 'failed', lines, error: writeError, retry: true });
     }
 
@@ -328,23 +339,38 @@ export class SheetSync {
 
   /**
    * Move a frozen run's snapshot out of the swept namespace, and report what it
-   * ended up called.
+   * ended up called — the original name if it could not be moved.
    *
-   * Worth a second attempt, which no other write here gets: renaming a tab to a
-   * fixed title is idempotent — unlike `insertDimension`, a repeat is the same
-   * result — and this is the one moment the tab's survival is the difference
-   * between a copy-paste repair and version-history archaeology.
+   * The id is looked up again when the caller has none, because "no id" is not
+   * "no tab": the reply carrying it can be lost to a timeout on a batch that
+   * landed, and the listing that would have recovered it can fail on its own.
+   * Leaving the tab under the swept name in that case hands the user a repair
+   * target that the next clean run deletes.
+   *
+   * Worth retrying, which no other write here gets: renaming a tab to a fixed
+   * title is idempotent — unlike `insertDimension`, a repeat is the same result
+   * — and this is the one moment the tab's survival is the difference between a
+   * copy-paste repair and version-history archaeology.
    */
-  private async markForRepair(backupId: number, name: string, signal: AbortSignal | undefined): Promise<string> {
+  private async markForRepair(backupId: number | undefined, name: string, signal: AbortSignal | undefined): Promise<string> {
+    let id = backupId;
+    if (id === undefined) {
+      try {
+        id = (await listSheets({ signal })).find((s) => s.title === name)?.sheetId;
+      } catch (err) {
+        this.log.warn(`could not list the tabs to find the snapshot: ${errorMessage(err)}`);
+      }
+    }
+    if (id === undefined) return name;
+
     const title = repairName(name);
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
-        await applyRequests([renameSheetRequest(backupId, title)], { signal });
+        await applyRequests([renameSheetRequest(id, title)], { signal });
         return title;
       } catch (err) {
-        if (attempt === 2) {
-          this.log.warn(`could not rename the snapshot tab to "${title}" — copy it back before restarting: ${errorMessage(err)}`);
-        }
+        if (attempt < 2) await sleep(backoffMs(attempt));
+        else this.log.warn(`could not rename the snapshot tab to "${title}": ${errorMessage(err)}`);
       }
     }
     return name;
@@ -411,7 +437,12 @@ export class SheetSync {
       // a copy rather than an archaeology exercise in version history — and the
       // rename is what keeps a later clean run's sweep from taking it, since a
       // restart in between forgets that any of this happened.
-      const tab = backupId === undefined ? name : await this.markForRepair(backupId, name, signal);
+      const tab = await this.markForRepair(backupId, name, signal);
+      // Still in the swept namespace, so the safety the rename buys is not
+      // there and the user has to be told the deadline they are working to.
+      const urgency = isBackupTab(tab)
+        ? `It could not be renamed out of the way, so copy it back BEFORE restarting — a later clean run removes it. `
+        : '';
 
       // Nagging on every poll rather than scrolling away once: the repair is
       // manual, and the message carries what is needed to do it.
@@ -419,7 +450,7 @@ export class SheetSync {
         `FROZEN: the sheet write failed verification and the rollback did not complete (${errorMessage(err)}). ` +
         `No further writes this process. ` +
         `Look for a tab named "${tab}" — it holds the sheet exactly as it was before the write, so copy it back over ` +
-        `${grid.snapshot.title}, delete it, then restart. If it is not there, restore from Sheets version history instead. ` +
+        `${grid.snapshot.title}, delete it, then restart. ${urgency}If it is not there, restore from Sheets version history instead. ` +
         `Verify problems: ${detail}. Rows to delete: ${verification.deleteRows.map((r) => r + 1).join(', ') || 'none'}.`;
       this.log.error(this.frozen);
       return idle({ status: 'frozen', lines, error: this.frozen });

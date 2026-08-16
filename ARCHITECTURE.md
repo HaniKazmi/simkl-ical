@@ -73,6 +73,12 @@ read. `tsc` is a checker only. Consequences that bite:
   says which list is current; `idSet` and `indexLibrary` both defer to it. `completed` is
   deliberately left lingering: everything it contributes is already dated and ages out of the
   grace window on its own, and SIMKL marks an ongoing show completed the moment you catch up.
+- **`pruneSuperseded` runs where the answer exists.** Reading `status` is not enough on its own: a
+  *stale* `watching` copy saying `watching` beside a fresh `dropped` copy saying `dropped` is
+  identical, field for field, to a fresh `watching` copy beside a stale `dropped` one, so any rule
+  reading only the payloads gets one of the two moves backwards. Which list was just fetched is the
+  only thing that separates them, and it is known in `refreshLibraryIfChanged` and nowhere
+  downstream — so the eviction happens there, once, rather than as a guess in each consumer.
 - **Films do not come from the CDN calendar.** `movie_release.json` covers a rolling 33-day window
   with placeholder times, so films are resolved per title and re-read daily on their own clock —
   a studio delay produces no library activity to gate on.

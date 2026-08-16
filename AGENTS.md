@@ -57,7 +57,10 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
 - **A list is where an item was found; `item.status` is where it belongs.** SIMKL reports a move
   against the destination list only, and `listSignature` advances only for the destination, so the
   source list is never refetched and the item sits in both forever. Anything asking "is this still
-  being watched" must read `status` — `join`'s id sets and `indexLibrary`'s tie-break both do.
+  being watched" must read `status` — `join`'s id sets and `indexLibrary`'s tie-break both do. But
+  `status` alone cannot settle it: a stale copy of a dropped show and a fresh copy of an un-dropped
+  one are the same bytes. Only the poll knows which list it just fetched, so `pruneSuperseded`
+  evicts the stale membership there, at the one point the answer exists.
 - **Never write a formula cell, and never write a show row except `Status`.** Every derived cell on
   a show row rolls up from the season rows beneath it. Writing one replaces a live roll-up with a
   frozen number, and nothing would ever notice.
@@ -85,7 +88,7 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
 | `src/refresh.ts` | `FeedState` — the whole orchestration; the only thing that mutates |
 | `src/join.ts`, `src/ics.ts` | Pure: calendars + library + releases → events → ICS string |
 | `src/sources/` | One module per upstream (CDN calendars, OAuth library, film releases, show catalogue, the sheet) |
-| `src/simkl/` | SIMKL transport: error classification, device-flow auth, the per-title lookup pool, API types |
+| `src/simkl/` | SIMKL transport: error classification, device-flow auth, the per-title lookup pool, item field readers, API types |
 | `src/sheets/` | Google transport: service-account JWT, Sheets requests, API types |
 | `src/backoff.ts` | Retry timing and the `HttpError` base, shared by both transports |
 | `src/sheet/` | Pure: grid → blocks → plan → guard → requests → verify |

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { listSignature, listSignatures, staleLists, LISTS } from '../src/sources/library.ts';
+import { listSignature, listSignatures, pruneSuperseded, staleLists, LISTS } from '../src/sources/library.ts';
+import { itemSimklId } from '../src/simkl/item.ts';
 import type { Activities, ListDefinition } from '../src/simkl/types.ts';
 
 /** The fixture always populates every category, so tests can mutate them freely. */
@@ -149,4 +150,68 @@ test('a missing category degrades to an empty signature rather than throwing', (
 test('an absent activities payload makes every list stale, not none', () => {
   // The safe direction: knowing nothing must mean "refetch", never "skip".
   assert.equal(staleLists(null, listSignatures(activities())).length, LISTS.length);
+});
+
+// --- superseded membership -------------------------------------------------
+//
+// A move is reported only against the destination, so the source list keeps its
+// copy — carrying the status it held at the time. That is indistinguishable
+// from the opposite move by anything in the payloads: a stale `watching` copy
+// saying `watching` beside a fresh `dropped` copy saying `dropped` is identical,
+// field for field, to a fresh `watching` copy beside a stale `dropped` one.
+// Which list was just fetched is the only thing that separates them.
+
+const item = (id: number, status: string) => ({ show: { title: `Show ${id}`, ids: { simkl: id } }, status });
+const listNamed = (key: string): ListDefinition => LISTS.find((l) => l.key === key)!;
+
+test('a title claimed by a freshly fetched list is dropped from the stale one', () => {
+  const library = {
+    shows_watching: { shows: [item(1, 'watching'), item(2, 'watching')] },
+    shows_dropped: { shows: [item(1, 'dropped')] },
+  };
+  const pruned = pruneSuperseded(library, [listNamed('shows_dropped')]);
+
+  assert.deepEqual(pruned.shows_watching?.shows?.map(itemSimklId), [2], 'the moved title goes');
+  assert.deepEqual(pruned.shows_dropped?.shows?.map(itemSimklId), [1], 'the claimant keeps it');
+  assert.equal(library.shows_watching.shows.length, 2, 'the input is not mutated');
+});
+
+// The same shape, opposite direction. A payload-only rule gets one of the two
+// backwards; this one reads the refetch instead, so both come out right.
+test('un-dropping is the mirror image, not a special case', () => {
+  const library = {
+    shows_watching: { shows: [item(1, 'watching')] },
+    shows_dropped: { shows: [item(1, 'dropped')] },
+  };
+  const pruned = pruneSuperseded(library, [listNamed('shows_watching')]);
+
+  assert.deepEqual(pruned.shows_dropped?.shows ?? [], []);
+  assert.deepEqual(pruned.shows_watching?.shows?.map(itemSimklId), [1]);
+});
+
+// Only a claim removes anything. A fresh list holding an item whose own status
+// names somewhere else is SIMKL not having evicted it yet — and dropping it on
+// that basis alone would delete the item from the library outright whenever the
+// list it belongs to was not part of this poll. "Absent from every list" means
+// *no information* to everything downstream, which is strictly worse than a
+// membership the status already contradicts.
+test('a fresh list holding an item whose status names another list removes nothing', () => {
+  const library = {
+    shows_watching: { shows: [item(1, 'dropped')] },
+    shows_dropped: { shows: [item(1, 'dropped')] },
+  };
+  const pruned = pruneSuperseded(library, [listNamed('shows_watching')]);
+  assert.deepEqual(pruned.shows_dropped?.shows?.map(itemSimklId), [1]);
+  assert.deepEqual(pruned.shows_watching?.shows?.map(itemSimklId), [1]);
+});
+
+test('pruning is scoped to one type, and leaves an untouched library alone', () => {
+  const library = {
+    shows_watching: { shows: [item(1, 'watching')] },
+    anime_watching: { anime: [item(1, 'watching')] },
+  };
+  assert.equal(pruneSuperseded(library, []), library, 'no refetch, no copy');
+
+  const pruned = pruneSuperseded(library, [listNamed('shows_watching')]);
+  assert.deepEqual(pruned.anime_watching?.anime?.map(itemSimklId), [1], 'a different type is never touched');
 });

@@ -44,6 +44,10 @@ interface ServerOptions {
   /** Fail the nth batchUpdate (1-based). */
   failWrite?: number;
   failRollback?: boolean;
+  /** Drop `replies` from the write's response, the way a timeout loses them. */
+  hideReplies?: boolean;
+  /** Fail the first N tab-listing *attempts*. A listing retries four times. */
+  failTabLists?: number;
 }
 
 /**
@@ -51,12 +55,13 @@ interface ServerOptions {
  * target into a new one first. Modelling only Sheet1 would let a duplicateSheet
  * or copyPaste silently no-op and every rollback assertion below pass vacuously.
  */
-const server = ({ meddle, failWrite, failRollback, episodes = EPISODES, grid = GRID }: ServerOptions & { episodes?: unknown; grid?: CellSpec[][] } = {}) => {
+const server = ({ meddle, failWrite, failRollback, hideReplies, failTabLists, episodes = EPISODES, grid = GRID }: ServerOptions & { episodes?: unknown; grid?: CellSpec[][] } = {}) => {
   const tabs = new Map<number, CellData[][]>([[1, grid.map((row) => row.map(cellOf))]]);
   const titles = new Map<number, string>([[1, 'Sheet1']]);
   const state = tabs.get(1)!;
   let nextSheetId = 2;
   let writes = 0;
+  let tabLists = 0;
   const batches: string[][] = [];
 
   const clone = (rows: CellData[][]): CellData[][] => rows.map((row) => row.map((cell) => structuredClone(cell)));
@@ -121,13 +126,15 @@ const server = ({ meddle, failWrite, failRollback, episodes = EPISODES, grid = G
       }
       const replies = requests.map(apply);
       if (!isRollback) meddle?.(state);
-      return jsonResponse({ replies });
+      return jsonResponse(hideReplies && !isRollback ? {} : { replies });
     }
 
     if (url.includes('sheets.googleapis.com')) {
       // The metadata-only read that finds backup tabs. Both reads carry a field
       // mask now; only the grid read names a range.
       if (!url.includes('ranges=')) {
+        tabLists += 1;
+        if (failTabLists !== undefined && tabLists <= failTabLists) return new Response('{"error":{"message":"boom"}}', { status: 500 });
         return jsonResponse({ sheets: [...titles].map(([sheetId, title]) => ({ properties: { sheetId, title } })) });
       }
       const rows = tabs.get(1) ?? [];
@@ -312,6 +319,23 @@ test('run never rejects, however the sheet misbehaves', async () => {
   );
 });
 
+// The same class, the opposite conclusion: the transport clears the token cache
+// on its way out of a 401, so the next poll signs a fresh assertion and recovers
+// by itself — but only if it is asked for one.
+test('a 401 asks for another poll, unlike the access errors it shares a class with', async () => {
+  await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL }, () =>
+    withFetch(
+      (url) => (url.startsWith('https://oauth2.googleapis.com/token') ? jsonResponse({ access_token: 't', expires_in: 3600 }) : new Response('nope', { status: 401 })),
+      async () => {
+        clearTokenCache();
+        const result = await new SheetSync({ logger: quiet }).run(LIBRARY);
+        assert.equal(result.status, 'failed');
+        assert.equal(result.retry, true);
+      },
+    ),
+  );
+});
+
 // --- catalogue gating ------------------------------------------------------
 
 const catalogueCalls = (calls: string[]) => calls.filter((c) => /api\.simkl\.com\/(tv|anime)\//.test(c));
@@ -431,6 +455,42 @@ test('a failed rollback keeps the backup tab, renames it for repair, and names i
       assert.deepEqual(titles.filter((t) => t.startsWith('_sync-backup-')), [], 'and is out of the swept namespace');
       assert.ok(result.error?.includes(repair), 'and the frozen message names it by its new name');
       assert.match(result.error ?? '', /copy it back over Sheet1/);
+    }),
+  );
+});
+
+// "No id" is not "no tab". A timeout loses the reply that carries the new
+// sheetId, and the listing that would recover it can fail on its own — while
+// the duplicate, riding the same atomic batch, is sitting right there. Leaving
+// it under the swept name hands the user a repair target the next clean run
+// deletes.
+test('a snapshot whose id was lost is still found and renamed', async () => {
+  clearTokenCache();
+  const sheet = server({ meddle: (state) => void (state[2]![3] = cellOf(99)), hideReplies: true, failTabLists: 4 });
+  await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL }, () =>
+    withFetch(sheet.handler, async () => {
+      const result = await new SheetSync({ logger: quiet }).run(LIBRARY);
+      assert.equal(result.status, 'frozen', 'no id at rollback time means it cannot restore');
+      const repair = [...sheet.titles.values()].find((t) => t.startsWith('_sync-REPAIR-'));
+      assert.ok(repair, 'but the tab is found on the way into the freeze, and renamed');
+      assert.ok(result.error?.includes(repair));
+      assert.doesNotMatch(result.error ?? '', /BEFORE restarting/, 'so there is no deadline to warn about');
+    }),
+  );
+});
+
+// And when even that cannot be done, the message has to carry the deadline the
+// user is working to rather than implying the tab will keep.
+test('a snapshot that could not be renamed says so, and says to hurry', async () => {
+  clearTokenCache();
+  const sheet = server({ meddle: (state) => void (state[2]![3] = cellOf(99)), hideReplies: true, failTabLists: 8 });
+  await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL }, () =>
+    withFetch(sheet.handler, async () => {
+      const result = await new SheetSync({ logger: quiet }).run(LIBRARY);
+      assert.equal(result.status, 'frozen');
+      const backup = [...sheet.titles.values()].find((t) => t.startsWith('_sync-backup-'));
+      assert.ok(backup, 'the tab survives under its original name');
+      assert.match(result.error ?? '', /BEFORE restarting/);
     }),
   );
 });

@@ -287,6 +287,34 @@ test('a revoked token during film lookups is reported as AUTH', async () => {
   });
 });
 
+// Dropping a show bumps only the destination list's timestamp, so `watching` is
+// never refetched and keeps its pre-move copy — status and all. Nothing in the
+// payloads separates that from an un-drop, so the poll has to resolve it while
+// it still knows which list it just fetched.
+test('a title claimed by a refetched list is evicted from the stale one it left', async () => {
+  await withToken(async (state) => {
+    await prime(state);
+    assert.equal(state.library?.shows_watching?.shows?.length, 1, 'the baseline has it in watching');
+
+    const moved = activities({ tv_shows: { dropped: '2026-08-16T00:00:00Z' } });
+    const dropped = { shows: [{ show: { title: 'A Show', ids: { simkl: 100 } }, status: 'dropped' }] };
+    await withFetch(
+      (url) => {
+        if (url.includes('/sync/activities')) return jsonResponse(moved);
+        if (url.includes('/all-items/shows/dropped')) return jsonResponse(dropped);
+        throw new Error(`unexpected request: ${url}`);
+      },
+      async (calls) => {
+        await state.refreshLibraryIfChanged();
+        assert.deepEqual(lists(calls), ['shows/dropped'], 'only the destination is refetched');
+      },
+    );
+
+    assert.deepEqual(state.library?.shows_watching?.shows, [], 'the stale membership goes');
+    assert.equal(state.library?.shows_dropped?.shows?.length, 1, 'and the fresh one stands');
+  });
+});
+
 // --- the sheet sync -------------------------------------------------------
 //
 // The sheet is a second consumer of the same poll. Everything here is about it

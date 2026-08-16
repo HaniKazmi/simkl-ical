@@ -1,8 +1,10 @@
 import { apiGet } from '../simkl/client.ts';
+import { itemSimklId, itemStatus } from '../simkl/item.ts';
 import type {
   Activities,
   CategoryActivity,
   Library,
+  LibraryItem,
   ListDefinition,
   ListResponse,
   SyncStatus,
@@ -98,6 +100,67 @@ const fetchList = (
     params: { extended: 'full', episode_watched_at: 'yes', include_all_episodes: 'yes' },
     signal,
   });
+
+/**
+ * Drop list membership that this poll's refetch has superseded.
+ *
+ * A move is reported only against the destination, so the list an item left is
+ * never refetched and keeps its copy indefinitely — carrying the status it held
+ * at the time. Nothing in the two payloads separates that from the opposite
+ * move: a stale `watching` copy saying `watching` beside a fresh `dropped` copy
+ * saying `dropped` is identical, field for field, to a fresh `watching` copy
+ * beside a stale `dropped` one. Any rule reading only the payloads gets one of
+ * the two backwards.
+ *
+ * Which list was just fetched is the only thing that tells them apart, and it
+ * is known here and nowhere downstream. So: an item that arrives in the list
+ * its own `status` names is current there, and every other list of the same
+ * type is out of date about it.
+ */
+export const pruneSuperseded = (library: Library, refreshed: ListDefinition[]): Library => {
+  const owner = new Map<number, ListDefinition>();
+  for (const list of refreshed) {
+    for (const item of itemsOf(library[list.key])) {
+      if (itemStatus(item) !== list.status) continue;
+      const id = itemSimklId(item);
+      if (id !== null) owner.set(id, list);
+    }
+  }
+  if (!owner.size) return library;
+
+  const pruned: Library = { ...library };
+  for (const list of LISTS) {
+    const superseded = (item: LibraryItem): boolean => {
+      const id = itemSimklId(item);
+      if (id === null) return false;
+      const claimant = owner.get(id);
+      return claimant !== undefined && claimant.type === list.type && claimant.key !== list.key;
+    };
+    const next = without(library[list.key], superseded);
+    if (next) pruned[list.key] = next;
+  }
+  return pruned;
+};
+
+const itemsOf = (response: ListResponse | undefined): LibraryItem[] => [
+  ...(response?.shows ?? []),
+  ...(response?.anime ?? []),
+  ...(response?.movies ?? []),
+];
+
+/** A copy without the matching items, or undefined when nothing matched. */
+const without = (response: ListResponse | undefined, drop: (item: LibraryItem) => boolean): ListResponse | undefined => {
+  if (!response) return undefined;
+  let changed = false;
+  const keep = (items: LibraryItem[] | undefined): LibraryItem[] | undefined => {
+    if (!items) return items;
+    const kept = items.filter((item) => !drop(item));
+    if (kept.length !== items.length) changed = true;
+    return kept;
+  };
+  const next: ListResponse = { ...response, shows: keep(response.shows), anime: keep(response.anime), movies: keep(response.movies) };
+  return changed ? next : undefined;
+};
 
 /**
  * Sequential on purpose: the SIMKL docs warn against parallelising uncached

@@ -1,5 +1,6 @@
 import { config } from './config.ts';
 import { localDate, releaseDate, shiftDate } from './dates.ts';
+import { itemSimklId, itemStatus } from './simkl/item.ts';
 import type {
   CalendarEntry,
   FinaleType,
@@ -19,14 +20,7 @@ export const extractItems = (response: ListResponse | LibraryItem[] | null | und
   return response.shows ?? response.anime ?? response.movies ?? [];
 };
 
-/**
- * The library calls this field `ids.simkl`; the calendar calls it `simkl_id`.
- * Bridging the two names is the whole join.
- */
-export const itemSimklId = (item: LibraryItem | null | undefined): number | null => {
-  const ids = item?.show?.ids ?? item?.movie?.ids;
-  return ids?.simkl ?? ids?.simkl_id ?? null;
-};
+export { itemSimklId };
 
 /**
  * Statuses that mean an item is only *still* in the list it was fetched from
@@ -50,9 +44,9 @@ export const idSet = (...responses: Array<ListResponse | LibraryItem[] | null | 
   const set = new Set<number>();
   for (const response of responses) {
     for (const item of extractItems(response)) {
-      if (MOVED_ON.has(item.status?.trim().toLowerCase() ?? '')) continue;
+      if (MOVED_ON.has(itemStatus(item) ?? '')) continue;
       const id = itemSimklId(item);
-      if (id != null) set.add(Number(id));
+      if (id !== null) set.add(id);
     }
   }
   return set;

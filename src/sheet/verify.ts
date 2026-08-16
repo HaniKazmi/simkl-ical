@@ -70,6 +70,12 @@ const editLanded = (after: SheetSnapshot, edit: CellEdit, insertRows: number[]):
  * index it was given, so anything short of a full match at that index is a
  * pre-existing row — and the whole reason for asking is that the answer decides
  * what a rollback deletes.
+ *
+ * Strict on purpose, with a known cost: a concurrent edit to one cell of the
+ * brand-new row leaves the insert unrecognised, so the rollback deletes nothing,
+ * the paste cannot shrink the grid, and the run freezes with the row still
+ * there. That is the safe direction. Loosening it to a partial match trades a
+ * rare manual repair for a rarer deletion of a row nobody created.
  */
 const insertLanded = (after: SheetSnapshot, insert: RowInsert): boolean =>
   insert.fill.length > 0 && insert.fill.every((cell) => sameValue(entered(after, insert.row, cell.column), cell.value));

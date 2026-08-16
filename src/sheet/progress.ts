@@ -13,6 +13,7 @@
  */
 
 import { localDate, MS_PER_DAY } from '../dates.ts';
+import { itemSimklId, itemStatus } from '../simkl/item.ts';
 import type { EpisodeDetail, Library, LibraryItem, ListKey } from '../simkl/types.ts';
 
 // --- Timestamps ------------------------------------------------------------
@@ -82,12 +83,6 @@ export interface TitleProgress {
   seasons: Map<number, SeasonProgress>;
 }
 
-const idOf = (item: LibraryItem): number | null => {
-  const ids = item.show?.ids ?? item.movie?.ids;
-  const id = ids?.simkl ?? ids?.simkl_id;
-  return typeof id === 'number' && Number.isInteger(id) ? id : null;
-};
-
 /**
  * Watched episodes per numbered season, with their first and last timestamps.
  *
@@ -140,11 +135,11 @@ export const indexLibrary = (library: Library | null | undefined): Map<number, T
     const listStatus = key.slice(key.indexOf('_') + 1);
 
     for (const item of [...(list?.shows ?? []), ...(list?.anime ?? [])]) {
-      const id = idOf(item);
+      const id = itemSimklId(item);
       if (id === null) continue;
 
       const lastWatchedAt = normaliseInstant(item.last_watched_at);
-      const status = item.status?.trim().toLowerCase() ?? null;
+      const status = itemStatus(item);
       const at = lastWatchedAt ?? '';
       const authoritative = status === listStatus;
 
