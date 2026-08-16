@@ -13,7 +13,7 @@
 
 import { config } from '../shared/config.ts';
 import { MS_PER_DAY } from '../shared/dates.ts';
-import { a1, columnLetter, duplicateIds, idsFor, type ColumnMap, type Grid, type HeaderName, type SeasonRow, type ShowBlock } from './2-grid.ts';
+import { a1, columnLetter, duplicateIds, idsFor, isBlank, numberOf, type ColumnMap, type Grid, type HeaderName, type SeasonRow, type ShowBlock } from './2-grid.ts';
 import { courComplete, runtimeDays, seasonComplete, watchSerial, type SeasonShape, type TitleProgress } from './1-progress.ts';
 import type { CatalogueRequest } from './io/catalogue.ts';
 import type { CellData, ExtendedValue } from '../api/google/types.ts';
@@ -385,6 +385,17 @@ export const planSync = (
       if (!within(resolved.lastWatchedAt, cutoffMs)) continue;
 
       const label = `${block.title} S${season.season ?? '?'}`;
+      // A hand-typed count — "12 (rewatch)", "~8" — parses to null, so the
+      // comparison below would read it as 0 and plan an edit the guard refuses
+      // unconditionally. Refusal is whole-plan, so one such cell would stop
+      // every unrelated edit in the run for as long as the row stays inside the
+      // activity window. Skipped here so the guard stays the backstop rather
+      // than the gate, and the reason names the row instead of the planner.
+      const existing = cellAt(grid, season.row, grid.columns.Episode);
+      if (!isBlank(existing) && numberOf(existing) === null) {
+        plan.skipped.push(`${label}: the Episode cell holds something that is not a number, so the row is left alone`);
+        continue;
+      }
       if (resolved.watched > (season.episode ?? 0)) {
         plan.edits.push(edit(grid, season.row, 'Episode', num(resolved.watched), `${label}: ${season.episode ?? 0} -> ${resolved.watched} episodes`));
       }

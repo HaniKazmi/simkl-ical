@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { assertPlanSafe } from '../../src/sheet/4-guard.ts';
 import { parseGrid } from '../../src/sheet/2-grid.ts';
 import { deriveStatus, needsLookup, planLookups, planRecord, planSync, statusSource, type CatalogueView, type SheetPlan, type TitleCatalogue } from '../../src/sheet/3-plan.ts';
 import { dateSerial, indexLibrary, seasonShapes } from '../../src/sheet/1-progress.ts';
@@ -601,4 +602,59 @@ test('planRecord carries no skip or note lines', () => {
   assert.deepEqual(record, { edits: [], inserts: [] });
   assert.ok(!JSON.stringify(record).includes('a skip'));
   assert.ok(!JSON.stringify(record).includes('a note'));
+});
+
+// --- rows the planner declines rather than handing to the guard -------------
+//
+// `assertPlanSafe` refuses a whole plan, by design. So anything the planner can
+// see will be refused has to be declined here instead, or one hand-annotated
+// cell stops every unrelated edit in the run for as long as that row stays
+// inside the activity window.
+
+test('a season whose Episode cell holds text is skipped, not planned', () => {
+  const { plan } = scenario({
+    rows: [
+      show('Fargo', 'Watching', 100),
+      // A count the user annotated by hand: it carries a stringValue, so it
+      // parses to no number at all.
+      [null, null, 1, '12 (rewatch)', 44000, null, 0.0153, { formula: '=G3*D3' }, null, null],
+    ],
+    items: [{ id: 100, status: 'watching', seasons: { 1: watched(14) }, watched: 14, total: 14 }],
+    episodes: { 100: eps(1, 14) },
+  });
+  const result = plan();
+
+  assert.deepEqual(
+    result.edits.filter((e) => e.field === 'Episode'),
+    [],
+    'no Episode edit, so the guard is never asked to refuse the run',
+  );
+  assert.ok(
+    result.skipped.some((line) => /not a number/.test(line)),
+    `the row should be skipped with a reason, got ${JSON.stringify(result.skipped)}`,
+  );
+});
+
+// The point of the skip: the rest of the run still happens.
+test('one unusable Episode cell does not stop the other rows', () => {
+  const { grid, index, catalogue } = scenario({
+    rows: [
+      show('Fargo', 'Watching', 100),
+      [null, null, 1, '12 (rewatch)', 44000, null, 0.0153, { formula: '=G3*D3' }, null, null],
+      show('Veep', 'Watching', 200),
+      season(1, 2, null),
+    ],
+    items: [
+      { id: 100, status: 'watching', seasons: { 1: watched(14) }, watched: 14, total: 14 },
+      { id: 200, status: 'watching', seasons: { 1: watched(5) }, watched: 5, total: 10 },
+    ],
+    episodes: { 100: eps(1, 14), 200: eps(1, 10) },
+  });
+  const result = planSync(grid, index, catalogue, { timezone: TZ });
+
+  const episodeEdits = result.edits.filter((e) => e.field === 'Episode');
+  assert.equal(episodeEdits.length, 1, 'the healthy row is still planned');
+  assert.equal(episodeEdits[0]?.row, 4, 'and it is the healthy one');
+  // The whole point: this plan passes the guard rather than being refused.
+  assert.doesNotThrow(() => assertPlanSafe(result, grid));
 });
