@@ -35,11 +35,13 @@ const wired = (): Orchestrator => {
   return state;
 };
 
-test('the counts the library holds reach the page', async () => {
+test('the counts the library holds reach the page, totalled by type', async () => {
   await withConfig({ timezone: 'Europe/London' }, () => {
     const page = renderStatus(wired(), { now: Date.now() });
-    assert.match(page, /shows\/watching/);
-    assert.match(page, /shows\/dropped/);
+    // Two shows in the fixture, one watching and one dropped — one total, not
+    // a row per status.
+    assert.match(page, /shows<\/b> 2/);
+    assert.match(page, /anime<\/b> 0/);
   });
 });
 

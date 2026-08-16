@@ -13,6 +13,7 @@
  */
 
 import { config } from '../shared/config.ts';
+import { recentRequests } from '../api/requests.ts';
 import { libraryCounts } from '../library.ts';
 import { sheetRuns } from '../sheet/io/journal.ts';
 import type { Orchestrator } from '../orchestrator.ts';
@@ -37,6 +38,7 @@ export const renderStatus = (state: Orchestrator, { now = Date.now() }: { now?: 
       libraryError: state.errors.library,
       counts: libraryCounts(state.library),
       gate: state.lastGate,
+      movement: state.lastMovement,
       activitiesPollMs: config.activitiesPollMs,
 
       events: feed.events.length,
@@ -67,6 +69,7 @@ export const renderStatus = (state: Orchestrator, { now = Date.now() }: { now?: 
       sheetFrozen: sheetSync?.frozen ?? null,
       sheetError: state.errors.sheet,
       runs: sheetRuns(),
+      requests: recentRequests(),
     }),
   );
 };

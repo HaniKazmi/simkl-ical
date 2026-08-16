@@ -20,7 +20,13 @@ test('the cold state models without throwing', () => {
   assert.equal(model.uptime, null);
   assert.equal(model.library.polled.label, 'never');
   assert.equal(model.library.total, 0);
-  assert.deepEqual(model.library.counts, []);
+  // The three type rows are a fixed shape, so a cold page has the same
+  // skeleton as a warm one rather than a gap where the totals go.
+  assert.deepEqual(model.library.counts, [
+    { key: 'shows', count: 0 },
+    { key: 'anime', count: 0 },
+    { key: 'films', count: 0 },
+  ]);
   assert.equal(model.feed.rendered.label, 'never');
   assert.deepEqual(model.sheet.runs, []);
   assert.ok(!JSON.stringify(model).includes('NaN'));
@@ -48,15 +54,30 @@ test('something that has never run is due now, not overdue', () => {
 
 const GATE = { pull: 'delta' as const, updated: 1, removed: 0 };
 
-test('count rows carry a share of the largest', () => {
+// Fourteen per-status rows that move twice a week, eleven of them usually the
+// same number, is not what the section is for. Three totals answer the question
+// it is for — is the library the size I expect.
+test('the counts collapse to one total per type', () => {
   const model = buildModel(
-    input({ counts: { 'shows/watching': 47, 'shows/completed': 412, 'shows/dropped': 0 }, gate: GATE }),
+    input({
+      counts: { 'shows/watching': 47, 'shows/completed': 412, 'anime/completed': 200, 'movies/plantowatch': 11, other: 0 },
+      gate: GATE,
+    }),
   );
 
-  assert.equal(model.library.total, 459);
-  assert.deepEqual(model.library.counts.map((c) => c.key), ['shows/watching', 'shows/completed', 'shows/dropped']);
-  assert.equal(model.library.counts[1]?.share, 1, 'the largest fills the bar');
-  assert.ok(Math.abs((model.library.counts[0]?.share ?? 0) - 47 / 412) < 1e-9);
+  assert.equal(model.library.total, 670);
+  assert.deepEqual(model.library.counts, [
+    { key: 'shows', count: 459 },
+    { key: 'anime', count: 200 },
+    { key: 'films', count: 11 },
+  ]);
+});
+
+// `other` exists to keep the rows summing to the total, not to be read — so it
+// shows up only when SIMKL has sent a status nothing here knows about.
+test('an unrecognised status appears only when it is not zero', () => {
+  const model = buildModel(input({ counts: { 'shows/watching': 3, other: 2 }, gate: GATE }));
+  assert.deepEqual(model.library.counts.at(-1), { key: 'other', count: 2 });
 });
 
 // Before the first poll nothing is known, which is a different claim from
@@ -106,4 +127,86 @@ test('runs are newest first for reading, though the journal appends oldest first
 test('the freeze message is carried whole', () => {
   const message = 'FROZEN: copy _sync-repair-1 back over Sheet1 and delete rows 610-611';
   assert.equal(buildModel(input({ sheetFrozen: message })).sheet.frozen, message);
+});
+
+// --- how the library moved -------------------------------------------------
+//
+// The two halves answer different questions, and the commonest poll there is
+// makes them disagree: watching an episode updates records and moves no counts
+// at all. That is `updated` versus `reshaped`, which the render gate keys on,
+// finally visible to a reader.
+
+const moved = (over: Partial<NonNullable<Parameters<typeof buildModel>[0]['movement']>> = {}) => ({
+  at: before(2 * MINUTE),
+  deltas: {},
+  updated: 0,
+  removed: 0,
+  ...over,
+});
+
+test('watching episodes reports work done and no movement between statuses', () => {
+  const model = buildModel(input({ movement: moved({ updated: 14 }) }));
+  assert.deepEqual(model.library.movement?.deltas, [], 'no count moved, because progress is not membership');
+  assert.match(model.library.movement?.summary ?? '', /14 records updated/);
+  assert.match(model.library.movement?.summary ?? '', /nothing moved between statuses/);
+});
+
+test('a status move reports the pair of counts shifting', () => {
+  const model = buildModel(input({ movement: moved({ updated: 1, deltas: { 'shows/watching': -1, 'shows/completed': 1 } }) }));
+  assert.deepEqual(model.library.movement?.deltas, ['shows/watching \u22121', 'shows/completed +1']);
+});
+
+test('a removal reports its count falling', () => {
+  const model = buildModel(input({ movement: moved({ updated: 0, removed: 1, deltas: { 'movies/plantowatch': -1 } }) }));
+  assert.deepEqual(model.library.movement?.deltas, ['movies/plantowatch \u22121']);
+  assert.match(model.library.movement?.summary ?? '', /1 removed/);
+});
+
+// A count that did not move is not news, and a line listing fourteen zeroes
+// would bury the one that did.
+test('counts that did not move are not listed', () => {
+  const model = buildModel(input({ movement: moved({ updated: 3, deltas: { 'shows/watching': 0, 'anime/completed': 2 } }) }));
+  assert.deepEqual(model.library.movement?.deltas, ['anime/completed +2']);
+});
+
+// Before the first pull there is nothing to report, which is not the same as
+// reporting that nothing moved.
+test('a library that has never moved says so rather than showing an empty change', () => {
+  assert.equal(buildModel(input({ movement: null })).library.movement, null);
+});
+
+// --- the request log -------------------------------------------------------
+
+const request = (over: Partial<Parameters<typeof buildModel>[0]['requests'][number]> = {}) => ({
+  at: before(2 * MINUTE),
+  service: 'simkl' as const,
+  method: 'GET',
+  path: '/sync/activities',
+  status: 200,
+  ms: 120,
+  bytes: 1100,
+  attempts: 1,
+  error: null,
+  ...over,
+});
+
+test('a size reads at a glance rather than in bytes', () => {
+  const model = buildModel(input({ requests: [request({ bytes: 900 }), request({ bytes: 21_504 }), request({ bytes: 2_516_582 })] }));
+  assert.deepEqual(
+    model.requests.map((r) => r.size),
+    ['900B', '21K', '2.4M'],
+  );
+});
+
+// A 304 is the healthy outcome of a conditional GET, and the absence of a body
+// is the whole point of it.
+test('a response carrying no body shows a dash, not a zero', () => {
+  const model = buildModel(input({ requests: [request({ status: 304, bytes: null })] }));
+  assert.equal(model.requests[0]?.size, '\u2014');
+});
+
+test('a request keeps its instant for a machine and its age for a reader', () => {
+  const model = buildModel(input({ requests: [request()] }));
+  assert.match(model.requests[0]?.at.label ?? '', /ago$/);
+  assert.equal(model.requests[0]?.at.iso, before(2 * MINUTE));
 });

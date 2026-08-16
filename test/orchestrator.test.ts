@@ -763,3 +763,62 @@ test('a failed poll leaves the previous gate standing', async () => {
     assert.ok(state.errors.library, 'and the failure is reported');
   });
 });
+
+// --- what the status page is told about movement ---------------------------
+
+// The commonest poll there is. It updates a record and moves no count, and the
+// page has to be able to say so — that distinction is the one the render gate
+// keys on, and until now it existed only inside the poll.
+test('watching an episode reports records updated and no count movement', async () => {
+  await withToken(async (state) => {
+    await prime(state);
+
+    const moved = activities({ tv_shows: { watching: '2026-08-15T18:00:00Z' } }, '2026-08-15T18:00:00Z');
+    const progressed = {
+      shows: [{ show: { title: 'A Show', ids: { simkl: 100 } }, status: 'watching', watched_episodes_count: 4 }],
+    };
+    await withFetch(api(moved, { body: progressed }), () => state.refreshLibraryIfChanged());
+
+    assert.deepEqual(state.lastMovement?.deltas, {}, 'nothing changed status');
+    assert.equal(state.lastMovement?.updated, 1, 'but a record did arrive');
+  });
+});
+
+test('a show moving status reports the pair of counts shifting', async () => {
+  await withToken(async (state) => {
+    await prime(state);
+
+    const moved = activities({ tv_shows: { completed: '2026-08-15T18:00:00Z' } }, '2026-08-15T18:00:00Z');
+    const finished = { shows: [{ show: { title: 'A Show', ids: { simkl: 100 } }, status: 'completed' }] };
+    await withFetch(api(moved, { body: finished }), () => state.refreshLibraryIfChanged());
+
+    assert.deepEqual(state.lastMovement?.deltas, { 'shows/watching': -1, 'shows/completed': 1 });
+  });
+});
+
+// A page that blanks every half hour tells a reader less than one still showing
+// the last thing that happened.
+test('a quiet poll leaves the previous movement standing', async () => {
+  await withToken(async (state) => {
+    await prime(state);
+    const moved = activities({ tv_shows: { completed: '2026-08-15T18:00:00Z' } }, '2026-08-15T18:00:00Z');
+    await withFetch(api(moved, { body: { shows: [{ show: { title: 'A Show', ids: { simkl: 100 } }, status: 'completed' }] } }), () =>
+      state.refreshLibraryIfChanged(),
+    );
+    const after = state.lastMovement;
+    assert.ok(after);
+
+    await withFetch(api(moved), () => state.refreshLibraryIfChanged());
+    assert.equal(state.lastMovement, after, 'the same record, not a blank one');
+  });
+});
+
+// A cold start loaded the library rather than moving it, and reporting 741
+// counts arriving from zero is true while saying nothing about movement.
+test('a first load reports its size but not as movement', async () => {
+  await withToken(async (state) => {
+    await withFetch(api(activities()), () => state.refreshLibraryIfChanged());
+    assert.deepEqual(state.lastMovement?.deltas, {}, 'nothing moved; it arrived');
+    assert.equal(state.lastMovement?.updated, 2, 'and the size is still reported');
+  });
+});

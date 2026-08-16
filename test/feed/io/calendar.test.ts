@@ -10,6 +10,7 @@ import {
 } from '../../../src/feed/io/calendar.ts';
 import { cachedKeys, clearCache } from '../../../src/api/cdn.ts';
 import type { CalendarFile } from '../../../src/api/simkl/types.ts';
+import { clearRequests, recentRequests } from '../../../src/api/requests.ts';
 import { calendarFile, jsonResponse, withFetch } from '../../helpers.ts';
 
 test('archive URLs use an unpadded month', () => {
@@ -294,4 +295,49 @@ test('a cache served after a failure is neither fresh nor a 304', async () => {
       assert.equal(fallback.source, 'cache');
     },
   );
+});
+
+// --- what the status page is shown -----------------------------------------
+
+// The 304 row is the one that proves the conditional GET is doing its job: the
+// CDN answered, and there was nothing to download.
+test('a 304 is recorded as an answer carrying no body', async () => {
+  clearCache();
+  clearRequests();
+  let calls = 0;
+  await withFetch(
+    () => (++calls === 1 ? jsonResponse(GOOD, { lastModified: 'Sat, 01 Aug 2026 00:00:00 GMT' }) : new Response(null, { status: 304 })),
+    async () => {
+      await fetchRolling('tv');
+      await fetchRolling('tv');
+    },
+  );
+
+  const log = recentRequests();
+  assert.equal(log.length, 2);
+  assert.equal(log[0]?.status, 304);
+  assert.equal(log[0]?.bytes, null, 'nothing came down, and the row says so');
+  assert.equal(log[1]?.status, 200);
+  assert.ok((log[1]?.bytes ?? 0) > 0, 'the first fetch did download a body');
+  assert.equal(log[0]?.service, 'cdn');
+});
+
+// Serving a stale cache is a success to the caller and a failure upstream. The
+// row is the only place that distinction survives.
+test('a CDN failure served from cache is still recorded as a failure', async () => {
+  clearCache();
+  clearRequests();
+  let calls = 0;
+  await withFetch(
+    () => (++calls === 1 ? jsonResponse(GOOD) : new Response('nope', { status: 503 })),
+    async () => {
+      await fetchRolling('tv');
+      const stale = await fetchRolling('tv');
+      assert.equal(stale.source, 'cache', 'the caller still got data');
+    },
+  );
+
+  const log = recentRequests();
+  assert.equal(log[0]?.status, 503);
+  assert.match(log[0]?.error ?? '', /503/);
 });

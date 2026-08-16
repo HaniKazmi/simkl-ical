@@ -11,6 +11,7 @@
  */
 
 import { config } from '../shared/config.ts';
+import { describeUrl, recordRequest } from './requests.ts';
 import { errorMessage } from '../shared/errors.ts';
 import { withTimeout } from '../shared/signals.ts';
 
@@ -77,9 +78,24 @@ export const fetchCached = async <T>(url: string, key: string, { validate, signa
   const headers: Record<string, string> = { 'User-Agent': `${config.appName}/${config.appVersion}` };
   if (cached?.lastModified) headers['If-Modified-Since'] = cached.lastModified;
 
+  const started = Date.now();
+  const log = (status: number | null, bytes: number | null, error: string | null): void =>
+    recordRequest({
+      at: new Date().toISOString(),
+      service: 'cdn',
+      method: 'GET',
+      path: describeUrl(url),
+      status,
+      ms: Date.now() - started,
+      bytes,
+      attempts: 1,
+      error,
+    });
+
   // Stale data beats no data, so every failure below serves the cache when
   // there is one — flagged stale rather than passing as a success.
-  const fallback = (reason: string): CdnResult<T> => {
+  const fallback = (reason: string, status: number | null = null): CdnResult<T> => {
+    log(status, null, reason);
     if (cached) return { ...cached, source: 'cache' };
     throw new Error(`${url} ${reason}`);
   };
@@ -95,26 +111,33 @@ export const fetchCached = async <T>(url: string, key: string, { validate, signa
     return fallback(`could not be fetched: ${errorMessage(err)}`);
   }
 
-  if (res.status === 304 && cached) return { ...cached, source: 'not-modified' };
+  // A 304 carries no body, which is the point of asking conditionally.
+  if (res.status === 304 && cached) {
+    log(res.status, null, null);
+    return { ...cached, source: 'not-modified' };
+  }
   if (!res.ok) {
     // Drained rather than dropped. An unread body holds its socket out of
     // undici's pool until GC, and these are the multi-MB files — on exactly
     // the 5xx path where the CDN is already struggling.
     await res.body?.cancel().catch(() => {});
-    return fallback(`returned ${res.status}`);
+    return fallback(`returned ${res.status}`, res.status);
   }
 
+  // Read as text so the size is known; `res.json()` does the same internally.
+  const text = await res.text().catch(() => '');
   let data: T;
   try {
-    data = (await res.json()) as T;
+    data = JSON.parse(text) as T;
   } catch (err) {
     // An HTML interstitial served with a 200 must not discard a good cache.
-    return fallback(`returned unparseable JSON: ${errorMessage(err)}`);
+    return fallback(`returned unparseable JSON: ${errorMessage(err)}`, res.status);
   }
 
   const problem = validate?.(data);
-  if (problem) return fallback(problem);
+  if (problem) return fallback(problem, res.status);
 
+  log(res.status, text.length, null);
   const entry: CachedFile<T> = { data, lastModified: res.headers.get('last-modified') };
   cache.set(key, entry);
   return { ...entry, source: 'fresh' };
