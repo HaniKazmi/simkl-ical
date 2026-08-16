@@ -156,8 +156,11 @@ exactly what differs between them.
   one place that knows which list it just fetched. `completed` is left lingering deliberately:
   everything it contributes is already dated and ages out on its own.
 - **UIDs are derived, never random**, or clients duplicate events instead of updating them.
-- **Only `feed.ics` and `token.json` are persisted**, both 0600 through `writeFileAtomic`. No control
-  state outlives the process, so a restart always resyncs.
+- **Three files are persisted**, all 0600 through `writeFileAtomic`: `token.json`, `feed.ics`, and
+  `sheet-runs.json`. The third is **observational, never control** — written by the sheet half and
+  read only by the status page. *Nothing in `src/` may read it to decide what to do*: not to skip a
+  run, not to arm a retry, not to remember a freeze. No control state outlives the process, so a
+  restart still resyncs everything, because no decision consults it.
 - **Every numeric setting is clamped** rather than validated fatally: a running feed beats a
   container that will not boot.
 

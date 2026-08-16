@@ -139,6 +139,21 @@ jobs:
           head -c 15 /tmp/feed.ics | grep -q 'BEGIN:VCALENDAR' || {
             echo "::error::the feed did not start with BEGIN:VCALENDAR"; exit 1; }
 
+          # The status page is the one route that renders from every subsystem
+          # at once, so a cold container is exactly where it would throw.
+          SWRONG=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/nope/status)
+          [ "$SWRONG" = "404" ] || { echo "::error::expected 404 for a wrong status token, got $SWRONG"; exit 1; }
+
+          SRIGHT=$(curl -s -o /tmp/status.html -w '%{http_code}' http://localhost:3000/smoke-test-token/status)
+          [ "$SRIGHT" = "200" ] || { echo "::error::expected 200 for the status page, got $SRIGHT"; exit 1; }
+          grep -q '<!doctype html' /tmp/status.html || {
+            echo "::error::the status page is not an HTML document"; exit 1; }
+          # A cold page that prints these is rendering a null it should have
+          # handled. `if` rather than `&&`, which reads as inverted under set -e.
+          if grep -qE 'undefined|\[object Object\]' /tmp/status.html; then
+            echo "::error::the status page rendered an unhandled value"; exit 1
+          fi
+
           echo "smoke test passed"
 
       - name: Container logs

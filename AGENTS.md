@@ -76,25 +76,44 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
 - **One inserted row per run is an invariant, not a setting.** Plan indices are pre-write and
   `insertDimension` applies cumulatively, so a second insert would land a row high;
   `assertPlanSafe` refuses it outright.
+- **Every value interpolated into the status page goes through the `html` tag.** Show titles,
+  spreadsheet contents and upstream error bodies all reach it, so `2-html.ts` escapes by default and
+  `raw()` is reserved for the stylesheet. The safe-HTML brand is a module-private `Symbol` because a
+  `{ html: string }` duck type is forgeable by any object with that key — including one parsed out of
+  `sheet-runs.json`, which the page renders verbatim. That file is the only one to audit for this.
+- **The status page renders `sheetName`, never `sheetId`, and never the feed token.** This repo is
+  public and the spreadsheet's only protection is its Drive sharing staying Restricted. The token is
+  already in the page's URL, so the page loads nothing off-origin and sends `Referrer-Policy:
+  no-referrer` — an external asset would carry the token out in a `Referer` header.
+- **`sheet-runs.json` is observational, never control.** Nothing may read it to decide behaviour, so
+  a corrupt or deleted history cannot change what the sync does. See ARCHITECTURE.md.
 - **Tests must not reach the network, the real `./data`, or the real spreadsheet.** Use `withFetch`,
   `withConfig` and `withTempDataDir` from `test/helpers.ts` — on a real checkout `./data` holds a
   live OAuth token, and `.env` holds a live `SHEET_ID`. The helpers module forces `sheetId` to
-  undefined and `sheetSyncMode` to `off` on import for exactly that reason.
+  undefined, `sheetSyncMode` to `off`, and `dataDir` to a throwaway path on import for exactly that
+  reason: the sheet run log made a green suite write into the live data dir beside a real token.
+  `clearSheetRuns()` from `sheet/io/journal.ts` belongs in any test that touches the history, the
+  same way `clearCache()` does for the CDN.
 
 ## Where things live
 
-Four buckets, and the folder a file sits in answers two questions: **which half of the project
+Five buckets, and the folder a file sits in answers two questions: **which half of the project
 needs it**, and **is it transport or business logic**.
 
 | Path | Role |
 | --- | --- |
 | `src/orchestrator.ts` | `Orchestrator` — the poll, the timers, `/healthz`; owns the library and drives both halves |
-| `src/server.ts`, `src/index.ts`, `src/login.ts` | Fastify (two routes, no state of its own), boot, and the device-flow CLI |
+| `src/server.ts`, `src/index.ts`, `src/login.ts` | Fastify (three routes, no state of its own), boot, and the device-flow CLI |
 | `src/shared/` | Used by both halves, and with no feature knowledge at all: config, dates, errors, logger, signals, atomic-write |
 | `src/library.ts` | Which SIMKL lists are read and how a change is detected. Beside the orchestrator, which is the only thing that owns a library |
 | `src/api/` | Every HTTP client, and no domain rules. `backoff.ts`, `cdn.ts`, `simkl/`, `google/` |
 | `src/feed/` | iCal only |
 | `src/sheet/` | Google Sheet sync only |
+| `src/status/` | The HTML status page. Reads both halves and is read by none |
+
+`src/status/` is a **layer**, not a fourth peer: it sits above `feed/` and `sheet/` and below root,
+may read from both halves, and **nothing in `feed/`, `sheet/`, `api/` or `shared/` may import from
+it**. Layering still runs downward only; there is simply one more level.
 
 Each half is an **impure shell around a numbered pure core**: `io/` holds whatever talks outside
 the process, and the rest carries its pipeline position in the filename, so `ls` prints the order.
@@ -123,6 +142,14 @@ the process, and the rest carries its pipeline position in the filename, so `ls`
 | VERIFY | `6-verify.ts` — did the write do exactly what was planned |
 | ROLLBACK | `5-requests.ts` again, in separate batches |
 | — | `sync.ts` — the protocol that runs them |
+
+`src/status/` — MODEL → RENDER
+
+| Step | Module |
+| --- | --- |
+| MODEL | `1-model.ts` — a `StatusInput` of plain data → a `StatusModel`. Pure |
+| RENDER | `2-html.ts` — a `StatusModel` → one self-contained page. Pure; owns `html`/`raw`/`escapeHtml` |
+| — | `status.ts` — the shell: the only file here that names `Orchestrator`, and the only one that reads the clock |
 
 Layering runs downward only, and everything numbered stays pure — those modules take options with
 config-backed defaults rather than reading `config` mid-body.
