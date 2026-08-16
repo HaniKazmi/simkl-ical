@@ -13,30 +13,42 @@ api.simkl.com/sync/all-items/…     (OAuth, your library, no dates)         ─
 api.simkl.com/movies/{id}          (per-film release dates)                ─┘
 ```
 
-`FeedState` (`src/refresh.ts`) is the whole orchestration: it holds the rendered ICS in memory,
-owns two timers, and is the only thing that mutates. **Requests never trigger a fetch** — a client
-polling hard cannot amplify into SIMKL traffic, and a SIMKL outage degrades to a stale feed rather
-than an empty one.
+`Orchestrator` (`src/orchestrator.ts`) is the running service: one poll, two consumers. It owns the
+SIMKL library — the only input both halves share — plus the timers, the abort controller and
+`/healthz`, and it drives `Feed` and `SheetSync` as peers. Neither knows about the other.
+
+**Requests never trigger a fetch** — a client polling hard cannot amplify into SIMKL traffic, and a
+SIMKL outage degrades to a stale feed rather than an empty one.
+
+**One owner per piece of state.** The library is *passed* to `Feed` rather than stored there, so a
+poll cannot end up with two copies that disagree — which matters because `pruneSuperseded` returns
+a new object when it evicts anything. The same rule gives each half its own error slots, which is
+what makes "the two timers must not clear each other's failures" a property of the code rather than
+a convention, and what `/healthz` then simply reports.
 
 Layering, downward only:
 
-- `src/backoff.ts` — retry timing and the `HttpError` base. Shared because `retryDelayMs` encodes
-  two things that are easy to get subtly wrong (a blank `Retry-After` is not zero; the header may
-  be an HTTP date) and a second copy means fixing one and not the other.
-- `src/simkl/`, `src/sheets/` — transport, one per upstream API. Each owns its base URL, auth,
-  retryable statuses and status-to-error mapping; those are what genuinely differ, so the request
-  loops stay separate rather than collapsing into one parameterised one.
-- `src/simkl/pool.ts` — bounded-concurrency per-title lookups. Shared by `movies.ts` and `shows.ts`
-  for the three-way split of an error: retryable, gone, or account-level and therefore not a fact
-  about this title at all. A second copy of that last clause drifts silently — a 401 filed as "this
-  title is unavailable" makes an expired token look like a hundred deleted films.
-- `src/sources/` — one module per upstream. `calendar.ts` (CDN, conditional GET, in-process cache,
-  monthly archives), `library.ts` (authenticated lists, activities gating), `movies.ts` (per-title
-  release dates), `shows.ts` (per-title episode lists and status), `sheet.ts` (read and write one
-  tab).
-- `src/join.ts` → `src/ics.ts`, and all of `src/sheet/` — pure. They take options with config-backed
-  defaults rather than reading `config` mid-body, so they stay testable.
-- `src/server.ts` — Fastify, two routes, no state of its own.
+- `src/shared/` — used by both halves, with no feature knowledge: config, dates, errors, logger,
+  signals, atomic-write. Plus `library.ts`, the one piece of shared *domain* — SIMKL list
+  definitions, activity gating, and the eviction of membership a refetch superseded.
+- `src/api/` — every HTTP client, and no domain rules. `backoff.ts` holds retry timing and the
+  `HttpError` base, shared because `retryDelayMs` encodes two things that are easy to get subtly
+  wrong (a blank `Retry-After` is not zero; the header may be an HTTP date) and a second copy means
+  fixing one and not the other. `cdn.ts` is the conditional-GET cache — generic, with the caller
+  supplying `validate`, because only the caller can say whether a parseable payload is a usable one.
+  `simkl/` and `google/` are one per upstream: each owns its base URL, auth, retryable statuses and
+  status-to-error mapping, which is what genuinely differs, so the request loops stay separate
+  rather than collapsing into one parameterised one. `simkl/pool.ts` is shared by the two per-title
+  callers for the three-way split of an error — retryable, gone, or account-level and therefore not
+  a fact about this title at all. A second copy of that last clause drifts silently: a 401 filed as
+  "this title is unavailable" makes an expired token look like a hundred deleted films.
+- `src/feed/` and `src/sheet/` — one per half, each an impure shell around a numbered pure core.
+  `io/` holds whatever talks outside the process; everything numbered is pure and takes options
+  with config-backed defaults rather than reading `config` mid-body, so it stays testable. The
+  numbers are the pipeline position, so a directory listing is the pipeline — see AGENTS.md for
+  both tables.
+- `src/server.ts` — Fastify, two routes, and genuinely no state of its own: it takes a structural
+  `{ ics, health }` rather than the orchestrator, so it cannot know how the service is composed.
 
 ## No build step
 
@@ -45,7 +57,7 @@ read. `tsc` is a checker only. Consequences that bite:
 
 - **Erasable syntax only** — no enums, namespaces, parameter properties or decorators.
   `erasableSyntaxOnly` makes these compile errors rather than runtime failures.
-- **Import specifiers carry the real extension**: `import { config } from './config.ts'`.
+- **Import specifiers carry the real extension**: `import { config } from '../shared/config.ts'`.
 - **Type-only imports must say so** (`verbatimModuleSyntax`): `import type { Library } from ...`.
 
 ## Invariants worth knowing before changing anything
@@ -54,9 +66,10 @@ read. `tsc` is a checker only. Consequences that bite:
   overwrite a complete feed loaded from disk.
 - **`safeRender()` serialises renders through a promise chain.** Both timers end there and coincide
   every six hours at the default intervals; overlapping runs would race on the disk save.
-- **Errors are per-subsystem** (`calendar`, `library`, `render`, `sheet`). The timers must not clear
-  each other's failures. Nothing in the refresh path is allowed to be fatal — the process stays up
-  and `/healthz` reports why. `errors.sheet` is reported but deliberately excluded from `Health.ok`:
+- **Errors are per-subsystem, and owned rather than shared.** `Feed` holds `calendar` and `render`,
+  `Orchestrator` holds `library` and `sheet`, so the timers *cannot* clear each other's failures.
+  Nothing in the refresh path is allowed to be fatal — the process stays up and `/healthz` reports
+  why. The sheet's error is reported but deliberately excluded from both `ok` and `problems`:
   `/healthz` is the container healthcheck and the CI smoke test, and a frozen sheet sync must not
   restart the container or fail a deploy.
 - **Only `feed.ics` and `token.json` are persisted.** No control state outlives the process, so a
@@ -101,8 +114,9 @@ carries no season number. A grace window past two days pulls monthly archives, w
 
 # The sheet sync
 
-A second consumer of the same poll, structurally separate from the feed: `src/sheets/` (transport),
-`src/sheet/` (pure), `src/sheet-sync.ts` (the protocol). Inert unless `SHEET_ID` **and** a Google
+A second consumer of the same poll, structurally separate from the feed: `src/api/google/`
+(transport), `src/sheet/io/` (this feature's I/O), the numbered modules beside them (pure), and
+`src/sheet/sync.ts` (the protocol). Inert unless `SHEET_ID` **and** a Google
 credential are both supplied — a target with no credential stays off rather than filing an ENOENT
 once per poll.
 
@@ -241,8 +255,8 @@ because it is the trigger for everything the sync writes: a season cannot become
 being watched. A 24h ceiling backstops the one thing that changes with no library activity —
 `/tv/{id}` status flipping on a renewal — and is daily for the same reason `movieRefreshMs` is.
 
-**The retention lives in `SheetSync`, not in `sources/shows.ts`.** The source fetches; the caller
-decides when, exactly as `movies.ts` and `FeedState` divide it. A TTL cache under the source would
+**The retention lives in `SheetSync`, not in `io/catalogue.ts`.** The source fetches; the caller
+decides when, exactly as `io/movies.ts` and `Feed` divide it. A TTL cache under the source would
 serve a stale episode list for a show the caller just decided to refresh *because* it changed. It
 also stores only what the planner reads — per-season shapes, `status`, `runtime` — rather than the
 raw payloads, so per-episode descriptions and images do not accumulate for the life of the process.
