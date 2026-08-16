@@ -1,7 +1,11 @@
 /**
- * INDEX — what SIMKL says was watched, reduced to the shape the planner
- * needs. Pure, and the other half of PARSE: `1-grid.ts` reads the spreadsheet,
- * this reads the library, and `3-plan.ts` needs both.
+ * INDEX — what SIMKL says was watched, reduced to the shape the planner needs.
+ * Pure.
+ *
+ * First, and before the spreadsheet is even read: `sync.ts` indexes the library
+ * as its cheap early-out — an empty index means there is nothing this run could
+ * write, so the grid read never happens. `2-grid.ts` parses the sheet, and
+ * `3-plan.ts` needs both.
  *
  * Two sources, answering two different questions. The library says what was
  * *watched* and never what *exists*; `/tv/episodes/{id}` says what exists and

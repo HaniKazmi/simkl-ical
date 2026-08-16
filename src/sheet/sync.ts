@@ -5,8 +5,9 @@
  * cycle inside one poll so that what was planned and what was written describe
  * the same grid:
  *
+ *   INDEX     1-progress.ts     — the library, and the early-out
  *   READ      io/spreadsheet.ts, io/catalogue.ts
- *   PARSE     1-grid.ts, 2-progress.ts
+ *   PARSE     2-grid.ts
  *   PLAN      3-plan.ts
  *   GUARD     4-guard.ts        — nothing is built until this passes
  *   FRESH     a snapshot older than 120s restarts the cycle from the READ
@@ -30,8 +31,8 @@ import type { Library } from '../api/simkl/types.ts';
 // The steps, in the order this file runs them.
 import { applyRequests, listSheets, readSnapshot, type SheetSnapshot } from './io/spreadsheet.ts';
 import { fetchCatalogue } from './io/catalogue.ts';
-import { parseGrid, type Grid } from './1-grid.ts';
-import { indexLibrary, seasonShapes, type TitleProgress } from './2-progress.ts';
+import { parseGrid, type Grid } from './2-grid.ts';
+import { indexLibrary, seasonShapes, type TitleProgress } from './1-progress.ts';
 import { describePlan, planLookups, planSync, type CatalogueStamp, type CatalogueView, type SheetPlan, type TitleCatalogue } from './3-plan.ts';
 import { assertPlanSafe, UnsafePlanError } from './4-guard.ts';
 import { backupName, backupRequest, deleteRowRequests, deleteSheetRequest, isBackupTab, renameSheetRequest, repairName, restoreRequest, toRequests } from './5-requests.ts';

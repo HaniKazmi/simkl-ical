@@ -10,7 +10,7 @@ import {
   seasonShapes,
   seasonsOf,
   watchSerial,
-} from '../../src/sheet/2-progress.ts';
+} from '../../src/sheet/1-progress.ts';
 import { libraryItem, libraryOf } from '../helpers.ts';
 
 // --- dates -----------------------------------------------------------------

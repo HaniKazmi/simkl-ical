@@ -12,9 +12,9 @@
  */
 
 import { config } from '../shared/config.ts';
-import { isBlank, isFormula, numberOf, sameValue, type Grid, type HeaderName } from './1-grid.ts';
+import { isBlank, isFormula, numberOf, sameValue, type Grid, type HeaderName } from './2-grid.ts';
 import { shiftDate } from '../shared/dates.ts';
-import { dateSerial } from './2-progress.ts';
+import { dateSerial } from './1-progress.ts';
 import type { CellEdit, SheetPlan } from './3-plan.ts';
 import type { ExtendedValue } from '../api/google/types.ts';
 

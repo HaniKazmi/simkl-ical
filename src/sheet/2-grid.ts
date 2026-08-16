@@ -1,7 +1,8 @@
 /**
  * PARSE — snapshot → blocks. Pure: no config, no clock, no network.
  *
- * Second of READ (io/) → **PARSE** → PLAN → GUARD → BUILD → APPLY → VERIFY.
+ * The spreadsheet half of PARSE, after `1-progress.ts` has indexed the library
+ * and found something worth reading the grid for.
  *
  * The sheet's structure is implicit — a row with the `Show` column filled
  * starts a block, and every row after it belongs to that block until the next
