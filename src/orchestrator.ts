@@ -183,15 +183,6 @@ export class Orchestrator {
   }
 
   /**
-   * A warm-up failure, filed where a render failure goes: it is the slot
-   * `/healthz` keys `ok` on, and the next successful render clears it. A method
-   * rather than a reach-through write, because the field has that invariant.
-   */
-  noteStartupFailure(message: string): void {
-    this.feed.errors.render = `startup: ${message}`;
-  }
-
-  /**
    * One cheap request decides whether the library calls are worth making.
    * The signature covers only the timestamps that can move an item between
    * lists — see listSignature in shared/library.ts.
@@ -340,8 +331,9 @@ export class Orchestrator {
    * Stop refreshing and cancel anything in flight — a calendar refresh can be
    * several MB into a fetch, and shutdown should not wait for it.
    *
-   * The abort does not reach a render already queued on `Feed`; that would need
-   * `await this.feed.settled()`, which nothing has wanted yet.
+   * The abort reaches fetches, not the render chain: a render already queued on
+   * `Feed` still runs and still writes the feed to disk. Harmless, since the
+   * process is going away and the write is atomic, but it is not cancellation.
    */
   stop(): void {
     for (const t of this.timers) clearInterval(t);

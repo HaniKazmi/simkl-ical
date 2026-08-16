@@ -183,13 +183,4 @@ export class Feed {
     this.log.info(`rendered ${this.events.length} events`);
     return true;
   }
-
-  /**
-   * The render chain, for a caller that wants to wait it out. `stop()` aborts
-   * in-flight fetches but cannot reach a render already queued here, so this is
-   * the only way to know the last save has landed. Nothing needs it today.
-   */
-  settled(): Promise<void> {
-    return this.rendering;
-  }
 }

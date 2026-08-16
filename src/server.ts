@@ -1,7 +1,7 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { timingSafeEqual } from 'node:crypto';
 import { config } from './shared/config.ts';
-import type { Health } from './orchestrator.ts';
+import type { Orchestrator } from './orchestrator.ts';
 
 /** Constant-time compare so the token cannot be recovered by timing the 404s. */
 const tokenMatches = (candidate: string): boolean => {
@@ -13,22 +13,13 @@ const tokenMatches = (candidate: string): boolean => {
 /** The one 404 body. Every miss answers with this — see setNotFoundHandler. */
 const NOT_FOUND = { error: 'Not found' };
 
-/**
- * What the routes need, and nothing more. Declared here so the server does not
- * know how the service is composed — `Orchestrator` satisfies it structurally.
- */
-export interface FeedService {
-  readonly ics: string;
-  readonly health: Health;
-}
-
 export interface ServerOptions {
   logger?: boolean;
   /** Where the logger writes. Defaults to stdout; tests assert on the output. */
   logStream?: NodeJS.WritableStream;
 }
 
-export const buildServer = (state: FeedService, { logger = true, logStream }: ServerOptions = {}): FastifyInstance => {
+export const buildServer = (state: Orchestrator, { logger = true, logStream }: ServerOptions = {}): FastifyInstance => {
   const app = Fastify({
     // The feed token is a path parameter and Fastify caps those at 100
     // characters by default, which a longer token would exceed — a 414 rather
