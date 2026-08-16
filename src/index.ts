@@ -31,8 +31,10 @@ void (async () => {
     await service.refreshLibraryIfChanged();
     app.log.info(`ready: serving ${service.feed.events.length} events`);
   } catch (err) {
-    // Never fatal: the server keeps answering /healthz so the failure is visible.
-    service.noteStartupFailure(errorMessage(err));
+    // Never fatal: the server keeps answering /healthz so the failure is
+    // visible. Filed as a render failure because that is the slot `ok` keys on,
+    // and the next successful render clears it.
+    service.feed.errors.render = `startup: ${errorMessage(err)}`;
     app.log.error(`warm-up failed: ${errorStack(err)}`);
   } finally {
     // In `finally` on purpose: a failed warm-up must still leave something
