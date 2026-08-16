@@ -246,7 +246,7 @@ export class SheetSync {
       }
 
       // FRESH. Back to the read, not on to the write: re-planning is the point.
-      if (Date.now() - snapshot.readAt > FRESH_MS) {
+      if (performance.now() - snapshot.readAtMono > FRESH_MS) {
         this.log.warn(`the sheet snapshot aged past ${FRESH_MS / 1000}s while planning; re-reading (attempt ${attempt})`);
         continue;
       }

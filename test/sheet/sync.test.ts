@@ -628,3 +628,48 @@ test('an inert sync writes no journal', async () => {
     await assert.rejects(readFile(join(dir, 'sheet-runs.json'), 'utf8'));
   });
 });
+
+// --- the freshness gate ----------------------------------------------------
+
+/**
+ * Advance the monotonic clock faster than the run can plan.
+ *
+ * The freshness window is two minutes, so a test cannot wait it out — the clock
+ * has to move instead. Swapping `performance.now` is the move `withFetch` makes
+ * on `fetch`, for the same reason: the seam is a global.
+ *
+ * Every reading is 5 minutes past the one before, so a snapshot is stale by the
+ * time its plan is ready, on every attempt.
+ */
+const withRunawayClock = async (fn: () => Promise<void>): Promise<void> => {
+  const real = performance.now.bind(performance);
+  let ticks = 0;
+  performance.now = () => real() + ticks++ * 300_000;
+  try {
+    await fn();
+  } finally {
+    performance.now = real;
+  }
+};
+
+/**
+ * A plan is built against row indices, so applying it to a grid that has since
+ * moved writes to the wrong rows. The gate is what makes that unreachable, and
+ * it compares two readings of the *same* clock — a fixture stamping `readAtMono`
+ * from `Date.now()` would read as a difference of ~1.7e12 ms, which is always
+ * fresh, and would disable this silently.
+ */
+test('a snapshot that ages past the freshness window is re-read, never written against', async () => {
+  await withRunawayClock(() =>
+    run('apply', {}, (result, calls, sheet, _sync, log) => {
+      assert.equal(sheet.writes(), 0, 'nothing is written against a stale snapshot');
+
+      const reads = calls.filter((url) => url.includes('ranges=')).length;
+      assert.ok(reads > 1, `expected the grid to be re-read, saw ${reads} read(s)`);
+
+      // Bounded: it gives up rather than re-reading forever.
+      assert.equal(result.status, 'failed');
+      assert.match(log.lines.join('\n'), /aged past/);
+    }),
+  );
+});

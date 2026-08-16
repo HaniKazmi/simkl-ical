@@ -27,8 +27,17 @@ export interface SheetSnapshot {
   rowCount: number;
   columnCount: number;
   rows: CellData[][];
-  /** When the read completed. The freshness gate compares against this. */
-  readAt: number;
+  /**
+   * When the read completed, on the monotonic clock. The freshness gate compares
+   * against this, and its window is two minutes — close enough to a plausible
+   * clock step that wall time could call a fresh snapshot stale, or worse, a
+   * stale one fresh. Never rendered, so it has no reason to be a wall-clock time.
+   *
+   * The clock is in the name because the type cannot carry it: both clocks are
+   * `number`, and a fixture assigning `Date.now()` here reads as a difference of
+   * ~1.7e12 ms, which is always "fresh" and silently disables the gate.
+   */
+  readAtMono: number;
 }
 
 /** The configured spreadsheet, or a clear failure. One copy of the check. */
@@ -93,7 +102,7 @@ export const readSnapshot = async ({ signal }: { signal?: AbortSignal } = {}): P
       0,
     ),
     rows: (grid?.rowData ?? []).map((row) => row.values ?? []),
-    readAt: Date.now(),
+    readAtMono: performance.now(),
   };
 };
 

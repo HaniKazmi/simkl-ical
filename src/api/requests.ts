@@ -114,7 +114,11 @@ export const describeUrl = (url: string | URL): string => {
 export const beginRequest = (
   init: { service: RequestService; component: RequestComponent; method: string; url: string | URL },
 ): ((outcome: { status: number | null; bytes: number | null; error: string | null; attempts?: number }) => void) => {
-  const started = Date.now();
+  // Monotonic, because this is a span rather than a moment. `Date.now()` is wall
+  // time, so an NTP correction or a VM resume between the two readings renders a
+  // negative latency on the status page. `at` below is a moment and stays on the
+  // wall clock — it is what a reader matches against a log line.
+  const started = performance.now();
   const path = describeUrl(init.url);
   return ({ status, bytes, error, attempts = 1 }) =>
     recordRequest({
@@ -124,7 +128,7 @@ export const beginRequest = (
       method: init.method,
       path,
       status,
-      ms: Date.now() - started,
+      ms: Math.round(performance.now() - started),
       bytes,
       attempts,
       error,
