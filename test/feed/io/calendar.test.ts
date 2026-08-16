@@ -25,10 +25,10 @@ test('rolling URLs point at the top-level files', () => {
 });
 
 test('monthsBack returns the distinct months a window spans', () => {
-  const mid = new Date('2026-08-20T12:00:00Z');
+  const mid = Temporal.Instant.from('2026-08-20T12:00:00Z');
   assert.deepEqual(monthsBack(5, mid), [{ year: 2026, month: 8 }]);
 
-  const crossing = new Date('2026-08-10T12:00:00Z');
+  const crossing = Temporal.Instant.from('2026-08-10T12:00:00Z');
   assert.deepEqual(monthsBack(14, crossing), [
     { year: 2026, month: 7 },
     { year: 2026, month: 8 },
@@ -36,7 +36,7 @@ test('monthsBack returns the distinct months a window spans', () => {
 });
 
 test('monthsBack crosses a year boundary', () => {
-  assert.deepEqual(monthsBack(14, new Date('2026-01-05T12:00:00Z')), [
+  assert.deepEqual(monthsBack(14, Temporal.Instant.from('2026-01-05T12:00:00Z')), [
     { year: 2025, month: 12 },
     { year: 2026, month: 1 },
   ]);
@@ -45,7 +45,7 @@ test('monthsBack crosses a year boundary', () => {
 // A 90-day window spans exactly the four months it touches, in order, with no
 // padding in the URLs they build.
 test('a long window spans every month it touches, oldest first', () => {
-  const months = monthsBack(90, new Date('2026-08-10T12:00:00Z'));
+  const months = monthsBack(90, Temporal.Instant.from('2026-08-10T12:00:00Z'));
   assert.deepEqual(months, [
     { year: 2026, month: 5 },
     { year: 2026, month: 6 },
@@ -58,7 +58,7 @@ test('a long window spans every month it touches, oldest first', () => {
 });
 
 test('a zero-day window is still the current month, not nothing', () => {
-  assert.deepEqual(monthsBack(0, new Date('2026-08-10T12:00:00Z')), [{ year: 2026, month: 8 }]);
+  assert.deepEqual(monthsBack(0, Temporal.Instant.from('2026-08-10T12:00:00Z')), [{ year: 2026, month: 8 }]);
 });
 
 // The window has to be measured in the same zone the join's cutoff is, or the
@@ -66,7 +66,7 @@ test('a zero-day window is still the current month, not nothing', () => {
 // month boundary, an entry that passes the join's filter would live in an
 // archive nothing ever fetched.
 test('the window is counted from the local date, not the UTC one', () => {
-  const now = new Date('2026-03-15T02:00:00Z'); // 14 March, 22:00 in New York
+  const now = Temporal.Instant.from('2026-03-15T02:00:00Z'); // 14 March, 22:00 in New York
   assert.deepEqual(monthsBack(14, now, 'America/New_York'), [
     { year: 2026, month: 2 },
     { year: 2026, month: 3 },
@@ -237,7 +237,7 @@ test('archives outside the grace window are evicted from the cache', async () =>
   await withFetch(
     () => jsonResponse(GOOD),
     async () => {
-      await fetchCalendar('tv', { graceDays: 14, now: new Date('2026-08-01T12:00:00Z') });
+      await fetchCalendar('tv', { graceDays: 14, now: Temporal.Instant.from('2026-08-01T12:00:00Z') });
       assert.deepEqual(
         cachedKeys().sort(),
         ['calendar-tv', 'calendar-tv-2026-7', 'calendar-tv-2026-8'],
@@ -245,7 +245,7 @@ test('archives outside the grace window are evicted from the cache', async () =>
       );
 
       // A month later July is out of the window and must not be retained.
-      await fetchCalendar('tv', { graceDays: 14, now: new Date('2026-09-20T12:00:00Z') });
+      await fetchCalendar('tv', { graceDays: 14, now: Temporal.Instant.from('2026-09-20T12:00:00Z') });
       assert.deepEqual(cachedKeys().sort(), ['calendar-tv', 'calendar-tv-2026-9']);
     },
   );
@@ -255,7 +255,7 @@ test('evicting one calendar type leaves the other alone', async () => {
   await withFetch(
     () => jsonResponse(GOOD),
     async () => {
-      const now = new Date('2026-08-20T12:00:00Z');
+      const now = Temporal.Instant.from('2026-08-20T12:00:00Z');
       await fetchCalendar('tv', { graceDays: 14, now });
       await fetchCalendar('anime', { graceDays: 14, now });
       assert.ok(cachedKeys().includes('calendar-tv-2026-8'), 'tv archive kept');
@@ -273,7 +273,7 @@ test('an unavailable archive is reported rather than swallowed', async () => {
     async () => {
       const { data: merged, source } = await fetchCalendar('tv', {
         graceDays: 14,
-        now: new Date('2026-08-20T12:00:00Z'),
+        now: Temporal.Instant.from('2026-08-20T12:00:00Z'),
         log: (m) => void logged.push(m),
       });
       assert.equal(merged.calendar.length, 1, 'the rolling file still carries the feed');

@@ -76,7 +76,8 @@ const prime = (state: Orchestrator, acts: unknown = activities(), opts: Paramete
 
 /** Age every film stamp past the refresh floor, so the films are due again. */
 const ageFilms = (state: Orchestrator) => {
-  for (const id of state.feed.filmStamps.keys()) state.feed.filmStamps.set(id, Date.now() - config.movieRefreshMs - 1000);
+  const aged = Temporal.Now.instant().subtract({ milliseconds: config.movieRefreshMs + 1000 });
+  for (const id of state.feed.filmStamps.keys()) state.feed.filmStamps.set(id, aged);
 };
 
 const pulls = (calls: string[]) => calls.filter((c) => c.includes('/sync/all-items'));
@@ -484,7 +485,7 @@ test('a failed daily re-read retries on the next poll, not in another day', asyn
     });
     // The stamp is not refreshed, so the film stays past the floor and due.
     assert.ok(
-      Date.now() - state.feed.filmStamps.get(300)! > config.movieRefreshMs,
+      Date.now() - state.feed.filmStamps.get(300)!.epochMilliseconds > config.movieRefreshMs,
       'a failed round must not count as resolved',
     );
 

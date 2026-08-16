@@ -211,7 +211,7 @@ const isPremiere = (entry: CalendarEntry): boolean => {
 
 export interface JoinOptions {
   timezone?: string;
-  now?: Date;
+  now?: Temporal.Instant;
   movieReleases?: Map<number, MovieRelease>;
   graceDays?: number;
 }
@@ -232,7 +232,7 @@ export const join = (
   library: Library,
   {
     timezone = config.timezone,
-    now = new Date(),
+    now = Temporal.Now.instant(),
     movieReleases = new Map<number, MovieRelease>(),
     graceDays = config.graceDays,
   }: JoinOptions = {},
@@ -248,7 +248,7 @@ export const join = (
     moviesPlanned: plannedIds(library, 'movies'),
   };
 
-  const today = plainDateIn(now.toTemporalInstant(), timezone);
+  const today = plainDateIn(now, timezone);
   const cutoff = today.subtract({ days: graceDays });
   const events = new Map<string, FeedEvent>();
 

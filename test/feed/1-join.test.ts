@@ -69,7 +69,7 @@ test('episodeCode returns null rather than formatting a missing episode', () => 
 
 // --- join ---------------------------------------------------------------
 
-const NOW = new Date('2026-08-10T12:00:00Z');
+const NOW = Temporal.Instant.from('2026-08-10T12:00:00Z');
 
 const tvEntry = (
   id: number,
@@ -426,7 +426,7 @@ test('the grace cutoff is measured in the same zone as the entries', () => {
   // 8th where a UTC one would be the 9th. The entry is placed exactly between
   // them: 01:00Z on the 9th is the evening of the 8th locally, so it survives a
   // cutoff computed in the same zone and is dropped by one computed in UTC.
-  const now = new Date('2026-08-10T02:00:00Z');
+  const now = Temporal.Instant.from('2026-08-10T02:00:00Z');
   const entries = [tvEntry(100, 5, 3, '2026-08-09T01:00:00Z')];
 
   const events = join(calendars(entries), library, { timezone: 'America/New_York', now, graceDays: 1 });

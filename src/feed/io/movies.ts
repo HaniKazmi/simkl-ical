@@ -78,14 +78,14 @@ export const pickReleaseDate = (
   country: string = config.releaseCountry,
   // An option rather than read from config mid-body, matching join — it keeps
   // this a pure function.
-  { now = new Date(), timezone = config.timezone }: { now?: Date; timezone?: string } = {},
+  { now = Temporal.Now.instant(), timezone = config.timezone }: { now?: Temporal.Instant; timezone?: string } = {},
 ): PickedRelease | null => {
   // Uppercased because iso_3166_1 is matched exactly; deduplicated so a US
   // viewer does not walk the identical results twice at every step.
   const codes = [...new Set([country.toUpperCase(), 'US'])];
   const territories = codes.map((code) => ({ code, results: datesFor(movie, code) }));
   // The viewer's local date, not UTC — the same question the join asks.
-  const today = plainDateIn(now.toTemporalInstant(), timezone);
+  const today = plainDateIn(now, timezone);
 
   // A real release anywhere in the preference order beats a premiere anywhere,
   // so both territories are exhausted before the last resorts are considered.
@@ -161,9 +161,9 @@ export const FILM_HORIZON_DAYS = 30;
  * can be exercised at its edges without a populated `Feed`.
  */
 export const filmDue = (
-  stamp: number | undefined,
+  stamp: Temporal.Instant | undefined,
   release: MovieRelease | undefined,
-  now: Date,
+  now: Temporal.Instant,
   {
     refreshMs = config.movieRefreshMs,
     horizonDays = FILM_HORIZON_DAYS,
@@ -171,9 +171,9 @@ export const filmDue = (
   }: { refreshMs?: number; horizonDays?: number; timezone?: string } = {},
 ): boolean => {
   if (stamp === undefined) return true;
-  if (now.getTime() - stamp <= refreshMs) return false;
+  if (now.epochMilliseconds - stamp.epochMilliseconds <= refreshMs) return false;
   if (!release) return true;
-  const horizon = plainDateIn(now.toTemporalInstant(), timezone).add({ days: horizonDays });
+  const horizon = plainDateIn(now, timezone).add({ days: horizonDays });
   return Temporal.PlainDate.compare(release.date, horizon) <= 0;
 };
 

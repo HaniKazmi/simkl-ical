@@ -167,7 +167,7 @@ test('an empty film list yields an empty map and counts as complete', () => {
 
 // --- picking among several dates of the same type -------------------------
 
-const NOW = { now: new Date('2026-08-15T12:00:00Z') };
+const NOW = { now: Temporal.Instant.from('2026-08-15T12:00:00Z') };
 
 // Array order carries no meaning, so an original run must not beat a
 // re-release — the old date falls behind the cutoff and the film disappears.
@@ -416,7 +416,7 @@ test('a known type is still preferred over an unrecognised one', () => {
 // In UTC, a viewer far enough east sits on yesterday's date.
 test('whether a date has passed is judged in the viewer timezone, not UTC', () => {
   // 12:00Z is already the 16th in Auckland and still the 15th in UTC.
-  const now = { now: new Date('2026-08-15T12:00:00Z') };
+  const now = { now: Temporal.Instant.from('2026-08-15T12:00:00Z') };
   const movie: MovieDetail = {
     title: 'x',
     release_dates: [
@@ -449,13 +449,13 @@ test('whether a date has passed is judged in the viewer timezone, not UTC', () =
 // matters: the floor bounds how often any one film is asked about at all, and
 // only past it does the horizon decide whether asking would learn anything.
 
-const DUE_NOW = new Date('2026-08-15T12:00:00Z');
+const DUE_NOW = Temporal.Instant.from('2026-08-15T12:00:00Z');
 const DAY_MS = 24 * 60 * 60 * 1000;
 const OPTS = { refreshMs: DAY_MS, timezone: 'Europe/London' };
 /** A release `days` from NOW, so a fixture can sit either side of the horizon. */
 const dated = (days: number): MovieRelease => ({
   ...release(1),
-  date: plainDateFrom(new Date(DUE_NOW.getTime() + days * DAY_MS).toISOString().slice(0, 10)),
+  date: plainDateFrom(DUE_NOW.add({ milliseconds: days * DAY_MS }).toString().slice(0, 10)),
 });
 
 test('a film never asked about is due', () => {
@@ -464,7 +464,7 @@ test('a film never asked about is due', () => {
 
 // The poll runs far more often than release dates change.
 test('a film asked about within the floor is not due, however imminent', () => {
-  const justAsked = DUE_NOW.getTime() - 1000;
+  const justAsked = DUE_NOW.subtract({ seconds: 1 });
   assert.equal(filmDue(justAsked, dated(1), DUE_NOW, OPTS), false, 'even releasing tomorrow');
   assert.equal(filmDue(justAsked, undefined, DUE_NOW, OPTS), false, 'even with no announced date');
 });
@@ -472,30 +472,30 @@ test('a film asked about within the floor is not due, however imminent', () => {
 // Absent from the release map means resolved with no announced date — the one
 // answer worth re-asking whatever the calendar says.
 test('past the floor, a film with no announced date is due', () => {
-  assert.equal(filmDue(DUE_NOW.getTime() - DAY_MS - 1000, undefined, DUE_NOW, OPTS), true);
+  assert.equal(filmDue(DUE_NOW.subtract({ milliseconds: DAY_MS + 1000 }), undefined, DUE_NOW, OPTS), true);
 });
 
 test('past the floor, the horizon decides', () => {
-  const aged = DUE_NOW.getTime() - DAY_MS - 1000;
+  const aged = DUE_NOW.subtract({ milliseconds: DAY_MS + 1000 });
   assert.equal(filmDue(aged, dated(FILM_HORIZON_DAYS - 1), DUE_NOW, OPTS), true, 'inside the horizon');
   assert.equal(filmDue(aged, dated(FILM_HORIZON_DAYS + 1), DUE_NOW, OPTS), false, 'beyond it');
 });
 
 // A date that has passed may have been pushed back, so it stays worth asking.
 test('a release already past is still due', () => {
-  assert.equal(filmDue(DUE_NOW.getTime() - DAY_MS - 1000, dated(-30), DUE_NOW, OPTS), true);
+  assert.equal(filmDue(DUE_NOW.subtract({ milliseconds: DAY_MS + 1000 }), dated(-30), DUE_NOW, OPTS), true);
 });
 
 // The boundary is inclusive: a film landing exactly on the horizon is still
 // close enough for a studio to move.
 test('the horizon boundary is inclusive', () => {
-  assert.equal(filmDue(DUE_NOW.getTime() - DAY_MS - 1000, dated(FILM_HORIZON_DAYS), DUE_NOW, OPTS), true);
+  assert.equal(filmDue(DUE_NOW.subtract({ milliseconds: DAY_MS + 1000 }), dated(FILM_HORIZON_DAYS), DUE_NOW, OPTS), true);
 });
 
 // The horizon is counted in the viewer's zone for the same reason the join is:
 // a UTC instant is a different local date for a fifth of the day.
 test('the horizon is measured in the viewer\'s timezone', () => {
-  const aged = DUE_NOW.getTime() - DAY_MS - 1000;
+  const aged = DUE_NOW.subtract({ milliseconds: DAY_MS + 1000 });
   const onTheEdge = { ...release(1), date: plainDateFrom('2026-09-14') };
   assert.equal(filmDue(aged, onTheEdge, DUE_NOW, { ...OPTS, horizonDays: 30 }), true);
   assert.equal(filmDue(aged, onTheEdge, DUE_NOW, { ...OPTS, horizonDays: 29 }), false);
