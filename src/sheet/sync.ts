@@ -186,16 +186,21 @@ export class SheetSync {
     const index = indexLibrary(library);
     if (index.size === 0) return idle();
 
+    // Held across attempts so the exhausted path below can report the plan it
+    // built rather than an empty one — the run whose detail matters most.
+    let record: PlanRecord | undefined;
+    let lines: string[] = [];
+
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
       const snapshot = await readSnapshot({ signal });
       const grid = parseGrid(snapshot);
 
       const catalogue = await this.catalogueFor(grid, index, signal);
       const plan = planSync(grid, index, catalogue);
-      const lines = describePlan(plan, grid.columns);
+      lines = describePlan(plan, grid.columns);
       // Once per scope: five separate calls read as five projections a reader
       // has to confirm are the same one.
-      const record = planRecord(plan);
+      record = planRecord(plan);
       // An incomplete catalogue means some season's shape is unknown, and an
       // unknown shape is exactly what makes an end date premature. A deferred
       // row is simpler: the work exists and the cap is the only thing holding
@@ -244,7 +249,7 @@ export class SheetSync {
 
     const message = `could not plan against a fresh snapshot in ${MAX_ATTEMPTS} attempts`;
     this.log.warn(`sheet sync: ${message}`);
-    return idle({ status: 'failed', error: message, retry: true });
+    return idle({ status: 'failed', plan: record, lines, error: message, retry: true });
   }
 
   /**
@@ -329,7 +334,24 @@ export class SheetSync {
       }
     }
 
-    const after = await readSnapshot({ signal });
+    // Guarded for the same reason the listing above is, and with more at stake:
+    // the batch has already gone out. Unwound, this lands in `run()`'s catch,
+    // which reports a run that planned nothing — so a write that did land is
+    // recorded as having written nothing, and the snapshot tab is orphaned with
+    // no line in the journal pointing at it.
+    //
+    // There is no safe recovery from here inside this cycle. A rollback needs a
+    // read to reason about, and this is the read. So the plan and the lines are
+    // reported, the snapshot is deliberately *not* discarded, and the next poll
+    // re-reads and re-plans against whatever actually landed.
+    let after: SheetSnapshot;
+    try {
+      after = await readSnapshot({ signal });
+    } catch (err) {
+      const message = `the sheet could not be read back after the write: ${errorMessage(err)}`;
+      this.report(`sheet sync ${message}`, lines, 'error');
+      return idle({ status: 'failed', plan: record, lines, error: message, retry: true });
+    }
     const verification = verify(grid, after, plan);
 
     if (verification.ok) {
