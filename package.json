@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Joins SIMKL's public airdate calendars with your private library and serves a subscribable iCal feed.",
   "engines": {
-    "node": ">=22.18"
+    "node": ">=26.0.0"
   },
   "scripts": {
     "start": "node src/index.ts",

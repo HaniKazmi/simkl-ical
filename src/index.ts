@@ -1,9 +1,10 @@
-import { config, requireClientId, requireValidTimezone } from './shared/config.ts';
+import { config, requireClientId, requireTemporal, requireValidTimezone } from './shared/config.ts';
 import { errorMessage, errorStack } from './shared/errors.ts';
 import { Orchestrator } from './orchestrator.ts';
 import { buildServer } from './server.ts';
 
 try {
+  requireTemporal();
   requireClientId();
   requireValidTimezone();
 } catch (err) {

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
-import { buildConfig, config, requireClientId, requireValidTimezone, sheetSyncConfigured } from '../../src/shared/config.ts';
+import { buildConfig, config, requireClientId, requireTemporal, requireValidTimezone, sheetSyncConfigured } from '../../src/shared/config.ts';
 import { withTimeout } from '../../src/shared/signals.ts';
 import { withConfig } from '../helpers.ts';
 
@@ -150,4 +150,16 @@ test('the sheet limits are clamped rather than fatal', () => {
   assert.equal(buildConfig({ SHEET_MAX_EDITS: '0' }).sheetMaxEdits, 1);
   assert.equal(buildConfig({ SHEET_SINCE_DAYS: '-5' }).sheetSinceDays, 1);
   assert.equal(buildConfig({ SHEET_SINCE_DAYS: 'soon' }).sheetSinceDays, 90);
+});
+
+// The version number does not answer the question: Temporal is enabled at build
+// time, so two builds of the same Node disagree. Homebrew's 26 has no Temporal;
+// the nodejs.org binary of the same version does.
+test('a runtime without Temporal is refused at boot, with a message that says what to do', () => {
+  assert.throws(() => requireTemporal({}), /typeof Temporal/);
+  assert.throws(() => requireTemporal({}), /nodejs\.org|fnm|nvm/);
+});
+
+test('a runtime with Temporal passes', () => {
+  assert.doesNotThrow(() => requireTemporal());
 });

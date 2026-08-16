@@ -27,10 +27,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 22.18 is the floor in package.json engines and the README, and nothing
-        # used to run on it — code using a newer API typechecked green against
-        # @types/node and then crashed on the documented minimum.
-        node: ['22.18', '24']
+        # 26.0.0 is the floor in package.json engines and the README: it is the
+        # release Temporal shipped in, and this codebase has no `Date` left to
+        # fall back on. Pinned rather than tested as `lts`, because Temporal is a
+        # *build-time* option — code using it typechecks green against
+        # @types/node and then throws ReferenceError on a build without it.
+        node: ['26.0.0', '26']
     steps:
       - uses: actions/checkout@v7
 

@@ -240,10 +240,12 @@ request ordering are what prevent it.
 
 ## CI
 
-`npm ci && npm run typecheck && npm test` on Node 22.18 and 24, then build, smoke test and publish
-the image. 22.18 is the real floor — code using a newer API typechecks green against `@types/node`
-and then crashes on the documented minimum, which is why the matrix pins it rather than testing
-only `lts`.
+`npm ci && npm run typecheck && npm test` on Node 26.0.0 and 26, then build, smoke test and publish
+the image. 26.0.0 is the real floor — it is the release Temporal shipped in, and Temporal is a
+*build-time* option rather than a runtime flag, so code using it typechecks green against
+`@types/node` and then throws `ReferenceError` on a build without it. Homebrew's `node` is such a
+build; the nodejs.org binaries and `node:26-alpine` are not. That is why the matrix pins the floor
+rather than testing only `lts`, and why `index.ts` asserts the global at boot.
 
 The smoke test runs the built image and asserts `/healthz` answers with parseable JSON, that a wrong
 feed token gets a 404 and the right one returns something starting `BEGIN:VCALENDAR`, and the same
