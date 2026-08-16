@@ -67,6 +67,14 @@ export class Orchestrator {
    * response from a category the user emptied — see `retainOnly`.
    */
   removalAt: Record<SyncType, string> = { shows: '', anime: '', movies: '' };
+  /**
+   * Set when a membership response could not be trusted to delete against. The
+   * next poll pulls the whole library instead of diffing, because a full pull
+   * is authoritative — it answers what was removed rather than inferring it.
+   * Without this the refusal would stand until the process restarted, and every
+   * poll in between would re-ask the same unanswerable question.
+   */
+  resyncPending = false;
   libraryAt: string | null = null;
   polledAt: string | null = null;
   /** The two failures this layer owns; `Feed` holds the other two. */
@@ -196,6 +204,7 @@ export class Orchestrator {
           removalAt: this.removalAt,
           syncedAll: this.syncedAll,
           hasLibrary: this.library !== null,
+          resyncPending: this.resyncPending,
         },
         { force },
       );
@@ -238,8 +247,10 @@ export class Orchestrator {
         // and the container reports unhealthy until the six-hour calendar
         // timer renders on its own.
         pulled = true;
-        // A full pull *is* the membership set, so removals need no second call.
+        // A full pull *is* the membership set, so removals need no second call
+        // — and it is the answer to a refused diff, so the debt clears here.
         this.removalAt = stamps;
+        this.resyncPending = false;
         // Never back to null. `full` is partly `!this.syncedAll`, so a null
         // watermark makes the next poll full too, and the one after that —
         // the whole library every half hour, which is the burst SIMKL answers
@@ -272,8 +283,11 @@ export class Orchestrator {
         this.library = diff.library;
         gate.removed = diff.removed;
         if (!diff.applied) {
-          // The signature is left unadvanced, so the next poll asks again.
-          this.log.warn('membership response would drop most of the library; not applying it');
+          // Answered by pulling whole rather than by asking again: the response
+          // is genuinely ambiguous — a category the user emptied and one the
+          // payload lost look the same — and only the full library settles it.
+          this.resyncPending = true;
+          this.log.warn('membership response would drop most of a category; re-pulling the whole library next poll');
         } else {
           this.removalAt = stamps;
           if (diff.removed) {
