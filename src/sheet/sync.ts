@@ -166,7 +166,7 @@ export class SheetSync {
    * through here, so an inert install writes no file at all.
    */
   private async record(result: SheetSyncResult): Promise<SheetSyncResult> {
-    this.lastRunAt = new Date().toISOString();
+    this.lastRunAt = Temporal.Now.instant().toString({ smallestUnit: 'millisecond' });
     this.lastStatus = result.status;
     await appendSheetRun(
       {
@@ -197,11 +197,11 @@ export class SheetSync {
 
       // One instant for both, threaded rather than defaulted. `planLookups`
       // and `planSync` must agree about which blocks are in scope, and they are
-      // separated here by the entire catalogue fetch — two `new Date()`
-      // defaults would put that fetch's duration between the two answers, so a
-      // block sitting on the activity cut-off could be looked up and then
-      // planned as out of scope, or the reverse.
-      const now = new Date();
+      // separated here by the entire catalogue fetch — letting each default its
+      // own `Temporal.Now.instant()` would put that fetch's duration between the
+      // two answers, so a block sitting on the activity cut-off could be looked
+      // up and then planned as out of scope, or the reverse.
+      const now = Temporal.Now.instant();
       const catalogue = await this.catalogueFor(grid, index, signal, now);
       const plan = planSync(grid, index, catalogue, { now });
       lines = describePlan(plan, grid.columns);
@@ -266,7 +266,7 @@ export class SheetSync {
    * Stamping happens here rather than at the end of the run, so the FRESH
    * retry loop's second pass asks for nothing: it has already been read.
    */
-  private async catalogueFor(grid: Grid, index: Map<number, TitleProgress>, signal: AbortSignal | undefined, now: Date): Promise<CatalogueView> {
+  private async catalogueFor(grid: Grid, index: Map<number, TitleProgress>, signal: AbortSignal | undefined, now: Temporal.Instant): Promise<CatalogueView> {
     const requests = planLookups(grid, index, { now, stamps: this.stamps, maxAgeMs: CATALOGUE_MAX_AGE_MS });
     const fetched = await fetchCatalogue(requests, { signal });
 
@@ -285,7 +285,7 @@ export class SheetSync {
     // `gone` id is stamped: retrying never starts working, and leaving it
     // unstamped would re-request it on every poll forever.
     const stalled = new Set(fetched.failed);
-    const at = Date.now();
+    const at = Temporal.Now.instant();
     for (const { id } of requests) {
       if (stalled.has(id)) continue;
       this.stamps.set(id, { watchedAt: index.get(id)?.lastWatchedAt ?? null, at });
@@ -307,7 +307,7 @@ export class SheetSync {
 
   private async apply(grid: Grid, plan: SheetPlan, lines: string[], retry: boolean, signal: AbortSignal | undefined): Promise<SheetSyncResult> {
     const record = planRecord(plan);
-    const name = backupName(new Date());
+    const name = backupName(Temporal.Now.instant());
     // The snapshot rides at the head of the write batch, so it is taken and the
     // write applied in one atomic request — there is no state in which the
     // sheet changed but nothing recorded what it looked like first.

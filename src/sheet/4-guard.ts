@@ -13,7 +13,7 @@
 
 import { config } from '../shared/config.ts';
 import { isBlank, isFormula, numberOf, sameValue, type Grid, type HeaderName } from './2-grid.ts';
-import { localDateOf, shiftDate } from '../shared/dates.ts';
+import { plainDateFrom, plainDateIn } from '../shared/dates.ts';
 import { dateSerial } from './1-progress.ts';
 import type { CellEdit, SheetPlan } from './3-plan.ts';
 import type { ExtendedValue } from '../api/google/types.ts';
@@ -28,7 +28,7 @@ const EDIT_FIELDS = new Set<HeaderName>(['Status', 'Episode', 'End']);
  */
 const INSERT_FIELDS = new Set<HeaderName>(['Season', 'Episode', 'Start', 'End', 'Episodes', 'Length']);
 
-const MIN_SERIAL = dateSerial('2000-01-01');
+const MIN_SERIAL = dateSerial(plainDateFrom('2000-01-01'));
 
 export class UnsafePlanError extends Error {
   constructor(message: string) {
@@ -50,7 +50,7 @@ const describeValue = (value: ExtendedValue): string =>
 export interface SafetyLimits {
   maxEdits?: number;
   maxRows?: number;
-  now?: Date;
+  now?: Temporal.Instant;
   /**
    * The zone the `End` bound is computed in, and it must be the one `planSync`
    * used: the serials it writes are local dates, so a guard bounding them in a
@@ -62,12 +62,12 @@ export interface SafetyLimits {
 export const assertPlanSafe = (
   plan: SheetPlan,
   grid: Grid,
-  { maxEdits = config.sheetMaxEdits, maxRows = config.sheetMaxRows, now = new Date(), timezone = config.timezone }: SafetyLimits = {},
+  { maxEdits = config.sheetMaxEdits, maxRows = config.sheetMaxRows, now = Temporal.Now.instant(), timezone = config.timezone }: SafetyLimits = {},
 ): void => {
   // Tomorrow, in the viewer's zone. The slice would be a UTC date, which is a
   // day out for a fifth of the clock — and the +1 day here would absorb it,
   // making the bound quietly two days wide instead of one.
-  const maxSerial = dateSerial(shiftDate(localDateOf(now, timezone), 1));
+  const maxSerial = dateSerial(plainDateIn(now, timezone).add({ days: 1 }));
   const showRows = new Set(grid.blocks.map((b) => b.row));
   const seasonRows = new Map(grid.blocks.flatMap((b) => b.seasons.map((s) => [s.row, s] as const)));
 

@@ -12,37 +12,38 @@ import {
   watchSerial,
 } from '../../src/sheet/1-progress.ts';
 import { libraryItem, libraryOf } from '../helpers.ts';
+import { instantFrom, plainDateFrom } from '../../src/shared/dates.ts';
 
 // --- dates -----------------------------------------------------------------
 
 test('a date serial counts days from the sheet epoch', () => {
-  assert.equal(dateSerial('1899-12-30'), 0);
-  assert.equal(dateSerial('1900-01-01'), 2);
-  assert.equal(dateSerial('2026-08-15'), 46249);
+  assert.equal(dateSerial(plainDateFrom('1899-12-30')), 0);
+  assert.equal(dateSerial(plainDateFrom('1900-01-01')), 2);
+  assert.equal(dateSerial(plainDateFrom('2026-08-15')), 46249);
 });
 
 // The highest-risk conversion in the project: iso.slice(0, 10) is wrong for any
 // US evening broadcast, which is stamped the following day in UTC.
 test('a late-evening watch lands on the local date, not the UTC one', () => {
-  assert.equal(watchSerial('2026-08-14T23:54:25Z', 'Europe/London'), dateSerial('2026-08-15'));
-  assert.equal(watchSerial('2026-08-15T02:54:25Z', 'America/New_York'), dateSerial('2026-08-14'));
+  assert.equal(watchSerial(instantFrom('2026-08-14T23:54:25Z'), 'Europe/London'), dateSerial(plainDateFrom('2026-08-15')));
+  assert.equal(watchSerial(instantFrom('2026-08-15T02:54:25Z'), 'America/New_York'), dateSerial(plainDateFrom('2026-08-14')));
 });
 
-// localDate ends in Intl.DateTimeFormat.prototype.format, which *throws* on an
-// invalid Date rather than yielding NaN — so the guard must run before the
-// conversion, not after it.
-test('an unusable timestamp returns null rather than throwing', () => {
-  assert.equal(watchSerial('not a date', 'Europe/London'), null);
-  assert.equal(watchSerial(null, 'Europe/London'), null);
-  assert.equal(watchSerial(undefined, 'Europe/London'), null);
-  assert.equal(watchSerial('', 'Europe/London'), null);
+// The parse is the step that can fail, so it is the step that answers null;
+// the conversion after it is total. The planner never throws, so an unusable
+// timestamp costs that episode's date rather than the run.
+test('an unusable timestamp is refused at the parse, and never reaches the serial', () => {
+  for (const bad of ['not a date', '', '2026', 'March 5', null, undefined]) {
+    assert.equal(normaliseInstant(bad), null, `${bad} should not parse`);
+    assert.equal(watchSerial(normaliseInstant(bad), 'Europe/London'), null);
+  }
 });
 
 // SIMKL occasionally emits a space where the T belongs, and Date.parse on that
 // is implementation-defined.
 test('a space-separated timestamp is normalised rather than rejected', () => {
-  assert.equal(normaliseInstant('2026-08-14 21:03:12Z'), '2026-08-14T21:03:12Z');
-  assert.equal(watchSerial('2026-08-14 21:03:12Z', 'Europe/London'), dateSerial('2026-08-14'));
+  assert.equal(normaliseInstant('2026-08-14 21:03:12Z')?.toString(), '2026-08-14T21:03:12Z');
+  assert.equal(watchSerial(instantFrom('2026-08-14 21:03:12Z'), 'Europe/London'), dateSerial(plainDateFrom('2026-08-14')));
 });
 
 test('a runtime in minutes becomes the day fraction the sheet holds', () => {
@@ -56,8 +57,8 @@ test('a runtime in minutes becomes the day fraction the sheet holds', () => {
 test('an episode with no watched_at is not counted', () => {
   const seasons = seasonsOf(libraryItem({ id: 1, seasons: { 1: ['2026-08-01T12:00:00Z', null, '2026-08-03T12:00:00Z'] } }));
   assert.equal(seasons.get(1)?.watched, 2);
-  assert.equal(seasons.get(1)?.firstWatchedAt, '2026-08-01T12:00:00Z');
-  assert.equal(seasons.get(1)?.lastWatchedAt, '2026-08-03T12:00:00Z');
+  assert.equal(String(seasons.get(1)?.firstWatchedAt), '2026-08-01T12:00:00Z');
+  assert.equal(String(seasons.get(1)?.lastWatchedAt), '2026-08-03T12:00:00Z');
 });
 
 // South Park: episodes[] holds 338 against a watched count of 331, and season 0

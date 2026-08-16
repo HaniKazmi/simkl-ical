@@ -18,7 +18,7 @@
  * count of 331, and season 0 holds exactly 7.
  */
 
-import { localDate, MS_PER_DAY, parseYmd } from '../shared/dates.ts';
+import { instantFrom, MS_PER_DAY, plainDateIn } from '../shared/dates.ts';
 import { itemStatus } from '../api/simkl/item.ts';
 import type { EpisodeDetail, LibraryItem } from '../api/simkl/types.ts';
 import type { Library } from '../library.ts';
@@ -29,38 +29,32 @@ import type { Library } from '../library.ts';
 const EPOCH_MS = Date.UTC(1899, 11, 30);
 
 /**
- * A usable ISO instant, or null.
+ * A usable instant, or null.
  *
- * Validation happens *before* any conversion, not after: `localDate` ends in
- * `Intl.DateTimeFormat.prototype.format`, which **throws RangeError** on an
- * invalid Date rather than returning something a NaN check could catch. SIMKL
- * occasionally emits `"2026-08-14 21:03:12Z"` with a space where the `T`
- * belongs, and `Date.parse` on that is implementation-defined.
+ * Thin over `instantFrom`, which owns the parse and SIMKL's one quirk — a space
+ * where the `T` belongs. Kept as a name here because "what the sheet accepts
+ * from a watch record" is a question about this pipeline, and the planner never
+ * throws: an unusable timestamp costs that episode's date, not the run.
  */
-export const normaliseInstant = (raw: string | null | undefined): string | null => {
-  if (typeof raw !== 'string') return null;
-  const iso = raw.trim().replace(' ', 'T');
-  if (!iso) return null;
-  return Number.isFinite(Date.parse(iso)) ? iso : null;
-};
+export const normaliseInstant = (raw: string | null | undefined): Temporal.Instant | null => instantFrom(raw);
 
-/** Days since the sheet epoch for a local calendar date. */
-export const dateSerial = (ymd: string): number => {
-  const [y, m, d] = parseYmd(ymd);
-  return Math.round((Date.UTC(y, m - 1, d) - EPOCH_MS) / MS_PER_DAY);
-};
+/**
+ * Days since the sheet epoch for a local calendar date.
+ *
+ * Still arithmetic on a UTC instant rather than a Temporal duration: the output
+ * is a Sheets serial, a number of whole days since 1899-12-30, and `PlainDate`
+ * offers no epoch-day accessor that would shorten this.
+ */
+export const dateSerial = (date: Temporal.PlainDate): number =>
+  Math.round((Date.UTC(date.year, date.month - 1, date.day) - EPOCH_MS) / MS_PER_DAY);
 
 /**
  * The sheet serial for a watch timestamp, in the viewer's zone — never
  * `iso.slice(0, 10)`, which lands a US evening broadcast on the following day.
  * Returns null rather than throwing, because the planner never throws.
  */
-export const watchSerial = (raw: string | null | undefined, timezone: string): number | null => {
-  const iso = normaliseInstant(raw);
-  if (iso === null) return null;
-  const date = localDate(iso, timezone);
-  return date === null ? null : dateSerial(date);
-};
+export const watchSerial = (at: Temporal.Instant | null | undefined, timezone: string): number | null =>
+  at ? dateSerial(plainDateIn(at, timezone)) : null;
 
 /** Per-episode minutes → the day fraction the `Episodes` column holds on a season row. */
 export const runtimeDays = (minutes: number | null | undefined): number | null =>
@@ -72,8 +66,8 @@ export interface SeasonProgress {
   number: number;
   /** Episodes with a real `watched_at`. The number the sheet's `Episode` column holds. */
   watched: number;
-  firstWatchedAt: string | null;
-  lastWatchedAt: string | null;
+  firstWatchedAt: Temporal.Instant | null;
+  lastWatchedAt: Temporal.Instant | null;
 }
 
 export interface TitleProgress {
@@ -81,7 +75,7 @@ export interface TitleProgress {
   title: string;
   /** `item.status` — the only membership there is, one record per title. */
   status: string | null;
-  lastWatchedAt: string | null;
+  lastWatchedAt: Temporal.Instant | null;
   watchedCount: number;
   totalCount: number;
   notAiredCount: number;
@@ -101,14 +95,16 @@ export const seasonsOf = (item: LibraryItem): Map<number, SeasonProgress> => {
   for (const season of item.seasons ?? []) {
     if (!Number.isInteger(season.number) || season.number <= 0) continue;
     let watched = 0;
-    let first: string | null = null;
-    let last: string | null = null;
+    let first: Temporal.Instant | null = null;
+    let last: Temporal.Instant | null = null;
     for (const episode of season.episodes ?? []) {
       const at = normaliseInstant(episode.watched_at);
       if (at === null) continue;
       watched += 1;
-      if (first === null || at < first) first = at;
-      if (last === null || at > last) last = at;
+      // Instants, so this is a comparison of values rather than of the strings
+      // they happened to arrive as.
+      if (first === null || Temporal.Instant.compare(at, first) < 0) first = at;
+      if (last === null || Temporal.Instant.compare(at, last) > 0) last = at;
     }
     out.set(season.number, { number: season.number, watched, firstWatchedAt: first, lastWatchedAt: last });
   }

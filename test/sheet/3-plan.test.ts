@@ -4,6 +4,7 @@ import { assertPlanSafe } from '../../src/sheet/4-guard.ts';
 import { parseGrid } from '../../src/sheet/2-grid.ts';
 import { deriveStatus, needsLookup, planLookups, planRecord, planSync, statusSource, type CatalogueView, type SheetPlan, type TitleCatalogue } from '../../src/sheet/3-plan.ts';
 import { dateSerial, indexLibrary, seasonShapes } from '../../src/sheet/1-progress.ts';
+import { plainDateIn } from '../../src/shared/dates.ts';
 import type { EpisodeDetail, ShowDetail } from '../../src/api/simkl/types.ts';
 import { daysAgo, libraryOf, sheetSnapshot, SHEET_HEADERS, type CellSpec, type ItemSpec, seasonRow, showRow } from '../helpers.ts';
 
@@ -125,7 +126,7 @@ test('a fully aired, fully watched season is dated on its last watch', () => {
     details: { 400: { status: 'airing' } },
   });
   const end = plan().edits.find((e) => e.field === 'End');
-  assert.equal(end?.value.numberValue, dateSerial(new Date(last).toLocaleDateString('en-CA', { timeZone: TZ })));
+  assert.equal(end?.value.numberValue, dateSerial(plainDateIn(Temporal.Instant.from(last), TZ)));
 });
 
 // A dated season is closed by the user's decision — which is also why a wrongly
@@ -426,12 +427,12 @@ test('a title whose watch time has not moved is not looked up again', () => {
   const cold = planLookups(grid, index);
   assert.deepEqual([...new Set(cold.map((r) => r.id))], [1, 2], 'a cold process reads everything eligible');
 
-  const at = Date.now();
+  const at = Temporal.Now.instant();
   const stamps = new Map(cold.map((r) => [r.id, { watchedAt: index.get(r.id)?.lastWatchedAt ?? null, at }]));
   assert.deepEqual(planLookups(grid, index, { stamps, maxAgeMs: DAY }), [], 'nothing moved, nothing re-read');
 
   // Only the title that moved.
-  stamps.set(1, { watchedAt: '1999-01-01T00:00:00Z', at });
+  stamps.set(1, { watchedAt: Temporal.Instant.from('1999-01-01T00:00:00Z'), at });
   assert.deepEqual([...new Set(planLookups(grid, index, { stamps, maxAgeMs: DAY }).map((r) => r.id))], [1]);
 });
 
@@ -444,10 +445,10 @@ test('a stamp past its age ceiling is re-read even with no activity', () => {
   });
   const unchanged = { watchedAt: index.get(1)?.lastWatchedAt ?? null };
 
-  const fresh = new Map([[1, { ...unchanged, at: Date.now() - DAY / 2 }]]);
+  const fresh = new Map([[1, { ...unchanged, at: Temporal.Now.instant().subtract({ milliseconds: DAY / 2 }) }]]);
   assert.deepEqual(planLookups(grid, index, { stamps: fresh, maxAgeMs: DAY }), []);
 
-  const old = new Map([[1, { ...unchanged, at: Date.now() - DAY * 2 }]]);
+  const old = new Map([[1, { ...unchanged, at: Temporal.Now.instant().subtract({ milliseconds: DAY * 2 }) }]]);
   assert.equal(planLookups(grid, index, { stamps: old, maxAgeMs: DAY }).length > 0, true);
 });
 
@@ -461,11 +462,11 @@ test('the cut-off still wins over a stamp — an ineligible title is never read'
 
 test('needsLookup reads unstamped, moved and aged as due, and nothing else', () => {
   const progress = indexLibrary(libraryOf({ id: 1, lastWatchedAt: '2026-08-01T00:00:00Z' })).get(1);
-  const now = Date.now();
+  const now = Temporal.Now.instant();
   assert.equal(needsLookup(undefined, progress, now, DAY), true, 'never read');
-  assert.equal(needsLookup({ watchedAt: '2026-08-01T00:00:00Z', at: now }, progress, now, DAY), false);
-  assert.equal(needsLookup({ watchedAt: '2026-07-01T00:00:00Z', at: now }, progress, now, DAY), true, 'moved');
-  assert.equal(needsLookup({ watchedAt: '2026-08-01T00:00:00Z', at: now - DAY * 2 }, progress, now, DAY), true, 'aged');
+  assert.equal(needsLookup({ watchedAt: Temporal.Instant.from('2026-08-01T00:00:00Z'), at: now }, progress, now, DAY), false);
+  assert.equal(needsLookup({ watchedAt: Temporal.Instant.from('2026-07-01T00:00:00Z'), at: now }, progress, now, DAY), true, 'moved');
+  assert.equal(needsLookup({ watchedAt: Temporal.Instant.from('2026-08-01T00:00:00Z'), at: now.subtract({ milliseconds: DAY * 2 }) }, progress, now, DAY), true, 'aged');
   // A title that has dropped out of the library entirely still compares.
   assert.equal(needsLookup({ watchedAt: null, at: now }, undefined, now, DAY), false);
 });
