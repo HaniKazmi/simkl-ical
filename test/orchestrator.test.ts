@@ -470,3 +470,70 @@ test('a calendar refresh renders the library as it is when the fetch finishes', 
     assert.equal(state.feed.events.length, 1, 'the render must use the library the poll left, not the one the fetch started with');
   });
 });
+
+// The trap this field exists to avoid. A quiet poll returns early, so a gate
+// recorded after that return would leave the page able to show only gates where
+// something moved — backwards, since nothing moving is the healthy steady state
+// and the line an operator most wants to see.
+test('a quiet poll still records a gate, with nothing in it', async () => {
+  await withToken(async (state) => {
+    const acts = activities();
+    await withFetch(api(acts), () => state.refreshLibraryIfChanged());
+
+    await withFetch(api(acts), async (calls) => {
+      await state.refreshLibraryIfChanged();
+      assert.equal(calls.length, 1, 'still exactly one request');
+      assert.deepEqual(state.lastGate, { moved: [], refetched: [] });
+    });
+  });
+});
+
+// On a cold start every signature differs from the absent one it is compared
+// against, so both halves are the full set and they agree.
+test('a cold start reports every list as both moved and refetched', async () => {
+  await withToken(async (state) => {
+    await withFetch(api(activities()), async () => {
+      await state.refreshLibraryIfChanged();
+      assert.equal(state.lastGate?.moved.length, LISTS.length);
+      assert.equal(state.lastGate?.refetched.length, LISTS.length);
+    });
+  });
+});
+
+// The case the two fields exist for. A forced poll refetches everything while
+// the gate itself says nothing moved, so collapsing them into one list would
+// report eleven changes that did not happen.
+test('a forced poll refetches every list while the gate reports none moved', async () => {
+  await withToken(async (state) => {
+    await prime(state);
+    await withFetch(api(activities()), async () => {
+      await state.refreshLibraryIfChanged({ force: true });
+      assert.deepEqual(state.lastGate?.moved, [], 'the signatures all still match');
+      assert.equal(state.lastGate?.refetched.length, LISTS.length, 'and yet every list was refetched');
+    });
+  });
+});
+
+test('a gate that moves one list records just that one', async () => {
+  await withToken(async (state) => {
+    await prime(state);
+    await withFetch(api(activities({ tv_shows: { watching: '2026-08-15T18:00:00Z' } })), async () => {
+      await state.refreshLibraryIfChanged();
+      assert.deepEqual(state.lastGate, { moved: ['shows_watching'], refetched: ['shows_watching'] });
+    });
+  });
+});
+
+// A poll that never reached the gate has nothing to report about it, which is
+// not the same as reporting that nothing moved.
+test('a failed poll leaves the previous gate standing', async () => {
+  await withToken(async (state) => {
+    await prime(state);
+    const before = state.lastGate;
+    await withFetch(() => new Response('nope', { status: 500 }), async () => {
+      await state.refreshLibraryIfChanged();
+    });
+    assert.deepEqual(state.lastGate, before);
+    assert.ok(state.errors.library, 'and the failure is reported');
+  });
+});

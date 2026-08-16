@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { listSignature, listSignatures, pruneSuperseded, staleLists, LISTS } from '../src/library.ts';
+import { listCounts, listSignature, listSignatures, pruneSuperseded, staleLists, LISTS } from '../src/library.ts';
 import { itemSimklId } from '../src/api/simkl/item.ts';
 import type { Activities, ListDefinition } from '../src/api/simkl/types.ts';
 
@@ -214,4 +214,26 @@ test('pruning is scoped to one type, and leaves an untouched library alone', () 
 
   const pruned = pruneSuperseded(library, [listNamed('shows_watching')]);
   assert.deepEqual(pruned.anime_watching?.anime?.map(itemSimklId), [1], 'a different type is never touched');
+});
+
+// Every key, always. A list dropped for being empty makes "not fetched yet" and
+// "you have nothing in it" render identically, and only one of those is news.
+test('listCounts names every list, including the empty ones', () => {
+  const counts = listCounts({
+    shows_watching: { shows: [{ show: { ids: { simkl: 1 } } }, { show: { ids: { simkl: 2 } } }] },
+    anime_watching: { anime: [{ show: { ids: { simkl: 3 } } }] },
+    movies_plantowatch: { movies: [{ movie: { ids: { simkl: 4 } } }] },
+  } as never);
+
+  assert.deepEqual(Object.keys(counts), LISTS.map((l) => l.key), 'in LISTS order');
+  assert.equal(counts.shows_watching, 2);
+  assert.equal(counts.anime_watching, 1);
+  assert.equal(counts.movies_plantowatch, 1);
+  assert.equal(counts.shows_dropped, 0);
+});
+
+test('listCounts on a library that has never loaded is all zeroes', () => {
+  const counts = listCounts(null);
+  assert.equal(Object.keys(counts).length, LISTS.length);
+  assert.ok(Object.values(counts).every((n) => n === 0));
 });
