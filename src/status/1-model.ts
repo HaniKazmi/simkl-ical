@@ -185,7 +185,7 @@ const due = (last: string | null, every: Temporal.Duration, now: Temporal.Instan
   if (at === null) return { label: 'due now' };
   const next = at.add(every);
   return Temporal.Instant.compare(next, now) <= 0
-    ? { label: `overdue by ${duration(now.until(next).negated())}` }
+    ? { label: `overdue by ${duration(next.until(now))}` }
     : { label: `in ${duration(now.until(next))}` };
 };
 

@@ -56,7 +56,7 @@ const MAX_ATTEMPTS = 3;
  * prompt a re-read. Daily, for the reason `movieRefreshMs` is daily: a network
  * renewing a show produces nothing in your library to gate on.
  */
-const CATALOGUE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const CATALOGUE_MAX_AGE = Temporal.Duration.from({ hours: 24 });
 
 export type SheetSyncStatus = 'idle' | 'reported' | 'applied' | 'refused' | 'failed' | 'rolled-back' | 'frozen';
 
@@ -268,7 +268,7 @@ export class SheetSync {
    * retry loop's second pass asks for nothing: it has already been read.
    */
   private async catalogueFor(grid: Grid, index: Map<number, TitleProgress>, signal: AbortSignal | undefined, now: Temporal.Instant): Promise<CatalogueView> {
-    const requests = planLookups(grid, index, { now, stamps: this.stamps, maxAgeMs: CATALOGUE_MAX_AGE_MS });
+    const requests = planLookups(grid, index, { now, stamps: this.stamps, maxAge: CATALOGUE_MAX_AGE });
     const fetched = await fetchCatalogue(requests, { signal });
 
     // Derive on the way in: the shapes are computed once per title here rather

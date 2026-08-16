@@ -314,10 +314,13 @@ export const needsLookup = (
   stamp: CatalogueStamp | undefined,
   progress: TitleProgress | undefined,
   now: Temporal.Instant,
-  maxAgeMs: number,
+  maxAge: Temporal.Duration | null,
 ): boolean => {
   if (!stamp) return true;
-  if (now.epochMilliseconds - stamp.at.epochMilliseconds > maxAgeMs) return true;
+  // Same shape as `filmDue`'s floor, and now the same spelling: a stamp is stale
+  // once `now` has passed it by the ceiling. Null means no ceiling at all, which
+  // is what a caller that gates purely on watch activity wants.
+  if (maxAge && Temporal.Instant.compare(now, stamp.at.add(maxAge)) > 0) return true;
   // By value. Two `Instant`s for the same moment are different objects, so `!==`
   // here would be true forever and every title would be re-read every poll.
   return !sameInstant(stamp.watchedAt, progress?.lastWatchedAt ?? null);
@@ -329,7 +332,7 @@ const sameInstant = (a: Temporal.Instant | null, b: Temporal.Instant | null): bo
 export interface LookupOptions extends PlanOptions {
   /** What is already held, keyed by SIMKL id. Empty on a cold process. */
   stamps?: Map<number, CatalogueStamp>;
-  maxAgeMs?: number;
+  maxAge?: Temporal.Duration | null;
 }
 
 /**
@@ -345,11 +348,11 @@ export interface LookupOptions extends PlanOptions {
 export const planLookups = (
   grid: Grid,
   index: Map<number, TitleProgress>,
-  { now = Temporal.Now.instant(), sinceDays = config.sheetSinceDays, stamps = new Map<number, CatalogueStamp>(), maxAgeMs = Infinity }: LookupOptions = {},
+  { now = Temporal.Now.instant(), sinceDays = config.sheetSinceDays, stamps = new Map<number, CatalogueStamp>(), maxAge = null }: LookupOptions = {},
 ): CatalogueRequest[] => {
   const cutoff = cutoffFrom(now, sinceDays);
   const requests: CatalogueRequest[] = [];
-  const due = (id: number): boolean => needsLookup(stamps.get(id), index.get(id), now, maxAgeMs);
+  const due = (id: number): boolean => needsLookup(stamps.get(id), index.get(id), now, maxAge);
 
   for (const block of grid.blocks) {
     if (!isRecent(blockIds(block), index, cutoff)) continue;
@@ -485,7 +488,7 @@ export const planSync = (
         }
       }
 
-      const insert = planInsert(grid, block, source, covered, catalogue, { now, timezone, sinceDays });
+      const insert = planInsert(grid, block, source, covered, catalogue, { cutoff, timezone });
       if (typeof insert === 'string') plan.skipped.push(insert);
       else if (insert) {
         // One row per run, and not a setting: every request index in a plan is
@@ -533,10 +536,9 @@ const planInsert = (
   source: TitleProgress | null,
   covered: Set<number>,
   catalogue: CatalogueView,
-  { now, timezone, sinceDays }: Required<PlanOptions>,
+  { cutoff, timezone }: { cutoff: Temporal.Instant; timezone: string },
 ): RowInsert | string | null => {
   if (block.type !== 'show' || !source || !block.ids.length) return null;
-  const cutoff = cutoffFrom(now, sinceDays);
 
   const candidates = [...source.seasons.values()]
     .filter((s) => s.watched > 0 && !covered.has(s.number) && within(s.lastWatchedAt, cutoff))

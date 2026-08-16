@@ -15,6 +15,7 @@
 import type { SheetRunRecord } from '../../src/sheet/io/journal.ts';
 import type { RequestRecord } from '../../src/api/requests.ts';
 import type { StatusInput } from '../../src/status/1-model.ts';
+import { isoOf } from '../../src/shared/dates.ts';
 
 export const MINUTE = 60_000;
 export const HOUR = 60 * MINUTE;
@@ -28,7 +29,7 @@ export const NOW = Temporal.Instant.from('2026-08-16T14:16:00.000Z');
  * from the real clock — importing both into one file is how a test starts
  * measuring against a moving `now`.
  */
-export const before = (ms: number): string => NOW.subtract({ milliseconds: ms }).toString({ smallestUnit: 'millisecond' });
+export const before = (ms: number): string => isoOf(NOW.subtract({ milliseconds: ms }));
 
 /** Nothing has run, nothing is configured, nothing is on disk. */
 export const COLD: StatusInput = {

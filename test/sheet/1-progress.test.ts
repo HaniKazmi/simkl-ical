@@ -4,7 +4,6 @@ import {
   courComplete,
   dateSerial,
   indexLibrary,
-  normaliseInstant,
   runtimeDays,
   seasonComplete,
   seasonShapes,
@@ -34,15 +33,15 @@ test('a late-evening watch lands on the local date, not the UTC one', () => {
 // timestamp costs that episode's date rather than the run.
 test('an unusable timestamp is refused at the parse, and never reaches the serial', () => {
   for (const bad of ['not a date', '', '2026', 'March 5', null, undefined]) {
-    assert.equal(normaliseInstant(bad), null, `${bad} should not parse`);
-    assert.equal(watchSerial(normaliseInstant(bad), 'Europe/London'), null);
+    assert.equal(instantFrom(bad), null, `${bad} should not parse`);
+    assert.equal(watchSerial(instantFrom(bad), 'Europe/London'), null);
   }
 });
 
 // SIMKL occasionally emits a space where the T belongs, and Date.parse on that
 // is implementation-defined.
 test('a space-separated timestamp is normalised rather than rejected', () => {
-  assert.equal(normaliseInstant('2026-08-14 21:03:12Z')?.toString(), '2026-08-14T21:03:12Z');
+  assert.equal(instantFrom('2026-08-14 21:03:12Z')?.toString(), '2026-08-14T21:03:12Z');
   assert.equal(watchSerial(instantFrom('2026-08-14 21:03:12Z'), 'Europe/London'), dateSerial(plainDateFrom('2026-08-14')));
 });
 

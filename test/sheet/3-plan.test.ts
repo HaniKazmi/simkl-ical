@@ -10,7 +10,7 @@ import { daysAgo, libraryOf, sheetSnapshot, SHEET_HEADERS, type CellSpec, type I
 
 const H = SHEET_HEADERS;
 const TZ = 'Europe/London';
-const DAY = 86_400_000;
+const DAY = Temporal.Duration.from({ hours: 24 });
 
 const show = showRow;
 const season = (n: number, episodes: number | null, end: number | null, id: number | string | null = null): CellSpec[] =>
@@ -429,11 +429,11 @@ test('a title whose watch time has not moved is not looked up again', () => {
 
   const at = Temporal.Now.instant();
   const stamps = new Map(cold.map((r) => [r.id, { watchedAt: index.get(r.id)?.lastWatchedAt ?? null, at }]));
-  assert.deepEqual(planLookups(grid, index, { stamps, maxAgeMs: DAY }), [], 'nothing moved, nothing re-read');
+  assert.deepEqual(planLookups(grid, index, { stamps, maxAge: DAY }), [], 'nothing moved, nothing re-read');
 
   // Only the title that moved.
   stamps.set(1, { watchedAt: Temporal.Instant.from('1999-01-01T00:00:00Z'), at });
-  assert.deepEqual([...new Set(planLookups(grid, index, { stamps, maxAgeMs: DAY }).map((r) => r.id))], [1]);
+  assert.deepEqual([...new Set(planLookups(grid, index, { stamps, maxAge: DAY }).map((r) => r.id))], [1]);
 });
 
 // The backstop for the case watch activity cannot catch: /tv/{id} status
@@ -445,11 +445,11 @@ test('a stamp past its age ceiling is re-read even with no activity', () => {
   });
   const unchanged = { watchedAt: index.get(1)?.lastWatchedAt ?? null };
 
-  const fresh = new Map([[1, { ...unchanged, at: Temporal.Now.instant().subtract({ milliseconds: DAY / 2 }) }]]);
-  assert.deepEqual(planLookups(grid, index, { stamps: fresh, maxAgeMs: DAY }), []);
+  const fresh = new Map([[1, { ...unchanged, at: Temporal.Now.instant().subtract({ hours: 12 }) }]]);
+  assert.deepEqual(planLookups(grid, index, { stamps: fresh, maxAge: DAY }), []);
 
-  const old = new Map([[1, { ...unchanged, at: Temporal.Now.instant().subtract({ milliseconds: DAY * 2 }) }]]);
-  assert.equal(planLookups(grid, index, { stamps: old, maxAgeMs: DAY }).length > 0, true);
+  const old = new Map([[1, { ...unchanged, at: Temporal.Now.instant().subtract({ hours: 48 }) }]]);
+  assert.equal(planLookups(grid, index, { stamps: old, maxAge: DAY }).length > 0, true);
 });
 
 test('the cut-off still wins over a stamp — an ineligible title is never read', () => {
@@ -457,7 +457,7 @@ test('the cut-off still wins over a stamp — an ineligible title is never read'
     rows: [show('Dormant', 'Ended', 1), season(1, 10, 44000)],
     items: [{ id: 1, status: 'completed', seasons: { 1: watched(10, 500) } }],
   });
-  assert.deepEqual(planLookups(grid, index, { stamps: new Map(), maxAgeMs: DAY }), []);
+  assert.deepEqual(planLookups(grid, index, { stamps: new Map(), maxAge: DAY }), []);
 });
 
 test('needsLookup reads unstamped, moved and aged as due, and nothing else', () => {
@@ -466,7 +466,7 @@ test('needsLookup reads unstamped, moved and aged as due, and nothing else', () 
   assert.equal(needsLookup(undefined, progress, now, DAY), true, 'never read');
   assert.equal(needsLookup({ watchedAt: Temporal.Instant.from('2026-08-01T00:00:00Z'), at: now }, progress, now, DAY), false);
   assert.equal(needsLookup({ watchedAt: Temporal.Instant.from('2026-07-01T00:00:00Z'), at: now }, progress, now, DAY), true, 'moved');
-  assert.equal(needsLookup({ watchedAt: Temporal.Instant.from('2026-08-01T00:00:00Z'), at: now.subtract({ milliseconds: DAY * 2 }) }, progress, now, DAY), true, 'aged');
+  assert.equal(needsLookup({ watchedAt: Temporal.Instant.from('2026-08-01T00:00:00Z'), at: now.subtract({ hours: 48 }) }, progress, now, DAY), true, 'aged');
   // A title that has dropped out of the library entirely still compares.
   assert.equal(needsLookup({ watchedAt: null, at: now }, undefined, now, DAY), false);
 });

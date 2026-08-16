@@ -142,7 +142,7 @@ export const FILM_HORIZON_DAYS = 30;
  * Whether one film's release date is worth asking about again.
  *
  * Two questions, in order: has it been asked about recently, and is its date
- * close enough to still move? `refreshMs` is the floor, so a film is never
+ * close enough to still move? `refresh` is the floor, so a film is never
  * looked up more than once per interval however imminent it is — the poll runs
  * far more often than the dates change. Past that floor, only a film with no
  * known date or one dated inside the horizon is re-read; a date already past
