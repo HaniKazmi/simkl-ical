@@ -31,7 +31,7 @@ test('nothing rendered yet is unhealthy, and says why', () => {
 // A revoked token must eventually read as unhealthy.
 test('a feed that has stopped polling goes unhealthy', () => {
   const state = rendered();
-  state.polledAt = ago(config.activitiesPollMs * 4);
+  state.polledAt = ago(config.activitiesPoll.total('milliseconds') * 4);
   state.errors.library = 'AUTH: SIMKL rejected the token (401)';
   assert.equal(state.health.ok, false);
   assert.deepEqual(state.health.problems, ['AUTH: SIMKL rejected the token (401)']);
@@ -62,7 +62,7 @@ test('problems are ordered library, then calendars, then rendering', () => {
 // the CDN is quiet, so emitting the staleness line too would say it twice.
 test('a subsystem with an error does not also report its staleness', () => {
   const state = rendered();
-  state.feed.calendarsFreshAt = ago(config.calendarRefreshMs * 4);
+  state.feed.calendarsFreshAt = ago(config.calendarRefresh.total('milliseconds') * 4);
   assert.deepEqual(state.health.problems, [`the CDN has not answered since ${state.feed.calendarsFreshAt}`]);
 
   state.feed.errors.calendar = 'serving cached calendars — the CDN has not answered since startup';
@@ -71,7 +71,7 @@ test('a subsystem with an error does not also report its staleness', () => {
 
 test('stale calendars go unhealthy', () => {
   const state = rendered();
-  state.feed.calendarsFreshAt = ago(config.calendarRefreshMs * 4);
+  state.feed.calendarsFreshAt = ago(config.calendarRefresh.total('milliseconds') * 4);
   assert.equal(state.health.ok, false);
 });
 
@@ -81,7 +81,7 @@ test('stale calendars go unhealthy', () => {
 test('a CDN outage is unhealthy even though refreshes keep "succeeding"', () => {
   const state = rendered();
   state.feed.calendarsAt = new Date().toISOString(); // attempts keep happening...
-  state.feed.calendarsFreshAt = ago(config.calendarRefreshMs * 4); // ...but nothing fresh
+  state.feed.calendarsFreshAt = ago(config.calendarRefresh.total('milliseconds') * 4); // ...but nothing fresh
   assert.equal(state.health.ok, false);
   assert.notEqual(state.health.feed.calendars.attemptedAt, state.health.feed.calendars.freshAt);
 });
@@ -100,7 +100,7 @@ test('a render that keeps failing is unhealthy', () => {
 // means rendering has stopped even when nothing reported an error.
 test('a feed that has stopped rendering is unhealthy', () => {
   const state = rendered();
-  state.feed.renderedAt = ago(config.calendarRefreshMs * 4);
+  state.feed.renderedAt = ago(config.calendarRefresh.total('milliseconds') * 4);
   assert.equal(state.health.ok, false);
   assert.deepEqual(state.health.problems, [`nothing has rendered since ${state.feed.renderedAt}`]);
 });

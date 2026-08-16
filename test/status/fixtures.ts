@@ -21,14 +21,14 @@ export const HOUR = 60 * MINUTE;
 export const DAY = 24 * HOUR;
 
 /** Fixed, so every relative label in an assertion is exact rather than flaky. */
-export const NOW = Date.parse('2026-08-16T14:16:00.000Z');
+export const NOW = Temporal.Instant.from('2026-08-16T14:16:00.000Z');
 
 /**
  * `ms` before `NOW`. Deliberately not `helpers.ts`'s `ago`, which counts back
  * from the real clock — importing both into one file is how a test starts
  * measuring against a moving `now`.
  */
-export const before = (ms: number): string => new Date(NOW - ms).toISOString();
+export const before = (ms: number): string => NOW.subtract({ milliseconds: ms }).toString({ smallestUnit: 'millisecond' });
 
 /** Nothing has run, nothing is configured, nothing is on disk. */
 export const COLD: StatusInput = {
@@ -45,7 +45,7 @@ export const COLD: StatusInput = {
   gate: null,
   movement: null,
   requests: [],
-  activitiesPollMs: 2 * HOUR,
+  activitiesPoll: Temporal.Duration.from({ milliseconds: 2 * HOUR }),
   events: 0,
   renderedAt: null,
   servingCached: false,
@@ -53,7 +53,7 @@ export const COLD: StatusInput = {
   calendarsAt: null,
   calendarsChangedAt: null,
   calendarError: null,
-  calendarRefreshMs: 6 * HOUR,
+  calendarRefresh: Temporal.Duration.from({ milliseconds: 6 * HOUR }),
   films: 0,
   filmsResolvedAt: null,
   filmsDue: false,

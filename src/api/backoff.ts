@@ -13,9 +13,13 @@ import { config } from '../shared/config.ts';
 /** Ceiling on a server-requested wait, so a hostile header cannot stall a refresh. */
 const MAX_RETRY_AFTER_MS = 60_000;
 
-export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+/** The one place a span meets `setTimeout`, which takes a number. */
+export const sleep = (span: Temporal.Duration | number): Promise<void> => {
+  const ms = typeof span === 'number' ? span : span.total('milliseconds');
+  return new Promise((r) => setTimeout(r, ms));
+};
 
-export const backoffMs = (attempt: number): number => 2 ** (attempt - 1) * config.retryBaseMs;
+export const backoffMs = (attempt: number): number => 2 ** (attempt - 1) * config.retryBase.total('milliseconds');
 
 /**
  * How long to wait before the next attempt. Cloudflare answers a 429 with

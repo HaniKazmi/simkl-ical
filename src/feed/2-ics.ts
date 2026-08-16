@@ -38,7 +38,7 @@ export const renderIcs = (events: FeedEvent[], { name = 'SIMKL', timezone = conf
     // No calendar-level `timezone`: it makes ical-generator emit a floating
     // DTSTAMP, which RFC 5545 requires in UTC. Every event here is all-day, so
     // only the X-WR-TIMEZONE hint is lost, and that is added back below.
-    ttl: Math.round(config.calendarRefreshMs / 1000),
+    ttl: Math.round(config.calendarRefresh.total('seconds')),
     method: ICalCalendarMethod.PUBLISH,
   });
 

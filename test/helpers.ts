@@ -20,7 +20,7 @@ import type { Library } from '../src/library.ts';
 // Here rather than per file, for the same reason: a file that forgets these
 // reaches the real API, or sleeps 15s per retry path.
 config.clientId ??= 'test-client-id';
-config.retryBaseMs = 1;
+config.retryBase = Temporal.Duration.from({ milliseconds: 1 });
 // The same class of guard as withTempDataDir, and not a convenience. SHEET_ID
 // lives in .env, config.ts loads it at import, and a test that forgot to
 // override would write to the real spreadsheet.

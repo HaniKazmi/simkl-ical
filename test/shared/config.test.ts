@@ -29,9 +29,9 @@ test('a missing client id says which file to fill in', async () => {
 // these breaks the service quietly if left unbounded.
 test('the intervals cannot be set low enough to hammer the APIs', () => {
   const c = buildConfig({ CALENDAR_REFRESH_MS: '0', ACTIVITIES_POLL_MS: '-1', MOVIE_REFRESH_MS: '10' });
-  assert.equal(c.calendarRefreshMs, 60_000, 'a zero interval is a tight loop against the CDN');
-  assert.equal(c.activitiesPollMs, 60_000);
-  assert.equal(c.movieRefreshMs, 60_000);
+  assert.equal(c.calendarRefresh.total('milliseconds'), 60_000, 'a zero interval is a tight loop against the CDN');
+  assert.equal(c.activitiesPoll.total('milliseconds'), 60_000);
+  assert.equal(c.movieRefresh.total('milliseconds'), 60_000);
 });
 
 test('the grace window stays in a range the archives can serve', () => {
@@ -162,4 +162,13 @@ test('a runtime without Temporal is refused at boot, with a message that says wh
 
 test('a runtime with Temporal passes', () => {
   assert.doesNotThrow(() => requireTemporal());
+});
+
+// The environment still speaks milliseconds — `ACTIVITIES_POLL_MS=1800000` is
+// documented — so a value that arrives as an integer must survive as the same
+// span, whatever the field's type became.
+test('a millisecond env var becomes exactly that span', () => {
+  const c = buildConfig({ ACTIVITIES_POLL_MS: '900000', RETRY_BASE_MS: '250' });
+  assert.equal(c.activitiesPoll.total('milliseconds'), 900_000);
+  assert.equal(c.retryBase.total('milliseconds'), 250);
 });

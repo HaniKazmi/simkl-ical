@@ -165,13 +165,14 @@ export const filmDue = (
   release: MovieRelease | undefined,
   now: Temporal.Instant,
   {
-    refreshMs = config.movieRefreshMs,
+    refresh = config.movieRefresh,
     horizonDays = FILM_HORIZON_DAYS,
     timezone = config.timezone,
-  }: { refreshMs?: number; horizonDays?: number; timezone?: string } = {},
+  }: { refresh?: Temporal.Duration; horizonDays?: number; timezone?: string } = {},
 ): boolean => {
   if (stamp === undefined) return true;
-  if (now.epochMilliseconds - stamp.epochMilliseconds <= refreshMs) return false;
+  // At or before the floor, there is nothing a re-read could learn.
+  if (Temporal.Instant.compare(now, stamp.add(refresh)) <= 0) return false;
   if (!release) return true;
   const horizon = plainDateIn(now, timezone).add({ days: horizonDays });
   return Temporal.PlainDate.compare(release.date, horizon) <= 0;

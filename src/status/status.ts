@@ -20,7 +20,7 @@ import type { Orchestrator } from '../orchestrator.ts';
 import { buildModel } from './1-model.ts';
 import { renderPage } from './2-html.ts';
 
-export const renderStatus = (state: Orchestrator, { now = Date.now() }: { now?: number } = {}): string => {
+export const renderStatus = (state: Orchestrator, { now = Temporal.Now.instant() }: { now?: Temporal.Instant } = {}): string => {
   const { feed, sheetSync } = state;
   const health = state.health;
 
@@ -39,7 +39,7 @@ export const renderStatus = (state: Orchestrator, { now = Date.now() }: { now?: 
       counts: libraryCounts(state.library),
       gate: state.lastGate,
       movement: state.lastMovement,
-      activitiesPollMs: config.activitiesPollMs,
+      activitiesPoll: config.activitiesPoll,
 
       events: feed.events.length,
       renderedAt: feed.renderedAt,
@@ -48,7 +48,7 @@ export const renderStatus = (state: Orchestrator, { now = Date.now() }: { now?: 
       calendarsAt: feed.calendarsAt,
       calendarsChangedAt: feed.calendarsChangedAt,
       calendarError: feed.errors.calendar,
-      calendarRefreshMs: config.calendarRefreshMs,
+      calendarRefresh: config.calendarRefresh,
       films: feed.movieReleases.size,
       filmsResolvedAt: feed.filmsResolvedAt,
       // Asked of `Feed`, which owns the rule. Re-deriving it here from

@@ -106,10 +106,13 @@ test('the backoff crosses a minute, an hour and a day cleanly', () => {
   assert.equal(deltaFrom('2026-01-01T00:00:00Z'), '2025-12-31T23:59:59Z');
 });
 
-// Second precision, because that is the granularity the comparison uses and a
-// fractional part is not something SIMKL ever sent us.
-test('the result carries no milliseconds', () => {
+// Second precision, because that is the granularity `date_from` is compared at.
+// The fractional input is the case that can tell: a whole-second one renders
+// without a fraction anyway, so it would pass whatever the truncation did.
+test('the result carries no milliseconds, whatever the watermark had', () => {
   assert.doesNotMatch(deltaFrom('2026-08-15T12:00:00Z')!, /\.\d/);
+  assert.equal(deltaFrom('2026-08-15T12:00:00.500Z'), '2026-08-15T11:59:59Z');
+  assert.equal(deltaFrom('2026-08-15T12:00:00.001Z'), '2026-08-15T11:59:59Z');
 });
 
 // Sending back what SIMKL gave us beats sending a guess.

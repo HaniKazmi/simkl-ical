@@ -108,11 +108,11 @@ export interface HealthInput {
 }
 
 export const buildHealth = (input: HealthInput): Health => {
-  const stalePoll = ageOf(input.polledAt) > config.activitiesPollMs * 3;
-  const staleCalendars = ageOf(input.calendarsFreshAt) > config.calendarRefreshMs * 3;
+  const stalePoll = ageOf(input.polledAt) > config.activitiesPoll.total('milliseconds') * 3;
+  const staleCalendars = ageOf(input.calendarsFreshAt) > config.calendarRefresh.total('milliseconds') * 3;
   // A render happens on every calendar refresh, so an old renderedAt means
   // rendering has stopped even when nothing reported an error.
-  const staleRender = ageOf(input.renderedAt) > config.calendarRefreshMs * 3;
+  const staleRender = ageOf(input.renderedAt) > config.calendarRefresh.total('milliseconds') * 3;
 
   // Worst first. Each subsystem contributes at most one line: its own error
   // if it has one, otherwise its staleness — an error like "serving cached
