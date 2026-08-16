@@ -98,3 +98,29 @@ test('the calendar name and timezone hint are configurable', () => {
 test('an event with no url omits the URL property', () => {
   assert.ok(!/^URL/m.test(renderIcs([{ ...event, url: null }])));
 });
+
+/**
+ * ical-generator picks its date branch by duck-typing — a `PlainDate` is
+ * recognised by having `toPlainDateTime` and lacking `hour`, `timeZoneId` and
+ * `epochSeconds` — so which branch a value takes is not pinned by any type.
+ *
+ * That matters less than it looks: passing `start.toString()` instead routes
+ * through the string branch and yields byte-identical output, so a tightened
+ * check upstream would be harmless. What this asserts is the property that has
+ * to hold whichever branch runs. A DATE-VALUE that became a DATE-TIME, or an
+ * all-day event that acquired a time, are both silent from the calendar's point
+ * of view until an event lands on the wrong day.
+ */
+test('an all-day event renders as a bare DATE, with the exclusive end date', () => {
+  const ics = renderIcs([{ ...event, date: '2026-08-16' }]);
+  assert.match(ics, /^DTSTART;VALUE=DATE:20260816\r$/m);
+  assert.match(ics, /^DTEND;VALUE=DATE:20260817\r$/m);
+  assert.doesNotMatch(ics, /DTSTART[^\r]*T\d{6}/, 'never a DATE-TIME');
+});
+
+// Month and year rollover, which is where `Date.UTC(y, m - 1, d + 1)` and
+// `PlainDate.add({ days: 1 })` could disagree and nothing else would notice.
+test('the exclusive end rolls over the month and the year', () => {
+  assert.match(renderIcs([{ ...event, date: '2026-02-28' }]), /^DTEND;VALUE=DATE:20260301\r$/m);
+  assert.match(renderIcs([{ ...event, date: '2026-12-31' }]), /^DTEND;VALUE=DATE:20270101\r$/m);
+});
