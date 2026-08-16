@@ -121,6 +121,13 @@ font-size:12px;display:flex;gap:18px;flex-wrap:wrap}.next b{color:var(--slate);f
 footer{padding-top:18px;color:var(--faint);font-size:11.5px}
 `;
 
+/**
+ * Looked up with `Object.hasOwn`, not `?? 'mute'`: `status` comes from
+ * `sheet-runs.json`, and a record saying `"constructor"` resolves through the
+ * prototype to a function, so the default never fires and the class attribute
+ * becomes the source of `Object`. Escaped, so not an injection — but that file
+ * is the untrusted surface this module exists to be careful with.
+ */
 const STATE_PILL: Record<string, string> = {
   applied: 'ok',
   reported: 'mute',
@@ -130,6 +137,8 @@ const STATE_PILL: Record<string, string> = {
   failed: 'crit',
   frozen: 'crit',
 };
+
+const pill = (status: string): string => (Object.hasOwn(STATE_PILL, status) ? STATE_PILL[status]! : 'mute');
 
 const time = (s: Stamp) => (s.iso === null ? html`<span class="dim">never</span>` : html`<time datetime="${s.iso}">${s.label}</time>`);
 
@@ -160,7 +169,7 @@ const runs = (model: StatusModel) =>
     const count = `${run.edits.length} edits · ${run.inserts.length} inserts${run.repeats > 1 ? ` · ${run.repeats} polls` : ''}`;
     return html`<div class="run">
       <div class="run-head ${changes.length || run.error ? '' : 'bare'}">
-        <span class="pill ${STATE_PILL[run.status] ?? 'mute'}">${run.status}</span>
+        <span class="pill ${pill(run.status)}">${run.status}</span>
         <span class="run-when">${time(run.at)}</span>
         <span class="run-count">${count}</span>
       </div>
@@ -231,7 +240,7 @@ ${model.problems.length === 0 ? null : html`<div class="problems"><ul>${model.pr
 <section>
   <div class="head">
     <span class="name">Sheet</span>
-    <span class="pill ${STATE_PILL[model.sheet.status] ?? 'mute'}">${model.sheet.status}</span>
+    <span class="pill ${pill(model.sheet.status)}">${model.sheet.status}</span>
     <span class="sum">${model.sheet.configured ? html`${model.sheet.mode} mode · tab “${model.sheet.tab}” · ${time(model.sheet.lastRun)}` : 'off'}</span>
   </div>
   ${sheetBody(model)}

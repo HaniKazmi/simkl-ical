@@ -8,6 +8,10 @@ import { quiet, recorder, withFreshJournal } from '../../helpers.ts';
 
 const FILE = 'sheet-runs.json';
 
+const T0 = Date.parse('2026-08-16T14:02:00.000Z');
+/** `n` polls after the first, at the real two-hour cadence. */
+const poll = (n: number): string => new Date(T0 + n * 2 * 60 * 60 * 1000).toISOString();
+
 const run = (overrides: Partial<NewSheetRun> = {}): NewSheetRun => ({
   at: '2026-08-16T14:02:00.000Z',
   status: 'applied',
@@ -27,21 +31,21 @@ test('the suite never points config.dataDir at the repo checkout', () => {
 
 test('a run round-trips through the file, oldest first', async () => {
   await withFreshJournal(async (dir) => {
-    await appendSheetRun(run({ at: 'first' }));
-    await appendSheetRun(run({ at: 'second', status: 'reported' }));
+    await appendSheetRun(run({ at: poll(0) }));
+    await appendSheetRun(run({ at: poll(1), status: 'reported' }));
 
     const raw = JSON.parse(await readFile(join(dir, FILE), 'utf8'));
     assert.equal(raw.version, 1);
     assert.deepEqual(
       raw.runs.map((r: { at: string }) => r.at),
-      ['first', 'second'],
+      [poll(0), poll(1)],
     );
 
     // Re-read from disk, not from the cache the appends left behind.
     await loadSheetRuns();
     assert.deepEqual(
       sheetRuns().map((r) => r.at),
-      ['first', 'second'],
+      [poll(0), poll(1)],
     );
     assert.equal(sheetRuns()[0]?.edits[0]?.note, 'Fargo S2: 3 -> 4 episodes');
   });
@@ -58,12 +62,12 @@ test('the file is written 0600', async () => {
 
 test('the history is capped, keeping the newest', async () => {
   await withFreshJournal(async () => {
-    for (let i = 0; i < 60; i += 1) await appendSheetRun(run({ at: `run-${i}`, error: `distinct ${i}` }));
+    for (let i = 0; i < 60; i += 1) await appendSheetRun(run({ at: poll(i), error: `distinct ${i}` }));
 
     const kept = sheetRuns();
     assert.equal(kept.length, 50);
-    assert.equal(kept[0]?.at, 'run-10', 'the oldest ten are gone');
-    assert.equal(kept.at(-1)?.at, 'run-59');
+    assert.equal(kept[0]?.at, poll(10), 'the oldest ten are gone');
+    assert.equal(kept.at(-1)?.at, poll(59));
   });
 });
 
@@ -91,11 +95,13 @@ test('an idle run that still errored is recorded', async () => {
 test('a repeated identical run collapses instead of filling the history', async () => {
   await withFreshJournal(async () => {
     const frozen = run({ status: 'frozen', error: 'FROZEN: copy _sync-1 back' });
-    for (let i = 0; i < 37; i += 1) await appendSheetRun({ ...frozen, at: `poll-${i}` });
+    // Eleven polls, not thirty-seven: past a day apart they stop being one
+    // episode, which is the point of SAME_EPISODE_MS.
+    for (let i = 0; i < 11; i += 1) await appendSheetRun({ ...frozen, at: poll(i) });
 
-    assert.equal(sheetRuns().length, 1, 'thirty-seven polls, one row');
-    assert.equal(sheetRuns()[0]?.repeats, 37);
-    assert.equal(sheetRuns()[0]?.at, 'poll-36', 'stamped with the most recent');
+    assert.equal(sheetRuns().length, 1, 'eleven polls, one row');
+    assert.equal(sheetRuns()[0]?.repeats, 11);
+    assert.equal(sheetRuns()[0]?.at, poll(0), 'stamped with when the freeze began, not the latest poll');
   });
 });
 
@@ -149,13 +155,21 @@ test('an unreadable file degrades to an empty history with one warning', async (
 // missed. All-or-nothing here throws away a good history over a single record.
 test('a malformed record is dropped and the rest of the history kept', async () => {
   await withFreshJournal(async (dir) => {
-    const good = run({ at: 'good' });
-    await writeFile(join(dir, FILE), JSON.stringify({ version: 1, runs: [null, 42, { at: 'no status' }, good, { status: 'applied' }] }));
+    const good = { ...run({ at: poll(0) }), repeats: 1 };
+    const rubbish = [
+      null,
+      42,
+      { at: poll(1) }, // no status
+      { ...good, at: 'not a date' }, // would render as `NaNd ago`
+      { ...good, at: poll(2), repeats: undefined }, // would make the count NaN
+      { status: 'applied' },
+    ];
+    await writeFile(join(dir, FILE), JSON.stringify({ version: 1, runs: [...rubbish, good] }));
     await loadSheetRuns({ log: quiet });
 
     assert.deepEqual(
       sheetRuns().map((r) => r.at),
-      ['good'],
+      [poll(0)],
     );
   });
 });
@@ -177,5 +191,21 @@ test('a write that cannot land is warned about, never thrown', async () => {
     } finally {
       config.dataDir = original;
     }
+  });
+});
+
+// The history survives a restart, so without a time bound a sheet hand-reverted
+// and re-applied days later folds into the record from the first time — losing
+// the second write, which is exactly what this file exists to keep.
+test('an identical run a long time later is a new record, not a repeat', async () => {
+  await withFreshJournal(async () => {
+    await appendSheetRun(run({ at: poll(0) }));
+    await appendSheetRun(run({ at: poll(1) }));
+    assert.equal(sheetRuns().length, 1, 'two hours apart is one episode');
+
+    // Three days on, the same plan applying again is genuinely a second write.
+    await appendSheetRun(run({ at: new Date(T0 + 3 * 24 * 60 * 60 * 1000).toISOString() }));
+    assert.equal(sheetRuns().length, 2);
+    assert.equal(sheetRuns()[0]?.repeats, 2, 'and the first episode keeps its count');
   });
 });

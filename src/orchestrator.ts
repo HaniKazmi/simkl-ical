@@ -248,9 +248,12 @@ export class Orchestrator {
       // The poll itself succeeded, so any earlier failure is now history.
       this.errors.library = null;
 
-      // What the gate itself said, separately from what will be refetched: on a
-      // cold start or a forced poll every list is fetched with no signature to
-      // compare, and reporting that as "eleven lists moved" is a different claim.
+      // What the gate itself said, separately from what gets refetched. The two
+      // diverge only on a forced poll, which refetches everything while every
+      // signature still matches — reporting that as "eleven lists moved" would
+      // be eleven changes that did not happen. A cold start has no signatures to
+      // compare against, so everything genuinely is news and both are the full
+      // set.
       const moved = staleLists(activities, this.listSignatures);
       const stale = force || !this.library ? LISTS : moved;
       // Above the early return below, which a quiet poll takes. Recorded after

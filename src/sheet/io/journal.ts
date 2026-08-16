@@ -83,10 +83,23 @@ export const clearSheetRuns = (): void => {
   runs = [];
 };
 
+/**
+ * Enough that every later use is total. `at` must *parse*, not merely be a
+ * string — an unparseable one reaches `Date.parse` and renders `NaNd ago` — and
+ * `repeats` must be a real number, or `previous.repeats + 1` is `NaN`, persists
+ * as `null`, and the count silently stops working for the life of the file.
+ */
 const isRecord = (value: unknown): value is SheetRunRecord => {
   if (typeof value !== 'object' || value === null) return false;
   const r = value as Partial<SheetRunRecord>;
-  return typeof r.at === 'string' && typeof r.status === 'string' && Array.isArray(r.edits) && Array.isArray(r.inserts);
+  return (
+    typeof r.at === 'string' &&
+    Number.isFinite(Date.parse(r.at)) &&
+    typeof r.status === 'string' &&
+    Number.isFinite(r.repeats) &&
+    Array.isArray(r.edits) &&
+    Array.isArray(r.inserts)
+  );
 };
 
 /**
@@ -127,11 +140,22 @@ export const loadSheetRuns = async ({ log }: { log?: Logger } = {}): Promise<voi
 const saysSomething = (record: NewSheetRun): boolean =>
   record.status !== 'idle' || record.edits.length > 0 || record.inserts.length > 0 || record.error !== null;
 
-/** Same outcome, same plan, same message — only the timestamp differs. */
+/**
+ * How far apart two identical runs can be and still be the same episode.
+ *
+ * The repetition worth collapsing is a stuck state re-reported every poll. The
+ * history survives a restart, so without a bound a sheet hand-reverted and
+ * re-applied days later folds into the record from the first time — losing the
+ * second write entirely, which is the history this file exists to keep.
+ */
+const SAME_EPISODE_MS = 24 * 60 * 60 * 1000;
+
+/** Same outcome, same plan, same message, and close enough in time to be one run of it. */
 const sameAs = (a: SheetRunRecord, b: NewSheetRun): boolean =>
   a.status === b.status &&
   a.mode === b.mode &&
   a.error === b.error &&
+  Date.parse(b.at) - Date.parse(a.at) < SAME_EPISODE_MS &&
   JSON.stringify(a.edits) === JSON.stringify(b.edits) &&
   JSON.stringify(a.inserts) === JSON.stringify(b.inserts);
 
@@ -145,15 +169,18 @@ const sameAs = (a: SheetRunRecord, b: NewSheetRun): boolean =>
  * every real entry within days. And a `frozen` run repeats on *every* poll for
  * the life of the process, so without collapsing it the cap fills with one
  * message — "frozen, 37 polls, since 14:02" is what an operator needs, not
- * thirty-seven copies of it.
+ * thirty-seven copies of it. Collapsing is bounded in time as well as by
+ * equality; see `SAME_EPISODE_MS`.
  */
 export const appendSheetRun = (run: NewSheetRun, { log }: { log?: Logger } = {}): Promise<void> => {
   if (!saysSomething(run)) return Promise.resolve();
 
   const previous = runs[runs.length - 1];
-  // Only this module can know a run repeated, so only this module sets it.
+  // Only this module can know a run repeated, so only this module sets it. The
+  // *first* `at` is kept, not the latest: "frozen, 37 polls, since 14:02" needs
+  // when the state began, and that it is still happening is what the count says.
   if (previous && sameAs(previous, run)) {
-    runs[runs.length - 1] = { ...run, repeats: previous.repeats + 1 };
+    runs[runs.length - 1] = { ...run, at: previous.at, repeats: previous.repeats + 1 };
   } else {
     runs.push({ ...run, repeats: 1 });
     if (runs.length > MAX_RUNS) runs = runs.slice(-MAX_RUNS);
