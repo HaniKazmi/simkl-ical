@@ -115,6 +115,18 @@ export const pruneSuperseded = (library: Library, refreshed: ListDefinition[]): 
   return pruned;
 };
 
+/**
+ * How many items each list holds, in `LISTS` order, including the ones the
+ * library has never carried — a list at zero is a fact, and dropping the key
+ * would make "not fetched yet" and "empty" look the same.
+ *
+ * Here rather than in the status page because this module already owns which
+ * lists are read and how their responses are shaped. Pure, and no new state:
+ * the library is already public on the orchestrator.
+ */
+export const listCounts = (library: Library | null): Record<string, number> =>
+  Object.fromEntries(LISTS.map((list) => [list.key, itemsOf(library?.[list.key]).length]));
+
 const itemsOf = (response: ListResponse | undefined): LibraryItem[] => [
   ...(response?.shows ?? []),
   ...(response?.anime ?? []),

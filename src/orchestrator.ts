@@ -82,6 +82,14 @@ export interface SheetHealth {
   error: string | null;
 }
 
+/** What one activities gate decided. */
+export interface GateOutcome {
+  /** Lists whose signature differed from the one held — what the gate said. */
+  moved: string[];
+  /** What was actually refetched. Wider than `moved` on a cold or forced poll. */
+  refetched: string[];
+}
+
 export interface OrchestratorErrors {
   library: string | null;
   sheet: string | null;
@@ -99,6 +107,18 @@ export class Orchestrator {
   polledAt: string | null = null;
   /** The two failures this layer owns; `Feed` holds the other two. */
   errors: OrchestratorErrors = { library: null, sheet: null };
+  /**
+   * Process start, for uptime. Deliberately not used to derive when a timer
+   * next fires: that comes from the last run plus the interval, which needs no
+   * state and stays right across a skipped tick.
+   */
+  readonly startedAt = new Date().toISOString();
+  /**
+   * What the last activities gate decided, for the status page. Null until the
+   * first successful poll — which is not the same as "nothing moved", and the
+   * page says so.
+   */
+  lastGate: GateOutcome | null = null;
   /**
    * Whether the last sheet sync wants another go. A boolean, not an interval:
    * the sheet has no upstream clock of its own — everything it writes derives
@@ -230,7 +250,15 @@ export class Orchestrator {
       // The poll itself succeeded, so any earlier failure is now history.
       this.errors.library = null;
 
-      const stale = force || !this.library ? LISTS : staleLists(activities, this.listSignatures);
+      // What the gate itself said, separately from what will be refetched: on a
+      // cold start or a forced poll every list is fetched with no signature to
+      // compare, and reporting that as "eleven lists moved" is a different claim.
+      const moved = staleLists(activities, this.listSignatures);
+      const stale = force || !this.library ? LISTS : moved;
+      // Above the early return below, which a quiet poll takes. Recorded after
+      // it, the page could only ever show a gate where something moved — exactly
+      // backwards, since nothing moving is the healthy steady state.
+      this.lastGate = { moved: moved.map((l) => l.key), refetched: stale.map((l) => l.key) };
       // Film dates age out on their own schedule, so a poll with no list
       // changes still has work to do once a day. Read once: the second read
       // would come after `resolveFilms` had stamped `filmsResolvedAt`.
