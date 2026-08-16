@@ -5,11 +5,15 @@
  * First of **FETCH** → JOIN → RENDER → SAVE, alongside `movies.ts`.
  */
 
+import { evictCache, fetchCached, type CdnResult } from '../../api/cdn.ts';
 import { config } from '../../shared/config.ts';
 import { localDate } from '../../shared/dates.ts';
 import { errorMessage } from '../../shared/errors.ts';
-import { withTimeout } from '../../shared/signals.ts';
 import type { CalendarFile, CalendarType } from '../../api/simkl/types.ts';
+
+// Re-exported so a test that touches this module clears the cache it actually
+// uses, rather than having to know the transport sits one layer down.
+export { cachedKeys, clearCache } from '../../api/cdn.ts';
 
 const CDN_BASE = 'https://data.simkl.in/calendar/v2/';
 
@@ -18,7 +22,7 @@ const CDN_BASE = 'https://data.simkl.in/calendar/v2/';
  *
  * movie_release.json is deliberately absent: it only covers a rolling 33-day
  * window and carries a date-only 04:00Z placeholder, so films are resolved
- * per-title through /movies/{id} instead — see sources/movies.ts.
+ * per-title through /movies/{id} instead — see movies.ts.
  */
 export const CALENDAR_FILES: Record<CalendarType, string> = {
   tv: 'tv.json',
@@ -28,84 +32,16 @@ export const CALENDAR_FILES: Record<CalendarType, string> = {
 /** The rolling file spans roughly -2/+34 days; beyond that we need archives. */
 const ROLLING_PAST_DAYS = 2;
 
-/** Archives run to several MB, so this is generous rather than tight. */
-const FETCH_TIMEOUT_MS = 60_000;
-
-interface FetchedFile {
-  data: CalendarFile;
-  lastModified: string | null;
-}
-
-interface FetchResult extends FetchedFile {
-  /**
-   * The network failed and the cached copy was served instead, so health can
-   * tell an outage from a quiet CDN. A 304 is not stale: the CDN answered.
-   */
-  stale: boolean;
-}
-
 /**
- * Process-lifetime cache, deliberately not on disk: it makes the 3-hourly
- * conditional GET cheap, while a restart always resyncs from the CDN.
+ * A calendar file, or the reason it is unusable. Parseable is not usable: a 200
+ * carrying `{}` or an error object would replace a good cache entry and render
+ * a near-empty feed, so this is the caller's half of the conditional GET.
  */
-const cache = new Map<string, FetchedFile>();
+const usable = (data: unknown): string | null =>
+  Array.isArray((data as CalendarFile | undefined)?.calendar) ? null : 'returned JSON with no calendar array';
 
-/** Cache keys currently held. Exported for tests; nothing in src/ reads it. */
-export const cachedKeys = (): string[] => [...cache.keys()];
-
-/** Drop everything. Exported for tests, which must not share a cache. */
-export const clearCache = (): void => cache.clear();
-
-/**
- * Fetch a calendar JSON file, using the cached copy when the CDN says it hasn't changed.
- *
- * The CDN ignores query strings, so cache-busting is impossible and a conditional
- * GET against the stored Last-Modified is the only way to tell whether a
- * regeneration has actually happened.
- */
-const fetchCached = async (url: string, key: string, { signal }: { signal?: AbortSignal } = {}): Promise<FetchResult> => {
-  const cached = cache.get(key) ?? null;
-  const headers: Record<string, string> = { 'User-Agent': `${config.appName}/${config.appVersion}` };
-  if (cached?.lastModified) headers['If-Modified-Since'] = cached.lastModified;
-
-  // A stale calendar beats no calendar, so every failure below serves the cache
-  // when there is one — flagged stale rather than passing as a success.
-  const fallback = (reason: string): FetchResult => {
-    if (cached) return { ...cached, stale: true };
-    throw new Error(`Calendar ${url} ${reason}`);
-  };
-
-  // Without a timeout a hung connection blocks a refresh cycle until undici's
-  // 300s default. The throw is caught for the same reason a bad status is: a
-  // timeout, a DNS failure or a reset are the *likeliest* ways the CDN fails,
-  // and letting one escape past `fallback` discards a perfectly good cached
-  // month — silently, because the caller reads staleness off the rolling file.
-  let res: Response;
-  try {
-    res = await fetch(url, { headers, signal: withTimeout(signal, FETCH_TIMEOUT_MS) });
-  } catch (err) {
-    return fallback(`could not be fetched: ${errorMessage(err)}`);
-  }
-
-  if (res.status === 304 && cached) return { ...cached, stale: false };
-  if (!res.ok) return fallback(`returned ${res.status}`);
-
-  let data: CalendarFile;
-  try {
-    data = (await res.json()) as CalendarFile;
-  } catch (err) {
-    // An HTML interstitial served with a 200 must not discard a good cache.
-    return fallback(`returned unparseable JSON: ${errorMessage(err)}`);
-  }
-
-  // Parseable is not usable: a 200 carrying `{}` or an error object would
-  // replace a good cache entry and render a near-empty feed.
-  if (!Array.isArray(data.calendar)) return fallback('returned JSON with no calendar array');
-
-  const entry: FetchedFile = { data, lastModified: res.headers.get('last-modified') };
-  cache.set(key, entry);
-  return { ...entry, stale: false };
-};
+const fetchFile = (url: string, key: string, signal?: AbortSignal): Promise<CdnResult<CalendarFile>> =>
+  fetchCached<CalendarFile>(url, key, { validate: usable, signal });
 
 export const rollingUrl = (type: CalendarType): string => CDN_BASE + CALENDAR_FILES[type];
 
@@ -121,15 +57,15 @@ export const archiveUrl = (type: CalendarType, year: number, month: number): str
 const rollingKey = (type: CalendarType): string => `calendar-${type}`;
 const archiveKey = (type: CalendarType, year: number, month: number): string => `calendar-${type}-${year}-${month}`;
 
-export const fetchRolling = (type: CalendarType, { signal }: { signal?: AbortSignal } = {}): Promise<FetchResult> =>
-  fetchCached(rollingUrl(type), rollingKey(type), { signal });
+export const fetchRolling = (type: CalendarType, { signal }: { signal?: AbortSignal } = {}): Promise<CdnResult<CalendarFile>> =>
+  fetchFile(rollingUrl(type), rollingKey(type), signal);
 
 const fetchArchive = (
   type: CalendarType,
   year: number,
   month: number,
   { signal }: { signal?: AbortSignal } = {},
-): Promise<FetchResult> => fetchCached(archiveUrl(type, year, month), archiveKey(type, year, month), { signal });
+): Promise<CdnResult<CalendarFile>> => fetchFile(archiveUrl(type, year, month), archiveKey(type, year, month), signal);
 
 export interface YearMonth {
   year: number;
@@ -193,7 +129,7 @@ export interface CalendarOptions {
 
 /**
  * A fetched calendar and how fresh it is. Freshness sits beside the payload
- * rather than on it — simkl/types.ts holds only shapes SIMKL actually sends.
+ * rather than on it — api/simkl/types.ts holds only shapes SIMKL actually sends.
  */
 export interface CalendarResult {
   data: CalendarFile;
@@ -247,9 +183,8 @@ export const fetchCalendar = async (
  */
 const evictOutside = (keep: string[], type: CalendarType): void => {
   const wanted = new Set(keep);
-  for (const key of cache.keys()) {
-    if (key.startsWith(`calendar-${type}`) && !wanted.has(key)) cache.delete(key);
-  }
+  // Scoped to this type's keys: the other type's window is not ours to prune.
+  evictCache((key) => !key.startsWith(`calendar-${type}`) || wanted.has(key));
 };
 
 export type Calendars = Record<CalendarType, CalendarResult>;
