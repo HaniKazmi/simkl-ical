@@ -227,9 +227,28 @@ export const toRequests = (plan: SheetPlan, grid: Grid): SheetRequest[] => {
  */
 export const BACKUP_PREFIX = '_sync-backup-';
 
+/**
+ * Where a snapshot is moved to when the run it belongs to freezes: out of the
+ * swept namespace, and into a name that says what it is to whoever opens the
+ * spreadsheet next.
+ *
+ * `frozen` is process state, so a restart forgets that a run told the user to
+ * repair from a particular tab. Without the rename the next clean write would
+ * sweep it away — and it is the only thing that makes the repair a copy rather
+ * than an archaeology exercise in version history.
+ */
+export const REPAIR_PREFIX = '_sync-REPAIR-';
+
 export const isBackupTab = (title: string): boolean => title.startsWith(BACKUP_PREFIX);
 
 export const backupName = (now: Date): string => `${BACKUP_PREFIX}${now.toISOString().replaceAll(':', '-').replace('.', '-')}`;
+
+export const repairName = (backup: string): string => backup.replace(BACKUP_PREFIX, REPAIR_PREFIX);
+
+/** `fields: 'title'` so the tab keeps its position, colour and grid size. */
+export const renameSheetRequest = (sheetId: number, title: string): SheetRequest => ({
+  updateSheetProperties: { properties: { sheetId, title }, fields: 'title' },
+});
 
 /**
  * Snapshot the tab, as the first request of the write batch.

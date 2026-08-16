@@ -170,10 +170,13 @@ restarts **from the read**, not from the write.
   there is no state in which the sheet changed but nothing recorded what it looked like. It is
   server-side, so a 1600-row copy costs no data transfer. Named versions were the obvious
   alternative and are reachable from no API at all.
-- **One snapshot tab survives, and only one.** `frozen` is process state, so a restart forgets
-  that a run told the user to repair from a particular tab — and a clean write sweeping the lot
-  would then destroy the only pre-corruption copy. Everything older than the newest goes on each
-  clean run, because each is a full tab copy against a 10M-cell ceiling for the spreadsheet.
+- **A clean run leaves no snapshot behind, and a frozen one renames its out of reach.** Every
+  `_sync-backup-…` tab goes once a write verifies — they are full tab copies against a 10M-cell
+  ceiling, and one is made per run. But `frozen` is process state, so a restart forgets that a run
+  told the user to repair from a particular tab, and a later clean sweep would take it. So the
+  freeze path renames it to `_sync-REPAIR-…` first, which is outside the swept namespace and says
+  what it is to whoever opens the spreadsheet next. That rename is the only write in the subsystem
+  allowed a second attempt: renaming to a fixed title is idempotent, unlike everything else here.
 
 ## Verification, and what it cost to learn
 
@@ -216,7 +219,8 @@ already.
 
 If the write landed and no snapshot can be found, the sync **freezes** rather than falling back to
 putting cells back individually — that is the mechanism that produced the misalignment once, and
-running it in the least-exercised state there is would be worse than stopping.
+running it in the least-exercised state there is would be worse than stopping. The frozen message
+names the `_sync-REPAIR-…` tab, and repeats on every poll until the process is restarted.
 
 ## Catalogue lookups
 

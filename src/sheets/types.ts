@@ -123,6 +123,14 @@ export interface DeleteSheetRequest {
 }
 
 /**
+ * Renames a tab. `fields` is a mask over `properties`, so `'title'` changes the
+ * title and leaves every other property — index, colour, grid size — alone.
+ */
+export interface UpdateSheetPropertiesRequest {
+  updateSheetProperties: { properties: SheetProperties; fields: string };
+}
+
+/**
  * Copies a range from one tab onto another, server-side — no cell values cross
  * the wire. Relative formula references are adjusted by the paste offset, which
  * is zero when source and destination sit at the same coordinates.
@@ -137,6 +145,7 @@ export type SheetRequest =
   | DeleteDimensionRequest
   | DuplicateSheetRequest
   | DeleteSheetRequest
+  | UpdateSheetPropertiesRequest
   | CopyPasteRequest;
 
 export interface BatchUpdateResponse {

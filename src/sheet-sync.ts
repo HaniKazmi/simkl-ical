@@ -15,7 +15,7 @@ import { errorMessage } from './errors.ts';
 import { parseGrid, type Grid } from './sheet/grid.ts';
 import { describePlan, planLookups, planSync, type CatalogueStamp, type CatalogueView, type SheetPlan, type TitleCatalogue } from './sheet/plan.ts';
 import { indexLibrary, seasonShapes, type TitleProgress } from './sheet/progress.ts';
-import { assertPlanSafe, backupName, backupRequest, deleteRowRequests, deleteSheetRequest, isBackupTab, restoreRequest, toRequests, UnsafePlanError } from './sheet/safety.ts';
+import { assertPlanSafe, backupName, backupRequest, deleteRowRequests, deleteSheetRequest, isBackupTab, renameSheetRequest, repairName, restoreRequest, toRequests, UnsafePlanError } from './sheet/safety.ts';
 import { SheetsAccessError } from './sheets/client.ts';
 import { verify, type Verification } from './sheet/verify.ts';
 import { applyRequests, listSheets, readSnapshot, type SheetSnapshot } from './sources/sheet.ts';
@@ -301,28 +301,53 @@ export class SheetSync {
   }
 
   /**
-   * Leave exactly one snapshot tab: the newest, which after a clean cycle is
-   * this run's.
+   * Drop every snapshot tab, not just this run's.
    *
-   * Not zero, and not all of them. `frozen` is process state, so a restart
-   * forgets that a run told the user to repair from tab T — and the next clean
-   * write would then sweep T away, destroying the only pre-corruption copy.
-   * Keeping the newest costs one tab and makes that unreachable. Not more than
-   * one either: each is a full copy of a 1644-row tab against a 10M-cell
-   * ceiling, and the write batch makes a fresh one every run.
+   * Only reached after a write verified clean, which is the one moment the
+   * sheet is known good — so an older snapshot describes a state nobody chose
+   * to restore. Without this they only accumulate: the write batch always makes
+   * one, and any failure between the write and the verify read leaves it behind
+   * with nothing to remove it. Each is a full copy of a 1644-row tab, against a
+   * 10M-cell ceiling for the whole spreadsheet.
    *
-   * The names are ISO timestamps, so newest is last in a plain sort.
+   * A frozen run's snapshot is deliberately *not* in this namespace — it is
+   * renamed to `_sync-REPAIR-…` on the way into the freeze, so that a restart,
+   * which clears `frozen`, cannot let a later clean write sweep away the one
+   * tab the user was told to repair from.
    */
   private async sweepBackups(signal: AbortSignal | undefined): Promise<void> {
     try {
-      const backups = (await listSheets({ signal })).filter((s) => isBackupTab(s.title)).sort((a, b) => a.title.localeCompare(b.title));
-      const stale = backups.slice(0, -1);
+      const stale = (await listSheets({ signal })).filter((s) => isBackupTab(s.title));
       if (!stale.length) return;
       await applyRequests(stale.map((s) => deleteSheetRequest(s.sheetId)), { signal });
-      this.log.info(`removed ${stale.length} snapshot tab(s) left over by an earlier run`);
+      if (stale.length > 1) this.log.warn(`removed ${stale.length} snapshot tabs, ${stale.length - 1} left over by an earlier run`);
     } catch (err) {
       this.log.warn(`could not remove the backup tabs (harmless, delete them by hand): ${errorMessage(err)}`);
     }
+  }
+
+  /**
+   * Move a frozen run's snapshot out of the swept namespace, and report what it
+   * ended up called.
+   *
+   * Worth a second attempt, which no other write here gets: renaming a tab to a
+   * fixed title is idempotent — unlike `insertDimension`, a repeat is the same
+   * result — and this is the one moment the tab's survival is the difference
+   * between a copy-paste repair and version-history archaeology.
+   */
+  private async markForRepair(backupId: number, name: string, signal: AbortSignal | undefined): Promise<string> {
+    const title = repairName(name);
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        await applyRequests([renameSheetRequest(backupId, title)], { signal });
+        return title;
+      } catch (err) {
+        if (attempt === 2) {
+          this.log.warn(`could not rename the snapshot tab to "${title}" — copy it back before restarting: ${errorMessage(err)}`);
+        }
+      }
+    }
+    return name;
   }
 
   private async rollback(
@@ -381,15 +406,19 @@ export class SheetSync {
       }
       await this.discardBackup(backupId, signal);
     } catch (err) {
+      // The snapshot tab is left in place, and renamed first. It holds the
+      // sheet exactly as it was before the write, which makes the manual repair
+      // a copy rather than an archaeology exercise in version history — and the
+      // rename is what keeps a later clean run's sweep from taking it, since a
+      // restart in between forgets that any of this happened.
+      const tab = backupId === undefined ? name : await this.markForRepair(backupId, name, signal);
+
       // Nagging on every poll rather than scrolling away once: the repair is
       // manual, and the message carries what is needed to do it.
-      // The snapshot tab is deliberately left in place. It holds the sheet
-      // exactly as it was before the write, which makes the manual repair a
-      // copy rather than an archaeology exercise in version history.
       this.frozen =
         `FROZEN: the sheet write failed verification and the rollback did not complete (${errorMessage(err)}). ` +
         `No further writes this process. ` +
-        `Look for a tab named "${name}" — it holds the sheet exactly as it was before the write, so copy it back over ` +
+        `Look for a tab named "${tab}" — it holds the sheet exactly as it was before the write, so copy it back over ` +
         `${grid.snapshot.title}, delete it, then restart. If it is not there, restore from Sheets version history instead. ` +
         `Verify problems: ${detail}. Rows to delete: ${verification.deleteRows.map((r) => r + 1).join(', ') || 'none'}.`;
       this.log.error(this.frozen);

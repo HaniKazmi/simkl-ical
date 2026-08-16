@@ -178,10 +178,12 @@ compared against what was planned; anything unexpected restores the snapshot who
 that fails it stops writing for the life of the process and tells you which tab holds the
 pre-write state.
 
-**You will see one `_sync-backup-…` tab in the spreadsheet.** That is the most recent snapshot,
-kept deliberately: a restart clears the "stopped writing" state, so without one held back the
-next clean write would sweep away the very tab a frozen run told you to repair from. Older ones
-are removed on each clean run, so there is never more than one. Deleting it by hand is safe.
+A run that finishes cleanly leaves no trace of its snapshot — the tab is dropped, along with any
+an interrupted earlier run left behind. The exception is the stop-writing case: that snapshot is
+renamed to **`_sync-REPAIR-…`** and kept, because restarting the container clears the
+stopped-writing state and a later clean run would otherwise sweep away the very tab you were told
+to repair from. So a `_sync-REPAIR-…` tab in your spreadsheet means something went wrong and is
+waiting for you; delete it once you have copied it back.
 
 Exactly one row is added per run, so starting two seasons between polls adds them over two runs —
 the report names the one it deferred, and the sync asks for the next poll rather than waiting.
