@@ -74,8 +74,8 @@ export const calendarOf = (calendar: CalendarEntry[] = [], metadata: Record<stri
 
 /** A complete, empty, fresh set of calendars — the shape refresh.ts holds. */
 export const emptyCalendars = (): Calendars => ({
-  tv: { data: calendarOf(), stale: false },
-  anime: { data: calendarOf(), stale: false },
+  tv: { data: calendarOf(), stale: false, notModified: false },
+  anime: { data: calendarOf(), stale: false, notModified: false },
 });
 
 /** Point config.dataDir at a fresh directory for the duration of `fn`. */
