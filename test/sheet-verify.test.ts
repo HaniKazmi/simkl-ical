@@ -118,7 +118,7 @@ const insertFixture = () => {
     address: a1(4, before.columns[field]),
     note: 'new',
   }));
-  return { after, plan: planOf([], [{ row: 4, title: 'Fargo', season: 3, fill, note: 'new row' }]) };
+  return { after, newRow, plan: planOf([], [{ row: 4, title: 'Fargo', season: 3, fill, note: 'new row' }]) };
 };
 
 test('an insert with exactly its planned fill verifies', () => {
@@ -128,22 +128,45 @@ test('an insert with exactly its planned fill verifies', () => {
   assert.deepEqual(result.deleteRows, []);
 });
 
-test('a row the sheet did not grow by fails', () => {
+// An atomic batch failure looks exactly like this, and it must not read as a
+// landed write: the caller would go looking for a snapshot tab that rode the
+// same failed batch, and freeze over a sheet nothing ever touched.
+test('a row the sheet did not grow by fails, and nothing landed', () => {
   const { plan } = insertFixture();
   const result = verify(before, sheetSnapshot(ROWS), plan);
   assert.equal(result.ok, false);
   assert.match(result.problems.join('; '), /grew by 0 rows, not 1/);
+  assert.equal(result.landed, false);
+  assert.deepEqual(result.deleteRows, []);
 });
 
 // The one catastrophic failure mode: rows below the insert land one off.
-test('a one-row misalignment is caught, and the inserted row is offered for deletion', () => {
+//
+// Nothing is offered for deletion, deliberately. `deleteRows` may only carry a
+// row this read positively identified as ours — every planned cell present at
+// exactly the planned index — and here the row at that index is the sheet's
+// own. Deleting on a guess is the failure the rollback exists to avoid, so a
+// grid this confused restores wholesale or freezes.
+test('a one-row misalignment is caught, and no row is offered for deletion', () => {
   const { plan } = insertFixture();
   // The insert landed a row too high, so the real season 2 row is now at 5.
   const misaligned = sheetSnapshot([...ROWS.slice(0, 3), [null, null, 3, 4, 45500, null, 0.0153, { formula: '=G4*D4' }, null, null], ROWS[3]!]);
   const result = verify(before, misaligned, plan);
   assert.equal(result.ok, false);
-  assert.deepEqual(result.deleteRows, [4]);
+  assert.deepEqual(result.deleteRows, []);
+});
+
+// The mirror image, and the case a rollback actually has to handle: the insert
+// went exactly where it was planned, and something *else* failed verification.
+test('an insert that landed where it was planned is offered for deletion', () => {
+  const { newRow, plan } = insertFixture();
+  const rows = [...ROWS.map((r) => [...r]), newRow];
+  // A concurrent human, on a row the plan never mentioned.
+  rows[2]![before.columns.Episode] = 99;
+  const result = verify(before, sheetSnapshot(rows), plan);
+  assert.equal(result.ok, false);
   assert.equal(result.landed, true);
+  assert.deepEqual(result.deleteRows, [4]);
 });
 
 test('a show row that lost its title fails, because it silently merges two blocks', () => {

@@ -14,7 +14,7 @@
 
 import { errorMessage } from '../errors.ts';
 import { a1, isFormulaValue, parseGrid, sameValue, type Grid, type HeaderName } from './grid.ts';
-import type { SheetPlan } from './plan.ts';
+import type { CellEdit, RowInsert, SheetPlan } from './plan.ts';
 import type { CellData, ExtendedValue } from '../sheets/types.ts';
 import type { SheetSnapshot } from '../sources/sheet.ts';
 
@@ -50,6 +50,30 @@ const cell = (snapshot: SheetSnapshot, row: number, column: number): CellData | 
 const entered = (snapshot: SheetSnapshot, row: number, column: number): ExtendedValue | undefined =>
   cell(snapshot, row, column)?.userEnteredValue;
 
+/**
+ * Whether one planned edit is present.
+ *
+ * Checked at both the offset the cell would occupy if the insert landed and the
+ * one it would occupy if it did not — a mismatched row count is exactly the
+ * case where which of the two applies is unknown. A cell that already held the
+ * planned value is evidence of nothing, so it does not count.
+ */
+const editLanded = (after: SheetSnapshot, edit: CellEdit, insertRows: number[]): boolean => {
+  if (sameValue(edit.previous, edit.value)) return false;
+  return [edit.row, shiftRow(edit.row, insertRows)].some((row) => sameValue(entered(after, row, edit.column), edit.value));
+};
+
+/**
+ * Whether the row an insert was meant to create is there, and is *ours*.
+ *
+ * Every filled cell must match. `insertDimension` puts the row at exactly the
+ * index it was given, so anything short of a full match at that index is a
+ * pre-existing row — and the whole reason for asking is that the answer decides
+ * what a rollback deletes.
+ */
+const insertLanded = (after: SheetSnapshot, insert: RowInsert): boolean =>
+  insert.fill.length > 0 && insert.fill.every((cell) => sameValue(entered(after, insert.row, cell.column), cell.value));
+
 export interface Verification {
   ok: boolean;
   problems: string[];
@@ -59,8 +83,12 @@ export interface Verification {
    * Answered from the planned writes themselves — are they present? — because
    * that is the actual question. Counting *unplanned* changes instead gets it
    * backwards for a batch that landed and broke a formula: nothing unplanned
-   * moved, yet the write is very much there. Conservatively true whenever the
-   * sheet could not be inspected at all.
+   * moved, yet the write is very much there. Row growth is not the answer
+   * either, and reading it as one is what turned a single transient 503 on a
+   * plan containing an insert into a permanent freeze over an untouched sheet:
+   * `batchUpdate` is atomic, so none of the planned writes being present means
+   * the batch never went out, whatever the row count says. Conservatively true
+   * only when the sheet could not be inspected at all.
    */
   landed: boolean;
   /** Rows the write created, and only ones this read positively identifies as ours. */
@@ -69,7 +97,6 @@ export interface Verification {
 
 export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Verification => {
   const problems: string[] = [];
-  let landedWrites = 0;
   const insertRows = plan.inserts.map((i) => i.row);
   const inserted = new Set(insertRows);
 
@@ -88,10 +115,16 @@ export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Ver
   }
   if (problems.length) return { ok: false, problems, landed: true, deleteRows: [] };
 
+  // Both answered before the row-by-row diff, because the `grew` mismatch below
+  // returns early and needs them: whether anything landed decides if there is a
+  // rollback to do at all, and `created` is the only row a rollback may delete.
+  const created = plan.inserts.filter((insert) => insertLanded(after, insert)).map((insert) => insert.row);
+  const landed = created.length > 0 || plan.edits.some((edit) => editLanded(after, edit, insertRows));
+
   const grew = after.rows.length - before.snapshot.rows.length;
   if (grew !== insertRows.length) {
     problems.push(`the sheet grew by ${grew} rows, not ${insertRows.length}`);
-    return { ok: false, problems, landed: true, deleteRows: [] };
+    return { ok: false, problems, landed, deleteRows: created };
   }
 
   const expected = new Map<string, ExtendedValue>();
@@ -127,8 +160,7 @@ export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Ver
       if (!inspected.has(column)) continue;
 
       if (plannedValue) {
-        if (sameValue(now, plannedValue)) landedWrites += 1;
-        else problems.push(`${a1(target, column)}: the planned write did not land`);
+        if (!sameValue(now, plannedValue)) problems.push(`${a1(target, column)}: the planned write did not land`);
         expected.delete(key);
         continue;
       }
@@ -144,8 +176,7 @@ export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Ver
       const key = `${row}:${column}`;
       const plannedValue = expected.get(key);
       if (plannedValue) {
-        if (sameValue(now, plannedValue)) landedWrites += 1;
-        else problems.push(`${a1(row, column)}: the inserted row's ${column} did not take`);
+        if (!sameValue(now, plannedValue)) problems.push(`${a1(row, column)}: the inserted row's ${column} did not take`);
         expected.delete(key);
         continue;
       }
@@ -171,5 +202,5 @@ export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Ver
     }
   }
 
-  return { ok: problems.length === 0, problems, landed: landedWrites > 0 || grew > 0, deleteRows: problems.length ? [...inserted] : [] };
+  return { ok: problems.length === 0, problems, landed, deleteRows: problems.length ? created : [] };
 };

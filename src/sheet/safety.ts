@@ -12,7 +12,7 @@
  */
 
 import { config } from '../config.ts';
-import { isFormula, sameValue, type Grid, type HeaderName } from './grid.ts';
+import { isBlank, isFormula, numberOf, sameValue, type Grid, type HeaderName } from './grid.ts';
 import { shiftDate } from '../dates.ts';
 import { dateSerial } from './progress.ts';
 import type { CellEdit, SheetPlan } from './plan.ts';
@@ -132,6 +132,14 @@ export const assertPlanSafe = (
     if (cell.field === 'Episode') {
       const next = cell.value.numberValue;
       if (next === undefined || !Number.isInteger(next) || next < 1) refuse(`${where}: an episode count must be a positive whole number.`);
+      // A count typed as text carries only `stringValue`, so it parses to no
+      // count at all — and the never-backwards rule below would then compare
+      // against 0 and write a *smaller* number over a larger one, which is the
+      // one way that rule can be defeated. Unconditional, like a formula cell.
+      const actual = grid.snapshot.rows[cell.row]?.[cell.column];
+      if (!isBlank(actual) && numberOf(actual) === null) {
+        refuse(`${where}: the cell holds something that is not a number, so a count cannot be compared against it.`);
+      }
       // Never backwards. The user's rule, and the reason a wrong-but-larger
       // number is the dangerous failure rather than a wrong-but-smaller one.
       if (next <= (season.episode ?? 0)) refuse(`${where}: ${next} would not increase the count of ${season.episode ?? 0}.`);

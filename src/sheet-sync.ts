@@ -16,6 +16,7 @@ import { parseGrid, type Grid } from './sheet/grid.ts';
 import { describePlan, planLookups, planSync, type CatalogueStamp, type CatalogueView, type SheetPlan, type TitleCatalogue } from './sheet/plan.ts';
 import { indexLibrary, seasonShapes, type TitleProgress } from './sheet/progress.ts';
 import { assertPlanSafe, backupName, backupRequest, deleteRowRequests, deleteSheetRequest, isBackupTab, restoreRequest, toRequests, UnsafePlanError } from './sheet/safety.ts';
+import { SheetsAccessError } from './sheets/client.ts';
 import { verify, type Verification } from './sheet/verify.ts';
 import { applyRequests, listSheets, readSnapshot, type SheetSnapshot } from './sources/sheet.ts';
 import { fetchCatalogue } from './sources/shows.ts';
@@ -107,7 +108,12 @@ export class SheetSync {
     } catch (err) {
       const message = errorMessage(err);
       this.log.error(`sheet sync failed: ${message}`);
-      return this.record(idle({ status: 'failed', error: message, retry: true }));
+      // A wrong SHEET_ID or an unshared spreadsheet needs a human, so asking
+      // for another poll only arms the retry every two hours for a week. It
+      // still lands in `errors.sheet` and `/healthz` on every run — "say it
+      // once" here means stop the retry loop, not stop reporting.
+      const retry = !(err instanceof SheetsAccessError);
+      return this.record(idle({ status: 'failed', error: message, retry }));
     }
   }
 
@@ -132,7 +138,12 @@ export class SheetSync {
       // unknown shape is exactly what makes an end date premature. A deferred
       // row is simpler: the work exists and the cap is the only thing holding
       // it, so ask for another poll rather than waiting on unrelated activity.
-      const retry = catalogue.failed.length > 0 || plan.deferred > 0;
+      //
+      // Only when the deferral can actually drain, which needs a write. Report
+      // mode never takes the first row either, so asking for another poll would
+      // re-read and re-plan the whole grid forever — in the default mode.
+      const catalogueRetry = catalogue.failed.length > 0;
+      const retry = catalogueRetry || (config.sheetSyncMode === 'apply' && plan.deferred > 0);
       if (plan.deferred) this.log.info(`${plan.deferred} more row(s) to add; the next poll will take the next one`);
       if (catalogue.failed.length) {
         this.log.warn(`${catalogue.failed.length} SIMKL lookups failed; the sheet sync will retry on the next poll`);
@@ -146,12 +157,13 @@ export class SheetSync {
       try {
         assertPlanSafe(plan, grid);
       } catch (err) {
-        // A refused plan is not retried: the same inputs would refuse again.
-        // The report names every proposed edit so it can be applied by hand or
-        // the cap raised for one run.
+        // The refusal itself is not a reason to retry: the same inputs would
+        // refuse again. A failed catalogue lookup is, and it is independent of
+        // why the plan was refused — the log line above has already promised
+        // the next poll will try it.
         if (!(err instanceof UnsafePlanError)) throw err;
         this.report(`sheet sync REFUSED the plan: ${err.message}`, lines, 'error');
-        return idle({ status: 'refused', edits: plan.edits.length, inserts: plan.inserts.length, lines, error: err.message });
+        return idle({ status: 'refused', edits: plan.edits.length, inserts: plan.inserts.length, lines, error: err.message, retry: catalogueRetry });
       }
 
       if (config.sheetSyncMode === 'report') {
@@ -242,8 +254,16 @@ export class SheetSync {
     // failure to *list* is not evidence that no snapshot exists, and must not
     // be reported as one: it leaves backupId unset either way, but only one of
     // the two states means "the tab is definitely not there".
+    //
+    // Caught here rather than allowed to unwind, which would abandon the cycle
+    // before the verify read and leave the next poll re-planning against a
+    // write nobody ever inspected.
     if (backupId === undefined) {
-      backupId = (await listSheets({ signal })).find((s) => s.title === name)?.sheetId;
+      try {
+        backupId = (await listSheets({ signal })).find((s) => s.title === name)?.sheetId;
+      } catch (err) {
+        this.log.warn(`could not list the tabs to find the snapshot: ${errorMessage(err)}`);
+      }
     }
 
     const after = await readSnapshot({ signal });
@@ -267,7 +287,7 @@ export class SheetSync {
       return idle({ status: 'failed', lines, error: writeError, retry: true });
     }
 
-    return await this.rollback(grid, after, verification, lines, backupId, name, signal);
+    return await this.rollback(grid, after, verification, lines, backupId, name, retry, signal);
   }
 
   /** Best effort: a leftover snapshot tab is untidy, never dangerous. */
@@ -281,21 +301,25 @@ export class SheetSync {
   }
 
   /**
-   * Drop every snapshot tab, not just this run's.
+   * Leave exactly one snapshot tab: the newest, which after a clean cycle is
+   * this run's.
    *
-   * Only reached after a write verified clean, which is the one moment the
-   * sheet is known good — so an older snapshot describes a state nobody chose
-   * to restore. Without this they only accumulate: the write batch always makes
-   * one, and any failure between the write and the verify read leaves it behind
-   * with nothing to remove it. Each is a full copy of a 1644-row tab, against a
-   * 10M-cell ceiling for the whole spreadsheet.
+   * Not zero, and not all of them. `frozen` is process state, so a restart
+   * forgets that a run told the user to repair from tab T — and the next clean
+   * write would then sweep T away, destroying the only pre-corruption copy.
+   * Keeping the newest costs one tab and makes that unreachable. Not more than
+   * one either: each is a full copy of a 1644-row tab against a 10M-cell
+   * ceiling, and the write batch makes a fresh one every run.
+   *
+   * The names are ISO timestamps, so newest is last in a plain sort.
    */
   private async sweepBackups(signal: AbortSignal | undefined): Promise<void> {
     try {
-      const stale = (await listSheets({ signal })).filter((s) => isBackupTab(s.title));
+      const backups = (await listSheets({ signal })).filter((s) => isBackupTab(s.title)).sort((a, b) => a.title.localeCompare(b.title));
+      const stale = backups.slice(0, -1);
       if (!stale.length) return;
       await applyRequests(stale.map((s) => deleteSheetRequest(s.sheetId)), { signal });
-      if (stale.length > 1) this.log.warn(`removed ${stale.length} snapshot tabs, ${stale.length - 1} left over by an earlier run`);
+      this.log.info(`removed ${stale.length} snapshot tab(s) left over by an earlier run`);
     } catch (err) {
       this.log.warn(`could not remove the backup tabs (harmless, delete them by hand): ${errorMessage(err)}`);
     }
@@ -308,12 +332,23 @@ export class SheetSync {
     lines: string[],
     backupId: number | undefined,
     name: string,
+    retry: boolean,
     signal: AbortSignal | undefined,
   ): Promise<SheetSyncResult> {
     const detail = verification.problems.join('; ');
     this.log.error(`sheet verify failed, rolling back: ${detail}`);
 
     try {
+      // Before anything is deleted, not after. A delete with no snapshot to
+      // restore from is a one-way change made in the exact state where the plan
+      // is already known to be wrong about the grid.
+      //
+      // There is deliberately no cell-level fallback either: putting cells back
+      // individually is the mechanism that produced a one-row misalignment once
+      // already, and running it in the one state nobody has exercised — a
+      // landed write whose snapshot cannot be found — is worse than stopping.
+      if (backupId === undefined) throw new Error('the write landed but its snapshot tab could not be found');
+
       let restored = after;
 
       // Structure first, in its own batch, and before any paste. Deleting the
@@ -329,11 +364,14 @@ export class SheetSync {
 
       // One server-side paste of the whole tab, at a zero offset. It cannot be
       // off by a row, and its cost does not grow with the number of cells that
-      // changed. There is deliberately no cell-level fallback: putting cells
-      // back individually is the mechanism that produced a one-row misalignment
-      // once already, and running it in the one state nobody has exercised —
-      // a landed write whose snapshot cannot be found — is worse than stopping.
-      if (backupId === undefined) throw new Error('the write landed but its snapshot tab could not be found');
+      // changed.
+      //
+      // Wholesale, with a known and accepted cost: a human edit landing inside
+      // the seconds-wide window between the batch and the verify read is inside
+      // the pasted range, so it is reverted along with ours, and the confirming
+      // verify below — which compares against the pre-write grid the restored
+      // tab now matches — will report a clean rollback. A per-cell revert was
+      // considered and rejected as too fragile to be worth closing that window.
       await applyRequests([restoreRequest(backupId, restored.sheetId, grid.snapshot.rowCount, grid.snapshot.columnCount)], { signal });
       restored = await readSnapshot({ signal });
 
@@ -360,7 +398,10 @@ export class SheetSync {
 
     const message = `the write did not verify and was rolled back: ${detail}`;
     this.log.warn(`sheet sync rolled back cleanly`);
-    return idle({ status: 'rolled-back', lines, error: message, retry: false });
+    // The rolled-back work is not guaranteed to refuse again — the concurrent
+    // edit that triggered this was itself reverted by the restore — so whatever
+    // the run wanted another poll for still stands.
+    return idle({ status: 'rolled-back', lines, error: message, retry });
   }
 
   private report(headline: string, lines: string[], level: 'info' | 'error' = 'info'): void {

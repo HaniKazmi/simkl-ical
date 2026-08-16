@@ -76,6 +76,24 @@ test('a count never goes backwards, or sideways', () => {
   refuses(planOf([cell(3, 'Episode', { numberValue: 0 })]), /positive whole number/);
 });
 
+// The one way the never-backwards rule can be defeated. A count typed as text
+// carries only a stringValue, so it parses to no count at all — and both the
+// planner and the guard would then compare against 0 and cheerfully write a
+// smaller number over a larger one.
+test('a hand-entered count stored as text is refused rather than overwritten', () => {
+  const texty = parseGrid(sheetSnapshot([H, show('Fargo', 'Ended'), season(1, 6, 44000), [null, null, 2, '12', 45000, null, 0.0153, { formula: '=G4*D4' }, null, null]]));
+  const edit: CellEdit = {
+    row: 3,
+    column: texty.columns.Episode,
+    field: 'Episode',
+    previous: texty.snapshot.rows[3]?.[texty.columns.Episode]?.userEnteredValue,
+    value: { numberValue: 5 },
+    address: a1(3, texty.columns.Episode),
+    note: 'test',
+  };
+  assert.throws(() => assertPlanSafe(planOf([edit]), texty), (err: Error) => err instanceof UnsafePlanError && /not a number/.test(err.message));
+});
+
 test('an implausible date serial is refused at both ends', () => {
   refuses(planOf([cell(3, 'End', { numberValue: 1000 })]), /not a plausible date serial/);
   refuses(planOf([cell(3, 'End', { numberValue: TODAY + 5 })]), /not a plausible date serial/);

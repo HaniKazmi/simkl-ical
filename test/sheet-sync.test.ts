@@ -170,11 +170,11 @@ test('apply mode writes exactly what it planned and verifies it', async () => {
     assert.equal(result.status, 'applied', result.error ?? '');
     assert.equal(result.error, null);
     assert.equal(sheet.state[3]?.[3]?.userEnteredValue?.numberValue, 5);
-    // Snapshot and write in one atomic batch, then a read, then the snapshot is
-    // dropped. Nothing is written without a fresh read either side of it.
-    assert.deepEqual(sheet.batches, [['duplicateSheet', 'updateCells'], ['deleteSheet']]);
+    // Snapshot and write in one atomic batch, then a read to verify, then the
+    // tab list. Exactly one write, and it has a fresh read either side of it.
+    assert.deepEqual(sheet.batches, [['duplicateSheet', 'updateCells']]);
     const sheets = calls.filter((c) => c.startsWith('https://sheets.googleapis.com/v4/spreadsheets/'));
-    assert.deepEqual(sheets.map((c) => (c.includes(':batchUpdate') ? 'write' : 'read')), ['read', 'write', 'read', 'read', 'write']);
+    assert.deepEqual(sheets.map((c) => (c.includes(':batchUpdate') ? 'write' : 'read')), ['read', 'write', 'read', 'read']);
     // Pinned because `new URL('SID:batchUpdate', base)` reads `SID:` as a
     // scheme and silently sends the request somewhere else entirely.
     assert.ok(sheets[1]?.startsWith('https://sheets.googleapis.com/v4/spreadsheets/SID:batchUpdate'), sheets[1]);
@@ -217,6 +217,41 @@ test('a 500 on the write is never retried, and the re-read settles what happened
     assert.equal(calls.filter((c) => c.includes(':batchUpdate')).length, 1);
     assert.equal(sheet.state[3]?.[3]?.userEnteredValue?.numberValue, 3, 'unchanged');
   });
+});
+
+// A plan containing an insert used to read the sheet's unchanged row count as
+// proof the write had landed, go looking for the snapshot tab that rode the
+// same failed batch, and freeze the process for good — over a sheet a single
+// transient 503 had left completely untouched.
+test('a 500 on a write that inserts a row fails cleanly instead of freezing', async () => {
+  clearTokenCache();
+  const grid: CellSpec[][] = [H, show('Fargo', 'Watching', 3381), season(1, 6, 44000)];
+  const library = libraryOf({
+    id: 3381,
+    title: 'Fargo',
+    status: 'watching',
+    seasons: { 1: [daysAgo(400)], 2: [daysAgo(2)] },
+    watched: 2,
+    total: 2,
+  });
+  const episodes = [
+    { season: 1, episode: 1, type: 'episode', aired: true },
+    { season: 2, episode: 1, type: 'episode', aired: true },
+  ];
+
+  const sheet = server({ grid, episodes, failWrite: 1 });
+  const log = recorder();
+  await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL }, () =>
+    withFetch(sheet.handler, async () => {
+      const sync = new SheetSync({ logger: log });
+      const result = await sync.run(library);
+      assert.ok(sheet.batches[0]?.includes('insertDimension'), 'the failed batch really did carry an insert');
+      assert.equal(result.status, 'failed');
+      assert.equal(result.retry, true, 'the next poll tries again');
+      assert.equal(sync.frozen, null, 'an untouched sheet is not a reason to stop writing forever');
+      assert.equal(sheet.tabs.get(1)?.length, grid.length, 'and no row was added');
+    }),
+  );
 });
 
 test('a run with nothing to write is idle and writes nothing', async () => {
@@ -384,32 +419,38 @@ test('a failed rollback keeps the backup tab and names it', async () => {
   );
 });
 
-// A snapshot left lying around on every successful run would be clutter, and
-// clutter that looks like a failure.
-test('a clean run leaves no backup tab behind', async () => {
+// The newest snapshot survives a clean run on purpose. `frozen` is process
+// state, so a restart forgets that an earlier run told the user to repair from
+// a particular tab — and sweeping the lot would then destroy it.
+test('a clean run keeps its own snapshot tab', async () => {
   clearTokenCache();
   const sheet = server();
   await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL }, () =>
     withFetch(sheet.handler, async () => {
       assert.equal((await new SheetSync({ logger: quiet }).run(LIBRARY)).status, 'applied');
-      assert.deepEqual([...sheet.titles.values()], ['Sheet1']);
+      assert.deepEqual([...sheet.titles.values()].filter((t) => t.startsWith('_sync-backup-')).length, 1);
     }),
   );
 });
 
 // The write batch always makes a snapshot, and any failure between the write
 // and the verify read leaves it behind with nothing to remove it. A clean run
-// is the one moment the sheet is known good, so it clears the lot.
-test('a clean run sweeps snapshot tabs an earlier run left behind', async () => {
+// is the one moment the sheet is known good, so it clears everything but the
+// newest — otherwise they accumulate a full tab copy per failed run.
+test('a clean run sweeps every snapshot tab but the newest', async () => {
   clearTokenCache();
   const sheet = server();
+  sheet.titles.set(98, '_sync-backup-2019-01-01T00-00-00-000Z');
+  sheet.tabs.set(98, []);
   sheet.titles.set(99, '_sync-backup-2020-01-01T00-00-00-000Z');
   sheet.tabs.set(99, []);
 
   await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL }, () =>
     withFetch(sheet.handler, async () => {
       assert.equal((await new SheetSync({ logger: quiet }).run(LIBRARY)).status, 'applied');
-      assert.deepEqual([...sheet.titles.values()], ['Sheet1'], 'the orphan goes too');
+      const remaining = [...sheet.titles.values()].filter((t) => t.startsWith('_sync-backup-'));
+      assert.equal(remaining.length, 1, 'both orphans go');
+      assert.ok(remaining[0]?.startsWith('_sync-backup-20') && !remaining[0].startsWith('_sync-backup-201'), 'and the one kept is this run’s');
     }),
   );
 });
