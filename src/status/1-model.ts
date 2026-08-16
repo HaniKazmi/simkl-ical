@@ -24,9 +24,9 @@ export interface StatusInput {
 
   polledAt: string | null;
   libraryError: string | null;
-  /** Every list, including the empty ones — see `listCounts`. */
+  /** Every type and status, including the empty ones — see `libraryCounts`. */
   counts: Record<string, number>;
-  gate: { moved: string[]; refetched: string[] } | null;
+  gate: { pull: 'none' | 'delta' | 'full'; updated: number; removed: number } | null;
   activitiesPollMs: number;
 
   events: number;
@@ -38,8 +38,9 @@ export interface StatusInput {
   calendarError: string | null;
   calendarRefreshMs: number;
   films: number;
+  /** The last round that completed — not a countdown; films have no timer. */
   filmsResolvedAt: string | null;
-  movieRefreshMs: number;
+  filmsDue: boolean;
 
   sheetConfigured: boolean;
   sheetMode: SheetSyncMode;
@@ -70,12 +71,11 @@ export interface Due {
   label: string;
 }
 
-export interface ListRow {
+export interface CountRow {
   key: string;
   count: number;
-  /** Share of the largest list, for a bar. 0 when everything is empty. */
+  /** Share of the largest row, for a bar. 0 when everything is empty. */
   share: number;
-  state: 'refetched' | 'unchanged' | 'unknown';
 }
 
 export interface Step {
@@ -99,9 +99,9 @@ export interface StatusModel {
     polled: Stamp;
     error: string | null;
     total: number;
-    lists: ListRow[];
-    moved: number;
-    gated: boolean;
+    counts: CountRow[];
+    /** What the last poll did, in one phrase. */
+    gate: string;
     due: Due;
   };
   feed: {
@@ -110,7 +110,7 @@ export interface StatusModel {
     error: string | null;
     steps: Step[];
     calendarsDue: Due;
-    filmsDue: Due;
+    filmsDue: boolean;
   };
   sheet: {
     configured: boolean;
@@ -187,11 +187,26 @@ const calendarDetail = (input: StatusInput, now: number): string => {
   return `${prefix} — unchanged since ${stamp(input.calendarsChangedAt, now).label}`;
 };
 
+/**
+ * What the last poll did, in one phrase.
+ *
+ * "not polled yet" is a different claim from "nothing moved" — until the first
+ * successful poll, nothing is known, and on a cold page that is the honest
+ * thing to say.
+ */
+const gateDetail = (gate: StatusInput['gate']): string => {
+  if (gate === null) return 'not polled yet';
+  if (gate.pull === 'full') return 'full resync';
+  const parts: string[] = [];
+  if (gate.updated) parts.push(`${gate.updated} updated`);
+  if (gate.removed) parts.push(`${gate.removed} removed`);
+  return parts.length ? parts.join(' · ') : 'nothing moved';
+};
+
 export const buildModel = (input: StatusInput): StatusModel => {
   const { now } = input;
   const counts = Object.entries(input.counts);
   const largest = Math.max(1, ...counts.map(([, n]) => n));
-  const refetched = new Set(input.gate?.refetched ?? []);
   // One instant, three places: the join, the render and the section heading all
   // describe the same moment.
   const rendered = stamp(input.renderedAt, now);
@@ -208,16 +223,8 @@ export const buildModel = (input: StatusInput): StatusModel => {
       polled: stamp(input.polledAt, now),
       error: input.libraryError,
       total: counts.reduce((sum, [, n]) => sum + n, 0),
-      lists: counts.map(([key, count]) => ({
-        key,
-        count,
-        share: count / largest,
-        // Unknown until the first successful poll, which is not the same claim
-        // as "nothing moved" — and on a cold page it is the honest one.
-        state: input.gate === null ? 'unknown' : refetched.has(key) ? 'refetched' : 'unchanged',
-      })),
-      moved: input.gate?.moved.length ?? 0,
-      gated: input.gate !== null,
+      counts: counts.map(([key, count]) => ({ key, count, share: count / largest })),
+      gate: gateDetail(input.gate),
       due: due(input.polledAt, input.activitiesPollMs, now),
     },
 
@@ -237,9 +244,10 @@ export const buildModel = (input: StatusInput): StatusModel => {
         },
       ],
       calendarsDue: due(input.calendarsAt, input.calendarRefreshMs, now),
-      // Films have no timer of their own: the gate checks their age and acts on
-      // it, so this is when the next gate will find them due, not a countdown.
-      filmsDue: due(input.filmsResolvedAt, input.movieRefreshMs, now),
+      // A boolean, not a countdown: whether a film is due is per-film — a new or
+      // undated one is due now, a date most of a year out is not — so no single
+      // instant says when the next one falls due.
+      filmsDue: input.filmsDue,
     },
 
     sheet: {

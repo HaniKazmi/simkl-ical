@@ -55,8 +55,10 @@ export interface Catalogue {
 const fetchEpisodes = (id: number, signal?: AbortSignal): Promise<EpisodeDetail[]> =>
   apiGet<EpisodeDetail[]>(`/tv/episodes/${id}`, { signal });
 
+// No `extended`: the per-title endpoints always return the whole record, and
+// the parameter is accepted for compatibility while changing nothing.
 const fetchDetail = (id: number, anime: boolean, signal?: AbortSignal): Promise<ShowDetail> =>
-  apiGet<ShowDetail>(`/${anime ? 'anime' : 'tv'}/${id}`, { params: { extended: 'full' }, signal });
+  apiGet<ShowDetail>(`/${anime ? 'anime' : 'tv'}/${id}`, { signal });
 
 /**
  * Resolve a batch. Requests for the same id are merged, so asking for the

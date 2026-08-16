@@ -143,7 +143,7 @@ export class SheetSync {
       const message = errorMessage(err);
       this.log.error(`sheet sync failed: ${message}`);
       // A wrong SHEET_ID or an unshared spreadsheet needs a human, so asking
-      // for another poll only arms the retry every two hours for a week. It
+      // for another poll only re-arms the retry every poll indefinitely. It
       // still lands in `errors.sheet` and `/healthz` on every run — "say it
       // once" here means stop the retry loop, not stop reporting.
       //

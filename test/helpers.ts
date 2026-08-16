@@ -14,7 +14,7 @@ import { MS_PER_DAY } from '../src/shared/dates.ts';
 import type { Calendars } from '../src/feed/io/calendar.ts';
 import type { SheetSnapshot } from '../src/sheet/io/spreadsheet.ts';
 import type { CellData } from '../src/api/google/types.ts';
-import type { CalendarEntry, CalendarFile, Library, LibraryItem, ShowMetadata } from '../src/api/simkl/types.ts';
+import type { CalendarEntry, CalendarFile, Library, LibraryItem, ShowMetadata, SyncType } from '../src/api/simkl/types.ts';
 
 // Here rather than per file, for the same reason: a file that forgets these
 // reaches the real API, or sleeps 15s per retry path.
@@ -108,6 +108,13 @@ export const withFreshJournal = async (fn: (dir: string) => Promise<void>): Prom
   });
 
 export type FetchHandler = (url: string, init?: RequestInit) => Response | Promise<Response>;
+
+/**
+ * The query of a recorded call, decoded. Assertions read the value the API was
+ * asked for rather than its percent-encoding, so a change in how `apiGet`
+ * builds a query string cannot fail a test that no behaviour change touched.
+ */
+export const paramsOf = (call: string): URLSearchParams => new URL(call).searchParams;
 
 /**
  * Replace global fetch for the duration of `fn`, recording every URL asked for.
@@ -207,6 +214,8 @@ export const daysAgo = (days: number): string => ago(days * MS_PER_DAY);
 
 export interface ItemSpec {
   id: number;
+  /** Films nest under `movie` and carry no seasons; everything else under `show`. */
+  type?: SyncType;
   title?: string;
   status?: string;
   lastWatchedAt?: string | null;
@@ -217,11 +226,13 @@ export interface ItemSpec {
   seasons?: Record<number, Array<string | null>>;
 }
 
-export const libraryItem = ({ id, title = `Show ${id}`, status = 'watching', lastWatchedAt, watched, total, notAired = 0, seasons = {} }: ItemSpec): LibraryItem => {
+export const libraryItem = ({ id, type = 'shows', title = `Show ${id}`, status = 'watching', lastWatchedAt, watched, total, notAired = 0, seasons = {} }: ItemSpec): LibraryItem => {
   const episodes = Object.values(seasons).flat();
   const counted = episodes.filter((at) => at !== null).length;
+  const nested = { title, ids: { simkl: id } };
+  if (type === 'movies') return { movie: nested, status, last_watched_at: lastWatchedAt ?? null };
   return {
-    show: { title, ids: { simkl: id } },
+    show: nested,
     status,
     last_watched_at: lastWatchedAt ?? episodes.filter((at): at is string => at !== null).sort().at(-1) ?? null,
     watched_episodes_count: watched ?? counted,
@@ -234,5 +245,11 @@ export const libraryItem = ({ id, title = `Show ${id}`, status = 'watching', las
   };
 };
 
-/** A library holding the given items in one `shows_watching` list. */
-export const libraryOf = (...items: ItemSpec[]): Library => ({ shows_watching: { shows: items.map(libraryItem) } });
+/**
+ * A library holding the given items, all typed `shows` unless a spec says
+ * otherwise. The default matches what most suites want; anything testing the
+ * type split sets it per item, since the type is the one field the item itself
+ * cannot supply.
+ */
+export const libraryOf = (...items: ItemSpec[]): Library =>
+  new Map(items.map((spec) => [spec.id, { type: spec.type ?? 'shows', item: libraryItem(spec) }]));

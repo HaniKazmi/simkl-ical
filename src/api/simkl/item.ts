@@ -1,9 +1,9 @@
 /**
  * Reading the two fields of a library item that everything downstream keys on.
  *
- * One copy, because three modules ask: the join builds its id sets from them,
- * `library.ts` uses them to decide which list membership a refetch has
- * superseded, and the sheet's progress index does both.
+ * One copy, because three modules ask: `library.ts` keys the library on the id,
+ * the join builds its id sets from both, and the sheet's progress index reads
+ * the status off every title it plans against.
  */
 
 import type { LibraryItem } from './types.ts';
@@ -19,11 +19,12 @@ export const itemSimklId = (item: LibraryItem | null | undefined): number | null
 };
 
 /**
- * The item's own status, folded for comparison against a `ListDefinition`.
+ * The item's own status, folded for comparison against a status constant.
  *
- * This is the field that says which list an item currently belongs to. The list
- * it arrived in does not: a move is reported only against the destination, so
- * the source keeps its copy until something else evicts it.
+ * This is the only membership there is: the library holds one record per id, so
+ * what this field says is what the item is. Optional on the wire, and a record
+ * carrying none is still a title we hold — which is why the feed's airing rule
+ * is negative and only its film rule is positive.
  */
 export const itemStatus = (item: LibraryItem | null | undefined): string | null =>
   item?.status?.trim().toLowerCase() ?? null;

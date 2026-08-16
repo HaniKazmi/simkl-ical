@@ -4,35 +4,62 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { config } from '../src/shared/config.ts';
 import { Orchestrator } from '../src/orchestrator.ts';
-import { LISTS } from '../src/library.ts';
-import { ago, emptyCalendars, jsonResponse, quiet, recorder, withConfig, withFetch, withTempDataDir } from './helpers.ts';
+import { emptyCalendars, jsonResponse, libraryOf, paramsOf, quiet, recorder, withConfig, withFetch, withTempDataDir } from './helpers.ts';
 
 const T = '2026-08-15T12:00:00Z';
 
 /** A full activities payload; pass overrides to move individual timestamps. */
-const activities = (over: Record<string, Record<string, string>> = {}) => ({
+const activities = (over: Record<string, Record<string, string>> = {}, all = T) => ({
+  all,
   tv_shows: { watching: T, plantowatch: T, completed: T, removed_from_list: T, ...over.tv_shows },
   anime: { watching: T, plantowatch: T, completed: T, removed_from_list: T, ...over.anime },
   movies: { plantowatch: T, removed_from_list: T, ...over.movies },
 });
 
-const listBody = { shows: [{ show: { title: 'A Show', ids: { simkl: 100 } } }] };
-const filmBody = { movies: [{ movie: { title: 'A Film', ids: { simkl: 300 } } }] };
+const libraryBody = {
+  shows: [{ show: { title: 'A Show', ids: { simkl: 100 } }, status: 'watching' }],
+  movies: [{ movie: { title: 'A Film', ids: { simkl: 300 } }, status: 'plantowatch' }],
+};
+
+/** The same library in the `simkl_ids_only` shape: ids and nothing else. */
+const membershipBody = { shows: [{ show: { ids: { simkl: 100 } } }], movies: [{ movie: { ids: { simkl: 300 } } }] };
+/** A plain date `days` from now, so a fixture can sit inside or outside the horizon. */
+const dateIn = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+
+/** Dated soon, so it stays inside the re-read horizon whenever the suite runs. */
 const movieDetail = {
   title: 'A Film',
   runtime: 120,
-  release_dates: [{ iso_3166_1: 'GB', results: [{ type: 3, release_date: '2027-05-25' }] }],
+  release_dates: [{ iso_3166_1: 'GB', results: [{ type: 3, release_date: dateIn(10) }] }],
 };
 
-/** Routes the three endpoint families a library refresh touches. */
+/** The same film pushed well past the horizon, where its date stops being re-read. */
+const distantDetail = { ...movieDetail, release_dates: [{ iso_3166_1: 'GB', results: [{ type: 3, release_date: dateIn(300) }] }] };
+
+/**
+ * Routes the endpoint families a library refresh touches.
+ *
+ * `body` overrides what the library pull answers with, which is how a delta
+ * carrying one changed record is distinguished from a full pull.
+ */
 const api =
-  (acts: unknown, { movieStatus = 200 }: { movieStatus?: number } = {}) =>
+  (
+    acts: unknown,
+    {
+      movieStatus = 200,
+      body = libraryBody,
+      membership,
+      detail = movieDetail,
+    }: { movieStatus?: number; body?: unknown; membership?: unknown; detail?: unknown } = {},
+  ) =>
   (url: string): Response => {
     if (url.includes('/sync/activities')) return jsonResponse(acts);
-    if (url.includes('/all-items/movies/')) return jsonResponse(filmBody);
-    if (url.includes('/all-items/')) return jsonResponse(listBody);
+    if (url.includes('/sync/all-items')) {
+      if (url.includes('simkl_ids_only')) return jsonResponse(membership ?? membershipBody);
+      return jsonResponse(body);
+    }
     if (url.includes('/movies/')) {
-      return movieStatus === 200 ? jsonResponse(movieDetail) : new Response('nope', { status: movieStatus });
+      return movieStatus === 200 ? jsonResponse(detail) : new Response('nope', { status: movieStatus });
     }
     throw new Error(`unexpected request: ${url}`);
   };
@@ -43,20 +70,28 @@ const withToken = (fn: (state: Orchestrator) => Promise<void>, logger: Orchestra
     await fn(new Orchestrator({ logger }));
   });
 
-/** Get a state to a warm, fully-synced baseline. Twelve tests started this way. */
-const prime = (state: Orchestrator, acts: unknown = activities(), opts: { movieStatus?: number } = {}) =>
+/** Get a state to a warm, fully-synced baseline, which most tests want. */
+const prime = (state: Orchestrator, acts: unknown = activities(), opts: Parameters<typeof api>[1] = {}) =>
   withFetch(api(acts, opts), () => state.refreshLibraryIfChanged());
 
-const lists = (calls: string[]) => calls.filter((c) => c.includes('/all-items/')).map((c) => c.split('/all-items/')[1]!.split('?')[0]!);
+/** Age every film stamp past the refresh floor, so the films are due again. */
+const ageFilms = (state: Orchestrator) => {
+  for (const id of state.feed.filmStamps.keys()) state.feed.filmStamps.set(id, Date.now() - config.movieRefreshMs - 1000);
+};
+
+const pulls = (calls: string[]) => calls.filter((c) => c.includes('/sync/all-items'));
+const deltas = (calls: string[]) => pulls(calls).filter((c) => c.includes('date_from='));
+const memberships = (calls: string[]) => pulls(calls).filter((c) => c.includes('simkl_ids_only'));
 const lookups = (calls: string[]) => calls.filter((c) => /\/movies\/\d/.test(c));
 
-test('a cold start fetches every list and resolves the films', async () => {
+test('a cold start pulls the whole library in one request and resolves the films', async () => {
   await withToken(async (state) => {
     await withFetch(api(activities()), async (calls) => {
       await state.refreshLibraryIfChanged();
-      assert.equal(lists(calls).length, LISTS.length, 'every list');
+      assert.equal(pulls(calls).length, 1, 'one pull, not one per list');
+      assert.equal(deltas(calls).length, 0, 'and no date_from — there is no watermark yet');
       assert.equal(lookups(calls).length, 1, 'and the one film');
-      assert.ok(state.library);
+      assert.equal(state.library?.size, 2);
       assert.equal(state.feed.movieReleases.size, 1);
     });
   });
@@ -77,53 +112,150 @@ test('a poll with nothing changed makes one request and refetches nothing', asyn
   });
 });
 
-test('marking an episode watched refetches only that one list', async () => {
+test('marking an episode watched asks for a delta and nothing more', async () => {
   await withToken(async (state) => {
     await prime(state);
 
-    const moved = activities({ tv_shows: { watching: '2026-08-15T18:00:00Z' } });
-    await withFetch(api(moved), async (calls) => {
+    const moved = activities({ tv_shows: { watching: '2026-08-15T18:00:00Z' } }, '2026-08-15T18:00:00Z');
+    await withFetch(api(moved, { body: {} }), async (calls) => {
       await state.refreshLibraryIfChanged();
-      assert.deepEqual(lists(calls), ['shows/watching']);
+      assert.equal(calls.length, 2, `activities and one delta, got ${calls.join(', ')}`);
+      assert.equal(deltas(calls).length, 1);
       assert.equal(lookups(calls).length, 0, 'an episode must not drag the film lookups along');
     });
   });
 });
 
-test('a film list change re-resolves the films', async () => {
+// The watermark goes out exactly as SIMKL gave it, less one second: date_from
+// is compared strictly greater, so passing back the timestamp verbatim asks for
+// nothing and a change landing in that same second is never seen again.
+test('the delta asks from one second behind the watermark', async () => {
+  await withToken(async (state) => {
+    await prime(state);
+    assert.equal(state.syncedAll, T);
+
+    const moved = activities({ tv_shows: { watching: '2026-08-15T18:00:00Z' } }, '2026-08-15T18:00:00Z');
+    await withFetch(api(moved, { body: {} }), async (calls) => {
+      await state.refreshLibraryIfChanged();
+      assert.equal(paramsOf(deltas(calls)[0]!).get('date_from'), '2026-08-15T11:59:59Z');
+    });
+    assert.equal(state.syncedAll, '2026-08-15T18:00:00Z', 'and then advances');
+  });
+});
+
+// The reason the trigger is the status signature rather than activities.all,
+// which rolls playback up with everything else.
+test('a scrobble moves activities.all and still pulls nothing', async () => {
   await withToken(async (state) => {
     await prime(state);
 
-    const moved = activities({ movies: { plantowatch: '2026-08-15T18:00:00Z' } });
-    await withFetch(api(moved), async (calls) => {
+    const scrobbled = activities({ tv_shows: { playback: '2026-08-15T18:00:00Z' } });
+    await withFetch(api({ ...scrobbled, all: '2026-08-15T18:00:00Z' }), async (calls) => {
       await state.refreshLibraryIfChanged();
-      assert.deepEqual(lists(calls), ['movies/plantowatch']);
-      assert.equal(lookups(calls).length, 1);
+      assert.equal(calls.length, 1, `expected only /sync/activities, got ${calls.join(', ')}`);
     });
   });
 });
 
-// A partial refresh must merge into what is already held, not replace it.
-test('refetching one list leaves the others in place', async () => {
+// A removal is in no delta: it moves removed_from_list and nothing else, so the
+// membership set is the only way to learn what went.
+test('a removal costs one extra request and drops the title', async () => {
   await withToken(async (state) => {
     await prime(state);
-    const before = Object.keys(state.library ?? {}).sort();
+    assert.equal(state.library?.size, 2);
 
-    await prime(state, activities({ tv_shows: { watching: '2026-08-15T18:00:00Z' } }));
-    assert.deepEqual(Object.keys(state.library ?? {}).sort(), before, 'no list may be lost');
+    const removed = activities({ movies: { removed_from_list: '2026-08-15T18:00:00Z' } });
+    await withFetch(api(removed, { membership: { shows: [{ show: { ids: { simkl: 100 } } }] } }), async (calls) => {
+      await state.refreshLibraryIfChanged();
+      assert.equal(calls.length, 2, `activities and one membership pull, got ${calls.join(', ')}`);
+      assert.equal(memberships(calls).length, 1);
+    });
+    assert.deepEqual([...(state.library?.keys() ?? [])], [100], 'the film is gone');
   });
 });
 
-// Recording the signature after a failed lookup would mark the film list
-// current despite unresolved dates, and nothing would retry.
-test('a transient film failure leaves the list stale so the next poll retries', async () => {
+// A truncated response is indistinguishable from a cleared account, and
+// applying one empties the feed.
+test('a membership response that would empty the library is refused and retried', async () => {
+  await withToken(async (state) => {
+    await prime(state);
+
+    const removed = activities({ movies: { removed_from_list: '2026-08-15T18:00:00Z' } });
+    await withFetch(api(removed, { membership: {} }), async () => {
+      await state.refreshLibraryIfChanged();
+    });
+    assert.equal(state.library?.size, 2, 'nothing dropped');
+
+    await withFetch(api(removed, { membership: {} }), async (calls) => {
+      await state.refreshLibraryIfChanged();
+      assert.equal(memberships(calls).length, 1, 'and the next poll asks again');
+    });
+  });
+});
+
+// The film that arrived has no date yet; the one already resolved answers the
+// same thing it did a moment ago, so asking again is a wasted request.
+test('a new film is looked up and the films already resolved are not', async () => {
+  await withToken(async (state) => {
+    await prime(state);
+
+    const moved = activities({ movies: { plantowatch: '2026-08-15T18:00:00Z' } }, '2026-08-15T18:00:00Z');
+    const arrived = { movies: [{ movie: { title: 'New Film', ids: { simkl: 301 } }, status: 'plantowatch' }] };
+    await withFetch(api(moved, { body: arrived }), async (calls) => {
+      await state.refreshLibraryIfChanged();
+      assert.equal(deltas(calls).length, 1);
+      assert.deepEqual(lookups(calls).map((c) => c.split('/movies/')[1]!.split('?')[0]), ['301']);
+    });
+  });
+});
+
+// A release date only firms up as it approaches, so re-reading one dated most
+// of a year out costs a request per film per day to learn nothing.
+test('a film dated beyond the horizon is not re-read once its date is known', async () => {
+  await withToken(async (state) => {
+    await prime(state, activities(), { detail: distantDetail });
+    ageFilms(state);
+
+    await withFetch(api(activities(), { detail: distantDetail }), async (calls) => {
+      await state.refreshLibraryIfChanged();
+      assert.equal(calls.length, 1, `expected only /sync/activities, got ${calls.join(', ')}`);
+    });
+    assert.equal(state.feed.movieReleases.size, 1, 'and its date is still held');
+  });
+});
+
+// A delta carries only what changed, so anything it does not mention has to
+// survive it.
+test('a delta merges into what is held rather than replacing it', async () => {
+  await withToken(async (state) => {
+    await prime(state);
+    assert.deepEqual([...(state.library?.keys() ?? [])].sort((a, b) => a - b), [100, 300]);
+
+    const moved = activities({ tv_shows: { watching: '2026-08-15T18:00:00Z' } }, '2026-08-15T18:00:00Z');
+    const delta = { shows: [{ show: { title: 'A Show', ids: { simkl: 100 } }, status: 'dropped' }] };
+    await withFetch(api(moved, { body: delta }), () => state.refreshLibraryIfChanged());
+
+    assert.deepEqual([...(state.library?.keys() ?? [])].sort((a, b) => a - b), [100, 300], 'the film survives');
+    assert.equal(state.library?.get(100)?.item.status, 'dropped', 'and the show moved');
+  });
+});
+
+// A retryable failure leaves the id unstamped, and an unstamped id is due — so
+// the retry needs no flag of its own.
+test('a transient film failure is retried on the next poll', async () => {
   await withToken(async (state) => {
     await prime(state, activities(), { movieStatus: 500 });
 
     await withFetch(api(activities()), async (calls) => {
       await state.refreshLibraryIfChanged();
-      assert.deepEqual(lists(calls), ['movies/plantowatch'], 'the film list is retried');
-      assert.equal(lookups(calls).length, 1);
+      assert.equal(pulls(calls).length, 0, 'nothing moved, so no library pull');
+      assert.equal(lookups(calls).length, 1, 'but the film is re-asked');
+    });
+
+    // And once it answers, the floor holds it until it ages out again.
+    await withFetch(api(activities()), async (calls) => {
+      await state.refreshLibraryIfChanged();
+      assert.equal(lookups(calls).length, 0, 'the resolved film is not re-asked');
     });
   });
 });
@@ -147,21 +279,23 @@ test('film dates are re-resolved once they age out, with no library change', asy
   await withToken(async (state) => {
     await prime(state);
 
-    state.feed.filmsResolvedAt = ago(config.movieRefreshMs + 1000);
+    ageFilms(state);
     await withFetch(api(activities()), async (calls) => {
       await state.refreshLibraryIfChanged();
-      assert.equal(lists(calls).length, 0, 'no list changed, so none is refetched');
+      assert.equal(pulls(calls).length, 0, 'nothing moved, so no library pull');
       assert.equal(lookups(calls).length, 1, 'but the dates are re-read');
     });
   });
 });
 
-test('force refetches everything regardless of the signatures', async () => {
+test('force pulls the whole library regardless of the signatures', async () => {
   await withToken(async (state) => {
     await prime(state);
     await withFetch(api(activities()), async (calls) => {
       await state.refreshLibraryIfChanged({ force: true });
-      assert.equal(lists(calls).length, LISTS.length);
+      assert.equal(pulls(calls).length, 1);
+      assert.equal(deltas(calls).length, 0, 'a forced pull is whole, not a delta');
+      assert.equal(memberships(calls).length, 0, 'and a full pull is itself the membership set');
     });
   });
 });
@@ -221,8 +355,7 @@ test('a failed daily re-read retries on the next poll, not in another day', asyn
   await withToken(async (state) => {
     await prime(state);
 
-    const before = state.feed.filmsResolvedAt;
-    state.feed.filmsResolvedAt = ago(config.movieRefreshMs + 1000);
+    ageFilms(state);
 
     await withFetch(api(activities(), { movieStatus: 500 }), async (calls) => {
       await state.refreshLibraryIfChanged();
@@ -230,9 +363,9 @@ test('a failed daily re-read retries on the next poll, not in another day', asyn
       // that the re-read happened at all.
       assert.ok(lookups(calls).length >= 1, 'the re-read was attempted');
     });
-    assert.notEqual(state.feed.filmsResolvedAt, before, 'precondition: it was aged');
+    // The stamp is not refreshed, so the film stays past the floor and due.
     assert.ok(
-      Date.now() - Date.parse(state.feed.filmsResolvedAt!) > config.movieRefreshMs,
+      Date.now() - state.feed.filmStamps.get(300)! > config.movieRefreshMs,
       'a failed round must not count as resolved',
     );
 
@@ -243,10 +376,10 @@ test('a failed daily re-read retries on the next poll, not in another day', asyn
   });
 });
 
-test('a successful daily re-read does reset the clock', async () => {
+test('a successful re-read resets the floor', async () => {
   await withToken(async (state) => {
     await prime(state);
-    state.feed.filmsResolvedAt = ago(config.movieRefreshMs + 1000);
+    ageFilms(state);
 
     await prime(state);
     await withFetch(api(activities()), async (calls) => {
@@ -262,7 +395,7 @@ test('a sustained rate limit keeps the films and retries rather than dropping th
     await prime(state);
     assert.equal(state.feed.movieReleases.size, 1, 'precondition');
 
-    state.feed.filmsResolvedAt = ago(config.movieRefreshMs + 1000);
+    ageFilms(state);
     await prime(state, activities(), { movieStatus: 429 });
 
     assert.equal(state.feed.movieReleases.size, 1, 'the known date is kept, not dropped');
@@ -284,34 +417,6 @@ test('a revoked token during film lookups is reported as AUTH', async () => {
       },
     );
     assert.match(state.errors.library!, /^AUTH:/);
-  });
-});
-
-// Dropping a show bumps only the destination list's timestamp, so `watching` is
-// never refetched and keeps its pre-move copy — status and all. Nothing in the
-// payloads separates that from an un-drop, so the poll has to resolve it while
-// it still knows which list it just fetched.
-test('a title claimed by a refetched list is evicted from the stale one it left', async () => {
-  await withToken(async (state) => {
-    await prime(state);
-    assert.equal(state.library?.shows_watching?.shows?.length, 1, 'the baseline has it in watching');
-
-    const moved = activities({ tv_shows: { dropped: '2026-08-16T00:00:00Z' } });
-    const dropped = { shows: [{ show: { title: 'A Show', ids: { simkl: 100 } }, status: 'dropped' }] };
-    await withFetch(
-      (url) => {
-        if (url.includes('/sync/activities')) return jsonResponse(moved);
-        if (url.includes('/all-items/shows/dropped')) return jsonResponse(dropped);
-        throw new Error(`unexpected request: ${url}`);
-      },
-      async (calls) => {
-        await state.refreshLibraryIfChanged();
-        assert.deepEqual(lists(calls), ['shows/dropped'], 'only the destination is refetched');
-      },
-    );
-
-    assert.deepEqual(state.library?.shows_watching?.shows, [], 'the stale membership goes');
-    assert.equal(state.library?.shows_dropped?.shows?.length, 1, 'and the fresh one stands');
   });
 });
 
@@ -429,12 +534,11 @@ test('a poll that fell through only to retry the sheet does not advance libraryS
 // poll runs on its own timer throughout, and `schedule` gives each its own
 // running flag. A render carrying a library read *before* the fetch is queued
 // when the fetch finishes — so it lands after the poll's own render and
-// overwrites it, and stands until the next refresh three hours later.
+// overwrites it, and stands until the next calendar refresh six hours later.
 //
-// The library object also changes identity mid-poll: `Object.assign` mutates
-// the old one with the fresh lists, then `pruneSuperseded` returns a *new* one
-// with superseded membership evicted. A pre-fetch capture therefore has the new
-// data and none of the pruning — a dropped show's episodes back in the feed.
+// The library also changes identity mid-poll: the merge and the removal diff
+// each return a new Map. A capture taken before the fetch therefore renders a
+// library the poll has already replaced.
 test('a calendar refresh renders the library as it is when the fetch finishes', async () => {
   await withToken(async (state) => {
     const airing = {
@@ -443,8 +547,8 @@ test('a calendar refresh renders the library as it is when the fetch finishes', 
       finale_type: null,
       episode: { season: 1, episode: 1, title: 'Ep 1', url: 'https://simkl.com/tv/100/' },
     };
-    // Nothing in any list, so this library joins to zero events.
-    state.library = { shows_watching: { shows: [] } };
+    // Empty, so this library joins to zero events.
+    state.library = new Map();
 
     let release: () => void = () => {};
     const held = new Promise<void>((resolve) => {
@@ -459,9 +563,9 @@ test('a calendar refresh renders the library as it is when the fetch finishes', 
       },
       async () => {
         const inFlight = state.refreshCalendars();
-        // The poll lands mid-fetch and replaces the library, as it does whenever
-        // pruneSuperseded evicts anything.
-        state.library = { shows_watching: { shows: [{ show: { title: 'A Show', ids: { simkl: 100 } } }] } };
+        // The poll lands mid-fetch and replaces the library, as it does on
+        // every merge.
+        state.library = libraryOf({ id: 100, title: 'A Show' });
         release();
         await inFlight;
       },
@@ -483,43 +587,46 @@ test('a quiet poll still records a gate, with nothing in it', async () => {
     await withFetch(api(acts), async (calls) => {
       await state.refreshLibraryIfChanged();
       assert.equal(calls.length, 1, 'still exactly one request');
-      assert.deepEqual(state.lastGate, { moved: [], refetched: [] });
+      assert.deepEqual(state.lastGate, { changed: false, pull: 'none', removals: false, updated: 0, removed: 0 });
     });
   });
 });
 
-// On a cold start every signature differs from the absent one it is compared
-// against, so both halves are the full set and they agree.
-test('a cold start reports every list as both moved and refetched', async () => {
+// On a cold start the signature differs from the absent one it is compared
+// against, so the change is real and the pull is whole.
+test('a cold start reports a changed gate and a full pull', async () => {
   await withToken(async (state) => {
     await withFetch(api(activities()), async () => {
       await state.refreshLibraryIfChanged();
-      assert.equal(state.lastGate?.moved.length, LISTS.length);
-      assert.equal(state.lastGate?.refetched.length, LISTS.length);
+      assert.equal(state.lastGate?.changed, true);
+      assert.equal(state.lastGate?.pull, 'full');
+      assert.equal(state.lastGate?.updated, 2);
     });
   });
 });
 
-// The case the two fields exist for. A forced poll refetches everything while
-// the gate itself says nothing moved, so collapsing them into one list would
-// report eleven changes that did not happen.
-test('a forced poll refetches every list while the gate reports none moved', async () => {
+// The case `changed` and `pull` exist separately for: a forced poll pulls
+// everything while the gate itself says nothing moved, so collapsing them into
+// one field would report a change that did not happen.
+test('a forced poll pulls whole while the gate reports nothing moved', async () => {
   await withToken(async (state) => {
     await prime(state);
     await withFetch(api(activities()), async () => {
       await state.refreshLibraryIfChanged({ force: true });
-      assert.deepEqual(state.lastGate?.moved, [], 'the signatures all still match');
-      assert.equal(state.lastGate?.refetched.length, LISTS.length, 'and yet every list was refetched');
+      assert.equal(state.lastGate?.changed, false, 'the signature still matches');
+      assert.equal(state.lastGate?.pull, 'full', 'and yet the whole library was pulled');
     });
   });
 });
 
-test('a gate that moves one list records just that one', async () => {
+test('a gate that moved reports what the delta carried', async () => {
   await withToken(async (state) => {
     await prime(state);
-    await withFetch(api(activities({ tv_shows: { watching: '2026-08-15T18:00:00Z' } })), async () => {
+    const moved = activities({ tv_shows: { watching: '2026-08-15T18:00:00Z' } }, '2026-08-15T18:00:00Z');
+    const delta = { shows: [{ show: { title: 'A Show', ids: { simkl: 100 } }, status: 'watching' }] };
+    await withFetch(api(moved, { body: delta }), async () => {
       await state.refreshLibraryIfChanged();
-      assert.deepEqual(state.lastGate, { moved: ['shows_watching'], refetched: ['shows_watching'] });
+      assert.deepEqual(state.lastGate, { changed: true, pull: 'delta', removals: false, updated: 1, removed: 0 });
     });
   });
 });

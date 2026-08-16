@@ -82,7 +82,7 @@ Under Compose, the first two go in `simkl.secrets.env` and the rest are set dire
 | `PORT`                | `3000`          | Port inside the container                                     |
 | `DATA_DIR`            | `/data`         | Holds `token.json`, the last rendered `feed.ics`, and the sheet run log. `./data` outside Docker |
 | `CALENDAR_REFRESH_MS` | `21600000` (6h) | How often to re-read the airdate calendars. Matches how often the CDN regenerates them |
-| `ACTIVITIES_POLL_MS`  | `7200000` (2h)  | How often to check your library for changes                   |
+| `ACTIVITIES_POLL_MS`  | `1800000` (30m) | How often to check your library for changes                   |
 | `MOVIE_REFRESH_MS`    | `86400000` (24h)| How often to re-read film release dates, which move without any library change |
 
 The three interval settings are floored at 60 seconds and `GRACE_DAYS` is clamped
@@ -121,16 +121,14 @@ for the sheet sync below, which needs to tell "you dropped this" from "SIMKL has
 heard of it".
 
 Putting a show on hold or dropping it stops its episodes appearing, from the next poll.
-SIMKL reports a move only against the list it moved *to*, so the show stays listed under
-`watching` as well — the feed goes by the status on the item rather than by which list it
-turned up in. Un-holding brings it back with no further action.
+Un-holding brings it back with no further action.
 
 ## Status page
 
 `https://…/<FEED_TOKEN>/status` is a plain HTML page showing what the service is actually
-doing: how many items are in each of your eleven SIMKL lists and which ones moved at the
-last check, the feed's fetch→join→render→save steps with when each last ran, and a history
-of every edit the sheet sync has made — cell by cell, with what changed.
+doing: how many titles you hold at each status, what the last check found, the feed's
+fetch→join→render→save steps with when each last ran, and a history of every edit the sheet
+sync has made — cell by cell, with what changed.
 
 It is **as sensitive as the feed URL**, and behind the same token: it names your shows.
 Treat it the same way, and note that a URL carrying a credential is kept by browser history
@@ -298,7 +296,7 @@ Contributing, test conventions and the rules worth knowing before changing anyth
 ```
 data.simkl.in/calendar/v2/*.json  ─┐
                                    ├─ join on simkl_id ─→ ICS ─→ GET /:token/feed.ics
-api.simkl.com/sync/all-items/…  ───┘
+api.simkl.com/sync/all-items  ─────┘
 ```
 
 A background loop renders the feed into memory; requests never trigger a fetch. A client
@@ -306,30 +304,29 @@ polling hard can't amplify into SIMKL traffic, and a SIMKL outage degrades to a 
 rather than an empty one.
 
 Airdate calendars are re-read every 6 hours with a conditional `GET`, matching how often the
-CDN regenerates them. Your library is gated behind `/sync/activities`, checked every 2 hours:
-activities carries a timestamp per list, so only the lists that actually changed are
-refetched. It ignores `playback` and `rated_at`, neither of which can change the feed —
-otherwise a scrobbler reporting progress
-would trigger a refetch that renders byte-identical output.
+CDN regenerates them. Your library is gated behind `/sync/activities`, checked every 30
+minutes: when a status timestamp moves, one request asks for just the items that changed
+since the last check. The gate ignores `playback` and `rated_at`, neither of which can change
+the feed — otherwise a scrobbler reporting progress would pull a delta that renders
+byte-identical output.
 
-Eleven lists are covered — watching, plan-to-watch, completed, hold and dropped for both shows
-and anime, plus plan-to-watch films. Only seven reach the feed; the rest are there for the
-sheet sync.
+One request covers everything — shows, anime and films, at every status. Watching,
+plan-to-watch and completed reach the feed; hold and dropped are there for the sheet sync.
 
-| Event                         | API calls                                    |
-| ----------------------------- | -------------------------------------------- |
-| Nothing changed               | 1                                            |
-| Marked an episode watched     | 2                                            |
-| Added or removed a film       | 2 + one lookup per film                      |
-| Removed something from a list | 6 (removals are only reported per category)  |
-| Cold start                    | 12 + one lookup per film                     |
-| Once a day                    | 1 + one lookup per film                      |
+| Event                         | API calls                                            |
+| ----------------------------- | ---------------------------------------------------- |
+| Nothing changed               | 1                                                    |
+| Marked an episode watched     | 2                                                    |
+| Added a film                  | 2 + one lookup for it                                |
+| Removed something from a list | 3 (removals are never in a delta, so ids are diffed) |
+| Cold start                    | 2 + one lookup per film                              |
 
-Film release dates get that daily re-read because nothing in your library moves when a
-studio delays a release — gating them on list changes alone meant the feed kept the old
-date until it aged out, at which point the film disappeared until the next restart.
+Film release dates are re-read when a film is new, has no announced date, or is dated within
+the next 30 days — never more than once a day each. Nothing in your library moves when a
+studio delays a release, so nothing else would catch it; a film dated a year out answers the
+same thing every day, so it is left alone until the date comes into range.
 
-Steady state is about 12 API calls a day, well inside SIMKL's 10 requests/second limit.
+Steady state is about 48 API calls a day, well inside SIMKL's 10 requests/second limit.
 
 With the sheet sync configured, a cold start adds one per-title episode list and one detail
 lookup for each show with recent watch activity — around 35 for a 300-row sheet. Afterwards
@@ -360,8 +357,26 @@ anyone else building against this API:
   against `Last-Modified` is the only way to detect a regeneration.
 - **`next_to_watch` is `null` when you're caught up**, so it can't be used as a progress
   signal. `last_watched` is always populated.
-- **`include_all_episodes=yes` is required** for the completed and dropped lists, or the
-  `seasons` key is absent entirely rather than empty.
+- **`extended=full` is the gatekeeper on `/sync/all-items`.** It alone turns on `seasons[]`;
+  `episode_watched_at=yes` and `include_all_episodes=yes` return byte-identical responses
+  without it. With `extended=full` alone, completed and dropped titles still come back with no
+  `seasons` at all, so `include_all_episodes=yes` is genuinely required too. `ids.simkl` needs
+  none of them.
+- **`extended` is a no-op on the per-title endpoints.** `/movies/{id}`, `/tv/{id}`,
+  `/anime/{id}` and `/tv/episodes/{id}` return byte-identical responses with and without it —
+  they always send the whole record.
+- **`date_from` is compared strictly greater, at one-second granularity.** Passing back the
+  exact `activities.all` returns nothing; one second earlier returns the newest change. Delta
+  responses are *complete* item records rather than partial patches, so merging is a plain
+  upsert. Nothing changed comes back as `{}` — two bytes.
+- **Removals never appear in a delta.** `removed_from_list` says one happened but not what
+  went; the only way to learn is to pull `extended=simkl_ids_only` and diff. That's 47 KB for a
+  741-item library.
+- **`/sync/all-items/{type}/{status}` fails open on a bad status.** An unrecognised segment
+  returns every item of that type rather than a 404 — `/sync/all-items/movies/removed_from_list`
+  is a full-library download, not an error.
+- **The activities payload names the show category `tv_shows`; the sync path says `shows`.**
+  The `movies` block omits `watching` and `hold` entirely rather than sending them null.
 - **Airdates are UTC instants**, and a US evening broadcast is stamped the next day in UTC.
   Roughly 19% of entries land on a different local date in `America/New_York` than naive
   date-slicing would give, and 3% in `Europe/London`.

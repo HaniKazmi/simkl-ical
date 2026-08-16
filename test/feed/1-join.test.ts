@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractItems, itemSimklId, idSet, episodeCode, join } from '../../src/feed/1-join.ts';
+import { airingIds, itemSimklId, plannedIds, episodeCode, join } from '../../src/feed/1-join.ts';
 import { localDate, releaseDate, shiftDate } from '../../src/shared/dates.ts';
-import type { CalendarEntry, CalendarFile, CalendarType, Library, MovieRelease } from '../../src/api/simkl/types.ts';
+import type { CalendarEntry, CalendarFile, CalendarType, Library, LibraryEntry, LibraryItem, MovieRelease } from '../../src/api/simkl/types.ts';
 import { calendarOf } from '../helpers.ts';
 
 type Cals = Partial<Record<CalendarType, CalendarFile>>;
@@ -33,19 +33,22 @@ test('releaseDate normalises to a plain date', () => {
   assert.equal(releaseDate('2026-12-18T04:00:00Z'), '2026-12-18');
 });
 
-test('extractItems copes with the shapes the API actually returns', () => {
-  assert.deepEqual(extractItems({}), []);          // empty list
-  assert.deepEqual(extractItems(null), []);
-  assert.deepEqual(extractItems({ shows: [show(1)] }), [show(1)]);
-  assert.deepEqual(extractItems({ anime: [show(2)] }), [show(2)]);
-  assert.deepEqual(extractItems({ movies: [movie(3)] }), [movie(3)]);
-});
-
 test('itemSimklId bridges the library ids.simkl to the calendar simkl_id', () => {
   assert.equal(itemSimklId(show(3407)), 3407);
   assert.equal(itemSimklId(movie(174094)), 174094);
   assert.equal(itemSimklId({ show: { title: 'No ids', ids: {} } }), null);
-  assert.equal(idSet({ shows: [show(1)] }).has(1), true);
+});
+
+// The library holds every film the user has ever completed, so a negative rule
+// here would sweep hundreds of watched films into the feed and into a per-title
+// lookup each. A show carrying no status is still one we hold.
+test('the airing rule is negative and the planned rule is positive', () => {
+  const library: Library = new Map([
+    [1, { type: 'shows', item: show(1) }],
+    [2, { type: 'movies', item: movie(2) }],
+  ]);
+  assert.equal(airingIds(library, 'shows').has(1), true, 'no status is still a show we hold');
+  assert.equal(plannedIds(library, 'movies').has(2), false, 'no status is not a plan to watch');
 });
 
 test('episodeCode pads, and omits the season for unseasoned anime', () => {
@@ -87,15 +90,20 @@ const calendars = (tv: CalendarEntry[] = []): Cals => ({
   anime: calendarOf([], {}),
 });
 
-const library: Library = {
-  shows_watching: { shows: [show(100, 'Watched Show')] },
-  shows_plantowatch: { shows: [show(200, 'Planned Show')] },
-  shows_completed: { shows: [show(400, 'Completed Show')] },
-  anime_watching: {},
-  anime_plantowatch: {},
-  anime_completed: {},
-  movies_plantowatch: { movies: [movie(300, 'Planned Film')] },
-};
+const entry = (type: 'shows' | 'anime' | 'movies', item: LibraryItem, status: string): [number, LibraryEntry] => [
+  itemSimklId(item)!,
+  { type, item: { ...item, status } },
+];
+
+const library: Library = new Map([
+  entry('shows', show(100, 'Watched Show'), 'watching'),
+  entry('shows', show(200, 'Planned Show'), 'plantowatch'),
+  entry('shows', show(400, 'Completed Show'), 'completed'),
+  entry('movies', movie(300, 'Planned Film'), 'plantowatch'),
+]);
+
+/** The library with one record replaced, which is what a delta merge does. */
+const withEntry = (base: Library, [id, value]: [number, LibraryEntry]): Library => new Map(base).set(id, value);
 
 test('watching shows contribute every upcoming episode', () => {
   const events = join(calendars([tvEntry(100, 4, 3, '2026-08-15T20:00:00Z')]), library, { timezone: 'Europe/London', now: NOW });
@@ -134,7 +142,7 @@ test('completed shows are not limited to premieres the way plan-to-watch is', ()
 // SIMKL's anime calendar carries no season field at all, so a premiere rule
 // requiring season === 1 could never match anything anime.
 test('anime plan-to-watch premieres match despite having no season', () => {
-  const animeLibrary = { ...library, anime_plantowatch: { anime: [show(500, 'Some Anime')] } };
+  const animeLibrary = withEntry(library, entry('anime', show(500, 'Some Anime'), 'plantowatch'));
   const cals: Cals = {
     tv: calendarOf([], {}),
     anime: calendarOf([
@@ -148,7 +156,7 @@ test('anime plan-to-watch premieres match despite having no season', () => {
 });
 
 test('an entry with no episode object gets a date-keyed uid, not "Eundefined"', () => {
-  const animeLibrary = { ...library, anime_watching: { anime: [show(600, 'Some Anime')] } };
+  const animeLibrary = withEntry(library, entry('anime', show(600, 'Some Anime'), 'watching'));
   const cals: Cals = {
     tv: calendarOf([], {}),
     anime: calendarOf([
@@ -166,14 +174,11 @@ test('an entry with no episode object gets a date-keyed uid, not "Eundefined"', 
   assert.equal(events[0].uid, 'simkl-600-20260827@simkl-ical');
 });
 
-// SIMKL reports a move against the destination list only, and `listSignature`
-// advances only for the destination — so the source list is never refetched and
-// the show sits in both indefinitely. Membership alone therefore keeps a
-// dropped show's *future* episodes coming forever, since a future date is
-// always inside the grace window.
-test('a show whose status says it moved on contributes nothing, however it is still listed', () => {
+// A future date is always inside the grace window, so without this a dropped or
+// on-hold show keeps generating episodes forever.
+test('a show whose status says it moved on contributes nothing', () => {
   for (const status of ['dropped', 'hold']) {
-    const moved: Library = { ...library, shows_watching: { shows: [{ ...show(100, 'Watched Show'), status }] } };
+    const moved = withEntry(library, entry('shows', show(100, 'Watched Show'), status));
     const events = join(calendars([tvEntry(100, 4, 3, '2026-08-15T20:00:00Z')]), moved, { timezone: 'Europe/London', now: NOW });
     assert.deepEqual(events, [], `status ${status}`);
   }
@@ -182,7 +187,7 @@ test('a show whose status says it moved on contributes nothing, however it is st
 // The counterpart, and the reason `completed` is not on that list: everything a
 // completed title contributes is already dated, so it ages out on its own.
 test('a completed show is still not treated as having moved on', () => {
-  const completed: Library = { ...library, shows_completed: { shows: [{ ...show(400, 'Completed Show'), status: 'completed' }] } };
+  const completed = withEntry(library, entry('shows', show(400, 'Completed Show'), 'completed'));
   const events = join(calendars([tvEntry(400, 4, 1, '2026-08-15T20:00:00Z')]), completed, { timezone: 'Europe/London', now: NOW });
   assert.equal(events.length, 1);
 });
@@ -229,10 +234,10 @@ test('the grace boundary is inclusive on its oldest day', () => {
 // The grace window is independent of watch state: the feed records what aired,
 // it is not a to-do list.
 test('an already-watched episode still lingers', () => {
-  const watchedUpToDate = {
-    ...library,
-    shows_watching: { shows: [{ ...show(100), last_watched: 'S01E09', next_to_watch: null, watched_episodes_count: 9, total_episodes_count: 9 }] },
-  };
+  const watchedUpToDate = withEntry(library, [
+    100,
+    { type: 'shows', item: { ...show(100), status: 'watching', last_watched: 'S01E09', next_to_watch: null, watched_episodes_count: 9, total_episodes_count: 9 } },
+  ]);
   const events = join(
     calendars([tvEntry(100, 1, 1, '2026-08-05T20:00:00Z')]),
     watchedUpToDate,

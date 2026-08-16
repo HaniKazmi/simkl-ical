@@ -101,7 +101,7 @@ font-weight:600;padding:0 8px 7px 0;border-bottom:1px solid var(--line)}
 td{padding:4px 8px 4px 0;border-bottom:1px solid var(--panel);font-size:12.5px}
 tr:last-child td{border-bottom:0}
 .num{text-align:right;width:64px}.bar{width:110px}.bar span{display:block;height:6px;border-radius:2px;background:var(--accent);opacity:.5}
-.moved{color:var(--ok)}.dim{color:var(--faint)}
+.dim{color:var(--faint)}
 .step{display:grid;grid-template-columns:14px 62px minmax(0,1fr) auto;gap:12px;align-items:baseline;padding:5px 0}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);align-self:center}
 .step.bad .dot{background:var(--crit)}
@@ -142,13 +142,12 @@ const pill = (status: string): string => (Object.hasOwn(STATE_PILL, status) ? ST
 
 const time = (s: Stamp) => (s.iso === null ? html`<span class="dim">never</span>` : html`<time datetime="${s.iso}">${s.label}</time>`);
 
-const listRows = (model: StatusModel) =>
-  model.library.lists.map(
+const countRows = (model: StatusModel) =>
+  model.library.counts.map(
     (row) => html`<tr>
       <td>${row.key}</td>
       <td class="num">${row.count}</td>
       <td class="bar"><span style="width:${Math.round(row.share * 100)}%"></span></td>
-      <td class="${row.state === 'refetched' ? 'moved' : 'dim'}">${row.state}</td>
     </tr>`,
   );
 
@@ -209,16 +208,16 @@ ${model.problems.length === 0 ? null : html`<div class="problems"><ul>${model.pr
 <section>
   <div class="head">
     <span class="name">Library</span>
-    <span class="pill mute">${model.library.gated ? html`${model.library.moved} of ${model.library.lists.length} lists moved` : 'not polled yet'}</span>
+    <span class="pill mute">${model.library.gate}</span>
     <span class="sum">gated ${time(model.library.polled)} · ${model.library.total} items</span>
   </div>
   <table>
-    <thead><tr><th>List</th><th class="num">Items</th><th class="bar"></th><th>Last gate</th></tr></thead>
-    <tbody>${listRows(model)}</tbody>
+    <thead><tr><th>Type / status</th><th class="num">Items</th><th class="bar"></th></tr></thead>
+    <tbody>${countRows(model)}</tbody>
   </table>
   <div class="next">
     <span><b>next gate</b> ${model.library.due.label}</span>
-    <span class="dim">one /sync/activities call, then a render and a sheet sync if anything moved</span>
+    <span class="dim">one /sync/activities call, then a delta pull, a render and a sheet sync if anything moved</span>
   </div>
   ${model.library.error === null ? null : html`<div class="msg">${model.library.error}</div>`}
 </section>
@@ -232,7 +231,7 @@ ${model.problems.length === 0 ? null : html`<div class="problems"><ul>${model.pr
   ${steps(model)}
   <div class="next">
     <span><b>next calendars</b> ${model.feed.calendarsDue.label}</span>
-    <span><b>films</b> ${model.feed.filmsDue.label}, on the gate above</span>
+    <span><b>films</b> ${model.feed.filmsDue ? 'due on the gate above' : 'none due'}</span>
   </div>
   ${model.feed.error === null ? null : html`<div class="msg">${model.feed.error}</div>`}
 </section>

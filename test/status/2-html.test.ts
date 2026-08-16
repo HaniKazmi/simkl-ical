@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { escapeHtml, html, raw, renderPage, toHtml } from '../../src/status/2-html.ts';
 import { buildModel, type StatusInput } from '../../src/status/1-model.ts';
-import { before, input, COLD, MINUTE } from './fixtures.ts';
+import { before, COLD, MINUTE } from './fixtures.ts';
 
 test('escapeHtml covers every character that can break out of markup', () => {
   assert.equal(escapeHtml(`<script>"x" & 'y'</script>`), '&lt;script&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/script&gt;');
@@ -88,7 +88,7 @@ test('hostile content from every untrusted source renders inert', () => {
     problems: [payload],
     libraryError: payload,
     counts: { [payload]: 3 },
-    gate: { moved: [], refetched: [] },
+    gate: { pull: 'none', updated: 0, removed: 0 },
     sheetConfigured: true,
     sheetFrozen: `FROZEN: copy ${payload} back`,
     sheetStatus: 'frozen',
@@ -134,7 +134,7 @@ test('an unconfigured sheet says so rather than showing an empty section', () =>
 // Requests never trigger a fetch. A control that started work would break the
 // invariant the whole architecture rests on, so there is nothing to submit.
 test('the page is inert: no script, no form, no off-origin request', () => {
-  const rendered = page({ sheetConfigured: true, counts: { shows_watching: 4 }, gate: { moved: [], refetched: [] } });
+  const rendered = page({ sheetConfigured: true, counts: { 'shows/watching': 4 }, gate: { pull: 'none', updated: 0, removed: 0 } });
   for (const forbidden of ['<script', '<form', '<button', 'http://', 'https://', 'src=']) {
     assert.ok(!rendered.includes(forbidden), `the page must contain no ${forbidden}`);
   }

@@ -16,6 +16,11 @@
     "erasableSyntaxOnly": true,
     // Type-only imports must say so, matching what stripping actually does.
     "verbatimModuleSyntax": true,
+    // An import left behind by a refactor is otherwise invisible: nothing is
+    // emitted, so no bundler prunes it and no test fails. Prefix a parameter
+    // with `_` to keep it for its position.
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
 
     "skipLibCheck": true
   },

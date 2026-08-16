@@ -11,52 +11,61 @@ import type {
   CalendarEntry,
   FinaleType,
   Library,
-  LibraryItem,
-  ListResponse,
   CalendarFile,
   CalendarType,
   MovieRelease,
   ShowMetadata,
+  SyncType,
 } from '../api/simkl/types.ts';
-
-/** Library responses nest under the type key, and come back as {} when empty. */
-export const extractItems = (response: ListResponse | LibraryItem[] | null | undefined): LibraryItem[] => {
-  if (!response || typeof response !== 'object') return [];
-  if (Array.isArray(response)) return response;
-  return response.shows ?? response.anime ?? response.movies ?? [];
-};
 
 export { itemSimklId };
 
 /**
- * Statuses that mean an item is only *still* in the list it was fetched from
- * because nothing has evicted it.
+ * Statuses whose upcoming episodes do not belong in the feed.
  *
- * SIMKL reports a move against the destination list alone, so a show moved from
- * watching to dropped sits in both — and `listSignature` advances only for the
- * destination, so the source list is never refetched. `item.status` is the one
- * field that says which is current, which is why `sheet/1-progress.ts` reads it
- * too. Without this a dropped or on-hold show keeps generating its future
- * episodes indefinitely, since a future date is always inside the window.
- *
- * `completed` is deliberately absent. It lingers the same way, but everything a
- * completed title contributes is already dated, so it ages out of the grace
- * window on its own — and SIMKL marks an ongoing show completed the moment you
- * catch up, which is exactly when its next season matters most.
+ * `plantowatch` is here because planned titles are joined separately, against
+ * the premiere rather than every airing. `completed` is deliberately absent:
+ * everything a completed title contributes is already dated, so it ages out of
+ * the grace window on its own — and SIMKL marks an ongoing show completed the
+ * moment you catch up, which is exactly when its next season matters most.
  */
-const MOVED_ON = new Set(['dropped', 'hold']);
+const NOT_AIRING = new Set(['dropped', 'hold', 'plantowatch']);
 
-export const idSet = (...responses: Array<ListResponse | LibraryItem[] | null | undefined>): Set<number> => {
-  const set = new Set<number>();
-  for (const response of responses) {
-    for (const item of extractItems(response)) {
-      if (MOVED_ON.has(itemStatus(item) ?? '')) continue;
-      const id = itemSimklId(item);
-      if (id !== null) set.add(id);
-    }
+/** Ids of one type whose status the predicate accepts. Absent status reads as ''. */
+const idsWhere = (
+  library: Library | null | undefined,
+  type: SyncType,
+  keep: (status: string) => boolean,
+): Set<number> => {
+  const ids = new Set<number>();
+  for (const [id, entry] of library ?? []) {
+    if (entry.type === type && keep(itemStatus(entry.item) ?? '')) ids.add(id);
   }
-  return set;
+  return ids;
 };
+
+/**
+ * Shows or anime whose airings belong in the feed.
+ *
+ * Negative on purpose: `status` is optional on the wire, and a record carrying
+ * none is still a title we hold, so including it is the answer we want.
+ */
+export const airingIds = (library: Library | null | undefined, type: SyncType): Set<number> =>
+  idsWhere(library, type, (status) => !NOT_AIRING.has(status));
+
+/**
+ * Titles on plan-to-watch.
+ *
+ * Positive, and the asymmetry with `airingIds` is the point: the library holds
+ * every film the user has ever completed, so a negative rule here would sweep
+ * hundreds of watched films into the feed *and* into a per-title lookup each.
+ * A film with no status is simply not planned — the safe direction.
+ */
+export const plannedIds = (library: Library | null | undefined, type: SyncType): Set<number> =>
+  idsWhere(library, type, (status) => status === 'plantowatch');
+
+/** The film-lookup input, so `Feed` needs no opinion about the library's shape. */
+export const plannedFilmIds = (library: Library | null | undefined): number[] => [...plannedIds(library, 'movies')];
 
 const FINALE_LABEL: Record<FinaleType, string> = {
   1: 'Mid-season finale',
@@ -231,14 +240,14 @@ export const join = (
   }: JoinOptions = {},
 ): FeedEvent[] => {
   const sets = {
-    // Completed sits alongside watching: SIMKL marks an ongoing show completed
-    // once everything aired has been watched, so dropping it loses the next
-    // season of anything between series.
-    showsAiring: idSet(library.shows_watching, library.shows_completed),
-    showsPlanned: idSet(library.shows_plantowatch),
-    animeAiring: idSet(library.anime_watching, library.anime_completed),
-    animePlanned: idSet(library.anime_plantowatch),
-    moviesPlanned: idSet(library.movies_plantowatch),
+    // Completed counts as airing: SIMKL marks an ongoing show completed once
+    // everything aired has been watched, so excluding it loses the next season
+    // of anything between series.
+    showsAiring: airingIds(library, 'shows'),
+    showsPlanned: plannedIds(library, 'shows'),
+    animeAiring: airingIds(library, 'anime'),
+    animePlanned: plannedIds(library, 'anime'),
+    moviesPlanned: plannedIds(library, 'movies'),
   };
 
   const today = localDate(now.toISOString(), timezone);

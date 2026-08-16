@@ -61,7 +61,8 @@ export interface LibraryIds {
 }
 
 export interface LibraryTitle {
-  title: string;
+  /** Absent from an `extended=simkl_ids_only` response, which carries ids alone. */
+  title?: string;
   year?: number;
   ids: LibraryIds;
 }
@@ -90,9 +91,8 @@ export interface LibraryItem {
   show?: LibraryTitle;
   movie?: LibraryTitle;
   /**
-   * Per-item and authoritative. List membership is not: a move is reported only
-   * against the list it moved to, so an un-dropped show sits in two lists at
-   * once and only this field says which one is current.
+   * Per-item and authoritative — the only membership there is, since the
+   * library holds one record per id and a move replaces it.
    */
   status?: string;
   /** Always populated. "S07E06", or "E07" for anime. */
@@ -112,37 +112,48 @@ export interface LibraryItem {
 }
 
 /**
- * All keys optional: an empty list comes back as `{}`, not `{shows: []}`.
+ * The wire shape of `/sync/all-items`, whatever the query. All keys optional:
+ * nothing to report comes back as `{}`, not `{shows: []}` — which is what a
+ * `date_from` delta returns on a quiet poll, all two bytes of it.
+ *
+ * A type-less pull populates all three keys at once, so nothing may read this
+ * as "the one key that is set".
  */
-export interface ListResponse {
+export interface AllItemsResponse {
   shows?: LibraryItem[];
   anime?: LibraryItem[];
   movies?: LibraryItem[];
 }
 
-export type ListKey =
-  | 'shows_watching'
-  | 'shows_plantowatch'
-  | 'shows_completed'
-  | 'shows_hold'
-  | 'shows_dropped'
-  | 'anime_watching'
-  | 'anime_plantowatch'
-  | 'anime_completed'
-  | 'anime_hold'
-  | 'anime_dropped'
-  | 'movies_plantowatch';
-
-export type Library = Partial<Record<ListKey, ListResponse>>;
-
 export type SyncType = 'shows' | 'anime' | 'movies';
 export type SyncStatus = 'watching' | 'plantowatch' | 'completed' | 'hold' | 'dropped';
 
-export interface ListDefinition {
-  key: ListKey;
+/**
+ * One library record, and the type it belongs to.
+ *
+ * `type` is the only thing not derivable from the item: an anime record is a
+ * show record with an extra `anime_type` field, and both nest their title under
+ * `show`. Which top-level key of the response it arrived under is the answer,
+ * and it is needed downstream — the feed picks a calendar with it, the sheet
+ * skips films with it.
+ *
+ * `status` is deliberately *not* copied up here. `itemStatus` reads it from the
+ * item, and a second copy is one that can disagree with the payload it was
+ * built from — the class of bug this whole model exists to remove.
+ */
+export interface LibraryEntry {
   type: SyncType;
-  status: SyncStatus;
+  item: LibraryItem;
 }
+
+/**
+ * The user's library: one authoritative record per SIMKL id.
+ *
+ * A delta returns each changed item once, carrying its current `status`, so an
+ * item cannot be present twice and cannot disagree with itself. List membership
+ * is not a thing this model can represent, which is the point.
+ */
+export type Library = Map<number, LibraryEntry>;
 
 /**
  * Per-status last-modified timestamps. `movies` carries no `watching` or `hold`

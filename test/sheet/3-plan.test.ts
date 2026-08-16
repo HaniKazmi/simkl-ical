@@ -4,7 +4,7 @@ import { parseGrid } from '../../src/sheet/2-grid.ts';
 import { deriveStatus, needsLookup, planLookups, planRecord, planSync, statusSource, type CatalogueView, type SheetPlan, type TitleCatalogue } from '../../src/sheet/3-plan.ts';
 import { dateSerial, indexLibrary, seasonShapes } from '../../src/sheet/1-progress.ts';
 import type { EpisodeDetail, ShowDetail } from '../../src/api/simkl/types.ts';
-import { daysAgo, libraryItem, sheetSnapshot, SHEET_HEADERS, type CellSpec, type ItemSpec, seasonRow, showRow } from '../helpers.ts';
+import { daysAgo, libraryOf, sheetSnapshot, SHEET_HEADERS, type CellSpec, type ItemSpec, seasonRow, showRow } from '../helpers.ts';
 
 const H = SHEET_HEADERS;
 const TZ = 'Europe/London';
@@ -30,7 +30,7 @@ interface Scenario {
 
 const scenario = ({ rows, items, episodes = {}, details = {}, failed = [] }: Scenario) => {
   const grid = parseGrid(sheetSnapshot([H, ...rows]));
-  const index = indexLibrary({ shows_watching: { shows: items.map(libraryItem) } });
+  const index = indexLibrary(libraryOf(...items));
   const titles = new Map<number, TitleCatalogue>();
   const entry = (id: number) => titles.get(id) ?? titles.set(id, { shapes: new Map() }).get(id)!;
   for (const [id, list] of Object.entries(episodes)) entry(Number(id)).shapes = seasonShapes(list);
@@ -182,13 +182,11 @@ test('Cancelled is never produced, and is overwritten when activity resumes', ()
   assert.deepEqual(plan().edits.map((e) => [e.field, e.value.stringValue]), [['Status', 'Ended']]);
 });
 
-// Branch 1 reads item.status, never which list it arrived in: list membership
-// goes stale, and the stale copy would rewrite Status to Abandoned every poll.
-test('Abandoned comes from the item status, not from list membership', () => {
+// Branch 1 reads item.status. A show the sheet already calls Ended, still being
+// watched, must not be rewritten to Abandoned.
+test('Abandoned comes from the item status', () => {
   const grid = parseGrid(sheetSnapshot([H, show('Beef', 'Ended', 700), season(1, 10, 44000)]));
-  const index = indexLibrary({
-    shows_dropped: { shows: [libraryItem({ id: 700, status: 'watching', seasons: { 1: watched(10) } })] },
-  });
+  const index = indexLibrary(libraryOf({ id: 700, status: 'watching', seasons: { 1: watched(10) } }));
   // Real shapes, or the fail-closed rule below would make this pass vacuously.
   const titles = new Map([[700, { shapes: seasonShapes(eps(1, 10)), status: 'ended' }]]);
   const plan = planSync(grid, index, { titles, failed: [], unavailable: [] }, { timezone: TZ });
@@ -461,7 +459,7 @@ test('the cut-off still wins over a stamp — an ineligible title is never read'
 });
 
 test('needsLookup reads unstamped, moved and aged as due, and nothing else', () => {
-  const progress = indexLibrary({ shows_watching: { shows: [libraryItem({ id: 1, lastWatchedAt: '2026-08-01T00:00:00Z' })] } }).get(1);
+  const progress = indexLibrary(libraryOf({ id: 1, lastWatchedAt: '2026-08-01T00:00:00Z' })).get(1);
   const now = Date.now();
   assert.equal(needsLookup(undefined, progress, now, DAY), true, 'never read');
   assert.equal(needsLookup({ watchedAt: '2026-08-01T00:00:00Z', at: now }, progress, now, DAY), false);

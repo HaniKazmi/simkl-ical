@@ -8,15 +8,13 @@
  * state is what keeps a poll from having two copies that can disagree.
  */
 
-import { config } from '../shared/config.ts';
-import { ageOf } from '../shared/dates.ts';
 import { errorMessage } from '../shared/errors.ts';
 import type { Logger } from '../shared/logger.ts';
 import type { Library, MovieRelease } from '../api/simkl/types.ts';
 // The pipeline, in the order this file runs it.
 import { anyChanged, anyStale, fetchAllCalendars, payloads, type Calendars } from './io/calendar.ts';
-import { fetchMovieReleases, reconcileReleases } from './io/movies.ts';
-import { join, idSet, type FeedEvent } from './1-join.ts';
+import { fetchMovieReleases, filmDue, reconcileReleases } from './io/movies.ts';
+import { join, plannedFilmIds, type FeedEvent } from './1-join.ts';
 import { renderIcs } from './2-ics.ts';
 import { loadFeed, saveFeed } from './io/store.ts';
 
@@ -34,6 +32,13 @@ export class Feed {
   events: FeedEvent[] = [];
   calendars: Calendars | null = null;
   movieReleases = new Map<number, MovieRelease>();
+  /**
+   * Film id → when it was last looked up, so a partial round can tell "asked
+   * recently" from "never asked". A retryably-failed lookup does not refresh the
+   * stamp, so the film stays past the floor and due — which is what makes the
+   * next poll retry exactly the films that failed, with no flag to carry.
+   */
+  filmStamps = new Map<number, number>();
   // calendarsAt advances on every attempt, including ones served from cache
   // after a failure; only calendarsFreshAt means the CDN answered.
   calendarsAt: string | null = null;
@@ -114,22 +119,25 @@ export class Feed {
     }
   }
 
+  /** Which films are worth asking about — the rule itself is `filmDue`. */
+  private filmsToResolve(ids: number[], now: Date): number[] {
+    return ids.filter((id) => filmDue(this.filmStamps.get(id), this.movieReleases.get(id), now));
+  }
+
   /**
-   * Whether the cached film release dates have aged out. Nothing in the library
-   * moves when a studio shifts a release, so list changes alone would never
-   * trigger a re-read; daily is cheap, as the lookups are CDN-cached by id.
+   * Whether any film needs a lookup, answered from memory alone.
    *
    * Public, and asked by `Orchestrator` rather than decided here: the quiet-poll
    * early return needs the answer *before* it knows whether it will resolve
    * anything. The state and the work live here; the decision does not.
    */
-  filmsDue(): boolean {
-    return ageOf(this.filmsResolvedAt) > config.movieRefreshMs;
+  filmsDue(library: Library | null): boolean {
+    return this.filmsToResolve(plannedFilmIds(library), new Date()).length > 0;
   }
 
   /**
    * FETCH, per film. Returns whether the round was complete — an incomplete one
-   * must leave the list stale so it retries.
+   * must arm the caller's retry.
    *
    * Deliberately *not* wrapped in a try/catch, which looks like an obvious
    * tidy-up now that films live here. These are SIMKL calls, so an account-level
@@ -137,17 +145,31 @@ export class Feed {
    * would make a revoked token during film lookups report nothing at all.
    */
   async resolveFilms(library: Library | null, { signal }: { signal: AbortSignal }): Promise<boolean> {
-    const filmIds = [...idSet(library?.movies_plantowatch)];
-    const lookups = await fetchMovieReleases(filmIds, { signal });
-    const { releases, complete } = reconcileReleases(this.movieReleases, filmIds, lookups);
+    const now = new Date();
+    const filmIds = plannedFilmIds(library);
+    const due = this.filmsToResolve(filmIds, now);
+    const requested = new Set(due);
+    const lookups = await fetchMovieReleases(due, { signal });
+    const { releases, complete } = reconcileReleases(this.movieReleases, filmIds, requested, lookups);
     this.movieReleases = releases;
 
-    // Only on a complete round: stamping regardless would defer the retry by a
-    // full movieRefreshMs, and the caller's signature rollback cannot help when
-    // the round was triggered by age rather than by a list change.
-    if (complete) this.filmsResolvedAt = new Date().toISOString();
+    // Stamped per id, and only where retrying cannot help: a film whose stamp is
+    // not refreshed stays due, which is the whole retry mechanism.
+    // `unavailable` is stamped because it is a settled answer — the id is gone
+    // upstream and fails identically forever, so leaving it unstamped would ask
+    // about it on every poll for good.
+    const retryable = new Set(lookups.failed);
+    for (const id of due) if (!retryable.has(id)) this.filmStamps.set(id, now.getTime());
+    // Films off the list must not hold their stamps, or re-adding one would find
+    // it fresh and never look it up. Still being planned is the whole test — a
+    // planned film with no announced date is absent from `releases` and has to
+    // keep its stamp, or the refresh floor would never hold for it.
+    const planned = new Set(filmIds);
+    for (const id of this.filmStamps.keys()) if (!planned.has(id)) this.filmStamps.delete(id);
 
-    if (filmIds.length) this.log.info(`resolved ${lookups.releases.size}/${filmIds.length} film release dates`);
+    if (complete) this.filmsResolvedAt = now.toISOString();
+
+    if (due.length) this.log.info(`resolved ${lookups.releases.size}/${due.length} film release dates`);
     if (lookups.unavailable.length) {
       this.log.warn(`${lookups.unavailable.length} film ids are gone upstream: ${lookups.unavailable.join(', ')}`);
     }
@@ -159,7 +181,7 @@ export class Feed {
    * than the caller's slot.
    *
    * Serialised: both refresh timers end here, and at the default intervals the
-   * calendar's 6h divides evenly into the library's 2h — so every calendar tick
+   * library polls twelve times to each calendar refresh — so every calendar tick
    * lands on a poll, and overlapping runs are the norm rather than an edge case.
    * Unserialised they would race on the disk save. The library is captured when
    * this is *called* rather than when the queued render runs, so a render
