@@ -44,6 +44,9 @@ export interface SheetRunRecord {
   repeats: number;
 }
 
+/** A run as its producer knows it — `repeats` is the journal's to count. */
+export type NewSheetRun = Omit<SheetRunRecord, 'repeats'>;
+
 interface JournalFile {
   version: number;
   runs: SheetRunRecord[];
@@ -121,11 +124,11 @@ export const loadSheetRuns = async ({ log }: { log?: Logger } = {}): Promise<voi
 };
 
 /** Whether a run said anything worth a line in the history. */
-const saysSomething = (record: SheetRunRecord): boolean =>
+const saysSomething = (record: NewSheetRun): boolean =>
   record.status !== 'idle' || record.edits.length > 0 || record.inserts.length > 0 || record.error !== null;
 
 /** Same outcome, same plan, same message — only the timestamp differs. */
-const sameAs = (a: SheetRunRecord, b: SheetRunRecord): boolean =>
+const sameAs = (a: SheetRunRecord, b: NewSheetRun): boolean =>
   a.status === b.status &&
   a.mode === b.mode &&
   a.error === b.error &&
@@ -144,14 +147,15 @@ const sameAs = (a: SheetRunRecord, b: SheetRunRecord): boolean =>
  * message — "frozen, 37 polls, since 14:02" is what an operator needs, not
  * thirty-seven copies of it.
  */
-export const appendSheetRun = (record: SheetRunRecord, { log }: { log?: Logger } = {}): Promise<void> => {
-  if (!saysSomething(record)) return Promise.resolve();
+export const appendSheetRun = (run: NewSheetRun, { log }: { log?: Logger } = {}): Promise<void> => {
+  if (!saysSomething(run)) return Promise.resolve();
 
   const previous = runs[runs.length - 1];
-  if (previous && sameAs(previous, record)) {
-    runs[runs.length - 1] = { ...record, repeats: previous.repeats + 1 };
+  // Only this module can know a run repeated, so only this module sets it.
+  if (previous && sameAs(previous, run)) {
+    runs[runs.length - 1] = { ...run, repeats: previous.repeats + 1 };
   } else {
-    runs.push(record);
+    runs.push({ ...run, repeats: 1 });
     if (runs.length > MAX_RUNS) runs = runs.slice(-MAX_RUNS);
   }
 
@@ -162,13 +166,13 @@ export const appendSheetRun = (record: SheetRunRecord, { log }: { log?: Logger }
 // writeFileAtomic stops two writers corrupting each other but not from
 // finishing out of order, and a write landing second with older content would
 // persist a history already moved past.
+//
+// One arm rather than the two `io/store.ts` needs: `write` swallows everything,
+// so the chain has nothing to recover from.
 let queue: Promise<void> = Promise.resolve();
 
 const save = (log?: Logger): Promise<void> => {
-  queue = queue.then(
-    () => write(log),
-    () => write(log),
-  );
+  queue = queue.then(() => write(log));
   return queue;
 };
 

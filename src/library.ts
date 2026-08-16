@@ -125,7 +125,12 @@ export const pruneSuperseded = (library: Library, refreshed: ListDefinition[]): 
  * the library is already public on the orchestrator.
  */
 export const listCounts = (library: Library | null): Record<string, number> =>
-  Object.fromEntries(LISTS.map((list) => [list.key, itemsOf(library?.[list.key]).length]));
+  Object.fromEntries(LISTS.map((list) => [list.key, sizeOf(library?.[list.key])]));
+
+// Summed rather than `itemsOf(...).length`, which copies every item in the
+// library to read three numbers — on the status page, per request.
+const sizeOf = (response: ListResponse | undefined): number =>
+  (response?.shows?.length ?? 0) + (response?.anime?.length ?? 0) + (response?.movies?.length ?? 0);
 
 const itemsOf = (response: ListResponse | undefined): LibraryItem[] => [
   ...(response?.shows ?? []),

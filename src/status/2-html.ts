@@ -10,7 +10,7 @@
  * forgotten. This is the one file to audit for interpolation.
  */
 
-import type { StatusModel } from './1-model.ts';
+import type { Stamp, StatusModel } from './1-model.ts';
 
 /**
  * Module-private, so the brand cannot be forged. A `{ html: string }` duck type
@@ -131,7 +131,7 @@ const STATE_PILL: Record<string, string> = {
   frozen: 'crit',
 };
 
-const time = (s: { iso: string | null; label: string }) => (s.iso === null ? html`<span class="dim">never</span>` : html`<time datetime="${s.iso}">${s.label}</time>`);
+const time = (s: Stamp) => (s.iso === null ? html`<span class="dim">never</span>` : html`<time datetime="${s.iso}">${s.label}</time>`);
 
 const listRows = (model: StatusModel) =>
   model.library.lists.map(
@@ -174,6 +174,7 @@ const sheetBody = (model: StatusModel) => {
   if (!sheet.configured) return html`<p class="dim">Not configured — set SHEET_ID and a Google credential to switch it on.</p>`;
   return html`
     ${sheet.frozen === null ? null : html`<div class="freeze"><b>Frozen — no further writes this process</b>${sheet.frozen}</div>`}
+    ${sheet.error === null || sheet.error === sheet.frozen ? null : html`<div class="msg">${sheet.error}</div>`}
     ${sheet.runs.length ? runs(model) : html`<p class="dim">Nothing written yet.</p>`}`;
 };
 

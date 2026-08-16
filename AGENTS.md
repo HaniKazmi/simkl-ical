@@ -111,9 +111,10 @@ needs it**, and **is it transport or business logic**.
 | `src/sheet/` | Google Sheet sync only |
 | `src/status/` | The HTML status page. Reads both halves and is read by none |
 
-`src/status/` is a **layer**, not a fourth peer: it sits above `feed/` and `sheet/` and below root,
-may read from both halves, and **nothing in `feed/`, `sheet/`, `api/` or `shared/` may import from
-it**. Layering still runs downward only; there is simply one more level.
+`src/status/` is a **layer**, not a fourth peer: it sits above both halves and below `server.ts`,
+may read from either, and names `Orchestrator` as a *type only*. **Nothing in `feed/`, `sheet/`,
+`api/`, `shared/` or `orchestrator.ts` may import from it** — the last of those would be a real
+runtime cycle, not an erased one. Layering still runs downward only; there is one more level.
 
 Each half is an **impure shell around a numbered pure core**: `io/` holds whatever talks outside
 the process, and the rest carries its pipeline position in the filename, so `ls` prints the order.

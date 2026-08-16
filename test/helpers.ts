@@ -9,6 +9,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { config, type Config } from '../src/shared/config.ts';
+import { clearSheetRuns } from '../src/sheet/io/journal.ts';
 import { MS_PER_DAY } from '../src/shared/dates.ts';
 import type { Calendars } from '../src/feed/io/calendar.ts';
 import type { SheetSnapshot } from '../src/sheet/io/spreadsheet.ts';
@@ -74,8 +75,8 @@ export const calendarOf = (calendar: CalendarEntry[] = [], metadata: Record<stri
 
 /** A complete, empty, fresh set of calendars — the shape refresh.ts holds. */
 export const emptyCalendars = (): Calendars => ({
-  tv: { data: calendarOf(), stale: false, notModified: false },
-  anime: { data: calendarOf(), stale: false, notModified: false },
+  tv: { data: calendarOf(), source: 'fresh' },
+  anime: { data: calendarOf(), source: 'fresh' },
 });
 
 /** Point config.dataDir at a fresh directory for the duration of `fn`. */
@@ -90,6 +91,21 @@ export const withTempDataDir = async (fn: (dir: string) => Promise<void>): Promi
     await rm(dir, { recursive: true, force: true });
   }
 };
+
+/**
+ * A temp data dir *and* an empty run history, which is what a test touching the
+ * sheet journal actually needs: the history is a module-level cache, so a suite
+ * that only isolates the directory still inherits whatever the last test wrote.
+ */
+export const withFreshJournal = async (fn: (dir: string) => Promise<void>): Promise<void> =>
+  withTempDataDir(async (dir) => {
+    clearSheetRuns();
+    try {
+      await fn(dir);
+    } finally {
+      clearSheetRuns();
+    }
+  });
 
 export type FetchHandler = (url: string, init?: RequestInit) => Response | Promise<Response>;
 

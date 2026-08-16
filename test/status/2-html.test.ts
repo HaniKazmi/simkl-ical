@@ -2,8 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { escapeHtml, html, raw, renderPage, toHtml } from '../../src/status/2-html.ts';
 import { buildModel, type StatusInput } from '../../src/status/1-model.ts';
-
-const out = (value: Parameters<typeof toHtml>[0]): string => toHtml(value);
+import { before, input, COLD, MINUTE } from './fixtures.ts';
 
 test('escapeHtml covers every character that can break out of markup', () => {
   assert.equal(escapeHtml(`<script>"x" & 'y'</script>`), '&lt;script&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/script&gt;');
@@ -20,14 +19,14 @@ test('escapeHtml does not double-escape its own output', () => {
 // is the point — `onerror=alert(1)` is inert once no tag can form around it.
 test('interpolated values are escaped', () => {
   const title = '<img src=x onerror=alert(1)>';
-  assert.equal(out(html`<td>${title}</td>`), '<td>&lt;img src=x onerror=alert(1)&gt;</td>');
+  assert.equal(toHtml(html`<td>${title}</td>`), '<td>&lt;img src=x onerror=alert(1)&gt;</td>');
 });
 
 // The property that actually matters, asserted structurally: whatever a title
 // contains, the only tags in the output are the ones this file wrote.
 test('no interpolated value can open a tag', () => {
   const hostile = `</td><script>alert(1)</script><td onmouseover="x">`;
-  const rendered = out(html`<tr><td>${hostile}</td></tr>`);
+  const rendered = toHtml(html`<tr><td>${hostile}</td></tr>`);
   assert.deepEqual(rendered.match(/<[^>]*>/g), ['<tr>', '<td>', '</td>', '</tr>']);
 });
 
@@ -36,7 +35,7 @@ test('no interpolated value can open a tag', () => {
 // which is a file on disk that a page renders verbatim.
 test('a forged safe-html object is escaped, not trusted', () => {
   for (const forgery of [{ html: '<script>alert(1)</script>' }, { [Symbol('safe-html')]: '<script>alert(1)</script>' }, { toString: () => '<b>' }]) {
-    const rendered = out(html`<p>${forgery}</p>`);
+    const rendered = toHtml(html`<p>${forgery}</p>`);
     assert.ok(!rendered.includes('<script'), 'no script tag survives');
     assert.ok(!rendered.includes('<b>'), 'and neither does a bare tag');
   }
@@ -44,68 +43,30 @@ test('a forged safe-html object is escaped, not trusted', () => {
 
 test('a nested html fragment passes through without double-escaping', () => {
   const inner = html`<b>${'a & b'}</b>`;
-  assert.equal(out(html`<td>${inner}</td>`), '<td><b>a &amp; b</b></td>');
+  assert.equal(toHtml(html`<td>${inner}</td>`), '<td><b>a &amp; b</b></td>');
 });
 
 test('arrays join, so a list of rows is an expression rather than a loop', () => {
   const rows = ['a', '<b>'].map((v) => html`<li>${v}</li>`);
-  assert.equal(out(html`<ul>${rows}</ul>`), '<ul><li>a</li><li>&lt;b&gt;</li></ul>');
+  assert.equal(toHtml(html`<ul>${rows}</ul>`), '<ul><li>a</li><li>&lt;b&gt;</li></ul>');
 });
 
 // An unset timestamp is the common case on a cold page, and printing the word
 // "null" into the markup is how a first-boot page looks broken.
 test('null and undefined render as nothing, not as their names', () => {
-  assert.equal(out(html`<p>${null}${undefined}</p>`), '<p></p>');
+  assert.equal(toHtml(html`<p>${null}${undefined}</p>`), '<p></p>');
 });
 
 test('raw is the one way through, and stays opt-in', () => {
-  assert.equal(out(html`<style>${raw('a > b { color: red }')}</style>`), '<style>a > b { color: red }</style>');
+  assert.equal(toHtml(html`<style>${raw('a > b { color: red }')}</style>`), '<style>a > b { color: red }</style>');
 });
 
 test('numbers and booleans render as themselves', () => {
-  assert.equal(out(html`<p>${0}${false}${142}</p>`), '<p>0false142</p>');
+  assert.equal(toHtml(html`<p>${0}${false}${142}</p>`), '<p>0false142</p>');
 });
 
 
 // --- The page --------------------------------------------------------------
-
-const NOW = Date.parse('2026-08-16T14:16:00.000Z');
-
-const COLD: StatusInput = {
-  now: NOW,
-  appName: 'simkl-ical',
-  version: '0.2.0',
-  timezone: 'Europe/London',
-  startedAt: null,
-  ok: false,
-  problems: [],
-  polledAt: null,
-  librarySyncedAt: null,
-  libraryError: null,
-  counts: {},
-  gate: null,
-  activitiesPollMs: 7_200_000,
-  events: 0,
-  renderedAt: null,
-  servingCached: false,
-  renderError: null,
-  calendarsAt: null,
-  calendarsFreshAt: null,
-  calendarsChangedAt: null,
-  calendarError: null,
-  calendarRefreshMs: 21_600_000,
-  films: 0,
-  filmsResolvedAt: null,
-  movieRefreshMs: 86_400_000,
-  sheetConfigured: false,
-  sheetMode: 'off',
-  sheetTab: 'Sheet1',
-  sheetStatus: 'idle',
-  sheetLastRunAt: null,
-  sheetFrozen: null,
-  sheetError: null,
-  runs: [],
-};
 
 const page = (over: Partial<StatusInput> = {}): string => renderPage(buildModel({ ...COLD, ...over }));
 
@@ -133,7 +94,7 @@ test('hostile content from every untrusted source renders inert', () => {
     sheetStatus: 'frozen',
     runs: [
       {
-        at: new Date(NOW - 60_000).toISOString(),
+        at: before(MINUTE),
         status: 'rolled-back',
         mode: 'apply',
         edits: [{ address: payload, field: payload as never, note: payload }],

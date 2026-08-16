@@ -34,7 +34,6 @@ export const renderStatus = (state: Orchestrator, { now = Date.now() }: { now?: 
       problems: health.problems,
 
       polledAt: state.polledAt,
-      librarySyncedAt: state.libraryAt,
       libraryError: state.errors.library,
       counts: listCounts(state.library),
       gate: state.lastGate,
@@ -45,7 +44,6 @@ export const renderStatus = (state: Orchestrator, { now = Date.now() }: { now?: 
       servingCached: feed.servingCached,
       renderError: feed.errors.render,
       calendarsAt: feed.calendarsAt,
-      calendarsFreshAt: feed.calendarsFreshAt,
       calendarsChangedAt: feed.calendarsChangedAt,
       calendarError: feed.errors.calendar,
       calendarRefreshMs: config.calendarRefreshMs,
