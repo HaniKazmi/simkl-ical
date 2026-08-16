@@ -22,6 +22,7 @@
  */
 
 import { errorMessage } from '../shared/errors.ts';
+import { nowIso } from '../shared/dates.ts';
 
 /**
  * Capped *per component*, not overall, because the components fire at wildly
@@ -122,7 +123,7 @@ export const beginRequest = (
   const path = describeUrl(init.url);
   return ({ status, bytes, error, attempts = 1 }) =>
     recordRequest({
-      at: new Date().toISOString(),
+      at: nowIso(),
       service: init.service,
       component: init.component,
       method: init.method,

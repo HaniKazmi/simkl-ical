@@ -34,6 +34,11 @@ export const retryDelayMs = (res: Response, attempt: number): number => {
   if (header === null || header.trim() === '') return backoffMs(attempt);
 
   const seconds = Number(header);
+  // The one `Date.parse` left in `src/`, and it has to be: the other form of
+  // this header is an RFC 7231 HTTP-date (`Wed, 21 Oct 2015 07:28:00 GMT`),
+  // which Temporal does not parse — it reads ISO 8601 and nothing else. The
+  // leniency is harmless here because the result is range-checked below and
+  // clamped, so a header that parses to nonsense falls back to the backoff.
   const ms = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header) - Date.now();
   if (!Number.isFinite(ms) || ms < 0) return backoffMs(attempt);
   return Math.min(ms, MAX_RETRY_AFTER_MS);

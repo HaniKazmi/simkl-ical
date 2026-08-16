@@ -38,6 +38,7 @@ import { backupRequest, deleteRowRequests, restoreRequest, toRequests } from './
 import { backupName, discardBackup, findBackup, isBackupTab, markForRepair, sweepBackups } from './backups.ts';
 import { verify, type Verification } from './6-verify.ts';
 import { appendSheetRun, loadSheetRuns } from './io/journal.ts';
+import { nowIso } from '../shared/dates.ts';
 
 /**
  * How old a snapshot may be when the write goes out. Past this the snapshot is
@@ -166,7 +167,7 @@ export class SheetSync {
    * through here, so an inert install writes no file at all.
    */
   private async record(result: SheetSyncResult): Promise<SheetSyncResult> {
-    this.lastRunAt = Temporal.Now.instant().toString({ smallestUnit: 'millisecond' });
+    this.lastRunAt = nowIso();
     this.lastStatus = result.status;
     await appendSheetRun(
       {
