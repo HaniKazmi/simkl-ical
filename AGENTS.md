@@ -128,9 +128,10 @@ needs it**, and **is it transport or business logic**.
 
 | Path | Role |
 | --- | --- |
-| `src/orchestrator.ts` | `Orchestrator` — the poll, the timers, `/healthz`; owns the library and drives both halves |
+| `src/orchestrator.ts` | `Orchestrator` — the poll, the timers, the state `/healthz` projects from; owns the library and drives both halves |
 | `src/server.ts`, `src/index.ts`, `src/login.ts` | Fastify (three routes, no state of its own), boot, and the device-flow CLI |
 | `src/shared/` | Used by both halves, and with no feature knowledge at all: config, dates, errors, logger, signals, atomic-write |
+| `src/health.ts` | The state projection both `/healthz` and the status page read. Pure; `buildHealth` takes flat state, `healthResponse` narrows it to the endpoint's contract |
 | `src/library.ts` | How the library is gated, merged and read: the signatures, the delta merge, the removal diff, the counts. Beside the orchestrator, which is the only thing that owns a library |
 | `src/api/` | Every HTTP client, and no domain rules. `backoff.ts`, `cdn.ts`, `simkl/`, `google/` |
 | `src/feed/` | iCal only |

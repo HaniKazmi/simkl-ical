@@ -12,7 +12,7 @@
  */
 
 import { config, sheetSyncConfigured } from './shared/config.ts';
-import { ageOf } from './shared/dates.ts';
+import { buildHealth, type Health } from './health.ts';
 import { errorMessage } from './shared/errors.ts';
 import type { Logger } from './shared/logger.ts';
 import { fetchAllItems, fetchMembership, getActivities } from './api/simkl/lists.ts';
@@ -21,71 +21,7 @@ import { readToken } from './api/simkl/auth.ts';
 import { SimklAuthError } from './api/simkl/client.ts';
 import type { Library, SyncType } from './api/simkl/types.ts';
 import { Feed } from './feed/feed.ts';
-import { SheetSync, type SheetSyncStatus } from './sheet/sync.ts';
-
-/**
- * One block per subsystem, each carrying its own timestamps **and its own
- * error**, so the error sits beside the thing it is about rather than in a
- * parallel bag you correlate by eye. The shape mirrors who owns what: `feed`
- * comes from `Feed`, `library` from here, `sheet` from `SheetSync`.
- */
-export interface Health {
-  /**
-   * Whether restarting this container would help — not whether anything is
-   * wrong. Deliberately narrower than `problems`: a revoked token is usually a
-   * self-clearing rate limit, and a restart cold-starts into the full pull that
-   * provokes it. The status page reports the wider question.
-   */
-  ok: boolean;
-  timezone: string;
-  /**
-   * Everything wrong right now, worst first — library, then calendars, then
-   * rendering. Empty when there is nothing to say.
-   *
-   * `sheet` is deliberately absent: a sheet failure never makes `ok` false, so
-   * listing it here would put an entry in front of an operator that the status
-   * code disagrees with. It is reported in `sheet.error` instead.
-   */
-  problems: string[];
-  library: LibraryHealth;
-  feed: FeedHealth;
-  sheet: SheetHealth;
-}
-
-export interface LibraryHealth {
-  /** The last `/sync/activities` call — what stops when a token is revoked. */
-  polledAt: string | null;
-  /** The last time a list actually moved. Days old on a correct, quiet system. */
-  syncedAt: string | null;
-  error: string | null;
-}
-
-export interface CalendarHealth {
-  /** Every refresh, including ones served from cache after a failure. */
-  attemptedAt: string | null;
-  /** Only when the CDN actually answered. The two diverge while serving cache. */
-  freshAt: string | null;
-  error: string | null;
-}
-
-export interface FeedHealth {
-  events: number;
-  renderedAt: string | null;
-  /** True while the feed came off disk and no fresh render has replaced it. */
-  servingCached: boolean;
-  /** A render failure. Not the calendars' — that is one level down. */
-  error: string | null;
-  calendars: CalendarHealth;
-}
-
-export interface SheetHealth {
-  configured: boolean;
-  mode: string;
-  status: SheetSyncStatus;
-  lastRunAt: string | null;
-  frozen: boolean;
-  error: string | null;
-}
+import { SheetSync } from './sheet/sync.ts';
 
 /** What one activities gate decided. */
 export interface GateOutcome {
@@ -170,58 +106,31 @@ export class Orchestrator {
   }
 
   /**
-   * Healthy means rendered recently, rendering successfully, and still hearing
-   * from both SIMKL and the CDN.
-   *
-   * `libraryAt` is deliberately not consulted: with per-list gating it only
-   * advances when something changes, so it can be days old on a correct system.
-   * `polledAt` tracks the activities call, which is what stops when a token is
-   * revoked.
+   * The state both readers project from. Assembled here because this is the
+   * only object that can see all three subsystems; what it *means* is
+   * `buildHealth`'s business.
    */
   get health(): Health {
     const { feed } = this;
-    const stalePoll = ageOf(this.polledAt) > config.activitiesPollMs * 3;
-    const staleCalendars = ageOf(feed.calendarsFreshAt) > config.calendarRefreshMs * 3;
-    // A render happens on every calendar refresh, so an old renderedAt means
-    // rendering has stopped even when nothing reported an error.
-    const staleRender = ageOf(feed.renderedAt) > config.calendarRefreshMs * 3;
+    return buildHealth({
+      polledAt: this.polledAt,
+      libraryAt: this.libraryAt,
+      libraryError: this.errors.library,
 
-    // Worst first. Each subsystem contributes at most one line: its own error
-    // if it has one, otherwise its staleness — an error like "serving cached
-    // calendars since X" already says the CDN is quiet, so emitting both would
-    // just say it twice. Library outranks calendars because a stale calendar
-    // still renders and a revoked token eventually will not.
-    const problems = [
-      this.errors.library ?? (stalePoll ? `SIMKL has not been polled since ${this.polledAt ?? 'startup'}` : null),
-      feed.errors.calendar ?? (staleCalendars ? `the CDN has not answered since ${feed.calendarsFreshAt ?? 'startup'}` : null),
-      feed.errors.render ??
-        (feed.renderedAt === null ? 'nothing has been rendered yet' : staleRender ? `nothing has rendered since ${feed.renderedAt}` : null),
-    ].filter((p) => p !== null);
+      events: feed.events.length,
+      renderedAt: feed.renderedAt,
+      servingCached: feed.servingCached,
+      renderError: feed.errors.render,
+      calendarsAt: feed.calendarsAt,
+      calendarsFreshAt: feed.calendarsFreshAt,
+      calendarError: feed.errors.calendar,
 
-    return {
-      ok: feed.renderedAt !== null && !stalePoll && !staleCalendars && !staleRender && !feed.errors.render,
-      timezone: config.timezone,
-      problems,
-      library: { polledAt: this.polledAt, syncedAt: this.libraryAt, error: this.errors.library },
-      feed: {
-        events: feed.events.length,
-        renderedAt: feed.renderedAt,
-        servingCached: feed.servingCached,
-        error: feed.errors.render,
-        calendars: { attemptedAt: feed.calendarsAt, freshAt: feed.calendarsFreshAt, error: feed.errors.calendar },
-      },
-      // Reported but deliberately excluded from `ok` and from `problems`:
-      // /healthz is the container healthcheck and the CI smoke test, and a
-      // frozen sheet sync must not restart the container or fail a deploy.
-      sheet: {
-        configured: this.sheetSync !== null,
-        mode: config.sheetSyncMode,
-        status: this.sheetSync?.lastStatus ?? 'idle',
-        lastRunAt: this.sheetSync?.lastRunAt ?? null,
-        frozen: Boolean(this.sheetSync?.frozen),
-        error: this.errors.sheet,
-      },
-    };
+      sheetConfigured: this.sheetSync !== null,
+      sheetStatus: this.sheetSync?.lastStatus ?? 'idle',
+      sheetLastRunAt: this.sheetSync?.lastRunAt ?? null,
+      sheetFrozen: Boolean(this.sheetSync?.frozen),
+      sheetError: this.errors.sheet,
+    });
   }
 
   /**
