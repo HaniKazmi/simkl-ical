@@ -10,7 +10,9 @@ test('an ISO instant parses', () => {
 
 // The whole reason for routing every parse through here. `Date.parse` accepts
 // all three of these and yields a plausible-looking instant, so a validation
-// gate built on it admits exactly what it means to reject.
+// gate built on it admits exactly what it means to reject. It is called below to
+// demonstrate that, which is the one place in the suite where it is the subject
+// rather than a leftover.
 test('what Date.parse would wave through is refused', () => {
   for (const lenient of ['2026', 'March 5', 'Dec 25 1995', 'not a date']) {
     assert.ok(Number.isFinite(Date.parse(lenient)) || lenient === 'not a date', `precondition: Date.parse tolerates ${lenient}`);

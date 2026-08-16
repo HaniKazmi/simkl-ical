@@ -4,6 +4,7 @@ import { chmod, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { login, pollPin, readToken, requestPin, writeToken } from '../../../src/api/simkl/auth.ts';
 import { jsonResponse, withFetch, withTempDataDir } from '../../helpers.ts';
+import { instantFrom } from '../../../src/shared/dates.ts';
 
 // --- the token on disk ----------------------------------------------------
 
@@ -19,7 +20,8 @@ test('the token records when it was saved', async () => {
   await withTempDataDir(async (dir) => {
     await writeToken('t');
     const saved = JSON.parse(await readFile(join(dir, 'token.json'), 'utf8')).saved_at;
-    assert.ok(!Number.isNaN(Date.parse(saved)), `saved_at should be a date, got ${saved}`);
+    // Strictly: `Date.parse` would accept `March 5` here and call it a date.
+    assert.ok(instantFrom(saved) !== null, `saved_at should be an ISO instant, got ${saved}`);
   });
 });
 

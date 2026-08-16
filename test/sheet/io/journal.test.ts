@@ -5,12 +5,13 @@ import { join, resolve } from 'node:path';
 import { appendSheetRun, loadSheetRuns, sheetRuns, type NewSheetRun } from '../../../src/sheet/io/journal.ts';
 import { config } from '../../../src/shared/config.ts';
 import { quiet, recorder, withFreshJournal } from '../../helpers.ts';
+import { isoOf } from '../../../src/shared/dates.ts';
 
 const FILE = 'sheet-runs.json';
 
-const T0 = Date.parse('2026-08-16T14:02:00.000Z');
+const T0 = Temporal.Instant.from('2026-08-16T14:02:00.000Z');
 /** `n` polls after the first, at the real two-hour cadence. */
-const poll = (n: number): string => new Date(T0 + n * 2 * 60 * 60 * 1000).toISOString();
+const poll = (n: number): string => isoOf(T0.add({ hours: n * 2 }));
 
 const run = (overrides: Partial<NewSheetRun> = {}): NewSheetRun => ({
   at: '2026-08-16T14:02:00.000Z',
@@ -210,7 +211,7 @@ test('an identical run a long time later is a new record, not a repeat', async (
     assert.equal(sheetRuns().length, 1, 'two hours apart is one episode');
 
     // Three days on, the same plan applying again is genuinely a second write.
-    await appendSheetRun(run({ at: new Date(T0 + 3 * 24 * 60 * 60 * 1000).toISOString() }));
+    await appendSheetRun(run({ at: isoOf(T0.add({ hours: 72 })) }));
     assert.equal(sheetRuns().length, 2);
     assert.equal(sheetRuns()[0]?.repeats, 2, 'and the first episode keeps its count');
   });
