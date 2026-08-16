@@ -68,36 +68,45 @@ produced it.
 
 ## When anything runs, and what it costs
 
-Two timers, and everything else is gated off them.
+Two timers. Everything else is gated off them, and every gate exists because the call it guards is
+expensive or the thing it fetches rarely changes.
 
-| Timer | Default | Does |
+| Call | Fires when | Request |
 | --- | --- | --- |
-| Calendar refresh | 3h | FETCH airdates, then render |
-| Library poll | 2h | `GET /sync/activities`, then the list fetches, the film clock, a render, and the sheet sync |
+| Airdate calendars | calendar timer, **3h** | `GET data.simkl.in/calendar/v2/{tv,anime}.json`, plus `…/{year}/{month}/{tv,anime}.json` per month the grace window reaches — conditional on `If-Modified-Since`, so `304` unless the CDN regenerated |
+| Activities gate | library timer, **2h** | `GET api.simkl.com/sync/activities` |
+| One library list | its signature moved in the gate above | `GET /sync/all-items/{type}/{status}?extended=full&episode_watched_at=yes&include_all_episodes=yes` |
+| Film release date | the film list moved, else **daily** | `GET /movies/{id}?extended=full` — one per plan-to-watch film, 4 at a time |
+| A title's episode list | that title's `lastWatchedAt` moved, else after **24h** | `GET /tv/episodes/{id}` |
+| A title's status | same trigger as its episode list | `GET /tv/{id}?extended=full`, or `/anime/{id}` for a cour |
+| Read the spreadsheet | start of every sheet-sync run, and again to verify a write | `GET sheets.googleapis.com/v4/spreadsheets/{id}?ranges='Sheet1'&fields=…` |
+| Write the spreadsheet | a plan passed the guard, in `apply` mode only | `POST …/spreadsheets/{id}:batchUpdate` |
+| List the tabs | after a write, to find or sweep the snapshot tab | `GET …/spreadsheets/{id}?fields=sheets.properties(sheetId,title)` |
+| Google access token | within **5 minutes** of expiry | `POST oauth2.googleapis.com/token` — a locally-signed RS256 assertion |
+| SIMKL login | `npm run login` only, never from the service | `GET /oauth/pin`, then `GET /oauth/pin/{code}` until approved |
 
-**`/sync/activities` is the gate.** It returns a last-modified timestamp per category, so a poll
-where nothing moved costs exactly **one request**. Each list has its own signature — the status
-timestamp plus `removed_from_list`, which is per-category and so invalidates the whole category —
-and only lists whose signature changed are refetched. `playback` and `rated_at` are ignored: a
-scrobbler reporting progress must not trigger a refetch that renders byte-identical output.
+Every SIMKL request also carries `client_id`, `app-name` and `app-version` as query parameters and
+a `simkl-api-key` header; authenticated ones add a bearer token.
 
-Three things run on their own clocks because nothing in the library moves when they change:
+**`/sync/activities` is what makes this cheap.** It returns a last-modified timestamp per category,
+so a poll where nothing moved costs exactly **one request** — the gate itself. Each list has its own
+signature: its status timestamp plus `removed_from_list`, which is per-category and so invalidates
+the whole category. `playback` and `rated_at` are deliberately excluded, or a scrobbler reporting
+progress would trigger a refetch that renders byte-identical output.
 
-- **Film release dates**, re-read daily. A studio delaying a release produces no library activity.
-- **A title's catalogue**, re-read when its `lastWatchedAt` moves, with a 24h ceiling. Watch
-  activity is the right trigger because it is the trigger for everything the sync writes — a season
-  cannot become complete without being watched — and the ceiling backstops the one thing that
-  changes silently, `/tv/{id}` status flipping on a renewal.
-- **The Google access token**, re-signed when it is within 5 minutes of expiry.
+Three things sit on their own clocks because **nothing in the library moves when they change**, so
+there is no signature to gate on: a studio delaying a film, a network renewing a show, and a token
+expiring. Hence the daily film clock, the 24h catalogue ceiling, and the 5-minute token margin.
 
-Without that per-title catalogue gate, watching one episode would re-read the catalogue of every
-eligible show — about 35 calls for a one-cell edit on a 300-row sheet. With it, a warm run
-makes roughly two.
+Without the per-title catalogue gate, watching one episode would re-read the catalogue of every
+eligible show — about 35 calls for a one-cell edit on a 300-row sheet. With it, a warm run makes
+roughly two.
 
 `LISTS` covers 11 lists where the feed needs 7; the sheet sync needs `hold` and `dropped` so that
 "absent from every list" can mean *no information*. The gate is what makes 11 affordable.
 
-README has the per-event call budget — one request when nothing changed, 12 on a cold start.
+README has the same thing cut by user action rather than by call — one request when nothing changed,
+12 on a cold start.
 
 ---
 
