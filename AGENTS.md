@@ -169,6 +169,12 @@ has no cache of its own — `SheetSync` retains catalogue results and decides wh
 `test/feed/io/calendar.test.ts`, which is the only caller and the one that knows what a usable
 payload looks like.
 
+`test/sheet/fixtures.ts` holds the one grid every sheet suite plans against, plus `cell`, `planOf`
+and `insertAt`. It is there rather than in `helpers.ts` for the reason that file already gives about
+`showRow`/`seasonRow`, one level up: `grid` is a positional array and every suite hard-codes row
+indices against it, so a second copy that drifts re-points every index in the file that has it —
+silently. The `test/**/*.test.ts` glob never runs it as a suite.
+
 The sheet sync's tests are weighted towards `4-guard.test.ts` and `5-requests.test.ts` on purpose:
 a one-row misalignment is the only catastrophic failure the feature has, and the guard and the
 request ordering are what prevent it.

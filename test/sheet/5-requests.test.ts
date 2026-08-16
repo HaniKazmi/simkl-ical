@@ -1,48 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { a1, parseGrid, type Grid, type HeaderName } from '../../src/sheet/2-grid.ts';
 import { deleteRowRequests, toRequests } from '../../src/sheet/5-requests.ts';
-import { dateSerial } from '../../src/sheet/1-progress.ts';
-import type { CellEdit, RowInsert, SheetPlan } from '../../src/sheet/3-plan.ts';
-import type { ExtendedValue } from '../../src/api/google/types.ts';
-import { sheetSnapshot, SHEET_HEADERS, type CellSpec, seasonRow, showRow } from '../helpers.ts';
-const H = SHEET_HEADERS;
-const TODAY = dateSerial(new Date().toISOString().slice(0, 10));
+import { cell, grid, insertAt, planOf } from './fixtures.ts';
 
-const show = (title: string, status: string): CellSpec[] => showRow(title, status, 1);
-const season = seasonRow;
-
-//  row 0 header | 1 show | 2 season 1 (closed) | 3 season 2 (open)
-const grid: Grid = parseGrid(sheetSnapshot([H, show('Fargo', 'Ended'), season(1, 6, 44000), season(2, 3, null)]));
-
-const cell = (row: number, field: HeaderName, value: ExtendedValue, previous?: ExtendedValue): CellEdit => ({
-  row,
-  column: grid.columns[field],
-  field,
-  previous: previous ?? grid.snapshot.rows[row]?.[grid.columns[field]]?.userEnteredValue,
-  value,
-  address: a1(row, grid.columns[field]),
-  note: 'test',
-});
-
-const planOf = (edits: CellEdit[] = [], inserts: RowInsert[] = []): SheetPlan => ({ edits, inserts, skipped: [], notes: [], deferred: 0 });
-
-const insertAt = (row: number, season: number, title = 'Fargo'): RowInsert => ({
-  row,
-  title,
-  season,
-  fill: (
-    [
-      ['Season', { numberValue: season }],
-      ['Episode', { numberValue: 4 }],
-      ['Start', { numberValue: TODAY - 10 }],
-      ['Episodes', { numberValue: 0.0153 }],
-      ['Length', { formulaValue: `=G${row + 1}*D${row + 1}` }],
-    ] as Array<[HeaderName, ExtendedValue]>
-  ).map(([field, value]) => ({ row, column: grid.columns[field], field, previous: undefined, value, address: a1(row, grid.columns[field]), note: 'new' })),
-  note: 'new row',
-});
-
+/** The batch as a readable shape: what each request is, and which row it hits. */
 const kinds = (requests: ReturnType<typeof toRequests>) =>
   requests.map((r) =>
     'insertDimension' in r ? 'insert' : 'deleteDimension' in r ? 'delete' : 'updateCells' in r ? `write@${r.updateCells.range.startRowIndex}` : Object.keys(r)[0],

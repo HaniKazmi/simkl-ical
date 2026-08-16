@@ -3,25 +3,12 @@ import assert from 'node:assert/strict';
 import { a1, parseGrid, type HeaderName } from '../../src/sheet/2-grid.ts';
 import { shiftRow, verify } from '../../src/sheet/6-verify.ts';
 import type { CellEdit, SheetPlan } from '../../src/sheet/3-plan.ts';
-import { cellOf, sheetSnapshot, SHEET_HEADERS, type CellSpec, seasonRow, showRow } from '../helpers.ts';
+import { cellOf, sheetSnapshot, type CellSpec } from '../helpers.ts';
+import { cell, grid as before, H, planOf, ROWS } from './fixtures.ts';
 
-const H = SHEET_HEADERS;
-
-const show = (title: string, status: string): CellSpec[] => showRow(title, status, 1);
-const season = seasonRow;
-
-const ROWS: CellSpec[][] = [H, show('Fargo', 'Ended'), season(1, 6, 44000), season(2, 3, null)];
-const before = parseGrid(sheetSnapshot(ROWS));
-
-const editOf = (row: number, field: HeaderName, value: number | string): CellEdit => ({
-  row,
-  column: before.columns[field],
-  field,
-  previous: before.snapshot.rows[row]?.[before.columns[field]]?.userEnteredValue,
-  value: typeof value === 'number' ? { numberValue: value } : { stringValue: value },
-  address: a1(row, before.columns[field]),
-  note: 'test',
-});
+/** `cell` with the bare value this suite finds easier to write. */
+const editOf = (row: number, field: HeaderName, value: number | string): CellEdit =>
+  cell(row, field, typeof value === 'number' ? { numberValue: value } : { stringValue: value });
 
 /** Apply a change to a copy of the fixture, the way a real write would. */
 const withChange = (row: number, field: HeaderName, spec: CellSpec) => {
@@ -29,8 +16,6 @@ const withChange = (row: number, field: HeaderName, spec: CellSpec) => {
   rows[row]![before.columns[field]] = spec;
   return sheetSnapshot(rows);
 };
-
-const planOf = (edits: CellEdit[] = [], inserts: SheetPlan['inserts'] = []): SheetPlan => ({ edits, inserts, skipped: [], notes: [], deferred: 0 });
 
 test('a shift maps a pre-existing row to where the inserts leave it', () => {
   assert.equal(shiftRow(3, []), 3);
