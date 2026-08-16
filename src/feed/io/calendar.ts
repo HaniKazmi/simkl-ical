@@ -7,7 +7,7 @@
 
 import { evictCache, fetchCached, type CdnResult, type CdnSource } from '../../api/cdn.ts';
 import { config } from '../../shared/config.ts';
-import { localDateOf, parseYmd } from '../../shared/dates.ts';
+import { plainDateIn } from '../../shared/dates.ts';
 import { errorMessage } from '../../shared/errors.ts';
 import type { CalendarFile, CalendarType } from '../../api/simkl/types.ts';
 
@@ -80,17 +80,15 @@ export interface YearMonth {
  * join's filter while living in a February archive nothing ever fetched.
  */
 export const monthsBack = (days: number, now: Date = new Date(), timezone: string = config.timezone): YearMonth[] => {
-  const [year, month, day] = parseYmd(localDateOf(now, timezone));
+  const today = plainDateIn(now.toTemporalInstant(), timezone);
   const months = new Map<string, YearMonth>();
   for (let i = days; i >= 0; i -= 1) {
     // Plain calendar arithmetic on a plain date: the zone was applied above,
-    // and applying it twice is how an off-by-one gets in.
-    const d = new Date(Date.UTC(year, month - 1, day - i));
-    // Unpadded month, matching the archive URL scheme.
-    months.set(`${d.getUTCFullYear()}-${d.getUTCMonth() + 1}`, {
-      year: d.getUTCFullYear(),
-      month: d.getUTCMonth() + 1,
-    });
+    // and applying it twice is how an off-by-one gets in. `PlainDate.month` is
+    // 1-based and unpadded here, which is the archive URL scheme — a padded one
+    // is a 404.
+    const d = today.subtract({ days: i });
+    months.set(`${d.year}-${d.month}`, { year: d.year, month: d.month });
   }
   return [...months.values()];
 };

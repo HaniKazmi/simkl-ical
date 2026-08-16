@@ -6,6 +6,7 @@ import type { MovieDetail } from '../../../src/api/simkl/types.ts';
 import type { MovieRelease } from '../../../src/feed/io/movies.ts';
 import { clearRequests, recentRequests } from '../../../src/api/requests.ts';
 import { jsonResponse, withFetch } from '../../helpers.ts';
+import { plainDateFrom } from '../../../src/shared/dates.ts';
 
 // Shape taken from a real /movies/2242503 response. Note `released` is two days
 // earlier than every country's actual theatrical date — this is not a typo in
@@ -22,13 +23,13 @@ const duneThree: MovieDetail = {
 
 test('the misleading top-level `released` field is not used', () => {
   const picked = pickReleaseDate(duneThree, 'GB');
-  assert.equal(picked!.date, '2026-12-18');
-  assert.notEqual(picked!.date, duneThree.released);
+  assert.equal(picked!.date.toString(), '2026-12-18');
+  assert.notEqual(picked!.date.toString(), duneThree.released);
 });
 
 test('the viewer country wins over other territories', () => {
-  assert.equal(pickReleaseDate(duneThree, 'BE')!.date, '2026-12-16');
-  assert.equal(pickReleaseDate(duneThree, 'GB')!.date, '2026-12-18');
+  assert.equal(pickReleaseDate(duneThree, 'BE')!.date.toString(), '2026-12-16');
+  assert.equal(pickReleaseDate(duneThree, 'GB')!.date.toString(), '2026-12-18');
 });
 
 test('theatrical is preferred over a premiere screening', () => {
@@ -39,19 +40,19 @@ test('theatrical is preferred over a premiere screening', () => {
     release_dates: [{ iso_3166_1: 'GB', results: [{ type: 3, release_date: '2026-07-17' }, { type: 1, release_date: '2026-07-06' }] }],
   };
   const picked = pickReleaseDate(odyssey, 'GB');
-  assert.equal(picked!.date, '2026-07-17');
+  assert.equal(picked!.date.toString(), '2026-07-17');
   assert.equal(picked!.type, 3);
 });
 
 test('falls back to US when the viewer country is not listed', () => {
   const picked = pickReleaseDate(duneThree, 'NZ');
-  assert.equal(picked!.date, '2026-12-18');
+  assert.equal(picked!.date.toString(), '2026-12-18');
   assert.equal(picked!.country, 'US');
 });
 
 test('a premiere is used when nothing better is listed', () => {
   const onlyPremiere: MovieDetail = { title: 'A Film', released: '2026-01-01', release_dates: [{ iso_3166_1: 'GB', results: [{ type: 1, release_date: '2026-03-04' }] }] };
-  assert.equal(pickReleaseDate(onlyPremiere, 'GB')!.date, '2026-03-04');
+  assert.equal(pickReleaseDate(onlyPremiere, 'GB')!.date.toString(), '2026-03-04');
 });
 
 // A premiere is a last resort across all territories, not just within one.
@@ -65,7 +66,7 @@ test('a US theatrical date beats a home-country premiere', () => {
     ],
   };
   const picked = pickReleaseDate(movie, 'GB');
-  assert.equal(picked!.date, '2026-12-04');
+  assert.equal(picked!.date.toString(), '2026-12-04');
   assert.equal(picked!.type, 3);
   assert.equal(picked!.country, 'US');
 });
@@ -82,7 +83,7 @@ test('the reported country matches where the date actually came from', () => {
 test('falls back to `released` only when there is no per-country data at all', () => {
   const bare: MovieDetail = { title: 'A Film', released: '2026-05-05', release_dates: [] };
   const picked = pickReleaseDate(bare, 'GB');
-  assert.equal(picked!.date, '2026-05-05');
+  assert.equal(picked!.date.toString(), '2026-05-05');
   assert.equal(picked!.type, null);
 });
 
@@ -99,7 +100,7 @@ test('release types are labelled for the event description', () => {
 
 // --- reconcileReleases ---------------------------------------------------
 
-const release = (id: number): MovieRelease => ({ simkl_id: id, title: `Film ${id}`, date: '2026-12-18', releaseType: 3, runtime: null, url: '' });
+const release = (id: number): MovieRelease => ({ simkl_id: id, title: `Film ${id}`, date: plainDateFrom('2026-12-18'), releaseType: 3, runtime: null, url: '' });
 
 const lookups = (releases: Array<[number, MovieRelease]>, failed: number[] = [], unavailable: number[] = []) =>
   ({ releases: new Map(releases), failed, unavailable });
@@ -183,7 +184,7 @@ test('a re-release beats an original run that has already happened', () => {
       },
     ],
   };
-  assert.equal(pickReleaseDate(movie, 'GB', NOW)!.date, '2027-05-25');
+  assert.equal(pickReleaseDate(movie, 'GB', NOW)!.date.toString(), '2027-05-25');
 });
 
 test('array order does not decide which date is chosen', () => {
@@ -193,7 +194,7 @@ test('array order does not decide which date is chosen', () => {
   ];
   const forwards: MovieDetail = { title: 'x', release_dates: [{ iso_3166_1: 'GB', results }] };
   const backwards: MovieDetail = { title: 'x', release_dates: [{ iso_3166_1: 'GB', results: [...results].reverse() }] };
-  assert.equal(pickReleaseDate(forwards, 'GB', NOW)!.date, pickReleaseDate(backwards, 'GB', NOW)!.date);
+  assert.equal(pickReleaseDate(forwards, 'GB', NOW)!.date.toString(), pickReleaseDate(backwards, 'GB', NOW)!.date.toString());
 });
 
 test('the soonest upcoming date wins when several are still ahead', () => {
@@ -209,7 +210,7 @@ test('the soonest upcoming date wins when several are still ahead', () => {
       },
     ],
   };
-  assert.equal(pickReleaseDate(movie, 'GB', NOW)!.date, '2026-09-01');
+  assert.equal(pickReleaseDate(movie, 'GB', NOW)!.date.toString(), '2026-09-01');
 });
 
 test('a film entirely in the past keeps its most recent date', () => {
@@ -225,7 +226,7 @@ test('a film entirely in the past keeps its most recent date', () => {
       },
     ],
   };
-  assert.equal(pickReleaseDate(movie, 'GB', NOW)!.date, '1997-01-31');
+  assert.equal(pickReleaseDate(movie, 'GB', NOW)!.date.toString(), '1997-01-31');
 });
 
 // The last resort must choose by type too, not by whichever came first.
@@ -245,7 +246,7 @@ test('the last-resort choice is by type, not by position', () => {
 
 // iso_3166_1 is matched exactly, so a lowercase value would fall through to US.
 test('the release country is matched case-insensitively', () => {
-  assert.equal(pickReleaseDate(duneThree, 'gb', NOW)!.date, pickReleaseDate(duneThree, 'GB', NOW)!.date);
+  assert.equal(pickReleaseDate(duneThree, 'gb', NOW)!.date.toString(), pickReleaseDate(duneThree, 'GB', NOW)!.date.toString());
   assert.equal(pickReleaseDate(duneThree, 'gb', NOW)!.country, 'GB');
 });
 
@@ -391,7 +392,7 @@ test('an unrecognised release type still beats the unreliable released field', (
     release_dates: [{ iso_3166_1: 'GB', results: [{ type: 7, release_date: '2026-12-18' }] }],
   };
   const picked = pickReleaseDate(movie, 'GB', NOW)!;
-  assert.equal(picked.date, '2026-12-18');
+  assert.equal(picked.date.toString(), '2026-12-18');
   assert.equal(picked.country, 'GB');
 });
 
@@ -431,12 +432,12 @@ test('whether a date has passed is judged in the viewer timezone, not UTC', () =
 
   // timezone is a parameter now, so this needs no global mutation at all.
   assert.equal(
-    pickReleaseDate(movie, 'NZ', { ...now, timezone: 'Pacific/Auckland' })!.date,
+    pickReleaseDate(movie, 'NZ', { ...now, timezone: 'Pacific/Auckland' })!.date.toString(),
     '2026-08-20',
     'the 15th is yesterday in Auckland',
   );
   assert.equal(
-    pickReleaseDate(movie, 'NZ', { ...now, timezone: 'UTC' })!.date,
+    pickReleaseDate(movie, 'NZ', { ...now, timezone: 'UTC' })!.date.toString(),
     '2026-08-15',
     'but is still today in UTC',
   );
@@ -454,7 +455,7 @@ const OPTS = { refreshMs: DAY_MS, timezone: 'Europe/London' };
 /** A release `days` from NOW, so a fixture can sit either side of the horizon. */
 const dated = (days: number): MovieRelease => ({
   ...release(1),
-  date: new Date(DUE_NOW.getTime() + days * DAY_MS).toISOString().slice(0, 10),
+  date: plainDateFrom(new Date(DUE_NOW.getTime() + days * DAY_MS).toISOString().slice(0, 10)),
 });
 
 test('a film never asked about is due', () => {
@@ -495,7 +496,7 @@ test('the horizon boundary is inclusive', () => {
 // a UTC instant is a different local date for a fifth of the day.
 test('the horizon is measured in the viewer\'s timezone', () => {
   const aged = DUE_NOW.getTime() - DAY_MS - 1000;
-  const onTheEdge = { ...release(1), date: '2026-09-14' };
+  const onTheEdge = { ...release(1), date: plainDateFrom('2026-09-14') };
   assert.equal(filmDue(aged, onTheEdge, DUE_NOW, { ...OPTS, horizonDays: 30 }), true);
   assert.equal(filmDue(aged, onTheEdge, DUE_NOW, { ...OPTS, horizonDays: 29 }), false);
 });

@@ -8,7 +8,6 @@
 
 import ical, { ICalCalendarMethod, ICalEventTransparency } from 'ical-generator';
 import { config } from '../shared/config.ts';
-import { plainDateFrom } from '../shared/dates.ts';
 import type { FeedEvent } from './1-join.ts';
 
 /**
@@ -48,10 +47,10 @@ export const renderIcs = (events: FeedEvent[], { name = 'SIMKL', timezone = conf
   cal.x('X-WR-TIMEZONE', timezone);
 
   for (const event of events) {
-    // A `PlainDate` goes to ical-generator unconverted: it accepts Temporal
-    // values directly, so nothing here has to manufacture a `Date` at UTC
-    // midnight and hope the zone never gets applied to it.
-    const start = plainDateFrom(event.date);
+    // Straight through: the join already resolved the zone, ical-generator
+    // accepts Temporal values, and nothing here manufactures a `Date` at UTC
+    // midnight and hopes the zone is never applied to it.
+    const start = event.date;
     cal.createEvent({
       id: event.uid,
       start,

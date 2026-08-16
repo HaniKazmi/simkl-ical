@@ -6,7 +6,7 @@
 
 import { apiGet } from '../../api/simkl/client.ts';
 import { lookupPool } from '../../api/simkl/pool.ts';
-import { localDateOf, releaseDate, shiftDate } from '../../shared/dates.ts';
+import { plainDateIn, releaseDate } from '../../shared/dates.ts';
 import { config } from '../../shared/config.ts';
 import type { MovieDetail, ReleaseDateResult } from '../../api/simkl/types.ts';
 
@@ -20,7 +20,7 @@ import type { MovieDetail, ReleaseDateResult } from '../../api/simkl/types.ts';
 export interface MovieRelease {
   simkl_id: number;
   title: string;
-  date: string;
+  date: Temporal.PlainDate;
   releaseType: number | null;
   runtime: string | null;
   url: string;
@@ -53,16 +53,16 @@ const datesFor = (movie: MovieDetail, country: string): ReleaseDateResult[] =>
  * no meaning. The viewer wants the next date that has not happened yet, or the
  * most recent past one when they all have.
  */
-const relevantDate = (results: ReleaseDateResult[], type: number, today: string): string | undefined => {
+const relevantDate = (results: ReleaseDateResult[], type: number, today: Temporal.PlainDate): Temporal.PlainDate | undefined => {
   const dates = results
     .filter((r) => r.type === type && r.release_date)
     .map((r) => releaseDate(r.release_date))
-    .sort();
-  return dates.find((d) => d >= today) ?? dates.at(-1);
+    .sort(Temporal.PlainDate.compare);
+  return dates.find((d) => Temporal.PlainDate.compare(d, today) >= 0) ?? dates.at(-1);
 };
 
 export interface PickedRelease {
-  date: string;
+  date: Temporal.PlainDate;
   type: number | null;
   country: string | null;
 }
@@ -85,7 +85,7 @@ export const pickReleaseDate = (
   const codes = [...new Set([country.toUpperCase(), 'US'])];
   const territories = codes.map((code) => ({ code, results: datesFor(movie, code) }));
   // The viewer's local date, not UTC — the same question the join asks.
-  const today = localDateOf(now, timezone);
+  const today = plainDateIn(now.toTemporalInstant(), timezone);
 
   // A real release anywhere in the preference order beats a premiere anywhere,
   // so both territories are exhausted before the last resorts are considered.
@@ -173,7 +173,8 @@ export const filmDue = (
   if (stamp === undefined) return true;
   if (now.getTime() - stamp <= refreshMs) return false;
   if (!release) return true;
-  return release.date <= shiftDate(localDateOf(now, timezone), horizonDays);
+  const horizon = plainDateIn(now.toTemporalInstant(), timezone).add({ days: horizonDays });
+  return Temporal.PlainDate.compare(release.date, horizon) <= 0;
 };
 
 /**
