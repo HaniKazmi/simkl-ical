@@ -379,6 +379,21 @@ export const planSync = (
     // the one insert mistake nothing downstream could detect.
     const covered = new Set(block.seasons.map((s) => s.season).filter((n): n is number => n !== null && Number.isInteger(n)));
 
+    // Two rows describing the same season of the same title. One title's
+    // progress cannot say which to advance, so both would be planned the same
+    // count — the same number written twice, silently, and only one of them
+    // rolls up into the show row above. Keyed on the *effective* id, because a
+    // blank season row inherits the block's: an anime block whose rows each
+    // carry their own id has one season 1 per title and is not this.
+    const claims = new Map<string, number>();
+    for (const row of block.seasons) {
+      if (row.season === null) continue;
+      for (const id of new Set(idsFor(block, row))) {
+        const key = `${id}:${row.season}`;
+        claims.set(key, (claims.get(key) ?? 0) + 1);
+      }
+    }
+
     for (const season of block.seasons) {
       const resolved = resolveRow(block, season, index, catalogue, duplicates);
       if (resolved === null) continue;
@@ -394,6 +409,10 @@ export const planSync = (
       if (!within(resolved.lastWatchedAt, cutoffMs)) continue;
 
       const label = `${block.title} S${season.season ?? '?'}`;
+      if (season.season !== null && idsFor(block, season).some((id) => (claims.get(`${id}:${season.season}`) ?? 0) > 1)) {
+        plan.skipped.push(`${label}: more than one row describes this season, so neither is written`);
+        continue;
+      }
       // A hand-typed count — "12 (rewatch)", "~8" — parses to null, so the
       // comparison below would read it as 0 and plan an edit the guard refuses
       // unconditionally. Refusal is whole-plan, so one such cell would stop
