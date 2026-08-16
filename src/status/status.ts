@@ -1,0 +1,71 @@
+/**
+ * The status page's impure shell: MODEL → RENDER, with the live service and the
+ * clock read here so the two numbered modules beside it stay pure.
+ *
+ * This is the only file under `status/` that names `Orchestrator`. Flattening
+ * its state into `StatusInput` restates field names, which is the price of the
+ * split — and what lets `1-model.ts` be tested from an object literal instead of
+ * an assembled service.
+ *
+ * Synchronous, deliberately. The run journal is already in memory and nothing
+ * here fetches, so a client refreshing the page hard costs a render and nothing
+ * else — the same reason requests never trigger a fetch.
+ */
+
+import { config } from '../shared/config.ts';
+import { listCounts } from '../library.ts';
+import { sheetRuns } from '../sheet/io/journal.ts';
+import type { Orchestrator } from '../orchestrator.ts';
+import { buildModel } from './1-model.ts';
+import { renderPage } from './2-html.ts';
+
+export const renderStatus = (state: Orchestrator, { now = Date.now() }: { now?: number } = {}): string => {
+  const { feed, sheetSync } = state;
+  const health = state.health;
+
+  return renderPage(
+    buildModel({
+      now,
+      appName: config.appName,
+      version: config.appVersion,
+      timezone: config.timezone,
+      startedAt: state.startedAt,
+      ok: health.ok,
+      problems: health.problems,
+
+      polledAt: state.polledAt,
+      librarySyncedAt: state.libraryAt,
+      libraryError: state.errors.library,
+      counts: listCounts(state.library),
+      gate: state.lastGate,
+      activitiesPollMs: config.activitiesPollMs,
+
+      events: feed.events.length,
+      renderedAt: feed.renderedAt,
+      servingCached: feed.servingCached,
+      renderError: feed.errors.render,
+      calendarsAt: feed.calendarsAt,
+      calendarsFreshAt: feed.calendarsFreshAt,
+      calendarsChangedAt: feed.calendarsChangedAt,
+      calendarError: feed.errors.calendar,
+      calendarRefreshMs: config.calendarRefreshMs,
+      films: feed.movieReleases.size,
+      filmsResolvedAt: feed.filmsResolvedAt,
+      movieRefreshMs: config.movieRefreshMs,
+
+      sheetConfigured: sheetSync !== null,
+      sheetMode: config.sheetSyncMode,
+      // The tab, never `sheetId`. This repo is public and the spreadsheet's only
+      // protection is its Drive sharing staying Restricted, so the id must not
+      // be somewhere a screenshot can carry it.
+      sheetTab: config.sheetName,
+      sheetStatus: sheetSync?.lastStatus ?? 'idle',
+      sheetLastRunAt: sheetSync?.lastRunAt ?? null,
+      // The whole message. `/healthz` reduces it to a boolean, so this is the
+      // only place the tab to copy back and the rows to delete are readable.
+      sheetFrozen: sheetSync?.frozen ?? null,
+      sheetError: state.errors.sheet,
+      runs: sheetRuns(),
+    }),
+  );
+};

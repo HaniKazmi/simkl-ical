@@ -94,12 +94,16 @@ test('with no token configured the feed is unreachable rather than open', async 
 test('a wrong token is indistinguishable from any other missing path', async () => {
   await withServer(async (app) => {
     const wrongToken = await app.inject({ method: 'GET', url: '/nope/feed.ics' });
+    const wrongStatus = await app.inject({ method: 'GET', url: '/nope/status' });
     const otherPath = await app.inject({ method: 'GET', url: '/something/else' });
     const root = await app.inject({ method: 'GET', url: '/' });
 
     assert.equal(wrongToken.statusCode, 404);
+    assert.equal(wrongStatus.statusCode, 404);
     assert.equal(otherPath.statusCode, 404);
     assert.equal(root.statusCode, 404);
+    assert.equal(wrongStatus.body, wrongToken.body, 'the status page is no more discoverable than the feed');
+    assert.equal(wrongStatus.headers['content-type'], otherPath.headers['content-type'], 'and a miss is never HTML');
     assert.equal(otherPath.body, wrongToken.body, 'bodies must match');
     assert.equal(root.body, wrongToken.body, 'bodies must match');
     assert.ok(!otherPath.body.includes('something'), 'the path must not be echoed back');
@@ -151,5 +155,61 @@ test('the feed token never reaches the logs', async () => {
       assert.ok(logged.includes('[redacted]'), 'the url should be redacted, not merely absent');
     },
     { logStream: stream },
+  );
+});
+
+// --- The status page -------------------------------------------------------
+
+test('the status page is served to the right token as HTML', async () => {
+  await withServer(async (app) => {
+    const res = await app.inject({ method: 'GET', url: `/${TOKEN}/status` });
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.headers['content-type'], 'text/html; charset=utf-8');
+    assert.ok(res.body.startsWith('<!doctype html>'));
+    assert.ok(res.body.includes('simkl-ical'));
+  });
+});
+
+// The page is inert by design, and these are what keep an escaping bug from
+// executing and the token in the URL from leaving in a Referer header.
+test('the status page carries its hardening headers', async () => {
+  await withServer(async (app) => {
+    const { headers } = await app.inject({ method: 'GET', url: `/${TOKEN}/status` });
+
+    assert.match(String(headers['content-security-policy']), /default-src 'none'/);
+    assert.ok(!String(headers['content-security-policy']).includes('script-src'), 'no script source is permitted at all');
+    assert.equal(headers['referrer-policy'], 'no-referrer');
+    assert.equal(headers['x-content-type-options'], 'nosniff');
+    assert.equal(headers['cache-control'], 'private, no-store');
+  });
+});
+
+// The URL bar already has it; a copy in the DOM is one more thing a screenshot
+// or an extension can carry off.
+test('the status page never prints the token or the spreadsheet id', async () => {
+  await withConfig({ sheetId: 'SECRET-SHEET-ID' }, async () => {
+    await withServer(async (app) => {
+      const res = await app.inject({ method: 'GET', url: `/${TOKEN}/status` });
+      assert.ok(!res.body.includes(TOKEN), 'not the feed token');
+      assert.ok(!res.body.includes('SECRET-SHEET-ID'), 'and not the spreadsheet id');
+    });
+  });
+});
+
+test('a token of the wrong length is a 404 on the status page too, not a 500', async () => {
+  await withServer(async (app) => {
+    for (const wrong of ['', 'a', 'a'.repeat(47), 'a'.repeat(49)]) {
+      assert.equal((await app.inject({ method: 'GET', url: `/${wrong}/status` })).statusCode, 404, `length ${wrong.length}`);
+    }
+  });
+});
+
+test('with no token configured the status page is unreachable', async () => {
+  await withServer(
+    async (app) => {
+      assert.equal((await app.inject({ method: 'GET', url: `/${TOKEN}/status` })).statusCode, 404);
+    },
+    { token: null },
   );
 });

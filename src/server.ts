@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { timingSafeEqual } from 'node:crypto';
 import { config } from './shared/config.ts';
 import type { Orchestrator } from './orchestrator.ts';
+import { renderStatus } from './status/status.ts';
 
 /** Constant-time compare so the token cannot be recovered by timing the 404s. */
 const tokenMatches = (candidate: string): boolean => {
@@ -59,6 +60,30 @@ export const buildServer = (state: Orchestrator, { logger = true, logStream }: S
       .header('Content-Disposition', 'inline; filename="simkl.ics"')
       .header('Cache-Control', 'private, no-store')
       .send(state.ics);
+  });
+
+  app.get<{ Params: { token: string } }>('/:token/status', async (req, reply) => {
+    if (!config.feedToken || !tokenMatches(req.params.token)) {
+      // The same body as the feed's miss and as any other 404, so the route
+      // cannot be discovered by probing.
+      return reply.code(404).send(NOT_FOUND);
+    }
+
+    return (
+      reply
+        // Set here rather than on the route, so the 404 above never acquires it.
+        .header('Content-Type', 'text/html; charset=utf-8')
+        // The feed token is in this page's URL, which browser history, bookmark
+        // sync and screenshots all keep. No script-src at all under
+        // `default-src 'none'` means an escaping bug cannot execute, and
+        // no-referrer stops the token riding out on any request the page makes
+        // — which is also why it loads nothing off-origin.
+        .header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'")
+        .header('Referrer-Policy', 'no-referrer')
+        .header('X-Content-Type-Options', 'nosniff')
+        .header('Cache-Control', 'private, no-store')
+        .send(renderStatus(state))
+    );
   });
 
   return app;
