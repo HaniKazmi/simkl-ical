@@ -80,7 +80,7 @@ Under Compose, the first two go in `simkl.secrets.env` and the rest are set dire
 | `RELEASE_COUNTRY`     | `GB`            | ISO 3166-1 alpha-2, case-insensitive. Which country's cinema dates to use for films |
 | `GRACE_DAYS`          | `14`            | How long an aired episode stays in the feed. Capped at 90     |
 | `PORT`                | `3000`          | Port inside the container                                     |
-| `DATA_DIR`            | `/data`         | Holds only `token.json` and the last rendered `feed.ics`. `./data` outside Docker |
+| `DATA_DIR`            | `/data`         | Holds `token.json`, the last rendered `feed.ics`, and the sheet run log. `./data` outside Docker |
 | `CALENDAR_REFRESH_MS` | `21600000` (6h) | How often to re-read the airdate calendars. Matches how often the CDN regenerates them |
 | `ACTIVITIES_POLL_MS`  | `7200000` (2h)  | How often to check your library for changes                   |
 | `MOVIE_REFRESH_MS`    | `86400000` (24h)| How often to re-read film release dates, which move without any library change |
@@ -125,6 +125,21 @@ SIMKL reports a move only against the list it moved *to*, so the show stays list
 `watching` as well — the feed goes by the status on the item rather than by which list it
 turned up in. Un-holding brings it back with no further action.
 
+## Status page
+
+`https://…/<FEED_TOKEN>/status` is a plain HTML page showing what the service is actually
+doing: how many items are in each of your eleven SIMKL lists and which ones moved at the
+last check, the feed's fetch→join→render→save steps with when each last ran, and a history
+of every edit the sheet sync has made — cell by cell, with what changed.
+
+It is **as sensitive as the feed URL**, and behind the same token: it names your shows.
+Treat it the same way, and note that a URL carrying a credential is kept by browser history
+and bookmark sync. The page loads nothing from anywhere else, runs no JavaScript, and has no
+button that starts work — requests never trigger a fetch. It never displays your `SHEET_ID`.
+
+If a sheet sync ever freezes, this is where the repair instructions are: which backup tab to
+copy back and which rows to delete. `/healthz` only reports *that* it froze.
+
 ## Subscribing
 
 Use the full `https://…/<FEED_TOKEN>/feed.ics` URL as a *subscribed calendar*, not an import.
@@ -164,7 +179,8 @@ for the library: the watch detail rides along on the fetch the feed already make
    log. It plans in full and writes nothing.
 4. Once the report looks right, re-share the sheet as **Editor** and switch to `apply`.
 
-`GET /healthz` carries the mode, the last run and its outcome.
+`GET /healthz` carries the mode, the last run and its outcome; the [status page](#status-page)
+shows what each run actually wrote, and survives a restart.
 
 ### What it does
 
@@ -235,10 +251,10 @@ or decorators. `erasableSyntaxOnly` in `tsconfig.json` makes any of those a comp
 rather than a runtime failure. Import specifiers carry the real extension
 (`import './config.ts'`), as Node requires.
 
-Routes: `GET /:token/feed.ics` and `GET /healthz`. Health is unauthenticated, and answers
-`503` rather than `200` whenever the feed has stopped moving — a revoked token, a CDN that
-has stopped answering, or a render that keeps throwing — so "the container is up" and "the
-feed is current" are not the same signal.
+Routes: `GET /:token/feed.ics`, `GET /:token/status` and `GET /healthz`. Health is
+unauthenticated, and answers `503` rather than `200` whenever the feed has stopped moving —
+a revoked token, a CDN that has stopped answering, or a render that keeps throwing — so "the
+container is up" and "the feed is current" are not the same signal.
 
 One block per subsystem, each with its own timestamps and its own error, plus `problems`:
 everything wrong right now, worst first, and empty when there is nothing to say.
