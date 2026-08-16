@@ -74,6 +74,13 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   The feed's airing rule is negative — a record with no `status` is still a title we hold — and its
   film rule is positive, because the library retains every completed film and a negative rule there
   would sweep hundreds of them into the feed and into a per-title lookup each.
+- **The feed reads membership, never progress.** `join` takes exactly two things off a library
+  record: its id and its `status`. Watch counts, `seasons[]` and `last_watched_at` are the sheet's
+  business, and a title moving between `watching` and `completed` — which SIMKL does every time you
+  catch up and every time the next episode drops — must produce the identical feed. So the render is
+  gated on `mergeDelta`'s `reshaped`, not its `updated`: the poll fires on every episode you mark, and
+  rendering on that rewrites the file for a fresh `DTSTAMP` and nothing else. `test/feed/1-join.test.ts`
+  holds the invariance directly; `test/orchestrator.test.ts` holds the render gate.
 - **`extended` does nothing on the per-title endpoints.** `/movies/{id}`, `/tv/{id}`, `/anime/{id}`
   and `/tv/episodes/{id}` return byte-identical responses with and without it. On `/sync/all-items`
   it is the gatekeeper: `extended=full` alone turns on `seasons[]`, and `episode_watched_at=yes` and

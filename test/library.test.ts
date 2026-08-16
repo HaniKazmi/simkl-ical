@@ -203,6 +203,41 @@ test('an item reclassified between types follows the response key', () => {
   assert.equal(library.get(6)?.type, 'anime');
 });
 
+// --- What the delta reshaped -----------------------------------------------
+//
+// `updated` counts what arrived; `reshaped` counts what moved. The feed reads
+// membership only, so it needs the second — and the two diverge on the most
+// common event there is.
+
+test('a record that only changed watch progress is updated but not reshaped', () => {
+  const base = toLibrary({ shows: [libraryItem({ id: 1, status: 'watching', watched: 3 })] });
+  const { updated, reshaped } = mergeDelta(base, { shows: [libraryItem({ id: 1, status: 'watching', watched: 4 })] });
+  assert.equal(updated, 1, 'the record did arrive');
+  assert.equal(reshaped, 0, 'but nothing the feed can see moved');
+});
+
+test('a status change is reshaped', () => {
+  const base = toLibrary({ shows: [libraryItem({ id: 1, status: 'watching' })] });
+  assert.equal(mergeDelta(base, { shows: [libraryItem({ id: 1, status: 'dropped' })] }).reshaped, 1);
+});
+
+test('a record arriving for the first time is reshaped', () => {
+  assert.equal(mergeDelta(new Map() as Library, shows(1)).reshaped, 1);
+});
+
+// The top-level key is the classification, and it decides which calendar the
+// title joins against — so a reclassification is a change the feed can see.
+test('a reclassification between types is reshaped', () => {
+  const base = toLibrary({ shows: [libraryItem({ id: 1 })] });
+  assert.equal(mergeDelta(base, { anime: [libraryItem({ id: 1 })] }).reshaped, 1);
+});
+
+// The second-overlap re-sends the newest records every poll; none of them moved.
+test('re-merging an unchanged record reshapes nothing', () => {
+  const base = toLibrary(shows(1, 2));
+  assert.equal(mergeDelta(base, shows(1, 2)).reshaped, 0);
+});
+
 // --- Removals --------------------------------------------------------------
 
 test('membership ids read every type of a simkl_ids_only response', () => {

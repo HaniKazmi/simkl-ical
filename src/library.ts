@@ -110,18 +110,28 @@ export const toLibrary = (response: AllItemsResponse | null | undefined): Librar
  * Returns a new Map rather than mutating, so the orchestrator swaps the library
  * in one assignment and a render holding the old one renders a coherent
  * library rather than a half-merged one.
+ *
+ * `updated` counts every record the delta carried; `reshaped` counts only those
+ * that arrived new or under a different `status`. The two differ on the most
+ * common event there is — watching an episode rewrites a record without moving
+ * it — and the gap is what tells a consumer that reads membership from one that
+ * reads progress. Which of the two matters is the consumer's business, so this
+ * reports both and decides neither.
  */
 export const mergeDelta = (
   previous: Library,
   response: AllItemsResponse | null | undefined,
-): { library: Library; updated: number } => {
+): { library: Library; updated: number; reshaped: number } => {
   const library: Library = new Map(previous);
   let updated = 0;
+  let reshaped = 0;
   for (const [id, type, item] of entriesOf(response)) {
+    const before = previous.get(id);
+    if (!before || before.type !== type || itemStatus(before.item) !== itemStatus(item)) reshaped += 1;
     library.set(id, { type, item });
     updated += 1;
   }
-  return { library, updated };
+  return { library, updated, reshaped };
 };
 
 /** The ids in a membership response — the whole of what `simkl_ids_only` says. */

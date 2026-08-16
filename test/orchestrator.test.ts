@@ -126,6 +126,60 @@ test('marking an episode watched asks for a delta and nothing more', async () =>
   });
 });
 
+// The commonest event there is, and the one that must not cascade. The poll has
+// to pull — the sheet is built from watch counts — but the feed reads membership
+// and nothing else, so re-rendering on it rewrites the file for a fresh DTSTAMP
+// and an identical event set, on every episode marked.
+test('marking an episode watched does not re-render the feed', async () => {
+  await withToken(async (state) => {
+    state.feed.calendars = emptyCalendars();
+    await prime(state);
+    assert.ok(state.feed.renderedAt, 'precondition: a render is possible at all here');
+    // A sentinel rather than the real stamp: any render replaces it, so the
+    // assertion does not rest on two wall-clock reads landing a millisecond apart.
+    const RENDERED = '2020-01-01T00:00:00.000Z';
+    state.feed.renderedAt = RENDERED;
+
+    // The same show, same status, one episode further on.
+    const progressed = {
+      shows: [
+        {
+          show: { title: 'A Show', ids: { simkl: 100 } },
+          status: 'watching',
+          watched_episodes_count: 4,
+          last_watched_at: '2026-08-15T18:00:00Z',
+        },
+      ],
+    };
+    const moved = activities({ tv_shows: { watching: '2026-08-15T18:00:00Z' } }, '2026-08-15T18:00:00Z');
+    await withFetch(api(moved, { body: progressed }), async (calls) => {
+      await state.refreshLibraryIfChanged();
+      assert.equal(deltas(calls).length, 1, 'the delta is still pulled — the sheet needs it');
+      assert.equal(lookups(calls).length, 0, 'and no film is re-read either');
+    });
+
+    assert.equal(state.library?.get(100)?.item.watched_episodes_count, 4, 'the library did take the update');
+    assert.equal(state.feed.renderedAt, RENDERED, 'but the feed was left alone');
+  });
+});
+
+// The counterpart, so the guard cannot be satisfied by never rendering at all.
+test('dropping a show does re-render the feed', async () => {
+  await withToken(async (state) => {
+    state.feed.calendars = emptyCalendars();
+    await prime(state);
+    assert.ok(state.feed.renderedAt, 'precondition: a render is possible at all here');
+    const RENDERED = '2020-01-01T00:00:00.000Z';
+    state.feed.renderedAt = RENDERED;
+
+    const dropped = { shows: [{ show: { title: 'A Show', ids: { simkl: 100 } }, status: 'dropped' }] };
+    const moved = activities({ tv_shows: { dropped: '2026-08-15T18:00:00Z' } }, '2026-08-15T18:00:00Z');
+    await withFetch(api(moved, { body: dropped }), () => state.refreshLibraryIfChanged());
+
+    assert.notEqual(state.feed.renderedAt, RENDERED, 'membership moved, so the feed must be rebuilt');
+  });
+});
+
 // The watermark goes out exactly as SIMKL gave it, less one second: date_from
 // is compared strictly greater, so passing back the timestamp verbatim asks for
 // nothing and a change landing in that same second is never seen again.
