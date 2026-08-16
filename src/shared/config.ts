@@ -171,7 +171,7 @@ export const config: Config = buildConfig(process.env);
  */
 export const requireValidTimezone = (timeZone: string = config.timezone): string => {
   try {
-    new Intl.DateTimeFormat('en-CA', { timeZone }).format(new Date());
+    Temporal.Now.zonedDateTimeISO(timeZone);
   } catch {
     throw new Error(`TZ is not a valid IANA timezone: ${timeZone}. Try e.g. Europe/London or America/New_York.`);
   }
