@@ -5,7 +5,7 @@
  */
 
 import { config } from '../shared/config.ts';
-import { localDate, localDateOf, releaseDate, shiftDate } from '../shared/dates.ts';
+import { instantFrom, plainDateIn } from '../shared/dates.ts';
 import { itemStatus } from '../api/simkl/item.ts';
 import type {
   CalendarEntry,
@@ -110,8 +110,8 @@ export type EventKind = 'tv' | 'anime' | 'movie';
 export interface FeedEvent {
   uid: string;
   kind: EventKind;
-  /** Local calendar date, YYYY-MM-DD. */
-  date: string;
+  /** The local calendar date it airs on. A date, not an instant: no zone applies. */
+  date: Temporal.PlainDate;
   summary: string;
   episodeTitle: string | null;
   /** One line of context: a network for episodes, a release type for films. */
@@ -123,7 +123,7 @@ export interface FeedEvent {
 interface MakeEventInput {
   uid: string;
   kind: EventKind;
-  date: string;
+  date: Temporal.PlainDate;
   title: string;
   code?: string | null;
   finale?: string | null;
@@ -162,7 +162,7 @@ interface EpisodeEventInput {
   entry: CalendarEntry;
   meta: ShowMetadata | undefined;
   kind: EventKind;
-  date: string;
+  date: Temporal.PlainDate;
 }
 
 const buildEpisodeEvent = ({ entry, meta, kind, date }: EpisodeEventInput): FeedEvent => {
@@ -171,7 +171,7 @@ const buildEpisodeEvent = ({ entry, meta, kind, date }: EpisodeEventInput): Feed
   const code = episodeCode(entry.episode?.season, entry.episode?.episode);
   // Entries with no episode number still describe a real airing, so they keep
   // their slot — keyed on the date, which is the only thing distinguishing them.
-  const suffix = code ? code.toLowerCase() : date.replace(/-/g, '');
+  const suffix = code ? code.toLowerCase() : `${date}`.replace(/-/g, '');
 
   return makeEvent({
     uid: `simkl-${id}-${suffix}@simkl-ical`,
@@ -191,7 +191,7 @@ const buildFilmEvent = (release: MovieRelease): FeedEvent =>
   makeEvent({
     uid: `simkl-movie-${release.simkl_id}@simkl-ical`,
     kind: 'movie',
-    date: releaseDate(release.date),
+    date: release.date,
     title: release.title,
     detail: releaseLabel(release.releaseType),
     runtime: release.runtime ?? null,
@@ -248,8 +248,8 @@ export const join = (
     moviesPlanned: plannedIds(library, 'movies'),
   };
 
-  const today = localDateOf(now, timezone);
-  const cutoff = shiftDate(today, -graceDays);
+  const today = plainDateIn(now.toTemporalInstant(), timezone);
+  const cutoff = today.subtract({ days: graceDays });
   const events = new Map<string, FeedEvent>();
 
   const addEpisodes = (
@@ -269,8 +269,10 @@ export const join = (
       // `Intl` raises on an Invalid Date, and one bad field in a payload of
       // several thousand entries would otherwise abort the whole render and
       // stop the feed updating until the CDN fixed itself.
-      const date = localDate(entry.date, timezone);
-      if (date === null || date < cutoff) continue;
+      const at = instantFrom(entry.date);
+      if (at === null) continue;
+      const date = plainDateIn(at, timezone);
+      if (Temporal.PlainDate.compare(date, cutoff) < 0) continue;
 
       const event = buildEpisodeEvent({ entry, meta: metadata?.[String(id)], kind, date });
       events.set(event.uid, event);
@@ -286,11 +288,11 @@ export const join = (
   for (const id of sets.moviesPlanned) {
     const release = movieReleases.get(id);
     if (!release) continue;
-    if (releaseDate(release.date) < cutoff) continue;
+    if (Temporal.PlainDate.compare(release.date, cutoff) < 0) continue;
 
     const event = buildFilmEvent(release);
     events.set(event.uid, event);
   }
 
-  return [...events.values()].sort((a, b) => a.date.localeCompare(b.date) || a.summary.localeCompare(b.summary));
+  return [...events.values()].sort((a, b) => Temporal.PlainDate.compare(a.date, b.date) || a.summary.localeCompare(b.summary));
 };

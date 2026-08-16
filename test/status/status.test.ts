@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { Orchestrator } from '../../src/orchestrator.ts';
 import { renderStatus } from '../../src/status/status.ts';
 import { ago, calendarOf, libraryOf, quiet, withConfig } from '../helpers.ts';
+import { plainDateFrom } from '../../src/shared/dates.ts';
 
 /**
  * The 30-field `Orchestrator → StatusInput` mapping, which both other status
@@ -31,7 +32,7 @@ const wired = (): Orchestrator => {
   state.feed.calendarsAt = ago(4 * MINUTE);
   state.feed.calendarsFreshAt = ago(4 * MINUTE);
   state.feed.calendarsChangedAt = ago(4 * MINUTE);
-  state.feed.movieReleases = new Map([[9, { simkl_id: 9, title: 'A Film', date: '2026-12-18', releaseType: 3, runtime: null, url: '' }]]);
+  state.feed.movieReleases = new Map([[9, { simkl_id: 9, title: 'A Film', date: plainDateFrom('2026-12-18'), releaseType: 3, runtime: null, url: '' }]]);
   return state;
 };
 

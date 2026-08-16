@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { airingIds, plannedIds, episodeCode, join } from '../../src/feed/1-join.ts';
 import { itemSimklId } from '../../src/api/simkl/item.ts';
-import { localDate, releaseDate, shiftDate } from '../../src/shared/dates.ts';
+import { localDate, plainDateFrom, releaseDate, shiftDate } from '../../src/shared/dates.ts';
 import type { CalendarEntry, CalendarFile, CalendarType, LibraryItem } from '../../src/api/simkl/types.ts';
 import type { Library, LibraryEntry } from '../../src/library.ts';
 import type { MovieRelease } from '../../src/feed/io/movies.ts';
@@ -32,8 +32,8 @@ test('localDate handles the midnight-UTC boundary', () => {
 });
 
 test('releaseDate normalises to a plain date', () => {
-  assert.equal(releaseDate('2026-12-18'), '2026-12-18');
-  assert.equal(releaseDate('2026-12-18T04:00:00Z'), '2026-12-18');
+  assert.equal(releaseDate('2026-12-18').toString(), '2026-12-18');
+  assert.equal(releaseDate('2026-12-18T04:00:00Z').toString(), '2026-12-18');
 });
 
 test('itemSimklId bridges the library ids.simkl to the calendar simkl_id', () => {
@@ -259,7 +259,7 @@ test('with no grace, past episodes are dropped and today is kept', () => {
     library,
     { timezone: 'Europe/London', now: NOW, graceDays: 0 },
   );
-  assert.deepEqual(events.map((e) => e.date), ['2026-08-10']);
+  assert.deepEqual(events.map((e) => String(e.date)), ['2026-08-10']);
 });
 
 test('a recently aired episode lingers for the grace window', () => {
@@ -268,7 +268,7 @@ test('a recently aired episode lingers for the grace window', () => {
     library,
     { timezone: 'Europe/London', now: NOW, graceDays: 14 },
   );
-  assert.deepEqual(events.map((e) => e.date), ['2026-08-05']);
+  assert.deepEqual(events.map((e) => String(e.date)), ['2026-08-05']);
 });
 
 test('an episode older than the grace window is dropped', () => {
@@ -305,7 +305,7 @@ test('an already-watched episode still lingers', () => {
 test('a recently released film lingers too', () => {
   const events = join(calendars(), library, { timezone: 'Europe/London', now: NOW, graceDays: 14, movieReleases: filmReleases('2026-08-05') });
   assert.equal(events.length, 1);
-  assert.equal(events[0]?.date, '2026-08-05');
+  assert.equal(String(events[0]?.date), '2026-08-05');
 });
 
 test('shiftDate crosses month and year boundaries', () => {
@@ -332,14 +332,14 @@ test('episode titles stay out of the summary', () => {
   assert.equal(events[0]?.episodeTitle, 'Ep 3');
 });
 
-const filmReleases = (date: string): Map<number, MovieRelease> =>
-  new Map([[300, { simkl_id: 300, title: 'Planned Film', date, releaseType: 3, runtime: '140m', url: 'https://simkl.com/movies/300' }]]);
+const filmReleases = (ymd: string): Map<number, MovieRelease> =>
+  new Map([[300, { simkl_id: 300, title: 'Planned Film', date: plainDateFrom(ymd), releaseType: 3, runtime: '140m', url: 'https://simkl.com/movies/300' }]]);
 
 test('plan-to-watch films are included by release date', () => {
   const events = join(calendars(), library, { timezone: 'Europe/London', now: NOW, movieReleases: filmReleases('2026-08-20') });
   assert.equal(events.length, 1);
   assert.equal(events[0]?.kind, 'movie');
-  assert.equal(events[0]?.date, '2026-08-20');
+  assert.equal(String(events[0]?.date), '2026-08-20');
   assert.equal(events[0]?.summary, 'Planned Film');
   assert.equal(events[0]?.detail, 'In cinemas');
 });
@@ -347,7 +347,7 @@ test('plan-to-watch films are included by release date', () => {
 test('films far beyond the 33-day calendar window still appear', () => {
   const events = join(calendars(), library, { timezone: 'Europe/London', now: NOW, movieReleases: filmReleases('2027-04-30') });
   assert.equal(events.length, 1);
-  assert.equal(events[0]?.date, '2027-04-30');
+  assert.equal(String(events[0]?.date), '2027-04-30');
 });
 
 test('films already released are dropped', () => {
@@ -364,7 +364,7 @@ test('events are deduplicated by uid and sorted by date', () => {
   const dup = tvEntry(100, 4, 3, '2026-08-15T20:00:00Z');
   const events = join(calendars([dup, dup, tvEntry(100, 4, 2, '2026-08-12T20:00:00Z')]), library, { timezone: 'Europe/London', now: NOW });
   assert.equal(events.length, 2);
-  assert.deepEqual(events.map((e) => e.date), ['2026-08-12', '2026-08-15']);
+  assert.deepEqual(events.map((e) => String(e.date)), ['2026-08-12', '2026-08-15']);
 });
 
 // Upstream data, several thousand entries per file, validated on arrival only
@@ -386,4 +386,50 @@ test('a malformed airdate skips its entry rather than aborting the render', () =
 test('an entry with no date at all is skipped the same way', () => {
   const cals = calendars([{ simkl_id: 100, date: '', finale_type: null } as never, tvEntry(100, 4, 3, '2026-08-15T20:00:00Z')]);
   assert.equal(join(cals, library, { timezone: 'Europe/London', now: NOW }).length, 1);
+});
+
+// --- the zone in the conversion --------------------------------------------
+
+/**
+ * The highest-risk conversion in the project, and until now the only one with
+ * no test: pinning the join to UTC broke nothing.
+ *
+ * An airdate is a UTC instant, and a US evening broadcast is stamped the
+ * following day in UTC — 20:30 in New York on the 13th is `02:30Z` on the 14th.
+ * Reading that as the 14th puts roughly a fifth of entries on the wrong day, and
+ * because the UID carries the date for entries with no episode number, it also
+ * changes their identity and duplicates them in every subscriber's calendar.
+ */
+test('an airdate lands on the local calendar day, not the UTC one', () => {
+  const lateNight = [tvEntry(100, 5, 1, '2026-08-14T02:30:00Z')];
+
+  const ny = join(calendars(lateNight), library, { timezone: 'America/New_York', now: NOW });
+  assert.equal(String(ny[0]?.date), '2026-08-13', '02:30Z is the previous evening in New York');
+
+  const utc = join(calendars(lateNight), library, { timezone: 'UTC', now: NOW });
+  assert.equal(String(utc[0]?.date), '2026-08-14', 'and the same instant is the 14th in UTC');
+});
+
+// East of UTC the shift goes the other way, so a zone that is merely ignored
+// rather than wrong would still pass the New York case alone.
+test('a zone ahead of UTC moves the date forward, not back', () => {
+  const evening = [tvEntry(100, 5, 2, '2026-08-14T23:30:00Z')];
+
+  assert.equal(String(join(calendars(evening), library, { timezone: 'Pacific/Auckland', now: NOW })[0]?.date), '2026-08-15');
+  assert.equal(String(join(calendars(evening), library, { timezone: 'UTC', now: NOW })[0]?.date), '2026-08-14');
+});
+
+// The grace cutoff is computed from the local date too, so a zone applied to the
+// entry but not to "today" would drop an entry that is still inside the window.
+test('the grace cutoff is measured in the same zone as the entries', () => {
+  // 02:00Z on the 10th is still the 9th in New York, so the local cutoff is the
+  // 8th where a UTC one would be the 9th. The entry is placed exactly between
+  // them: 01:00Z on the 9th is the evening of the 8th locally, so it survives a
+  // cutoff computed in the same zone and is dropped by one computed in UTC.
+  const now = new Date('2026-08-10T02:00:00Z');
+  const entries = [tvEntry(100, 5, 3, '2026-08-09T01:00:00Z')];
+
+  const events = join(calendars(entries), library, { timezone: 'America/New_York', now, graceDays: 1 });
+  assert.equal(events.length, 1, 'an entry on the cutoff day itself survives');
+  assert.equal(String(events[0]?.date), '2026-08-08');
 });

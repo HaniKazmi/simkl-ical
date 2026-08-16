@@ -2,11 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { renderIcs } from '../../src/feed/2-ics.ts';
 import type { FeedEvent } from '../../src/feed/1-join.ts';
+import { plainDateFrom } from '../../src/shared/dates.ts';
 
 const event: FeedEvent = {
   uid: 'simkl-3407-s11e03@simkl-ical',
   kind: 'tv',
-  date: '2026-08-10',
+  date: plainDateFrom('2026-08-10'),
   summary: 'Futurama – S11E03',
   episodeTitle: 'Our Flag Means Medical Coverage',
   detail: 'FOX',
@@ -112,7 +113,7 @@ test('an event with no url omits the URL property', () => {
  * of view until an event lands on the wrong day.
  */
 test('an all-day event renders as a bare DATE, with the exclusive end date', () => {
-  const ics = renderIcs([{ ...event, date: '2026-08-16' }]);
+  const ics = renderIcs([{ ...event, date: plainDateFrom('2026-08-16') }]);
   assert.match(ics, /^DTSTART;VALUE=DATE:20260816\r$/m);
   assert.match(ics, /^DTEND;VALUE=DATE:20260817\r$/m);
   assert.doesNotMatch(ics, /DTSTART[^\r]*T\d{6}/, 'never a DATE-TIME');
@@ -121,6 +122,6 @@ test('an all-day event renders as a bare DATE, with the exclusive end date', () 
 // Month and year rollover, which is where `Date.UTC(y, m - 1, d + 1)` and
 // `PlainDate.add({ days: 1 })` could disagree and nothing else would notice.
 test('the exclusive end rolls over the month and the year', () => {
-  assert.match(renderIcs([{ ...event, date: '2026-02-28' }]), /^DTEND;VALUE=DATE:20260301\r$/m);
-  assert.match(renderIcs([{ ...event, date: '2026-12-31' }]), /^DTEND;VALUE=DATE:20270101\r$/m);
+  assert.match(renderIcs([{ ...event, date: plainDateFrom('2026-02-28') }]), /^DTEND;VALUE=DATE:20260301\r$/m);
+  assert.match(renderIcs([{ ...event, date: plainDateFrom('2026-12-31') }]), /^DTEND;VALUE=DATE:20270101\r$/m);
 });

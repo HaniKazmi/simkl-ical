@@ -93,9 +93,11 @@ export const localDate = (iso: string | Date, timeZone: string): string | null =
 /**
  * Film release dates arrive from /movies/{id} already as plain YYYY-MM-DD in
  * the viewer's country, so there is no instant to convert and no timezone to
- * apply. This only guards against a full ISO timestamp sneaking through.
+ * apply. The slice only guards against a full ISO timestamp sneaking through;
+ * keeping it states that intent rather than leaning on the parser to reject the
+ * rest of the string.
  */
-export const releaseDate = (value: string): string => value.slice(0, 10);
+export const releaseDate = (value: string): Temporal.PlainDate => plainDateFrom(value.slice(0, 10));
 
 export const MS_PER_DAY = 86_400_000;
 
