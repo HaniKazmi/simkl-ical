@@ -4,7 +4,7 @@ import { Orchestrator } from '../src/orchestrator.ts';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { config } from '../src/shared/config.ts';
-import { ago, emptyCalendars, quiet, withTempDataDir } from './helpers.ts';
+import { ago, emptyCalendars, quiet, withFetch, withTempDataDir } from './helpers.ts';
 
 const rendered = () => {
   const state = new Orchestrator({ logger: quiet });
@@ -131,7 +131,15 @@ test('an unreadable token file degrades the feed rather than throwing', async ()
   await withTempDataDir(async (dir) => {
     await writeFile(join(dir, 'token.json'), '{ truncated');
     const state = new Orchestrator({ logger: quiet });
-    await state.refreshLibraryIfChanged();
+    // Wrapped even though `readToken` throws before any request: the guard is
+    // what makes that a property of the test rather than of the order two
+    // unrelated functions happen to run in.
+    await withFetch(
+      (url) => {
+        throw new Error(`no request should have been made, got ${url}`);
+      },
+      () => state.refreshLibraryIfChanged(),
+    );
     assert.ok(state.errors.library, 'the failure is recorded');
     assert.match(state.errors.library, /library:/);
   });

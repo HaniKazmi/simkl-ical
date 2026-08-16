@@ -24,6 +24,9 @@ config.retryBaseMs = 1;
 // lives in .env, config.ts loads it at import, and a test that forgot to
 // override would write to the real spreadsheet.
 config.sheetId = undefined;
+// Same guard, for the feed token: a server test that forgot `withConfig` would
+// otherwise authenticate against the live one and pass for the wrong reason.
+config.feedToken = undefined;
 config.sheetSyncMode = 'off';
 config.googleKeyBase64 = undefined;
 config.googleCredentialsExplicit = false;
