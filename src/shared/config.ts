@@ -124,9 +124,11 @@ export const buildConfig = (env: NodeJS.ProcessEnv): Config => ({
   // Read rather than repeated: SIMKL is told this in every request.
   appVersion: packageVersion(),
 
-  // The CDN files regenerate every 6h; polling at 3h with a conditional GET
-  // costs a 304 most of the time and halves worst-case staleness.
-  calendarRefreshMs: int(env.CALENDAR_REFRESH_MS, 3 * 60 * 60 * 1000, { min: 60_000 }),
+  // Matched to the CDN, which regenerates every 6h: asking more often mostly
+  // buys 304s and a re-merge of several MB, and asking less often means seeing
+  // only some regenerations. `/healthz` keys its staleness alarms off this, so
+  // raising it also raises how long a wedged render stays invisible.
+  calendarRefreshMs: int(env.CALENDAR_REFRESH_MS, 6 * 60 * 60 * 1000, { min: 60_000 }),
   // One tiny request that gates the five expensive library calls. Two hours:
   // list membership changes rarely, and a slightly stale feed is invisible next
   // to a calendar client that polls on its own schedule anyway.

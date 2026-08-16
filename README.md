@@ -81,7 +81,7 @@ Under Compose, the first two go in `simkl.secrets.env` and the rest are set dire
 | `GRACE_DAYS`          | `14`            | How long an aired episode stays in the feed. Capped at 90     |
 | `PORT`                | `3000`          | Port inside the container                                     |
 | `DATA_DIR`            | `/data`         | Holds only `token.json` and the last rendered `feed.ics`. `./data` outside Docker |
-| `CALENDAR_REFRESH_MS` | `10800000` (3h) | How often to re-read the airdate calendars                    |
+| `CALENDAR_REFRESH_MS` | `21600000` (6h) | How often to re-read the airdate calendars. Matches how often the CDN regenerates them |
 | `ACTIVITIES_POLL_MS`  | `7200000` (2h)  | How often to check your library for changes                   |
 | `MOVIE_REFRESH_MS`    | `86400000` (24h)| How often to re-read film release dates, which move without any library change |
 
@@ -289,10 +289,11 @@ A background loop renders the feed into memory; requests never trigger a fetch. 
 polling hard can't amplify into SIMKL traffic, and a SIMKL outage degrades to a stale feed
 rather than an empty one.
 
-Airdate calendars are re-read every 3 hours with a conditional `GET`. Your library is
-gated behind `/sync/activities`, checked every 2 hours: activities carries a timestamp per
-list, so only the lists that actually changed are refetched. It ignores `playback` and
-`rated_at`, neither of which can change the feed — otherwise a scrobbler reporting progress
+Airdate calendars are re-read every 6 hours with a conditional `GET`, matching how often the
+CDN regenerates them. Your library is gated behind `/sync/activities`, checked every 2 hours:
+activities carries a timestamp per list, so only the lists that actually changed are
+refetched. It ignores `playback` and `rated_at`, neither of which can change the feed —
+otherwise a scrobbler reporting progress
 would trigger a refetch that renders byte-identical output.
 
 Eleven lists are covered — watching, plan-to-watch, completed, hold and dropped for both shows
