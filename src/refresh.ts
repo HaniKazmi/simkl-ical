@@ -281,6 +281,7 @@ export class FeedState {
     // Whether anything the feed is built from moved. Declared out here because
     // the render below sits outside the try, and a failed poll must not claim it.
     let refetched = false;
+    let libraryFailed = false;
     try {
       // Inside the try: readToken only swallows ENOENT, so an unreadable
       // token.json must degrade the feed rather than escape to the timer.
@@ -331,13 +332,17 @@ export class FeedState {
       // contradicts what that field means.
       if (stale.length) this.libraryAt = new Date().toISOString();
     } catch (err) {
+      libraryFailed = true;
       // A revoked token must not empty the feed — keep serving the last render.
       const prefix = err instanceof SimklAuthError ? 'AUTH' : 'library';
       this.errors.library = `${prefix}: ${errorMessage(err)}`;
       this.log.error(
         err instanceof SimklAuthError
-          // The `--` matters: npm swallows a bare --force instead of passing it on.
-          ? 'SIMKL rejected the token. Re-run `npm run login -- --force`. Serving the last good feed.'
+          // A burst of uncached sync calls is answered with 401 user_token_failed
+          // rather than a 429, so this looks like a dead token and is usually a
+          // rate limit that clears on its own. Re-authorising fixes nothing the
+          // wait would not, so waiting is the advice.
+          ? 'SIMKL rejected the token. Usually a rate limit on uncached sync calls rather than a dead token — it clears by itself, so wait a few polls before re-running `npm run login -- --force`. Serving the last good feed.'
           : `library refresh failed: ${errorMessage(err)}`,
       );
     }
@@ -347,7 +352,11 @@ export class FeedState {
     // and rewrite an identical feed to disk; the calendar timer still renders
     // on its own schedule, so nothing goes stale.
     if (refetched) await this.safeRender();
-    await this.syncSheet();
+    // The sheet is built entirely from the library, so if the library refresh
+    // threw there is nothing new for the sync to see — and running it anyway
+    // means a full grid read and re-plan on every poll of a SIMKL outage, plus
+    // a REFUSED line in the log for each one.
+    if (!libraryFailed) await this.syncSheet();
   }
 
   /**

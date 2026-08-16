@@ -343,6 +343,35 @@ test('a sheet failure is never filed as a library error, and the feed still rend
   });
 });
 
+// The sheet is built entirely from the library, so a failed library refresh has
+// nothing new for it to see. Running it anyway meant a full grid read and
+// re-plan on every poll for the duration of a SIMKL outage — the quiet-poll
+// early return was skipped, because the try had already thrown past it.
+test('a failed library refresh skips the sheet sync entirely', async () => {
+  await withToken(async (state) => {
+    state.calendars = emptyCalendars();
+    let runs = 0;
+    state.sheetSync = {
+      lastRunAt: null,
+      lastStatus: 'idle',
+      frozen: null,
+      run: async () => {
+        runs += 1;
+        return { status: 'idle' as const, edits: 0, inserts: 0, lines: [], error: null, retry: false };
+      },
+    } as unknown as FeedState['sheetSync'];
+
+    await prime(state);
+    assert.equal(runs, 1, 'a healthy poll does sync the sheet');
+
+    await withFetch(() => new Response('upstream down', { status: 503 }), async () => {
+      await state.refreshLibraryIfChanged();
+    });
+    assert.ok(state.errors.library, 'the poll really did fail');
+    assert.equal(runs, 1, 'and the sheet was left alone');
+  });
+});
+
 test('a poll that fell through only to retry the sheet does not advance librarySyncedAt', async () => {
   await withToken(async (state) => {
     state.calendars = emptyCalendars();

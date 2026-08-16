@@ -294,6 +294,10 @@ test('run never rejects, however the sheet misbehaves', async () => {
         const result = await new SheetSync({ logger: quiet }).run(LIBRARY);
         assert.equal(result.status, 'failed');
         assert.match(result.error ?? '', /share the spreadsheet with the service account as Editor/);
+        // A wrong SHEET_ID or an unshared spreadsheet needs a human. Arming the
+        // retry would defeat the quiet-poll early return every two hours for a
+        // week; the error still reaches errors.sheet and /healthz each run.
+        assert.equal(result.retry, false);
       },
     ),
   );
@@ -484,6 +488,18 @@ test('a run that deferred a row asks for another poll', async () => {
       assert.equal(result.status, 'applied');
       assert.equal(result.inserts, 1, 'one row per run');
       assert.equal(result.retry, true, 'and the next poll is asked for');
+    }),
+  );
+
+  // Report mode never takes the first row either, so the deferral cannot drain
+  // and asking for another poll is an unbroken loop of full grid reads — in the
+  // default mode, on a sheet nobody has ever written to.
+  const reporting = server({ grid, episodes });
+  await withConfig({ sheetId: 'SID', sheetSyncMode: 'report', googleKeyBase64: CREDENTIAL }, () =>
+    withFetch(reporting.handler, async () => {
+      const result = await new SheetSync({ logger: quiet }).run(library);
+      assert.equal(result.status, 'reported');
+      assert.equal(result.retry, false, 'nothing a report can do would drain it');
     }),
   );
 });

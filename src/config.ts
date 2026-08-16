@@ -4,12 +4,15 @@ import { resolve } from 'node:path';
 
 // Node 20.6+ loads .env with --env-file, but doing it here keeps `node src/x.ts`
 // working without callers remembering the flag.
-if (!process.env.SIMKL_CLIENT_ID) {
-  try {
-    process.loadEnvFile(resolve(import.meta.dirname, '../.env'));
-  } catch {
-    // No .env — rely on real environment variables (the container case).
-  }
+//
+// Unconditional: `loadEnvFile` leaves anything already in the environment
+// alone, so there is nothing for a guard to protect. Gating it on
+// SIMKL_CLIENT_ID meant an environment that exported only that one variable
+// silently skipped the whole file, dropping FEED_TOKEN, SHEET_ID and TZ.
+try {
+  process.loadEnvFile(resolve(import.meta.dirname, '../.env'));
+} catch {
+  // No .env — rely on real environment variables (the container case).
 }
 
 /**
@@ -35,6 +38,14 @@ const oneOf = <T extends string>(value: string | undefined, allowed: readonly T[
   const candidate = value?.trim().toLowerCase();
   return allowed.find((a) => a === candidate) ?? fallback;
 };
+
+/**
+ * `~/x` → `$HOME/x`. A shell expands this before the process ever sees it, but
+ * a value read from `.env` or a compose file arrives verbatim — and
+ * `.env.example` suggests a `~/` path for the credential, which then failed
+ * with ENOENT once per sheet run.
+ */
+const expandHome = (path: string): string => (path === '~' || path.startsWith('~/') ? resolve(homedir(), path.slice(2)) : path);
 
 /**
  * The version from package.json, which the Dockerfile copies into the image
@@ -143,7 +154,7 @@ export const buildConfig = (env: NodeJS.ProcessEnv): Config => ({
   sheetMaxEdits: int(env.SHEET_MAX_EDITS, 30, { min: 1 }),
   sheetMaxRows: int(env.SHEET_MAX_ROWS, 20, { min: 1 }),
   googleKeyBase64: env.GOOGLE_SA_KEY_B64,
-  googleCredentialsPath: env.GOOGLE_APPLICATION_CREDENTIALS || resolve(homedir(), '.config/plot-device/sa.json'),
+  googleCredentialsPath: env.GOOGLE_APPLICATION_CREDENTIALS ? expandHome(env.GOOGLE_APPLICATION_CREDENTIALS) : resolve(homedir(), '.config/plot-device/sa.json'),
   googleCredentialsExplicit: Boolean(env.GOOGLE_APPLICATION_CREDENTIALS),
 });
 

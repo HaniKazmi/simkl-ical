@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { resolve } from 'node:path';
 import { buildConfig, config, requireClientId, requireValidTimezone, sheetSyncConfigured } from '../src/config.ts';
 import { withTimeout } from '../src/signals.ts';
 import { withConfig } from './helpers.ts';
@@ -55,6 +57,16 @@ test('an unset environment yields the documented defaults', () => {
   assert.equal(c.releaseCountry, 'GB');
   assert.equal(c.graceDays, 14);
   assert.equal(c.port, 3000);
+});
+
+// A shell expands `~` before the process sees it; a value read from .env or a
+// compose file arrives verbatim, and .env.example suggests exactly that path.
+test('a leading ~ in the credential path is expanded', () => {
+  const home = homedir();
+  assert.equal(buildConfig({ GOOGLE_APPLICATION_CREDENTIALS: '~/keys/sa.json' }).googleCredentialsPath, resolve(home, 'keys/sa.json'));
+  assert.equal(buildConfig({ GOOGLE_APPLICATION_CREDENTIALS: '~' }).googleCredentialsPath, home);
+  // Only a leading one, and only as a path segment.
+  assert.equal(buildConfig({ GOOGLE_APPLICATION_CREDENTIALS: '/etc/~/sa.json' }).googleCredentialsPath, '/etc/~/sa.json');
 });
 
 // SIMKL is told this in every request, so it must not drift from the package.
