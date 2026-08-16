@@ -50,8 +50,8 @@ Layering, downward only:
   with config-backed defaults rather than reading `config` mid-body, so it stays testable. The
   numbers are the pipeline position, so a directory listing is the pipeline — see AGENTS.md for
   both tables.
-- `src/server.ts` — Fastify, two routes, and genuinely no state of its own: it takes a structural
-  `{ ics, health }` rather than the orchestrator, so it cannot know how the service is composed.
+- `src/server.ts` — Fastify, two routes, and no state of its own: it reads `ics` and `health` off
+  the orchestrator and holds nothing between requests.
 
 ## No build step
 

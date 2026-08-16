@@ -160,8 +160,8 @@ Where a sheet run stopped is `SheetSyncStatus`, which `/healthz` reports as `she
   `userEnteredValue.formulaValue` distinguishes a formula, and a formula target must be refused
   unconditionally.
 
-`api/cdn.ts` keeps a module-level cache, re-exported through `feed/io/calendar.ts` so a test
-clears the one it actually uses; call `clearCache()` in tests that touch it, and
+`api/cdn.ts` keeps a module-level cache; call its `clearCache()` in tests that touch a calendar,
+and
 `clearTokenCache()` from `api/google/auth.ts` in tests that reach Google. `sheet/io/catalogue.ts`
 has no cache of its own — `SheetSync` retains catalogue results and decides when to re-read.
 

@@ -25,7 +25,7 @@ import type { EpisodeDetail, ShowDetail } from '../../api/simkl/types.ts';
 
 /**
  * No cache here, deliberately — the same division as `movies.ts`, where the
- * source fetches and `FeedState` decides when.
+ * source fetches and the caller decides when.
  *
  * `SheetSync` retains results across polls and knows which titles moved, so it
  * has strictly better information about when to refetch than a blind TTL does.
