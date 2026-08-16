@@ -11,7 +11,7 @@
  * correct write and a one-row misalignment.
  */
 
-import { type Grid } from './1-grid.ts';
+import type { Grid } from './1-grid.ts';
 import type { SheetPlan } from './3-plan.ts';
 import type { ExtendedValue, GridRange, SheetRequest } from '../api/google/types.ts';
 

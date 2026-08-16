@@ -113,6 +113,9 @@ export const jsonResponse = (body: unknown, { lastModified }: { lastModified?: s
     headers: lastModified ? { 'content-type': 'application/json', 'last-modified': lastModified } : { 'content-type': 'application/json' },
   });
 
+/** A complete, valid saved feed. `store.test.ts` contrasts truncations against it. */
+export const ICS = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR';
+
 /** A minimal but well-formed calendar file. */
 export const calendarFile = (calendar: unknown[] = [], metadata: Record<string, unknown> = {}) => ({ calendar, metadata });
 

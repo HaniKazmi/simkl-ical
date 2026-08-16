@@ -3,9 +3,7 @@ import assert from 'node:assert/strict';
 import { readdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { loadFeed, saveFeed } from '../../../src/feed/io/store.ts';
-import { withTempDataDir } from '../../helpers.ts';
-
-const ICS = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR';
+import { ICS, withTempDataDir } from '../../helpers.ts';
 
 test('a saved feed round-trips', async () => {
   await withTempDataDir(async () => {

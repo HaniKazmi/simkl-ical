@@ -11,10 +11,6 @@ import { localDate } from '../../shared/dates.ts';
 import { errorMessage } from '../../shared/errors.ts';
 import type { CalendarFile, CalendarType } from '../../api/simkl/types.ts';
 
-// Re-exported so a test that touches this module clears the cache it actually
-// uses, rather than having to know the transport sits one layer down.
-export { cachedKeys, clearCache } from '../../api/cdn.ts';
-
 const CDN_BASE = 'https://data.simkl.in/calendar/v2/';
 
 /**
@@ -172,19 +168,13 @@ export const fetchCalendar = async (
   // Rolling last so it wins on overlap; Promise.all preserves input order.
   const parts: Array<CalendarFile | null> = [...archives, rolling.data];
 
-  evictOutside([rollingKey(type), ...months.map((m) => archiveKey(type, m.year, m.month))], type);
+  // Drop cached files outside the current window: each retained month costs
+  // roughly 4 MB for the life of the process. Scoped to this type's keys — the
+  // other type's window is not ours to prune.
+  const wanted = new Set([rollingKey(type), ...months.map((m) => archiveKey(type, m.year, m.month))]);
+  evictCache((key) => !key.startsWith(`calendar-${type}`) || wanted.has(key));
 
   return { data: mergeCalendars(parts), stale: rolling.stale };
-};
-
-/**
- * Drop cached files outside the current window. The cache is keyed per archive
- * month, and each retained month costs roughly 4 MB for the life of the process.
- */
-const evictOutside = (keep: string[], type: CalendarType): void => {
-  const wanted = new Set(keep);
-  // Scoped to this type's keys: the other type's window is not ours to prune.
-  evictCache((key) => !key.startsWith(`calendar-${type}`) || wanted.has(key));
 };
 
 export type Calendars = Record<CalendarType, CalendarResult>;

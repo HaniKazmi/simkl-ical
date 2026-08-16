@@ -146,7 +146,7 @@ export class Orchestrator {
       feed.errors.calendar ?? (staleCalendars ? `the CDN has not answered since ${feed.calendarsFreshAt ?? 'startup'}` : null),
       feed.errors.render ??
         (feed.renderedAt === null ? 'nothing has been rendered yet' : staleRender ? `nothing has rendered since ${feed.renderedAt}` : null),
-    ].filter((p): p is string => p !== null);
+    ].filter((p) => p !== null);
 
     return {
       ok: feed.renderedAt !== null && !stalePoll && !staleCalendars && !staleRender && !feed.errors.render,
@@ -178,7 +178,7 @@ export class Orchestrator {
     return this.feed.hydrate(this.library, { signal: this.aborter.signal });
   }
 
-  refreshCalendars(): Promise<void> {
+  private refreshCalendars(): Promise<void> {
     return this.feed.refreshCalendars(this.library, { signal: this.aborter.signal });
   }
 

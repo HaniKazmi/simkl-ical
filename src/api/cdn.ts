@@ -45,7 +45,7 @@ export const evictCache = (keep: (key: string) => boolean): void => {
   }
 };
 
-export interface CdnOptions<T> {
+export interface CdnOptions {
   /**
    * Why this payload is unusable, or null if it is fine. Parseable is not
    * usable: a 200 carrying `{}` or an error object would otherwise replace a
@@ -62,7 +62,7 @@ export interface CdnOptions<T> {
  * conditional GET against the stored `Last-Modified` is the only way to tell
  * whether a regeneration has actually happened.
  */
-export const fetchCached = async <T>(url: string, key: string, { validate, signal }: CdnOptions<T> = {}): Promise<CdnResult<T>> => {
+export const fetchCached = async <T>(url: string, key: string, { validate, signal }: CdnOptions = {}): Promise<CdnResult<T>> => {
   const cached = (cache.get(key) as CachedFile<T> | undefined) ?? null;
   const headers: Record<string, string> = { 'User-Agent': `${config.appName}/${config.appVersion}` };
   if (cached?.lastModified) headers['If-Modified-Since'] = cached.lastModified;
@@ -97,7 +97,7 @@ export const fetchCached = async <T>(url: string, key: string, { validate, signa
   }
 
   const problem = validate?.(data);
-  if (problem !== null && problem !== undefined) return fallback(problem);
+  if (problem) return fallback(problem);
 
   const entry: CachedFile<T> = { data, lastModified: res.headers.get('last-modified') };
   cache.set(key, entry);

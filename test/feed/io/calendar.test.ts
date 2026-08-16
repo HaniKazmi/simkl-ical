@@ -7,9 +7,8 @@ import {
   mergeCalendars,
   fetchCalendar,
   fetchRolling,
-  cachedKeys,
-  clearCache,
 } from '../../../src/feed/io/calendar.ts';
+import { cachedKeys, clearCache } from '../../../src/api/cdn.ts';
 import type { CalendarFile } from '../../../src/api/simkl/types.ts';
 import { calendarFile, jsonResponse, withFetch } from '../../helpers.ts';
 
