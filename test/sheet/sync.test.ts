@@ -1,10 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { SheetSync } from '../../src/sheet/sync.ts';
 import { clearTokenCache } from '../../src/api/google/auth.ts';
 import type { CellData, SheetRequest } from '../../src/api/google/types.ts';
-import { cellOf, daysAgo, jsonResponse, libraryOf, quiet, recorder, sheetSnapshot, SHEET_HEADERS, withConfig, withFetch, type CellSpec, seasonRow, showRow } from '../helpers.ts';
+import { cellOf, daysAgo, jsonResponse, libraryOf, quiet, recorder, sheetSnapshot, SHEET_HEADERS, withConfig, withFetch, withTempDataDir, type CellSpec, seasonRow, showRow } from '../helpers.ts';
+import { clearSheetRuns, sheetRuns } from '../../src/sheet/io/journal.ts';
 
 const H = SHEET_HEADERS;
 
@@ -594,4 +597,44 @@ test('a run that deferred a row asks for another poll', async () => {
       assert.equal(result.retry, false, 'nothing a report can do would drain it');
     }),
   );
+});
+
+// The history exists so a restart does not erase what the sync did. `record()`
+// is the one choke point every terminal path funnels through, which is why the
+// append lives there rather than at six call sites.
+test('a run is recorded in the journal with what it planned', async () => {
+  await withTempDataDir(async () => {
+    clearSheetRuns();
+    try {
+      await run('apply', {}, (result) => {
+        assert.equal(result.status, 'applied');
+        const [recorded, ...rest] = sheetRuns();
+        assert.deepEqual(rest, [], 'one run, one record');
+        assert.equal(recorded?.status, 'applied');
+        assert.equal(recorded?.mode, 'apply');
+        assert.equal(recorded?.error, null);
+        assert.match(recorded?.edits[0]?.note ?? '', /Fargo S2: 3 -> 5 episodes/);
+        assert.equal(recorded?.edits[0]?.address, 'D4');
+      });
+    } finally {
+      clearSheetRuns();
+    }
+  });
+});
+
+// An install with no SHEET_ID must leave no trace on disk at all: the `off`
+// return in run() deliberately never reaches `record()`.
+test('an inert sync writes no journal', async () => {
+  await withTempDataDir(async (dir) => {
+    clearSheetRuns();
+    try {
+      await withConfig({ sheetSyncMode: 'off' }, async () => {
+        await new SheetSync({ logger: quiet }).run(LIBRARY);
+      });
+      assert.deepEqual(sheetRuns(), []);
+      await assert.rejects(readFile(join(dir, 'sheet-runs.json'), 'utf8'));
+    } finally {
+      clearSheetRuns();
+    }
+  });
 });

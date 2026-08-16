@@ -37,6 +37,7 @@ import { describePlan, planLookups, planRecord, planSync, type CatalogueStamp, t
 import { assertPlanSafe, UnsafePlanError } from './4-guard.ts';
 import { backupName, backupRequest, deleteRowRequests, deleteSheetRequest, isBackupTab, renameSheetRequest, repairName, restoreRequest, toRequests } from './5-requests.ts';
 import { verify, type Verification } from './6-verify.ts';
+import { appendSheetRun } from './io/journal.ts';
 
 /**
  * How old a snapshot may be when the write goes out. Past this the snapshot is
@@ -123,11 +124,11 @@ export class SheetSync {
     if (config.sheetSyncMode === 'off') return idle();
     if (this.frozen) {
       this.log.error(this.frozen);
-      return this.record(idle({ status: 'frozen', error: this.frozen }));
+      return await this.record(idle({ status: 'frozen', error: this.frozen }));
     }
 
     try {
-      return this.record(await this.cycle(library, signal));
+      return await this.record(await this.cycle(library, signal));
     } catch (err) {
       const message = errorMessage(err);
       this.log.error(`sheet sync failed: ${message}`);
@@ -141,13 +142,34 @@ export class SheetSync {
       // and recovers on its own. Without the retry it would not get one until
       // some list happened to move.
       const permanent = err instanceof SheetsAccessError && err.status !== 401;
-      return this.record(idle({ status: 'failed', error: message, retry: !permanent }));
+      return await this.record(idle({ status: 'failed', error: message, retry: !permanent }));
     }
   }
 
-  private record(result: SheetSyncResult): SheetSyncResult {
+  /**
+   * The one choke point every terminal path funnels through, which is why the
+   * journal append lives here rather than at six call sites. Awaited rather
+   * than fired and forgotten: the append cannot throw, and awaiting keeps a
+   * test's assertion about the file deterministic.
+   *
+   * The `sheetSyncMode === 'off'` return in `run()` deliberately does not come
+   * through here, so an inert install writes no file at all.
+   */
+  private async record(result: SheetSyncResult): Promise<SheetSyncResult> {
     this.lastRunAt = new Date().toISOString();
     this.lastStatus = result.status;
+    await appendSheetRun(
+      {
+        at: this.lastRunAt,
+        status: result.status,
+        mode: config.sheetSyncMode,
+        edits: result.plan.edits,
+        inserts: result.plan.inserts,
+        error: result.error,
+        repeats: 1,
+      },
+      { log: this.log },
+    );
     return result;
   }
 
