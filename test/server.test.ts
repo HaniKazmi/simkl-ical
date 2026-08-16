@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Writable } from 'node:stream';
 import { buildServer } from '../src/server.ts';
-import { FeedState } from '../src/refresh.ts';
+import { Orchestrator } from '../src/orchestrator.ts';
 import { quiet, withConfig } from './helpers.ts';
 
 const TOKEN = 'a'.repeat(48);
@@ -15,11 +15,11 @@ interface ServerCase {
 
 /** Build a server with a known feed token, restoring config afterwards. */
 const withServer = async (
-  fn: (app: ReturnType<typeof buildServer>, state: FeedState) => Promise<void>,
+  fn: (app: ReturnType<typeof buildServer>, state: Orchestrator) => Promise<void>,
   { token = TOKEN, logStream }: ServerCase = {},
 ): Promise<void> => {
   await withConfig({ feedToken: token ?? undefined }, async () => {
-    const state = new FeedState({ logger: quiet });
+    const state = new Orchestrator({ logger: quiet });
     const app = buildServer(state, { logger: Boolean(logStream), logStream });
     try {
       await fn(app, state);
@@ -36,7 +36,7 @@ test('the right token serves the feed as a calendar', async () => {
     assert.equal(res.headers['content-type'], 'text/calendar; charset=utf-8');
     assert.match(String(res.headers['content-disposition']), /filename="simkl\.ics"/);
     assert.equal(res.headers['cache-control'], 'private, no-store');
-    assert.equal(res.body, state.ics);
+    assert.equal(res.body, state.feed.ics);
   });
 });
 
@@ -112,8 +112,8 @@ test('healthz is 503 until a render has happened, and 200 after', async () => {
     assert.equal(before.statusCode, 503);
     assert.equal(before.json().ok, false);
 
-    state.renderedAt = new Date().toISOString();
-    state.calendarsFreshAt = new Date().toISOString();
+    state.feed.renderedAt = new Date().toISOString();
+    state.feed.calendarsFreshAt = new Date().toISOString();
     state.polledAt = new Date().toISOString();
 
     const after = await app.inject({ method: 'GET', url: '/healthz' });

@@ -1,20 +1,26 @@
+/**
+ * The running service: one poll driving two consumers.
+ *
+ * Owns the SIMKL library — the input both halves share — plus the timers, the
+ * abort controller and `/healthz`. Everything the feed needs lives in `Feed`;
+ * everything the spreadsheet needs lives in `SheetSync`. Neither knows about
+ * the other, and this file is the only thing that knows about both.
+ *
+ * **Requests never trigger a fetch**: a client polling hard cannot amplify into
+ * SIMKL traffic, and a SIMKL outage degrades to a stale feed rather than an
+ * empty one.
+ */
+
 import { config, sheetSyncConfigured } from './shared/config.ts';
 import { ageOf } from './shared/dates.ts';
 import { errorMessage } from './shared/errors.ts';
 import type { Logger } from './shared/logger.ts';
-import { SheetSync, type SheetSyncStatus } from './sheet/sync.ts';
+import { fetchLists, getActivities, listSignatures, pruneSuperseded, staleLists, LISTS } from './shared/library.ts';
 import { readToken } from './api/simkl/auth.ts';
 import { SimklAuthError } from './api/simkl/client.ts';
-import { anyStale, fetchAllCalendars, payloads, type Calendars } from './feed/io/calendar.ts';
-import { fetchLists, getActivities, listSignatures, pruneSuperseded, staleLists, LISTS } from './shared/library.ts';
-import { fetchMovieReleases, reconcileReleases } from './feed/io/movies.ts';
-import { join, idSet, type FeedEvent } from './feed/1-join.ts';
-import { renderIcs } from './feed/2-ics.ts';
-import { loadFeed, saveFeed } from './feed/io/store.ts';
-import type { Library, MovieRelease } from './api/simkl/types.ts';
-
-/** Shown as the calendar's name in every client. */
-const FEED_NAME = 'SIMKL – Upcoming';
+import type { Library } from './api/simkl/types.ts';
+import { Feed } from './feed/feed.ts';
+import { SheetSync, type SheetSyncStatus } from './sheet/sync.ts';
 
 export interface Health {
   ok: boolean;
@@ -56,32 +62,23 @@ export interface SubsystemErrors {
   sheet: string | null;
 }
 
-/**
- * Holds the rendered feed in memory. Requests never trigger a fetch: a client
- * polling hard cannot amplify into SIMKL traffic, and a SIMKL outage degrades
- * to a stale feed rather than an empty one.
- */
-export class FeedState {
+export interface OrchestratorErrors {
+  library: string | null;
+  sheet: string | null;
+}
+
+export class Orchestrator {
   log: Logger;
-  ics: string;
-  events: FeedEvent[] = [];
-  calendars: Calendars | null = null;
-  library: Library | null = null;
-  movieReleases = new Map<number, MovieRelease>();
-  listSignatures: Record<string, string> = {};
-  // calendarsAt advances on every attempt, including ones served from cache
-  // after a failure; only calendarsFreshAt means the CDN answered.
-  calendarsAt: string | null = null;
-  calendarsFreshAt: string | null = null;
-  libraryAt: string | null = null;
-  filmsResolvedAt: string | null = null;
-  polledAt: string | null = null;
-  renderedAt: string | null = null;
-  servingCached = false;
-  // One slot per subsystem: the two timers must not clear each other's failures.
-  errors: SubsystemErrors = { calendar: null, library: null, render: null, sheet: null };
+  /** The iCal half. Given the library per call; never holds its own copy. */
+  feed: Feed;
   /** Null unless a spreadsheet *and* a credential were both supplied. */
   sheetSync: SheetSync | null = null;
+  library: Library | null = null;
+  listSignatures: Record<string, string> = {};
+  libraryAt: string | null = null;
+  polledAt: string | null = null;
+  /** The two failures this layer owns; `Feed` holds the other two. */
+  errors: OrchestratorErrors = { library: null, sheet: null };
   /**
    * Whether the last sheet sync wants another go. A boolean, not an interval:
    * the sheet has no upstream clock of its own — everything it writes derives
@@ -90,15 +87,18 @@ export class FeedState {
    */
   sheetRetryPending = false;
   timers: NodeJS.Timeout[] = [];
-  /** Tail of the render chain; see safeRender. Never rejects. */
-  private rendering: Promise<void> = Promise.resolve();
   /** Cancels in-flight fetches on stop(). Every source call carries its signal. */
   private aborter = new AbortController();
 
   constructor({ logger = console as Logger }: { logger?: Logger } = {}) {
     this.log = logger;
-    this.ics = renderIcs([], { name: FEED_NAME });
+    this.feed = new Feed({ logger });
     if (sheetSyncConfigured()) this.sheetSync = new SheetSync({ logger });
+  }
+
+  /** The rendered feed. The one thing `server.ts` needs from this layer. */
+  get ics(): string {
+    return this.feed.ics;
   }
 
   /**
@@ -111,27 +111,37 @@ export class FeedState {
    * revoked.
    */
   get health(): Health {
+    const { feed } = this;
     const stalePoll = ageOf(this.polledAt) > config.activitiesPollMs * 3;
-    const staleCalendars = ageOf(this.calendarsFreshAt) > config.calendarRefreshMs * 3;
+    const staleCalendars = ageOf(feed.calendarsFreshAt) > config.calendarRefreshMs * 3;
     // A render happens on every calendar refresh, so an old renderedAt means
     // rendering has stopped even when nothing reported an error.
-    const staleRender = ageOf(this.renderedAt) > config.calendarRefreshMs * 3;
+    const staleRender = ageOf(feed.renderedAt) > config.calendarRefreshMs * 3;
+
+    // Composed from the two owners rather than read off one shared object, and
+    // read back below rather than reaching into them a second time.
+    const errors: SubsystemErrors = {
+      calendar: feed.errors.calendar,
+      library: this.errors.library,
+      render: feed.errors.render,
+      sheet: this.errors.sheet,
+    };
 
     return {
-      ok: this.renderedAt !== null && !stalePoll && !staleCalendars && !staleRender && !this.errors.render,
-      events: this.events.length,
-      calendarsRefreshedAt: this.calendarsAt,
-      calendarsFreshAt: this.calendarsFreshAt,
+      ok: feed.renderedAt !== null && !stalePoll && !staleCalendars && !staleRender && !errors.render,
+      events: feed.events.length,
+      calendarsRefreshedAt: feed.calendarsAt,
+      calendarsFreshAt: feed.calendarsFreshAt,
       librarySyncedAt: this.libraryAt,
       lastPolledAt: this.polledAt,
-      renderedAt: this.renderedAt,
-      servingCached: this.servingCached,
+      renderedAt: feed.renderedAt,
+      servingCached: feed.servingCached,
       stale: stalePoll || staleCalendars || staleRender || undefined,
       // A single headline value; `errors` carries the detail. Library problems
       // outrank calendar ones: a stale calendar still renders, a revoked token
       // eventually will not. The sheet sits last — it cannot affect the feed.
-      lastError: this.errors.library ?? this.errors.calendar ?? this.errors.render ?? this.errors.sheet ?? null,
-      errors: this.errors,
+      lastError: errors.library ?? errors.calendar ?? errors.render ?? errors.sheet ?? null,
+      errors,
       timezone: config.timezone,
       // Reported but deliberately excluded from `ok` above: /healthz is the
       // container healthcheck and the CI smoke test, and a frozen sheet sync
@@ -146,131 +156,30 @@ export class FeedState {
     };
   }
 
-  /**
-   * Render if both halves of the join are available, containing any failure in
-   * errors.render rather than the caller's slot, and persist what was produced.
-   *
-   * Serialised: both refresh timers end here and coincide every six hours at
-   * the default intervals, and overlapping runs would race on the save.
-   */
-  safeRender(): Promise<void> {
-    this.rendering = this.rendering.then(() => this.renderAndSave());
-    return this.rendering;
+  hydrate(): Promise<void> {
+    return this.feed.hydrate(this.library, { signal: this.aborter.signal });
   }
 
-  private async renderAndSave(): Promise<void> {
-    let rendered = false;
-    try {
-      rendered = this.render();
-    } catch (err) {
-      this.errors.render = errorMessage(err);
-      this.log.error(`render failed: ${errorMessage(err)}`);
-      return;
-    }
-    if (!rendered) return;
-
-    this.errors.render = null;
-    this.servingCached = false;
-    try {
-      await saveFeed(this.ics);
-    } catch (err) {
-      // Losing the saved copy only costs resilience at the next restart.
-      this.log.warn(`could not save the feed: ${errorMessage(err)}`);
-    }
+  refreshCalendars(): Promise<void> {
+    return this.feed.refreshCalendars(this.library, { signal: this.aborter.signal });
   }
 
   /**
-   * Returns whether a render happened. The feed is replaced only once both
-   * halves are present, so a partial refresh never overwrites a complete feed
-   * loaded from disk.
+   * A warm-up failure, filed where a render failure goes: it is the slot
+   * `/healthz` keys `ok` on, and the next successful render clears it. A method
+   * rather than a reach-through write, because the field has that invariant.
    */
-  render(): boolean {
-    if (!this.calendars || !this.library) return false;
-    this.events = join(payloads(this.calendars), this.library, { movieReleases: this.movieReleases });
-    this.ics = renderIcs(this.events, { name: FEED_NAME });
-    this.renderedAt = new Date().toISOString();
-    this.log.info(`rendered ${this.events.length} events`);
-    return true;
-  }
-
-  /**
-   * Serve the last feed on boot and keep serving it until a complete fresh one
-   * is rendered. Nothing else is restored, so no control state outlives the
-   * process.
-   */
-  async hydrate(): Promise<void> {
-    const saved = await loadFeed();
-    if (saved) {
-      this.ics = saved;
-      this.servingCached = true;
-      this.log.info('serving the last saved feed until a fresh one is ready');
-    }
-    await this.refreshCalendars();
-  }
-
-  async refreshCalendars(): Promise<void> {
-    try {
-      this.calendars = await fetchAllCalendars({
-        signal: this.aborter.signal,
-        log: (message) => this.log.warn(message),
-      });
-      this.calendarsAt = new Date().toISOString();
-
-      if (anyStale(this.calendars)) {
-        // Serving the cached copy is right; reporting it as fresh is not.
-        const since = this.calendarsFreshAt ?? 'startup';
-        this.errors.calendar = `serving cached calendars — the CDN has not answered since ${since}`;
-        this.log.warn(this.errors.calendar);
-      } else {
-        this.calendarsFreshAt = this.calendarsAt;
-        this.errors.calendar = null;
-      }
-    } catch (err) {
-      this.errors.calendar = errorMessage(err);
-      this.log.error(`calendar refresh failed: ${errorMessage(err)}`);
-    }
-    // Rendering is guarded separately: a bad timezone throws from inside the
-    // join, and that must degrade the feed rather than take the process down.
-    await this.safeRender();
-  }
-
-  /**
-   * Whether the cached film release dates have aged out. Nothing in the library
-   * moves when a studio shifts a release, so list changes alone would never
-   * trigger a re-read; daily is cheap, as the lookups are CDN-cached by id.
-   */
-  private filmsDue(): boolean {
-    return ageOf(this.filmsResolvedAt) > config.movieRefreshMs;
-  }
-
-  /**
-   * Re-read every plan-to-watch film's release date. Returns whether the round
-   * was complete — an incomplete one must leave the list stale so it retries.
-   */
-  private async resolveFilms(): Promise<boolean> {
-    const filmIds = [...idSet(this.library?.movies_plantowatch)];
-    const lookups = await fetchMovieReleases(filmIds, { signal: this.aborter.signal });
-    const { releases, complete } = reconcileReleases(this.movieReleases, filmIds, lookups);
-    this.movieReleases = releases;
-
-    // Only on a complete round: stamping regardless would defer the retry by a
-    // full movieRefreshMs, and the caller's signature rollback cannot help when
-    // the round was triggered by age rather than by a list change.
-    if (complete) this.filmsResolvedAt = new Date().toISOString();
-
-    if (filmIds.length) this.log.info(`resolved ${lookups.releases.size}/${filmIds.length} film release dates`);
-    if (lookups.unavailable.length) {
-      this.log.warn(`${lookups.unavailable.length} film ids are gone upstream: ${lookups.unavailable.join(', ')}`);
-    }
-    return complete;
+  noteStartupFailure(message: string): void {
+    this.feed.errors.render = `startup: ${message}`;
   }
 
   /**
    * One cheap request decides whether the library calls are worth making.
    * The signature covers only the timestamps that can move an item between
-   * lists — see listSignature in sources/library.ts.
+   * lists — see listSignature in shared/library.ts.
    */
   async refreshLibraryIfChanged({ force = false }: { force?: boolean } = {}): Promise<void> {
+    const { signal } = this.aborter;
     // Whether anything the feed is built from moved. Declared out here because
     // the render below sits outside the try, and a failed poll must not claim it.
     let refetched = false;
@@ -285,15 +194,16 @@ export class FeedState {
         return;
       }
 
-      const activities = await getActivities(token, { signal: this.aborter.signal });
+      const activities = await getActivities(token, { signal });
       this.polledAt = new Date().toISOString();
       // The poll itself succeeded, so any earlier failure is now history.
       this.errors.library = null;
 
       const stale = force || !this.library ? LISTS : staleLists(activities, this.listSignatures);
       // Film dates age out on their own schedule, so a poll with no list
-      // changes still has work to do once a day.
-      const filmsDue = force || this.filmsDue();
+      // changes still has work to do once a day. Read once: the second read
+      // would come after `resolveFilms` had stamped `filmsResolvedAt`.
+      const filmsDue = force || this.feed.filmsDue();
       // The retry term is a boolean, and false when the sync is unconfigured,
       // so a quiet poll still makes exactly one request.
       if (!stale.length && !filmsDue && !this.sheetRetryPending) return;
@@ -302,17 +212,24 @@ export class FeedState {
       if (stale.length) {
         this.log.info(`refetching ${stale.length}/${LISTS.length} lists: ${stale.map((l) => l.key).join(', ')}`);
         const library: Library = this.library ?? {};
-        Object.assign(library, await fetchLists(token, stale, { signal: this.aborter.signal }));
+        Object.assign(library, await fetchLists(token, stale, { signal }));
         // Which lists are fresh is known here and nowhere else, and it is the
         // only thing that can tell a stale copy of a moved title from the
         // current one — see pruneSuperseded.
+        //
+        // This *reassigns* `this.library`, so every read of it below must stay
+        // where it is. Hoisting one to the top of the method would hand the feed
+        // the pre-fetch library: a feed one poll behind, intermittently, and
+        // only when a list moved.
         this.library = pruneSuperseded(library, stale);
       }
 
       // Re-read when the film list changed, and otherwise once a day. Marking
       // an episode watched must not drag eleven film lookups along with it.
       const filmsComplete =
-        stale.some((l) => l.key === 'movies_plantowatch') || filmsDue ? await this.resolveFilms() : true;
+        stale.some((l) => l.key === 'movies_plantowatch') || filmsDue
+          ? await this.feed.resolveFilms(this.library, { signal })
+          : true;
 
       const signatures = listSignatures(activities);
       if (!filmsComplete) {
@@ -347,7 +264,7 @@ export class FeedState {
     // fell through purely to retry the sheet would otherwise re-join, re-render
     // and rewrite an identical feed to disk; the calendar timer still renders
     // on its own schedule, so nothing goes stale.
-    if (refetched) await this.safeRender();
+    if (refetched) await this.feed.safeRender(this.library);
     // The sheet is built entirely from the library, so if the library refresh
     // threw there is nothing new for the sync to see — and running it anyway
     // means a full grid read and re-plan on every poll of a SIMKL outage, plus
@@ -373,7 +290,10 @@ export class FeedState {
   /**
    * Run `job` on an interval, skipping a tick while the previous one is still
    * going. setInterval does not wait, and a refresh slower than its own period
-   * would interleave writes to library, movieReleases and listSignatures.
+   * would interleave writes to `library` and `listSignatures` here, and to
+   * `movieReleases` and `filmsResolvedAt` on the feed — a cross-object
+   * invariant now, held by the fact that the library timer is the sole writer
+   * of all four.
    */
   private schedule(name: string, job: () => Promise<void>, everyMs: number): void {
     let running = false;
@@ -401,6 +321,9 @@ export class FeedState {
   /**
    * Stop refreshing and cancel anything in flight — a calendar refresh can be
    * several MB into a fetch, and shutdown should not wait for it.
+   *
+   * The abort does not reach a render already queued on `Feed`; that would need
+   * `await this.feed.settled()`, which nothing has wanted yet.
    */
   stop(): void {
     for (const t of this.timers) clearInterval(t);
