@@ -292,6 +292,11 @@ export class Orchestrator {
       // and no second literal to keep in step with this one.
       const gate: GateOutcome = { changed, pull: full ? 'full' : changed ? 'delta' : 'none', removals, updated: 0, removed: 0 };
       this.lastGate = gate;
+      // Records that arrived new or under a different status, as opposed to
+      // every record the delta carried. The feed reads membership and nothing
+      // else, so this is what tells it whether there is anything to re-render —
+      // and marking an episode watched moves `updated` without moving this.
+      let reshaped = 0;
       // The retry term is a boolean, and false when the sync is unconfigured,
       // so a quiet poll still makes exactly one request.
       if (!full && !changed && !removals && !filmsDue && !this.sheetRetryPending) return;
@@ -308,6 +313,7 @@ export class Orchestrator {
         this.log.info('pulling the whole library');
         this.library = toLibrary(await fetchAllItems(token, { signal }));
         gate.updated = this.library.size;
+        reshaped = this.library.size;
         // A full pull *is* the membership set, so removals need no second call.
         this.removalSignature = removalsAt;
         this.syncedAll = activities.all ?? null;
@@ -319,7 +325,7 @@ export class Orchestrator {
         // would otherwise never be asked for again. The merge is an idempotent
         // upsert, so the overlap costs a re-sent record and nothing else.
         const dateFrom = deltaFrom(this.syncedAll);
-        ({ library: this.library, updated: gate.updated } = mergeDelta(
+        ({ library: this.library, updated: gate.updated, reshaped } = mergeDelta(
           this.library!,
           await fetchAllItems(token, { dateFrom, signal }),
         ));
@@ -347,7 +353,10 @@ export class Orchestrator {
         }
       }
 
-      shouldRender = gate.updated > 0 || gate.removed > 0 || filmsDue;
+      // Deliberately not `gate.updated`: watching an episode rewrites a record
+      // the feed cannot see any of, so rendering on it re-joins to the identical
+      // event set and rewrites the file for a fresh DTSTAMP and nothing else.
+      shouldRender = reshaped > 0 || gate.removed > 0 || filmsDue;
 
       // Re-read when the film list changed, and otherwise when one comes into
       // range. Marking an episode watched must not drag every film lookup along.
@@ -355,7 +364,9 @@ export class Orchestrator {
       // A failed lookup needs no flag here: it does not refresh that film's
       // stamp, so `filmsDue` is already true on the next poll for exactly the
       // films that failed.
-      if (gate.updated > 0 || filmsDue) {
+      // Same reasoning: a film enters or leaves plan-to-watch by changing
+      // status, never by a watch count moving.
+      if (reshaped > 0 || filmsDue) {
         const complete = await this.feed.resolveFilms(this.library, { signal });
         if (!complete) this.log.warn('some film lookups failed; will retry on the next poll');
       }

@@ -105,6 +105,59 @@ const library: Library = new Map([
 /** The library with one record replaced, which is what a delta merge does. */
 const withEntry = (base: Library, [id, value]: [number, LibraryEntry]): Library => new Map(base).set(id, value);
 
+// --- what the feed is allowed to depend on ---------------------------------
+//
+// The feed answers "what airs next for the things you follow". Whether you have
+// watched any of it is the sheet's question, not this one — and the poll runs
+// on every episode you mark, so a feed that varied with watch progress would
+// re-render and rewrite itself all day to produce the same bytes.
+
+/** Everything a watched episode rewrites on a record, and none of it is status. */
+const watched = (item: LibraryItem, count: number): LibraryItem => ({
+  ...item,
+  last_watched: `S01E${String(count).padStart(2, '0')}`,
+  next_to_watch: `S01E${String(count + 1).padStart(2, '0')}`,
+  last_watched_at: `2026-08-${String(count).padStart(2, '0')}T20:00:00Z`,
+  watched_episodes_count: count,
+  total_episodes_count: 24,
+  seasons: [{ number: 1, episodes: Array.from({ length: count }, (_, i) => ({ number: i + 1, watched_at: '2026-08-01T20:00:00Z' })) }],
+});
+
+test('watch progress does not change the feed', () => {
+  const cals = calendars([tvEntry(100, 4, 3, '2026-08-15T20:00:00Z'), tvEntry(100, 4, 4, '2026-08-22T20:00:00Z')]);
+  const at = (count: number) =>
+    join(cals, withEntry(library, [100, { type: 'shows', item: watched(show(100, 'Watched Show'), count) }]), {
+      timezone: 'Europe/London',
+      now: NOW,
+    });
+
+  assert.deepEqual(at(12), at(1), 'eleven more episodes watched, same feed');
+  assert.ok(at(1).length > 0, 'and it is not vacuously empty');
+});
+
+// SIMKL marks an ongoing show completed the moment you catch up, and back to
+// watching when the next episode drops — so this pair moves constantly. Both
+// mean "still following it", so the feed must not be able to tell them apart.
+test('a move between watching and completed does not change the feed', () => {
+  const cals = calendars([tvEntry(100, 4, 3, '2026-08-15T20:00:00Z')]);
+  const as = (status: string) =>
+    join(cals, withEntry(library, entry('shows', show(100, 'Watched Show'), status)), { timezone: 'Europe/London', now: NOW });
+
+  assert.deepEqual(as('completed'), as('watching'));
+  assert.ok(as('watching').length > 0);
+});
+
+// A record with no `status` at all is still a title we hold — the reason the
+// airing rule is negative rather than positive.
+test('a record carrying no status is treated as still followed', () => {
+  const cals = calendars([tvEntry(100, 4, 3, '2026-08-15T20:00:00Z')]);
+  const stateless = join(cals, withEntry(library, [100, { type: 'shows', item: show(100, 'Watched Show') }]), {
+    timezone: 'Europe/London',
+    now: NOW,
+  });
+  assert.deepEqual(stateless, join(cals, library, { timezone: 'Europe/London', now: NOW }));
+});
+
 test('watching shows contribute every upcoming episode', () => {
   const events = join(calendars([tvEntry(100, 4, 3, '2026-08-15T20:00:00Z')]), library, { timezone: 'Europe/London', now: NOW });
   assert.equal(events.length, 1);
