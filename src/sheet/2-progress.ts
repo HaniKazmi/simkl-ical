@@ -1,5 +1,7 @@
 /**
- * What SIMKL says was watched, reduced to the shape the planner needs. Pure.
+ * INDEX — what SIMKL says was watched, reduced to the shape the planner
+ * needs. Pure, and the other half of PARSE: `1-grid.ts` reads the spreadsheet,
+ * this reads the library, and `3-plan.ts` needs both.
  *
  * Two sources, answering two different questions. The library says what was
  * *watched* and never what *exists*; `/tv/episodes/{id}` says what exists and

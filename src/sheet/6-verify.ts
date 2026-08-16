@@ -1,5 +1,8 @@
 /**
- * Did the write do exactly what the plan said, and nothing else? Pure.
+ * VERIFY — did the write do exactly what the plan said, and nothing else? Pure.
+ *
+ * Last of READ → PARSE → PLAN → GUARD → BUILD → APPLY → **VERIFY**, and what
+ * decides whether the rollback in `sync.ts` runs.
  *
  * The comparison is on `userEnteredValue`, never `effectiveValue`. Writing a
  * season's `Episode` recalculates five formulas on the show row above it, so
@@ -13,10 +16,10 @@
  */
 
 import { errorMessage } from '../shared/errors.ts';
-import { a1, isFormulaValue, parseGrid, sameValue, type Grid, type HeaderName } from './grid.ts';
-import type { CellEdit, RowInsert, SheetPlan } from './plan.ts';
+import { a1, isFormulaValue, parseGrid, sameValue, type Grid, type HeaderName } from './1-grid.ts';
+import type { CellEdit, RowInsert, SheetPlan } from './3-plan.ts';
 import type { CellData, ExtendedValue } from '../api/google/types.ts';
-import type { SheetSnapshot } from '../sources/sheet.ts';
+import type { SheetSnapshot } from './io/spreadsheet.ts';
 
 /**
  * The columns the diff inspects. Scoping it to the edit columns alone would

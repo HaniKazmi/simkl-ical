@@ -1,28 +1,41 @@
 /**
  * The write protocol. The only thing in the project that writes to the sheet.
  *
- * READ → PLAN → GUARD → FRESH → APPLY → VERIFY → ROLLBACK → FROZEN, in that
- * order, with the whole cycle inside one poll so that what was planned and what
- * was written describe the same grid.
+ * It runs the numbered modules beside it, in their number order, with the whole
+ * cycle inside one poll so that what was planned and what was written describe
+ * the same grid:
+ *
+ *   READ      io/spreadsheet.ts, io/catalogue.ts
+ *   PARSE     1-grid.ts, 2-progress.ts
+ *   PLAN      3-plan.ts
+ *   GUARD     4-guard.ts        — nothing is built until this passes
+ *   FRESH     a snapshot older than 120s restarts the cycle from the READ
+ *   BUILD     5-requests.ts
+ *   APPLY     io/spreadsheet.ts
+ *   VERIFY    6-verify.ts
+ *   ROLLBACK  5-requests.ts again, in separate batches
+ *   FROZEN    no further writes this process
  *
  * `run()` never rejects: it is called from the refresh path, where nothing may
  * be fatal. Failures land in the returned result and, through it, in
  * `errors.sheet` and `/healthz`.
  */
 
-import { backoffMs, sleep } from './api/backoff.ts';
-import { config } from './shared/config.ts';
-import { errorMessage } from './shared/errors.ts';
-import { parseGrid, type Grid } from './sheet/grid.ts';
-import { describePlan, planLookups, planSync, type CatalogueStamp, type CatalogueView, type SheetPlan, type TitleCatalogue } from './sheet/plan.ts';
-import { indexLibrary, seasonShapes, type TitleProgress } from './sheet/progress.ts';
-import { assertPlanSafe, backupName, backupRequest, deleteRowRequests, deleteSheetRequest, isBackupTab, renameSheetRequest, repairName, restoreRequest, toRequests, UnsafePlanError } from './sheet/safety.ts';
-import { SheetsAccessError } from './api/google/client.ts';
-import { verify, type Verification } from './sheet/verify.ts';
-import { applyRequests, listSheets, readSnapshot, type SheetSnapshot } from './sources/sheet.ts';
-import { fetchCatalogue } from './sources/shows.ts';
-import type { Logger } from './shared/logger.ts';
-import type { Library } from './api/simkl/types.ts';
+import { backoffMs, sleep } from '../api/backoff.ts';
+import { config } from '../shared/config.ts';
+import { errorMessage } from '../shared/errors.ts';
+import type { Logger } from '../shared/logger.ts';
+import { SheetsAccessError } from '../api/google/client.ts';
+import type { Library } from '../api/simkl/types.ts';
+// The steps, in the order this file runs them.
+import { applyRequests, listSheets, readSnapshot, type SheetSnapshot } from './io/spreadsheet.ts';
+import { fetchCatalogue } from './io/catalogue.ts';
+import { parseGrid, type Grid } from './1-grid.ts';
+import { indexLibrary, seasonShapes, type TitleProgress } from './2-progress.ts';
+import { describePlan, planLookups, planSync, type CatalogueStamp, type CatalogueView, type SheetPlan, type TitleCatalogue } from './3-plan.ts';
+import { assertPlanSafe, UnsafePlanError } from './4-guard.ts';
+import { backupName, backupRequest, deleteRowRequests, deleteSheetRequest, isBackupTab, renameSheetRequest, repairName, restoreRequest, toRequests } from './5-requests.ts';
+import { verify, type Verification } from './6-verify.ts';
 
 /**
  * How old a snapshot may be when the write goes out. Past this the snapshot is

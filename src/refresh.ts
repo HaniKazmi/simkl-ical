@@ -2,7 +2,7 @@ import { config, sheetSyncConfigured } from './shared/config.ts';
 import { ageOf } from './shared/dates.ts';
 import { errorMessage } from './shared/errors.ts';
 import type { Logger } from './shared/logger.ts';
-import { SheetSync, type SheetSyncStatus } from './sheet-sync.ts';
+import { SheetSync, type SheetSyncStatus } from './sheet/sync.ts';
 import { readToken } from './api/simkl/auth.ts';
 import { SimklAuthError } from './api/simkl/client.ts';
 import { anyStale, fetchAllCalendars, payloads, type Calendars } from './feed/io/calendar.ts';

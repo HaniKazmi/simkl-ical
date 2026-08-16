@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseGrid } from '../src/sheet/grid.ts';
-import { deriveStatus, needsLookup, planLookups, planSync, statusSource, type CatalogueView, type TitleCatalogue } from '../src/sheet/plan.ts';
-import { dateSerial, indexLibrary, seasonShapes } from '../src/sheet/progress.ts';
-import type { EpisodeDetail, ShowDetail } from '../src/api/simkl/types.ts';
-import { daysAgo, libraryItem, sheetSnapshot, SHEET_HEADERS, type CellSpec, type ItemSpec, seasonRow, showRow } from './helpers.ts';
+import { parseGrid } from '../../src/sheet/1-grid.ts';
+import { deriveStatus, needsLookup, planLookups, planSync, statusSource, type CatalogueView, type TitleCatalogue } from '../../src/sheet/3-plan.ts';
+import { dateSerial, indexLibrary, seasonShapes } from '../../src/sheet/2-progress.ts';
+import type { EpisodeDetail, ShowDetail } from '../../src/api/simkl/types.ts';
+import { daysAgo, libraryItem, sheetSnapshot, SHEET_HEADERS, type CellSpec, type ItemSpec, seasonRow, showRow } from '../helpers.ts';
 
 const H = SHEET_HEADERS;
 const TZ = 'Europe/London';

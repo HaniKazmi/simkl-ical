@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { a1, parseGrid, type HeaderName } from '../src/sheet/grid.ts';
-import { shiftRow, verify } from '../src/sheet/verify.ts';
-import type { CellEdit, SheetPlan } from '../src/sheet/plan.ts';
-import { cellOf, sheetSnapshot, SHEET_HEADERS, type CellSpec, seasonRow, showRow } from './helpers.ts';
+import { a1, parseGrid, type HeaderName } from '../../src/sheet/1-grid.ts';
+import { shiftRow, verify } from '../../src/sheet/6-verify.ts';
+import type { CellEdit, SheetPlan } from '../../src/sheet/3-plan.ts';
+import { cellOf, sheetSnapshot, SHEET_HEADERS, type CellSpec, seasonRow, showRow } from '../helpers.ts';
 
 const H = SHEET_HEADERS;
 
