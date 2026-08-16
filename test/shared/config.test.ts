@@ -79,12 +79,28 @@ test('the reported version matches package.json', async () => {
 
 // `signal ?? AbortSignal.timeout(ms)` reads as a default but is an override,
 // dropping the timeout whenever a caller passes a signal.
-// Awaited on the signal itself rather than slept past: a fixed margin against
-// a real timer is the classic once-a-quarter flake on a loaded runner.
+/**
+ * Resolve when the signal aborts, rather than sleeping past a deadline: a fixed
+ * margin against a real timer is the classic loaded-runner flake.
+ *
+ * The keep-alive timer is not the deadline. `AbortSignal.timeout` does not hold
+ * the event loop open, so awaiting its abort event alone lets the loop drain and
+ * the runner cancels the pending test. This holds it open until the signal
+ * fires; if the generous ceiling wins instead, the assertion that follows fails
+ * on `aborted` being false rather than passing by luck.
+ */
 const aborted = (signal: AbortSignal): Promise<void> =>
   new Promise((resolve) => {
     if (signal.aborted) return resolve();
-    signal.addEventListener('abort', () => resolve(), { once: true });
+    const keepAlive = setTimeout(resolve, 5_000);
+    signal.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(keepAlive);
+        resolve();
+      },
+      { once: true },
+    );
   });
 
 test('a caller signal does not disable the request timeout', async () => {
