@@ -28,6 +28,13 @@ export interface CdnResult<T> extends CachedFile<T> {
    * tell an outage from a quiet CDN. A 304 is not stale: the CDN answered.
    */
   stale: boolean;
+  /**
+   * The CDN answered 304 — it has not regenerated since the copy in hand.
+   * `stale` cannot answer this: it is false for both a 304 and a fresh body,
+   * which is the same value for "nothing changed" and "everything did". False
+   * on a cached copy served after a failure, where the CDN said nothing at all.
+   */
+  notModified: boolean;
 }
 
 const cache = new Map<string, CachedFile<unknown>>();
@@ -70,7 +77,7 @@ export const fetchCached = async <T>(url: string, key: string, { validate, signa
   // Stale data beats no data, so every failure below serves the cache when
   // there is one — flagged stale rather than passing as a success.
   const fallback = (reason: string): CdnResult<T> => {
-    if (cached) return { ...cached, stale: true };
+    if (cached) return { ...cached, stale: true, notModified: false };
     throw new Error(`${url} ${reason}`);
   };
 
@@ -85,7 +92,7 @@ export const fetchCached = async <T>(url: string, key: string, { validate, signa
     return fallback(`could not be fetched: ${errorMessage(err)}`);
   }
 
-  if (res.status === 304 && cached) return { ...cached, stale: false };
+  if (res.status === 304 && cached) return { ...cached, stale: false, notModified: true };
   if (!res.ok) return fallback(`returned ${res.status}`);
 
   let data: T;
@@ -101,5 +108,5 @@ export const fetchCached = async <T>(url: string, key: string, { validate, signa
 
   const entry: CachedFile<T> = { data, lastModified: res.headers.get('last-modified') };
   cache.set(key, entry);
-  return { ...entry, stale: false };
+  return { ...entry, stale: false, notModified: false };
 };

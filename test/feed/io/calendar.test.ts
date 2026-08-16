@@ -180,10 +180,14 @@ test('a 304 is fresh, not stale — the CDN answered', async () => {
   await withFetch(
     () => (++calls === 1 ? jsonResponse(GOOD, { lastModified: 'Sat, 01 Aug 2026 00:00:00 GMT' }) : new Response(null, { status: 304 })),
     async () => {
-      await fetchRolling('tv');
+      const first = await fetchRolling('tv');
+      assert.equal(first.notModified, false, 'a body is not a 304');
       const cached = await fetchRolling('tv');
       assert.equal(cached.stale, false);
       assert.equal(cached.data.calendar.length, 1);
+      // `stale` is false for both a 304 and a fresh body, so on its own it
+      // cannot say whether the CDN regenerated. This is what separates them.
+      assert.equal(cached.notModified, true);
     },
   );
 });
@@ -275,6 +279,22 @@ test('an unavailable archive is reported rather than swallowed', async () => {
       assert.equal(merged.calendar.length, 1, 'the rolling file still carries the feed');
       assert.equal(stale, false, 'a failed archive is not rolling-file staleness');
       assert.ok(logged.some((l) => /archive .* unavailable/.test(l)), logged.join('\n'));
+    },
+  );
+});
+
+// Three outcomes that `stale` alone reduces to two: a fresh body and a 304 are
+// both "not stale", and a cache served after a failure must not read as "the
+// CDN said nothing changed" — it said nothing at all.
+test('a cache served after a failure is stale and not a 304', async () => {
+  let calls = 0;
+  await withFetch(
+    () => (++calls === 1 ? jsonResponse(GOOD, { lastModified: 'Sat, 01 Aug 2026 00:00:00 GMT' }) : Promise.reject(new Error('offline'))),
+    async () => {
+      await fetchRolling('tv');
+      const fallback = await fetchRolling('tv');
+      assert.equal(fallback.stale, true);
+      assert.equal(fallback.notModified, false, 'the CDN never answered, so it never said "unchanged"');
     },
   );
 });

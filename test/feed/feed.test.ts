@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadFeed, saveFeed } from '../../src/feed/io/store.ts';
 import { Feed } from '../../src/feed/feed.ts';
+import { clearCache } from '../../src/api/cdn.ts';
 import { Orchestrator } from '../../src/orchestrator.ts';
 import { calendarFile, emptyCalendars, ICS, jsonResponse, libraryOf, quiet, withFetch, withTempDataDir } from '../helpers.ts';
 
@@ -156,4 +157,29 @@ test('a complete render replaces the feed and persists it', async () => {
     assert.equal(feed.servingCached, false);
     assert.equal(await loadFeed(), feed.ics, 'and was written to disk');
   });
+});
+
+// The interval is matched to how often the CDN regenerates, so a poll that
+// answers 304 everywhere did no work — the normal, healthy outcome, and worth
+// being able to say rather than infer from a timestamp that always advances.
+test('calendarsChangedAt advances on new bytes and holds across a 304', async () => {
+  clearCache();
+  const feed = new Feed({ logger: quiet });
+  // By phase, not by call count: one refresh fetches both types plus every
+  // archive the grace window reaches, so a counted cutoff lands mid-refresh.
+  let unchanged = false;
+  await withFetch(
+    () => (unchanged ? new Response(null, { status: 304 }) : jsonResponse(calendarFile(), { lastModified: 'Sat, 01 Aug 2026 00:00:00 GMT' })),
+    async () => {
+      await feed.refreshCalendars({ signal: live });
+      const changed = feed.calendarsChangedAt;
+      assert.ok(changed, 'the first fetch brought bytes');
+
+      unchanged = true;
+      await feed.refreshCalendars({ signal: live });
+      assert.equal(feed.calendarsChangedAt, changed, 'a 304 changed nothing');
+      assert.equal(feed.errors.calendar, null, 'and a 304 is not an error');
+    },
+  );
+  clearCache();
 });

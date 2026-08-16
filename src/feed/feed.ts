@@ -14,7 +14,7 @@ import { errorMessage } from '../shared/errors.ts';
 import type { Logger } from '../shared/logger.ts';
 import type { Library, MovieRelease } from '../api/simkl/types.ts';
 // The pipeline, in the order this file runs it.
-import { anyStale, fetchAllCalendars, payloads, type Calendars } from './io/calendar.ts';
+import { anyChanged, anyStale, fetchAllCalendars, payloads, type Calendars } from './io/calendar.ts';
 import { fetchMovieReleases, reconcileReleases } from './io/movies.ts';
 import { join, idSet, type FeedEvent } from './1-join.ts';
 import { renderIcs } from './2-ics.ts';
@@ -38,6 +38,14 @@ export class Feed {
   // after a failure; only calendarsFreshAt means the CDN answered.
   calendarsAt: string | null = null;
   calendarsFreshAt: string | null = null;
+  /**
+   * When the CDN last sent new bytes, as opposed to answering 304. The interval
+   * is matched to how often the CDN regenerates, so "it answered" and "it
+   * changed" are different questions and only this one says a refresh did any
+   * work. Deliberately not in `/healthz`: a run of 304s is the healthy outcome,
+   * not a condition, and the payload's key order is pinned.
+   */
+  calendarsChangedAt: string | null = null;
   filmsResolvedAt: string | null = null;
   renderedAt: string | null = null;
   servingCached = false;
@@ -88,6 +96,8 @@ export class Feed {
     try {
       this.calendars = await fetchAllCalendars({ signal, log: (message) => this.log.warn(message) });
       this.calendarsAt = new Date().toISOString();
+
+      if (anyChanged(this.calendars)) this.calendarsChangedAt = this.calendarsAt;
 
       if (anyStale(this.calendars)) {
         // Serving the cached copy is right; reporting it as fresh is not.
