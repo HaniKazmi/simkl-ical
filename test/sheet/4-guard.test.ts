@@ -147,3 +147,21 @@ test('an insert may only fill its own whitelist, and only its own row', () => {
 test('a target beyond the end of the snapshot is refused', () => {
   refuses(planOf([{ ...cell(3, 'Episode', { numberValue: 8 }), row: 99, address: a1(99, grid.columns.Episode), previous: undefined }]), /outside the snapshot/);
 });
+
+// The one-row-per-run rule is an invariant, not a budget, and the guard is its
+// only enforcement: plan indices are pre-write while `insertDimension` requests
+// apply cumulatively, so a second insert lands a row above where it was planned
+// and `verify` — which makes the same unshifted assumption — disagrees with the
+// sheet in a different way again. The planner emits one; nothing proved the
+// guard is the backstop if it ever emitted two.
+test('two inserts in one batch are refused however well-formed each is', () => {
+  refuses(planOf([], [insertAt(4, 2), insertAt(9, 3, 'Veep')]), /2 inserts in one batch/);
+});
+
+test('two inserts are refused even for the same show', () => {
+  refuses(planOf([], [insertAt(4, 2), insertAt(5, 3)]), /inserts in one batch/);
+});
+
+test('one insert alongside edits is still allowed', () => {
+  assert.doesNotThrow(() => assertPlanSafe(planOf([cell(3, 'Episode', { numberValue: 9 })], [insertAt(4, 2)]), grid));
+});
