@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { Writable } from 'node:stream';
 import { buildServer } from '../src/server.ts';
 import { Orchestrator } from '../src/orchestrator.ts';
+import { config } from '../src/shared/config.ts';
 import { quiet, withConfig } from './helpers.ts';
 
 const TOKEN = 'a'.repeat(48);
@@ -126,11 +127,53 @@ test('healthz is 503 until a render has happened, and 200 after', async () => {
   });
 });
 
-test('healthz needs no token and leaks no credential', async () => {
+test('healthz needs no token', async () => {
   await withServer(async (app) => {
-    const body = (await app.inject({ method: 'GET', url: '/healthz' })).body;
-    assert.ok(!body.includes(TOKEN), 'the feed token must not appear in health');
-    assert.ok(!body.includes('client'), 'nor anything client-id shaped');
+    assert.equal((await app.inject({ method: 'GET', url: '/healthz' })).statusCode, 503);
+  });
+});
+
+// A container healthcheck is a contract, and the key set is the contract: CI
+// parses this body, and so does anything an operator has pointed at it. tsc
+// checks the keys exist but never their order, and `JSON.stringify` emits
+// insertion order, so only an assertion holds the shape.
+test('the healthz body is state and shape, in a stable order', async () => {
+  await withServer(async (app) => {
+    const body = (await app.inject({ method: 'GET', url: '/healthz' })).json();
+
+    assert.deepEqual(Object.keys(body), ['ok', 'timezone', 'library', 'feed', 'sheet']);
+    assert.deepEqual(Object.keys(body.library), ['polledAt', 'syncedAt']);
+    assert.deepEqual(Object.keys(body.feed), ['events', 'renderedAt', 'servingCached', 'calendars']);
+    assert.deepEqual(Object.keys(body.feed.calendars), ['attemptedAt', 'freshAt']);
+    assert.deepEqual(Object.keys(body.sheet), ['configured', 'mode', 'status', 'lastRunAt', 'frozen']);
+  });
+});
+
+// The diagnostic half is the status page's job: a healthcheck that carries
+// free text carries wording that changes, in a body a machine parses.
+test('the healthz body carries no free-text diagnostics', async () => {
+  await withServer(async (app, state) => {
+    state.errors.library = 'AUTH: SIMKL rejected the token';
+    state.errors.sheet = 'the spreadsheet is not shared with the service account';
+    state.feed.errors.render = 'render blew up';
+
+    const response = await app.inject({ method: 'GET', url: '/healthz' });
+    const body = response.body;
+
+    assert.doesNotMatch(body, /SIMKL rejected/);
+    assert.doesNotMatch(body, /not shared/);
+    assert.doesNotMatch(body, /blew up/);
+    assert.doesNotMatch(body, /problems/);
+    // Still the container's answer, and still driven by the same field.
+    assert.equal(response.statusCode, 503);
+    assert.equal(response.json().ok, false);
+  });
+});
+
+// CI parses this one by name.
+test('healthz still carries the timezone', async () => {
+  await withServer(async (app) => {
+    assert.equal((await app.inject({ method: 'GET', url: '/healthz' })).json().timezone, config.timezone);
   });
 });
 
