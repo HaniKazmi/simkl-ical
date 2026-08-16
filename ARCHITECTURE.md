@@ -95,8 +95,12 @@ so a poll where nothing moved costs exactly **one request** — the gate itself.
 off it, and they answer different questions. `librarySignature` is the five status timestamps across
 all three categories, and it decides whether to pull; `playback` and `rated_at` are deliberately
 excluded, or a scrobbler reporting progress would pull a delta that renders byte-identical output.
-`removalSignature` is `removed_from_list` per category, and it gates the membership pull on its own,
-because a removal moves that timestamp and produces no delta record at all.
+`removalStamps` is `removed_from_list` per category, and `movedRemovals` names the ones that moved —
+a removal moves that timestamp and produces no delta record at all, so the pull is gated on it. Which
+category moved also decides what may be deleted: an empty category is omitted from the response, so a
+payload that lost one is the same bytes as a category the user emptied, and only a category that
+reported a removal is reconciled against. A response that would still drop most of such a category is
+refused and answered with a full pull, which is authoritative where the diff can only guess.
 
 `activities.all` is neither of those. It is the **watermark** — what goes back out as `date_from` —
 and it rolls `playback` up with everything else, which is exactly why it cannot also be the trigger.

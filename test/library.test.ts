@@ -12,6 +12,7 @@ import {
   removalStamps,
   retainOnly,
   toLibrary,
+  watermarkOf,
 } from '../src/library.ts';
 import { libraryItem } from './helpers.ts';
 import type { Activities, AllItemsResponse, SyncType } from '../src/api/simkl/types.ts';
@@ -444,4 +445,23 @@ test('the decision carries what the caller must store', () => {
   const decision = evaluateGate(after, held());
   assert.equal(decision.signature, librarySignature(after));
   assert.deepEqual(decision.stamps, removalStamps(after));
+});
+
+// --- The watermark ---------------------------------------------------------
+
+test('the roll-up is the watermark when SIMKL sends one', () => {
+  assert.equal(watermarkOf(activities()), '2026-08-10T11:52:03Z');
+});
+
+// A local stamp would depend on this container's clock agreeing with SIMKL's,
+// and would freeze at that moment for as long as the roll-up stayed absent.
+test('with no roll-up the newest timestamp in the payload stands in', () => {
+  const undated = { ...activities(), all: undefined };
+  undated.tv_shows.watching = '2026-08-12T09:00:00Z';
+  assert.equal(watermarkOf(undated), '2026-08-12T09:00:00Z');
+});
+
+test('a payload with no timestamps at all has no watermark to offer', () => {
+  assert.equal(watermarkOf({ tv_shows: {}, anime: {}, movies: {} }), null);
+  assert.equal(watermarkOf(null), null);
 });

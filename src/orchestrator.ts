@@ -16,7 +16,7 @@ import { buildHealth, type Health } from './health.ts';
 import { errorMessage } from './shared/errors.ts';
 import type { Logger } from './shared/logger.ts';
 import { fetchAllItems, fetchMembership, getActivities } from './api/simkl/lists.ts';
-import { deltaFrom, evaluateGate, membershipIds, mergeDelta, retainOnly, toLibrary } from './library.ts';
+import { deltaFrom, evaluateGate, membershipIds, mergeDelta, retainOnly, toLibrary, watermarkOf } from './library.ts';
 import { readToken } from './api/simkl/auth.ts';
 import { SimklAuthError } from './api/simkl/client.ts';
 import type { SyncType } from './api/simkl/types.ts';
@@ -252,11 +252,12 @@ export class Orchestrator {
         this.removalAt = stamps;
         this.resyncPending = false;
         // Never back to null. `full` is partly `!this.syncedAll`, so a null
-        // watermark makes the next poll full too, and the one after that —
-        // the whole library every half hour, which is the burst SIMKL answers
-        // with `401 user_token_failed`. A local stamp is safe because the
-        // delta asks from a second behind it.
-        this.syncedAll = activities.all ?? this.syncedAll ?? new Date().toISOString();
+        // watermark makes the next poll full too, and the one after that — the
+        // whole library every half hour, which is the burst SIMKL answers with
+        // `401 user_token_failed`. The clock is the last resort and only
+        // reachable on an account with no activity of any kind, where an empty
+        // library means there is nothing for a slightly wrong instant to miss.
+        this.syncedAll = watermarkOf(activities) ?? this.syncedAll ?? new Date().toISOString();
         this.librarySignature = signature;
       } else if (changed) {
         // A second behind the watermark, because `date_from` is compared
@@ -270,7 +271,7 @@ export class Orchestrator {
           await fetchAllItems(token, { dateFrom, signal }),
         ));
         this.log.info(`${gate.updated} ${gate.updated === 1 ? 'record' : 'records'} changed since ${dateFrom}`);
-        this.syncedAll = activities.all ?? this.syncedAll;
+        this.syncedAll = watermarkOf(activities) ?? this.syncedAll;
         this.librarySignature = signature;
       }
 

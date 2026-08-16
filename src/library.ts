@@ -88,6 +88,29 @@ export const removalStamps = (activities: Activities | null | undefined): Record
     }),
   ) as Record<SyncType, string>;
 
+/**
+ * The watermark to send as `date_from`, from the payload rather than the clock.
+ *
+ * `activities.all` is the roll-up and is what SIMKL means us to send back. When
+ * it is absent the newest timestamp anywhere in the payload says the same thing
+ * — still a server instant, still monotonic, still comparable against the times
+ * the items carry. Preferring the local clock instead would be none of those:
+ * it depends on this container agreeing with SIMKL's clock, and if `all` never
+ * returns it freezes at whatever the clock said once, so every later delta
+ * re-asks for everything since that moment.
+ *
+ * Null only for a payload carrying no timestamps at all, which is a brand-new
+ * account — nothing has happened, so there is nothing a watermark could miss.
+ */
+export const watermarkOf = (activities: Activities | null | undefined): string | null => {
+  if (activities?.all) return activities.all;
+  const stamps = TYPES.flatMap((type) => Object.values((activities?.[ACTIVITY_CATEGORY[type]] ?? {}) as CategoryActivity)).filter(
+    (at): at is string => typeof at === 'string' && at.length > 0,
+  );
+  // ISO instants at a fixed offset, so lexical order is chronological.
+  return stamps.length ? stamps.reduce((newest, at) => (at > newest ? at : newest)) : null;
+};
+
 /** The categories whose removal stamp has moved since the ones held. */
 export const movedRemovals = (
   previous: Record<SyncType, string>,

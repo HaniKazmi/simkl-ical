@@ -76,7 +76,15 @@ export class Feed {
    * process.
    */
   async hydrate(library: Library | null, { signal }: { signal: AbortSignal }): Promise<void> {
-    const saved = await loadFeed();
+    // Contained here rather than allowed to unwind. `loadFeed` distinguishes a
+    // missing file from an unreadable one so the second is visible, but visible
+    // is the whole point of it — escaping would skip the calendar fetch, the
+    // render and the first library poll below it, leaving the service to wait
+    // out a full timer interval over a file it only ever reads as a fallback.
+    const saved = await loadFeed().catch((err: unknown) => {
+      this.log.warn(`could not read the saved feed, starting from empty: ${errorMessage(err)}`);
+      return null;
+    });
     if (saved) {
       this.ics = saved;
       this.servingCached = true;

@@ -658,3 +658,46 @@ test('one unusable Episode cell does not stop the other rows', () => {
   // The whole point: this plan passes the guard rather than being refused.
   assert.doesNotThrow(() => assertPlanSafe(result, grid));
 });
+
+// A hand-maintained file can end up with two rows for one season — a paste that
+// duplicated a row, or a split someone abandoned. One title's progress cannot
+// say which to advance, so both would take the same count: the same number
+// written twice, and only one of them rolling up into the show row.
+test('two rows describing one season are both skipped, not both written', () => {
+  const { plan } = scenario({
+    rows: [show('Fargo', 'Watching', 100), season(1, 2, null), season(1, 2, null)],
+    items: [{ id: 100, status: 'watching', seasons: { 1: watched(3) }, watched: 3, total: 10 }],
+    episodes: { 100: eps(1, 10) },
+  });
+  const result = plan();
+
+  assert.deepEqual(result.edits.filter((e) => e.field === 'Episode'), []);
+  assert.ok(
+    result.skipped.some((line) => /more than one row describes this season/.test(line)),
+    `expected a skip naming the clash, got ${JSON.stringify(result.skipped)}`,
+  );
+});
+
+// The same clash written the other way: one row names the block's id outright
+// and the other inherits it. Both resolve to the same title and season.
+test('an explicit id and an inherited one are the same claim', () => {
+  const { plan } = scenario({
+    rows: [show('Fargo', 'Watching', 100), season(1, 2, null, 100), season(1, 2, null)],
+    items: [{ id: 100, status: 'watching', seasons: { 1: watched(3) }, watched: 3, total: 10 }],
+    episodes: { 100: eps(1, 10) },
+  });
+  assert.deepEqual(plan().edits.filter((e) => e.field === 'Episode'), []);
+});
+
+// And the shape that is *not* a clash: an anime block whose rows each carry
+// their own SIMKL id has one season 1 per title.
+test('separate titles each with a season 1 are not a clash', () => {
+  const { plan } = scenario({
+    rows: [show('Some Anime', 'Watching'), season(1, 2, null, 200), season(1, 2, null, 300)],
+    items: [
+      { id: 200, status: 'watching', seasons: { 1: watched(5) }, watched: 5, total: 12 },
+      { id: 300, status: 'watching', seasons: { 1: watched(4) }, watched: 4, total: 12 },
+    ],
+  });
+  assert.equal(plan().edits.filter((e) => e.field === 'Episode').length, 2, 'both advance');
+});

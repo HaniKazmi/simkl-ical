@@ -51,17 +51,23 @@ export interface SafetyLimits {
   maxEdits?: number;
   maxRows?: number;
   now?: Date;
+  /**
+   * The zone the `End` bound is computed in, and it must be the one `planSync`
+   * used: the serials it writes are local dates, so a guard bounding them in a
+   * different zone rejects or accepts a day either side of the right answer.
+   */
+  timezone?: string;
 }
 
 export const assertPlanSafe = (
   plan: SheetPlan,
   grid: Grid,
-  { maxEdits = config.sheetMaxEdits, maxRows = config.sheetMaxRows, now = new Date() }: SafetyLimits = {},
+  { maxEdits = config.sheetMaxEdits, maxRows = config.sheetMaxRows, now = new Date(), timezone = config.timezone }: SafetyLimits = {},
 ): void => {
   // Tomorrow, in the viewer's zone. The slice would be a UTC date, which is a
   // day out for a fifth of the clock — and the +1 day here would absorb it,
   // making the bound quietly two days wide instead of one.
-  const maxSerial = dateSerial(shiftDate(localDateOf(now, config.timezone), 1));
+  const maxSerial = dateSerial(shiftDate(localDateOf(now, timezone), 1));
   const showRows = new Set(grid.blocks.map((b) => b.row));
   const seasonRows = new Map(grid.blocks.flatMap((b) => b.seasons.map((s) => [s.row, s] as const)));
 
