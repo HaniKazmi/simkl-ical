@@ -181,7 +181,7 @@ export const sheetSnapshot = (rows: CellSpec[][], { sheetId = 1, columnCount }: 
   rowCount: rows.length,
   columnCount: columnCount ?? Math.max(...rows.map((r) => r.length)),
   rows: rows.map((row) => row.map(cellOf)),
-  readAt: Date.now(),
+  readAtMono: performance.now(),
 });
 
 /**
