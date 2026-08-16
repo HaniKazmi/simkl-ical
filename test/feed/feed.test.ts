@@ -3,16 +3,13 @@ import assert from 'node:assert/strict';
 import { loadFeed, saveFeed } from '../../src/feed/io/store.ts';
 import { Feed } from '../../src/feed/feed.ts';
 import { Orchestrator } from '../../src/orchestrator.ts';
-import { calendarFile, emptyCalendars, jsonResponse, quiet, withFetch, withTempDataDir } from '../helpers.ts';
-import type { Library } from '../../src/api/simkl/types.ts';
-
-const ICS = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR';
+import { calendarFile, emptyCalendars, ICS, jsonResponse, libraryOf, quiet, withFetch, withTempDataDir } from '../helpers.ts';
 
 /** Every fetch a Feed makes carries a signal; nothing here cancels. */
-const live = () => new AbortController().signal;
+const live = new AbortController().signal;
 
 /** Enough of a library for the join to run. Passed in — Feed never holds one. */
-const LIBRARY: Library = { shows_watching: {} };
+const LIBRARY = libraryOf();
 
 // safeRender is the only caller in production, and both timers reach it.
 test('overlapping renders are serialised rather than racing', async () => {
@@ -39,7 +36,7 @@ test('the saved feed is served on boot', async () => {
     await withFetch(
       () => jsonResponse(calendarFile()),
       async () => {
-        await feed.hydrate(null, { signal: live() });
+        await feed.hydrate(null, { signal: live });
       },
     );
 
@@ -55,7 +52,7 @@ test('hydrating warms the calendars but renders nothing without a library', asyn
     await withFetch(
       () => jsonResponse(calendarFile()),
       async (calls) => {
-        await feed.hydrate(null, { signal: live() });
+        await feed.hydrate(null, { signal: live });
         assert.ok(calls.length > 0, 'hydrate must fetch the calendars');
       },
     );
@@ -86,7 +83,7 @@ test('with nothing saved, boot serves the empty calendar rather than failing', a
     await withFetch(
       () => jsonResponse(calendarFile()),
       async () => {
-        await feed.hydrate(null, { signal: live() });
+        await feed.hydrate(null, { signal: live });
       },
     );
     assert.equal(feed.servingCached, false);
