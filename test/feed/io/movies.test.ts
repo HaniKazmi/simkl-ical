@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { FILM_HORIZON_DAYS, fetchMovieReleases, filmDue, pickReleaseDate, reconcileReleases } from '../../../src/feed/io/movies.ts';
 import { releaseLabel } from '../../../src/feed/1-join.ts';
-import type { MovieDetail, MovieRelease } from '../../../src/api/simkl/types.ts';
+import type { MovieDetail } from '../../../src/api/simkl/types.ts';
+import type { MovieRelease } from '../../../src/feed/io/movies.ts';
 import { jsonResponse, withFetch } from '../../helpers.ts';
 
 // Shape taken from a real /movies/2242503 response. Note `released` is two days

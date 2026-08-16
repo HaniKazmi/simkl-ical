@@ -14,7 +14,8 @@ import { MS_PER_DAY } from '../src/shared/dates.ts';
 import type { Calendars } from '../src/feed/io/calendar.ts';
 import type { SheetSnapshot } from '../src/sheet/io/spreadsheet.ts';
 import type { CellData } from '../src/api/google/types.ts';
-import type { CalendarEntry, CalendarFile, Library, LibraryItem, ShowMetadata, SyncType } from '../src/api/simkl/types.ts';
+import type { CalendarEntry, CalendarFile, LibraryItem, ShowMetadata, SyncType } from '../src/api/simkl/types.ts';
+import type { Library } from '../src/library.ts';
 
 // Here rather than per file, for the same reason: a file that forgets these
 // reaches the real API, or sleeps 15s per retry path.

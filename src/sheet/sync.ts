@@ -27,7 +27,7 @@ import { config } from '../shared/config.ts';
 import { errorMessage } from '../shared/errors.ts';
 import type { Logger } from '../shared/logger.ts';
 import { SheetsAccessError } from '../api/google/client.ts';
-import type { Library } from '../api/simkl/types.ts';
+import type { Library } from '../library.ts';
 // The steps, in the order this file runs them.
 import { applyRequests, listSheets, readSnapshot, type SheetSnapshot } from './io/spreadsheet.ts';
 import { fetchCatalogue } from './io/catalogue.ts';

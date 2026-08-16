@@ -20,7 +20,8 @@
 
 import { localDate, MS_PER_DAY, parseYmd } from '../shared/dates.ts';
 import { itemStatus } from '../api/simkl/item.ts';
-import type { EpisodeDetail, Library, LibraryItem } from '../api/simkl/types.ts';
+import type { EpisodeDetail, LibraryItem } from '../api/simkl/types.ts';
+import type { Library } from '../library.ts';
 
 // --- Timestamps ------------------------------------------------------------
 

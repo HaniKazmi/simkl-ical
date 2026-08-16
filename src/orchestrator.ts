@@ -19,7 +19,8 @@ import { fetchAllItems, fetchMembership, getActivities } from './api/simkl/lists
 import { deltaFrom, librarySignature, membershipIds, mergeDelta, movedRemovals, removalStamps, retainOnly, toLibrary } from './library.ts';
 import { readToken } from './api/simkl/auth.ts';
 import { SimklAuthError } from './api/simkl/client.ts';
-import type { Library, SyncType } from './api/simkl/types.ts';
+import type { SyncType } from './api/simkl/types.ts';
+import type { Library } from './library.ts';
 import { Feed } from './feed/feed.ts';
 import { SheetSync } from './sheet/sync.ts';
 
