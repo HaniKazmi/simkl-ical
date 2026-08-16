@@ -106,8 +106,10 @@ export const exchangeToken = async (key: ServiceAccountKey, { signal }: { signal
     throw new Error(`Google token exchange failed (${response.status}): ${body.error_description ?? JSON.stringify(body)}`);
   }
   // Google says an hour today. Taking it from the response rather than assuming
-  // means a shorter-lived token cannot be served past its expiry, which costs a
-  // failed poll each cycle before the 401 handler clears the cache.
+  // means a shorter-lived token is never served past its expiry. Note what the
+  // margin does at the short end: anything at or under five minutes is written
+  // to the cache and then never read, so every request re-signs rather than
+  // serving something already stale.
   const expiresIn = typeof body.expires_in === 'number' && body.expires_in > 0 ? body.expires_in : 3600;
   return { token: body.access_token, expiresIn };
 };

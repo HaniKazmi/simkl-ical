@@ -123,7 +123,7 @@ two on a cold start.
 
 ## Where the code lives
 
-Four buckets — `shared/`, `api/`, `feed/`, `sheet/` — so the folder a file is in answers two
+Five buckets — `shared/`, `api/`, `feed/`, `sheet/`, `status/` — so the folder a file is in answers two
 questions: which half of the project needs it, and is it transport or business logic. Each half is
 an `io/` shell around a pure core numbered in pipeline order, so a directory listing is the flow
 above. AGENTS.md has the file-by-file map; layering runs downward only.
@@ -176,7 +176,8 @@ exactly what differs between them.
   read only by the status page. *Nothing in `src/` may read it to decide what to do*: not to skip a
   run, not to arm a retry, not to remember a freeze. No control state outlives the process, so a
   restart still resyncs everything, because no decision consults it. The delta watermark is held the
-  same way — in memory only — so a restart is a cold start, and a cold start is two requests.
+  same way — in memory only — so a restart is a cold start: two library requests, plus one
+  `/movies/{id}` per plan-to-watch film.
 - **Every numeric setting is clamped** rather than validated fatally: a running feed beats a
   container that will not boot.
 

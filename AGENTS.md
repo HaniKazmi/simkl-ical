@@ -105,10 +105,12 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   `raw()` is reserved for the stylesheet. The safe-HTML brand is a module-private `Symbol` because a
   `{ html: string }` duck type is forgeable by any object with that key — including one parsed out of
   `sheet-runs.json`, which the page renders verbatim. That file is the only one to audit for this.
-- **The status page renders `sheetName`, never `sheetId`, and never the feed token.** This repo is
-  public and the spreadsheet's only protection is its Drive sharing staying Restricted. The token is
-  already in the page's URL, so the page loads nothing off-origin and sends `Referrer-Policy:
-  no-referrer` — an external asset would carry the token out in a `Referer` header.
+- **The status page loads nothing off-origin, and sends `Referrer-Policy: no-referrer`.** The feed
+  token is in the page's own URL, so any external asset — a font, a CDN script, an image — would
+  carry it to a third party in a `Referer` header. That is the live concern, and it is about who
+  else sees the token rather than about the page showing it: the logs, `/healthz` and this page are
+  all trusted surfaces, and printing the token or the spreadsheet id in them is fine. The page
+  renders the tab *name* because that is what a reader can act on, not because the id is a secret.
 - **`sheet-runs.json` is observational, never control.** Nothing may read it to decide behaviour, so
   a corrupt or deleted history cannot change what the sync does. See ARCHITECTURE.md.
 - **Tests must not reach the network, the real `./data`, or the real spreadsheet.** Use `withFetch`,
@@ -133,7 +135,7 @@ needs it**, and **is it transport or business logic**.
 | `src/api/` | Every HTTP client, and no domain rules. `backoff.ts`, `cdn.ts`, `simkl/`, `google/` |
 | `src/feed/` | iCal only |
 | `src/sheet/` | Google Sheet sync only |
-| `src/status/` | The HTML status page. Reads both halves and is read by none |
+| `src/status/` | The HTML status page. Reads both halves; `server.ts` is its only reader |
 
 `src/status/` is a **layer**, not a fourth peer: it sits above both halves and below `server.ts`,
 may read from either, and names `Orchestrator` as a *type only*. **Nothing in `feed/`, `sheet/`,
@@ -238,10 +240,12 @@ the image. 22.18 is the real floor — code using a newer API typechecks green a
 and then crashes on the documented minimum, which is why the matrix pins it rather than testing
 only `lts`.
 
-The smoke test runs the built image and asserts `/healthz` answers with parseable JSON, a wrong
-feed token gets a 404, and the right one returns something starting `BEGIN:VCALENDAR`. It expects
-`503` there: nothing has been rendered without a token, and "the container is up" is the only claim
-being made.
+The smoke test runs the built image and asserts `/healthz` answers with parseable JSON, that a wrong
+feed token gets a 404 and the right one returns something starting `BEGIN:VCALENDAR`, and the same
+pair for the status page — 404, then a 200 whose body opens `<!doctype html>` and contains no
+`undefined` or `[object Object]`, which is what catches a field that failed to map. `/healthz` is
+expected to answer `503`: nothing has been rendered without a token, and "the container is up" is
+the only claim being made.
 
 ## Upstream API reference
 
