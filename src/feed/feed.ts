@@ -68,11 +68,23 @@ export class Feed {
       this.servingCached = true;
       this.log.info('serving the last saved feed until a fresh one is ready');
     }
-    await this.refreshCalendars(library, { signal });
+    await this.refreshCalendars({ signal });
+    // Rendering is guarded separately: a bad timezone throws from inside the
+    // join, and that must degrade the feed rather than take the process down.
+    await this.safeRender(library);
   }
 
-  /** FETCH, then render whatever that leaves possible. */
-  async refreshCalendars(library: Library | null, { signal }: { signal: AbortSignal }): Promise<void> {
+  /**
+   * FETCH, and nothing else. Rendering is deliberately the caller's.
+   *
+   * This fetch is several MB and takes seconds to minutes, and the library poll
+   * runs on its own timer throughout. If a render were queued here it would
+   * carry a library read *before* the fetch — and because it is queued when the
+   * fetch finishes, it lands after the poll's own render and overwrites it.
+   * The caller reads the library after this returns, so it renders what is
+   * current rather than what was current when the fetch began.
+   */
+  async refreshCalendars({ signal }: { signal: AbortSignal }): Promise<void> {
     try {
       this.calendars = await fetchAllCalendars({ signal, log: (message) => this.log.warn(message) });
       this.calendarsAt = new Date().toISOString();
@@ -90,9 +102,6 @@ export class Feed {
       this.errors.calendar = errorMessage(err);
       this.log.error(`calendar refresh failed: ${errorMessage(err)}`);
     }
-    // Rendering is guarded separately: a bad timezone throws from inside the
-    // join, and that must degrade the feed rather than take the process down.
-    await this.safeRender(library);
   }
 
   /**

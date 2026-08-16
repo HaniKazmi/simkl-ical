@@ -422,3 +422,51 @@ test('a poll that fell through only to retry the sheet does not advance libraryS
     assert.equal(state.libraryAt, synced);
   });
 });
+
+// --- the two timers overlap ------------------------------------------------
+
+// The calendar fetch is several MB and takes seconds to minutes; the library
+// poll runs on its own timer throughout, and `schedule` gives each its own
+// running flag. A render carrying a library read *before* the fetch is queued
+// when the fetch finishes — so it lands after the poll's own render and
+// overwrites it, and stands until the next refresh three hours later.
+//
+// The library object also changes identity mid-poll: `Object.assign` mutates
+// the old one with the fresh lists, then `pruneSuperseded` returns a *new* one
+// with superseded membership evicted. A pre-fetch capture therefore has the new
+// data and none of the pruning — a dropped show's episodes back in the feed.
+test('a calendar refresh renders the library as it is when the fetch finishes', async () => {
+  await withToken(async (state) => {
+    const airing = {
+      simkl_id: 100,
+      date: new Date().toISOString(),
+      finale_type: null,
+      episode: { season: 1, episode: 1, title: 'Ep 1', url: 'https://simkl.com/tv/100/' },
+    };
+    // Nothing in any list, so this library joins to zero events.
+    state.library = { shows_watching: { shows: [] } };
+
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    await withFetch(
+      async (url) => {
+        if (!url.includes('data.simkl.in')) throw new Error(`unexpected request: ${url}`);
+        await held;
+        return jsonResponse({ calendar: [airing], metadata: { 100: { title: 'A Show' } } });
+      },
+      async () => {
+        const inFlight = state.refreshCalendars();
+        // The poll lands mid-fetch and replaces the library, as it does whenever
+        // pruneSuperseded evicts anything.
+        state.library = { shows_watching: { shows: [{ show: { title: 'A Show', ids: { simkl: 100 } } }] } };
+        release();
+        await inFlight;
+      },
+    );
+
+    assert.equal(state.feed.events.length, 1, 'the render must use the library the poll left, not the one the fetch started with');
+  });
+});

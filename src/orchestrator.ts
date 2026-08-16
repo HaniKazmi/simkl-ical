@@ -179,8 +179,19 @@ export class Orchestrator {
     return this.feed.hydrate(this.library, { signal: this.aborter.signal });
   }
 
-  private refreshCalendars(): Promise<void> {
-    return this.feed.refreshCalendars(this.library, { signal: this.aborter.signal });
+  /**
+   * The calendar timer's job. Public because a test drives it directly: the
+   * ordering below is the whole point and nothing else would catch it changing.
+   *
+   * `this.library` is read *after* the fetch, never before. The fetch is several
+   * MB, the library poll runs on its own timer meanwhile, and this render is
+   * queued last — so a library captured before the fetch would overwrite the
+   * poll's correct render with a pre-prune one, and stand until the next
+   * refresh three hours later.
+   */
+  async refreshCalendars(): Promise<void> {
+    await this.feed.refreshCalendars({ signal: this.aborter.signal });
+    await this.feed.safeRender(this.library);
   }
 
   /**
