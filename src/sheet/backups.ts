@@ -31,8 +31,15 @@ export const REPAIR_PREFIX = '_sync-REPAIR-';
 
 export const isBackupTab = (title: string): boolean => title.startsWith(BACKUP_PREFIX);
 
-/** Colons and dots are legal in a tab name but awkward to type back. */
-export const backupName = (now: Date): string => `${BACKUP_PREFIX}${now.toISOString().replaceAll(':', '-').replace('.', '-')}`;
+/**
+ * Colons and dots are legal in a tab name but awkward to type back.
+ *
+ * Pinned to milliseconds because the shape is what a user reads and retypes:
+ * `Instant.toString()` omits a zero fractional part, which would silently give
+ * some runs a shorter name than others.
+ */
+export const backupName = (now: Temporal.Instant): string =>
+  `${BACKUP_PREFIX}${now.toString({ smallestUnit: 'millisecond' }).replaceAll(':', '-').replace('.', '-')}`;
 
 export const repairName = (backup: string): string => backup.replace(BACKUP_PREFIX, REPAIR_PREFIX);
 

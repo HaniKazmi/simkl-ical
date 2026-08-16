@@ -12,7 +12,6 @@
  */
 
 import { config } from '../shared/config.ts';
-import { MS_PER_DAY } from '../shared/dates.ts';
 import { a1, columnLetter, duplicateIds, idsFor, isBlank, numberOf, type ColumnMap, type Grid, type HeaderName, type SeasonRow, type ShowBlock } from './2-grid.ts';
 import { courComplete, runtimeDays, seasonComplete, watchSerial, type SeasonShape, type TitleProgress } from './1-progress.ts';
 import type { CatalogueRequest } from './io/catalogue.ts';
@@ -78,7 +77,7 @@ export interface SheetPlan {
 }
 
 export interface PlanOptions {
-  now?: Date;
+  now?: Temporal.Instant;
   timezone?: string;
   sinceDays?: number;
 }
@@ -108,10 +107,14 @@ const edit = (
  */
 const blockIds = (block: ShowBlock): number[] => [...new Set([...block.ids, ...block.seasons.flatMap((s) => s.ids)])];
 
-const latestOf = (progresses: TitleProgress[]): string | null =>
-  progresses.reduce<string | null>((latest, p) => (p.lastWatchedAt && (!latest || p.lastWatchedAt > latest) ? p.lastWatchedAt : latest), null);
+const latestOf = (progresses: TitleProgress[]): Temporal.Instant | null =>
+  progresses.reduce<Temporal.Instant | null>(
+    (latest, p) => (p.lastWatchedAt && (!latest || Temporal.Instant.compare(p.lastWatchedAt, latest) > 0) ? p.lastWatchedAt : latest),
+    null,
+  );
 
-const within = (iso: string | null, cutoffMs: number): boolean => iso !== null && Date.parse(iso) >= cutoffMs;
+const within = (at: Temporal.Instant | null, cutoff: Temporal.Instant): boolean =>
+  at !== null && Temporal.Instant.compare(at, cutoff) >= 0;
 
 /**
  * The instant before which a block is out of scope.
@@ -120,7 +123,11 @@ const within = (iso: string | null, cutoffMs: number): boolean => iso !== null &
  * are in scope, and three hand-written copies of the same arithmetic is how
  * they would stop agreeing.
  */
-const cutoffFrom = (now: Date, sinceDays: number): number => now.getTime() - sinceDays * MS_PER_DAY;
+const cutoffFrom = (now: Temporal.Instant, sinceDays: number): Temporal.Instant =>
+  // Hours rather than `{ days }`, which an `Instant` refuses outright: a day is
+  // a calendar unit and an instant has no calendar. That is also the behaviour
+  // wanted — an exact span, so the window does not move by an hour twice a year.
+  now.subtract({ hours: sinceDays * 24 });
 
 /**
  * Has anything in this block been watched recently enough to touch?
@@ -129,8 +136,8 @@ const cutoffFrom = (now: Date, sinceDays: number): number => now.getTime() - sin
  * years of history, and `planLookups` and `planSync` must never disagree about
  * which blocks are in scope.
  */
-const isRecent = (ids: number[], index: Map<number, TitleProgress>, cutoffMs: number): boolean =>
-  within(latestOf(ids.map((id) => index.get(id)).filter((p): p is TitleProgress => p !== undefined)), cutoffMs);
+const isRecent = (ids: number[], index: Map<number, TitleProgress>, cutoff: Temporal.Instant): boolean =>
+  within(latestOf(ids.map((id) => index.get(id)).filter((p): p is TitleProgress => p !== undefined)), cutoff);
 
 // --- Row resolution --------------------------------------------------------
 
@@ -144,7 +151,7 @@ const isRecent = (ids: number[], index: Map<number, TitleProgress>, cutoffMs: nu
 interface ResolvedRow {
   watched: number;
   complete: boolean;
-  lastWatchedAt: string | null;
+  lastWatchedAt: Temporal.Instant | null;
 }
 
 const numberedSeasons = (progress: TitleProgress): number[] => [...progress.seasons.keys()];
@@ -286,9 +293,9 @@ const latestSeasonAiring = (shapes: Map<number, SeasonShape>): boolean => {
  * whole gate.
  */
 export interface CatalogueStamp {
-  watchedAt: string | null;
-  /** When the lookup was made, in ms. */
-  at: number;
+  watchedAt: Temporal.Instant | null;
+  /** When the lookup was made. */
+  at: Temporal.Instant;
 }
 
 /**
@@ -303,11 +310,21 @@ export interface CatalogueStamp {
  * reasoning as `movieRefreshMs`, and the same daily cadence — a studio moving a
  * release, or a network renewing a show, changes nothing you could gate on.
  */
-export const needsLookup = (stamp: CatalogueStamp | undefined, progress: TitleProgress | undefined, nowMs: number, maxAgeMs: number): boolean => {
+export const needsLookup = (
+  stamp: CatalogueStamp | undefined,
+  progress: TitleProgress | undefined,
+  now: Temporal.Instant,
+  maxAgeMs: number,
+): boolean => {
   if (!stamp) return true;
-  if (nowMs - stamp.at > maxAgeMs) return true;
-  return stamp.watchedAt !== (progress?.lastWatchedAt ?? null);
+  if (now.epochMilliseconds - stamp.at.epochMilliseconds > maxAgeMs) return true;
+  // By value. Two `Instant`s for the same moment are different objects, so `!==`
+  // here would be true forever and every title would be re-read every poll.
+  return !sameInstant(stamp.watchedAt, progress?.lastWatchedAt ?? null);
 };
+
+const sameInstant = (a: Temporal.Instant | null, b: Temporal.Instant | null): boolean =>
+  a === null || b === null ? a === b : a.equals(b);
 
 export interface LookupOptions extends PlanOptions {
   /** What is already held, keyed by SIMKL id. Empty on a cold process. */
@@ -328,15 +345,14 @@ export interface LookupOptions extends PlanOptions {
 export const planLookups = (
   grid: Grid,
   index: Map<number, TitleProgress>,
-  { now = new Date(), sinceDays = config.sheetSinceDays, stamps = new Map<number, CatalogueStamp>(), maxAgeMs = Infinity }: LookupOptions = {},
+  { now = Temporal.Now.instant(), sinceDays = config.sheetSinceDays, stamps = new Map<number, CatalogueStamp>(), maxAgeMs = Infinity }: LookupOptions = {},
 ): CatalogueRequest[] => {
-  const cutoffMs = cutoffFrom(now, sinceDays);
-  const nowMs = now.getTime();
+  const cutoff = cutoffFrom(now, sinceDays);
   const requests: CatalogueRequest[] = [];
-  const due = (id: number): boolean => needsLookup(stamps.get(id), index.get(id), nowMs, maxAgeMs);
+  const due = (id: number): boolean => needsLookup(stamps.get(id), index.get(id), now, maxAgeMs);
 
   for (const block of grid.blocks) {
-    if (!isRecent(blockIds(block), index, cutoffMs)) continue;
+    if (!isRecent(blockIds(block), index, cutoff)) continue;
 
     const anime = block.ids.length === 0;
     // The episode list cannot be gated on "a season ended" — it is what
@@ -357,10 +373,10 @@ export const planSync = (
   grid: Grid,
   index: Map<number, TitleProgress>,
   catalogue: CatalogueView,
-  { now = new Date(), timezone = config.timezone, sinceDays = config.sheetSinceDays }: PlanOptions = {},
+  { now = Temporal.Now.instant(), timezone = config.timezone, sinceDays = config.sheetSinceDays }: PlanOptions = {},
 ): SheetPlan => {
   const plan: SheetPlan = { edits: [], inserts: [], skipped: [], notes: [], deferred: 0 };
-  const cutoffMs = cutoffFrom(now, sinceDays);
+  const cutoff = cutoffFrom(now, sinceDays);
   const duplicates = duplicateIds(grid.blocks);
   const seen = new Set<number>();
 
@@ -370,7 +386,7 @@ export const planSync = (
 
     // The cut-off applies uniformly, with no exemptions. A dormant sheet
     // produces zero edits, and no run can retro-edit years of history.
-    if (!isRecent(ids, index, cutoffMs)) continue;
+    if (!isRecent(ids, index, cutoff)) continue;
     const anime = block.ids.length === 0;
 
     // Every whole season the block already has a row for, computed up front and
@@ -406,7 +422,7 @@ export const planSync = (
       // is never revisited — which is also why a wrongly-stamped end date could
       // never be corrected, and why `End` is so conservative.
       if (season.closed) continue;
-      if (!within(resolved.lastWatchedAt, cutoffMs)) continue;
+      if (!within(resolved.lastWatchedAt, cutoff)) continue;
 
       const label = `${block.title} S${season.season ?? '?'}`;
       if (season.season !== null && idsFor(block, season).some((id) => (claims.get(`${id}:${season.season}`) ?? 0) > 1)) {
@@ -497,7 +513,7 @@ export const planSync = (
   // under a romaji name that mostly does not match what the sheet calls the
   // series. Matching on title is unreliable enough that this must never try.
   for (const progress of index.values()) {
-    if (seen.has(progress.id) || !within(progress.lastWatchedAt, cutoffMs)) continue;
+    if (seen.has(progress.id) || !within(progress.lastWatchedAt, cutoff)) continue;
     plan.notes.push(`${progress.title} (simkl ${progress.id}) has recent activity and no row — add it by hand if you want it tracked`);
   }
 
@@ -520,10 +536,10 @@ const planInsert = (
   { now, timezone, sinceDays }: Required<PlanOptions>,
 ): RowInsert | string | null => {
   if (block.type !== 'show' || !source || !block.ids.length) return null;
-  const cutoffMs = cutoffFrom(now, sinceDays);
+  const cutoff = cutoffFrom(now, sinceDays);
 
   const candidates = [...source.seasons.values()]
-    .filter((s) => s.watched > 0 && !covered.has(s.number) && within(s.lastWatchedAt, cutoffMs))
+    .filter((s) => s.watched > 0 && !covered.has(s.number) && within(s.lastWatchedAt, cutoff))
     .sort((a, b) => a.number - b.number);
   const candidate = candidates[0];
   if (!candidate) return null;

@@ -25,8 +25,12 @@ import { sheetSnapshot, SHEET_HEADERS, type CellSpec, seasonRow, showRow } from 
 
 export const H = SHEET_HEADERS;
 
-/** A date serial the guard will accept: today, so nothing is implausibly future. */
-export const TODAY = dateSerial(new Date().toISOString().slice(0, 10));
+/**
+ * A date serial the guard will accept: today, so nothing is implausibly future.
+ * Named in UTC rather than sliced off an instant, which is the same value said
+ * out loud instead of by accident.
+ */
+export const TODAY = dateSerial(Temporal.Now.plainDateISO('UTC'));
 
 export const show = (title: string, status: string): CellSpec[] => showRow(title, status, 1);
 export const season = seasonRow;

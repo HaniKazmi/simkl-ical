@@ -6,6 +6,8 @@ import type { CellEdit, SheetPlan } from '../../src/sheet/3-plan.ts';
 import type { HeaderName } from '../../src/sheet/2-grid.ts';
 import { sheetSnapshot } from '../helpers.ts';
 import { cell, grid, H, insertAt, planOf, season, show, TODAY } from './fixtures.ts';
+import { dateSerial } from '../../src/sheet/1-progress.ts';
+import { plainDateIn } from '../../src/shared/dates.ts';
 
 const refuses = (plan: SheetPlan, pattern: RegExp): void =>
   assert.throws(() => assertPlanSafe(plan, grid), (err: Error) => err instanceof UnsafePlanError && pattern.test(err.message));
@@ -164,4 +166,27 @@ test('two inserts are refused even for the same show', () => {
 
 test('one insert alongside edits is still allowed', () => {
   assert.doesNotThrow(() => assertPlanSafe(planOf([cell(3, 'Episode', { numberValue: 9 })], [insertAt(4, 2)]), grid));
+});
+
+/**
+ * The plausibility ceiling is *tomorrow in the viewer's zone*, and the zone is
+ * the whole point: computed in UTC it is a day late for anyone behind UTC, which
+ * makes the bound two days wide instead of one and lets a serial the sync should
+ * never write pass the guard.
+ *
+ * 02:00Z on the 15th is still the 14th in New York, so the local ceiling is the
+ * 15th where a UTC one would be the 16th. The serial below sits exactly between.
+ */
+test('the plausibility ceiling is tomorrow in the viewer zone, not in UTC', () => {
+  const now = Temporal.Instant.from('2026-08-15T02:00:00Z');
+  const dayAfterLocalTomorrow = dateSerial(plainDateIn(now, 'UTC').add({ days: 1 }));
+
+  assert.throws(
+    () => assertPlanSafe(planOf([cell(3, 'End', { numberValue: dayAfterLocalTomorrow })]), grid, { now, timezone: 'America/New_York' }),
+    /not a plausible date serial/,
+  );
+  assert.doesNotThrow(
+    () => assertPlanSafe(planOf([cell(3, 'End', { numberValue: dayAfterLocalTomorrow })]), grid, { now, timezone: 'UTC' }),
+    'the same serial is inside the ceiling for a viewer already on that date',
+  );
 });

@@ -161,6 +161,12 @@ test('a malformed record is dropped and the rest of the history kept', async () 
       42,
       { at: poll(1) }, // no status
       { ...good, at: 'not a date' }, // would render as `NaNd ago`
+      // `Date.parse` accepts all three of these and yields a plausible instant,
+      // so a gate built on it admits exactly what it exists to reject — and this
+      // file is read back off disk and rendered verbatim.
+      { ...good, at: '2026' },
+      { ...good, at: 'March 5' },
+      { ...good, at: 'Dec 25 1995' },
       { ...good, at: poll(2), repeats: undefined }, // would make the count NaN
       { status: 'applied' },
     ];

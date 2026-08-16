@@ -23,6 +23,7 @@ import type { Logger } from '../../shared/logger.ts';
 import type { SheetSyncMode } from '../../shared/config.ts';
 import type { RecordedEdit, RecordedInsert } from '../3-plan.ts';
 import type { SheetSyncStatus } from '../sync.ts';
+import { instantFrom } from '../../shared/dates.ts';
 
 /** One finished run, as an operator would want it after a restart. */
 export interface SheetRunRecord {
@@ -84,17 +85,22 @@ export const clearSheetRuns = (): void => {
 };
 
 /**
- * Enough that every later use is total. `at` must *parse*, not merely be a
- * string — an unparseable one reaches `Date.parse` and renders `NaNd ago` — and
+ * Enough that every later use is total. `at` must be a real instant, not merely
+ * a string — an unusable one renders `NaNd ago` on the status page — and
  * `repeats` must be a real number, or `previous.repeats + 1` is `NaN`, persists
  * as `null`, and the count silently stops working for the life of the file.
+ *
+ * Strict, which `Date.parse` was not: it accepts `2026`, `March 5` and
+ * `Dec 25 1995`, so the gate admitted exactly the values it exists to reject and
+ * the page rendered whatever came through. This file is read back off disk and
+ * rendered verbatim, so it is the one place that has to be sure.
  */
 const isRecord = (value: unknown): value is SheetRunRecord => {
   if (typeof value !== 'object' || value === null) return false;
   const r = value as Partial<SheetRunRecord>;
   return (
     typeof r.at === 'string' &&
-    Number.isFinite(Date.parse(r.at)) &&
+    instantFrom(r.at) !== null &&
     typeof r.status === 'string' &&
     Number.isFinite(r.repeats) &&
     Array.isArray(r.edits) &&
@@ -150,12 +156,25 @@ const saysSomething = (record: NewSheetRun): boolean =>
  */
 const SAME_EPISODE_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * Whether two records are close enough in time to be one episode.
+ *
+ * Unparseable reads as *not* close, so the runs stay separate — which is the
+ * safe direction, and stated rather than arrived at through `NaN` comparing
+ * false against everything.
+ */
+const within = (from: string, to: string): boolean => {
+  const a = instantFrom(from);
+  const b = instantFrom(to);
+  return a !== null && b !== null && b.epochMilliseconds - a.epochMilliseconds < SAME_EPISODE_MS;
+};
+
 /** Same outcome, same plan, same message, and close enough in time to be one run of it. */
 const sameAs = (a: SheetRunRecord, b: NewSheetRun): boolean =>
   a.status === b.status &&
   a.mode === b.mode &&
   a.error === b.error &&
-  Date.parse(b.at) - Date.parse(a.at) < SAME_EPISODE_MS &&
+  within(a.at, b.at) &&
   JSON.stringify(a.edits) === JSON.stringify(b.edits) &&
   JSON.stringify(a.inserts) === JSON.stringify(b.inserts);
 
