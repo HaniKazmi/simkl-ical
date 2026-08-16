@@ -16,7 +16,7 @@ import { buildHealth, type Health } from './health.ts';
 import { errorMessage } from './shared/errors.ts';
 import type { Logger } from './shared/logger.ts';
 import { fetchAllItems, fetchMembership, getActivities } from './api/simkl/lists.ts';
-import { deltaFrom, librarySignature, membershipIds, mergeDelta, movedRemovals, removalStamps, retainOnly, toLibrary } from './library.ts';
+import { deltaFrom, evaluateGate, membershipIds, mergeDelta, retainOnly, toLibrary } from './library.ts';
 import { readToken } from './api/simkl/auth.ts';
 import { SimklAuthError } from './api/simkl/client.ts';
 import type { SyncType } from './api/simkl/types.ts';
@@ -189,19 +189,16 @@ export class Orchestrator {
       // The poll itself succeeded, so any earlier failure is now history.
       this.errors.library = null;
 
-      // Read once each: both are pure functions of the same payload, and the
-      // branches below store what the comparison already computed.
-      const signature = librarySignature(activities);
-      const stamps = removalStamps(activities);
-      const removedFrom = movedRemovals(this.removalAt, stamps);
-      // What the gate itself said, separately from what gets pulled. The two
-      // diverge on a forced poll, which pulls everything while the signature
-      // still matches — reporting that as a change would be one that did not
-      // happen. A cold start has no signature to compare against, and no
-      // watermark to ask a delta from, so it pulls whole.
-      const changed = this.librarySignature !== signature;
-      const removals = removedFrom.size > 0;
-      const full = force || !this.library || !this.syncedAll;
+      const { changed, removals, removedFrom, full, signature, stamps } = evaluateGate(
+        activities,
+        {
+          librarySignature: this.librarySignature,
+          removalAt: this.removalAt,
+          syncedAll: this.syncedAll,
+          hasLibrary: this.library !== null,
+        },
+        { force },
+      );
       // Film dates move on their own schedule, so a poll with no library change
       // still has work to do when one comes into range. Read once: the second
       // read would come after `resolveFilms` had stamped the ids it asked about.
