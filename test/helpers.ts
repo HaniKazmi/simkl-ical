@@ -26,6 +26,13 @@ config.sheetId = undefined;
 config.sheetSyncMode = 'off';
 config.googleKeyBase64 = undefined;
 config.googleCredentialsExplicit = false;
+// Same guard, for writes rather than reads. Anything that persists — the feed,
+// the sheet run log — lands under config.dataDir, which defaults to ./data and
+// on a real checkout holds a live token. A suite that writes there passes green
+// while corrupting the thing it was told not to touch, so the default is moved
+// somewhere harmless and `withTempDataDir` stays for tests that read it back.
+// Per-pid so concurrent test files cannot collide; created only if written to.
+config.dataDir = join(tmpdir(), `simkl-ical-suite-${process.pid}`);
 
 /** A logger that records nothing, for states under test. */
 export const quiet = { info() {}, warn() {}, error() {} };

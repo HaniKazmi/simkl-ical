@@ -22,6 +22,7 @@ import { SimklAuthError } from './api/simkl/client.ts';
 import type { Library } from './api/simkl/types.ts';
 import { Feed } from './feed/feed.ts';
 import { SheetSync, type SheetSyncStatus } from './sheet/sync.ts';
+import { loadSheetRuns } from './sheet/io/journal.ts';
 
 /**
  * One block per subsystem, each carrying its own timestamps **and its own
@@ -175,8 +176,17 @@ export class Orchestrator {
     };
   }
 
-  hydrate(): Promise<void> {
-    return this.feed.hydrate(this.library, { signal: this.aborter.signal });
+  /**
+   * Restore what can be restored from disk. The sheet's run history loads here
+   * for the same reason the last feed does — it is what the status page has to
+   * show before the first poll of this process finishes.
+   *
+   * Only when a sync is configured: reading it otherwise would populate a page
+   * section for a feature that is inert.
+   */
+  async hydrate(): Promise<void> {
+    if (this.sheetSync) await loadSheetRuns({ log: this.log });
+    await this.feed.hydrate(this.library, { signal: this.aborter.signal });
   }
 
   /**
