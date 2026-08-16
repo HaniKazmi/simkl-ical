@@ -79,8 +79,8 @@ export interface YearMonth {
  * 15th spans March alone — so an entry dated 2026-02-28T23:00Z passes the
  * join's filter while living in a February archive nothing ever fetched.
  */
-export const monthsBack = (days: number, now: Date = new Date(), timezone: string = config.timezone): YearMonth[] => {
-  const today = plainDateIn(now.toTemporalInstant(), timezone);
+export const monthsBack = (days: number, now: Temporal.Instant = Temporal.Now.instant(), timezone: string = config.timezone): YearMonth[] => {
+  const today = plainDateIn(now, timezone);
   const months = new Map<string, YearMonth>();
   for (let i = days; i >= 0; i -= 1) {
     // Plain calendar arithmetic on a plain date: the zone was applied above,
@@ -116,7 +116,7 @@ export interface CalendarOptions {
   /** The zone the grace window is measured in — the join's, necessarily. */
   timezone?: string;
   signal?: AbortSignal;
-  now?: Date;
+  now?: Temporal.Instant;
   /** Optional sink for problems that degrade the result without failing it. */
   log?: (message: string) => void;
 }
@@ -145,7 +145,7 @@ export interface CalendarResult {
  */
 export const fetchCalendar = async (
   type: CalendarType,
-  { graceDays = config.graceDays, timezone = config.timezone, signal, now = new Date(), log }: CalendarOptions = {},
+  { graceDays = config.graceDays, timezone = config.timezone, signal, now = Temporal.Now.instant(), log }: CalendarOptions = {},
 ): Promise<CalendarResult> => {
   if (!CALENDAR_FILES[type]) throw new Error(`Unknown calendar type: ${type}`);
 

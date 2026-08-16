@@ -39,7 +39,7 @@ export class Feed {
    * stamp, so the film stays past the floor and due — which is what makes the
    * next poll retry exactly the films that failed, with no flag to carry.
    */
-  filmStamps = new Map<number, number>();
+  filmStamps = new Map<number, Temporal.Instant>();
   // calendarsAt advances on every attempt, including ones served from cache
   // after a failure; only calendarsFreshAt means the CDN answered.
   calendarsAt: string | null = null;
@@ -129,7 +129,7 @@ export class Feed {
   }
 
   /** Which films are worth asking about — the rule itself is `filmDue`. */
-  private filmsToResolve(ids: number[], now: Date): number[] {
+  private filmsToResolve(ids: number[], now: Temporal.Instant): number[] {
     return ids.filter((id) => filmDue(this.filmStamps.get(id), this.movieReleases.get(id), now));
   }
 
@@ -141,7 +141,7 @@ export class Feed {
    * anything. The state and the work live here; the decision does not.
    */
   filmsDue(library: Library | null): boolean {
-    return this.filmsToResolve(plannedFilmIds(library), new Date()).length > 0;
+    return this.filmsToResolve(plannedFilmIds(library), Temporal.Now.instant()).length > 0;
   }
 
   /**
@@ -154,7 +154,7 @@ export class Feed {
    * would make a revoked token during film lookups report nothing at all.
    */
   async resolveFilms(library: Library | null, { signal }: { signal: AbortSignal }): Promise<boolean> {
-    const now = new Date();
+    const now = Temporal.Now.instant();
     const filmIds = plannedFilmIds(library);
     const due = this.filmsToResolve(filmIds, now);
     const requested = new Set(due);
@@ -168,7 +168,7 @@ export class Feed {
     // upstream and fails identically forever, so leaving it unstamped would ask
     // about it on every poll for good.
     const retryable = new Set(lookups.failed);
-    for (const id of due) if (!retryable.has(id)) this.filmStamps.set(id, now.getTime());
+    for (const id of due) if (!retryable.has(id)) this.filmStamps.set(id, now);
     // Films off the list must not hold their stamps, or re-adding one would find
     // it fresh and never look it up. Still being planned is the whole test — a
     // planned film with no announced date is absent from `releases` and has to
@@ -176,7 +176,10 @@ export class Feed {
     const planned = new Set(filmIds);
     for (const id of this.filmStamps.keys()) if (!planned.has(id)) this.filmStamps.delete(id);
 
-    if (complete) this.filmsResolvedAt = now.toISOString();
+    // Pinned to milliseconds: `Instant.toString()` omits a zero fractional
+    // part where `Date.toISOString()` always wrote `.000Z`, and these strings
+    // are rendered and persisted beside ones written elsewhere.
+    if (complete) this.filmsResolvedAt = now.toString({ smallestUnit: 'millisecond' });
 
     if (due.length) this.log.info(`resolved ${lookups.releases.size}/${due.length} film release dates`);
     if (lookups.unavailable.length) {
