@@ -546,6 +546,45 @@ const planInsert = (
   };
 };
 
+/**
+ * What one planned edit looks like once the plan itself is gone: where it
+ * landed, which column, and the planner's own wording for what changed.
+ */
+export interface RecordedEdit {
+  address: string;
+  field: HeaderName;
+  note: string;
+}
+
+export interface RecordedInsert {
+  /** `row 610` rather than a cell — an insert has no single cell to point at. */
+  address: string;
+  title: string;
+  season: number;
+  note: string;
+}
+
+export interface PlanRecord {
+  edits: RecordedEdit[];
+  inserts: RecordedInsert[];
+}
+
+/**
+ * A plan reduced to what survives the run, for the status page's history.
+ *
+ * Structured rather than `describePlan`'s strings because the page renders the
+ * cell, the column and the wording as three columns, and a joined line cannot
+ * be split back into them. The skip and note lines are deliberately dropped:
+ * those answer "why was this row left alone", which the page does not ask.
+ *
+ * Every count downstream is a `.length` of one of these, so a run cannot report
+ * a plan size that disagrees with the plan it is reporting.
+ */
+export const planRecord = (plan: SheetPlan): PlanRecord => ({
+  edits: plan.edits.map(({ address, field, note }) => ({ address, field, note })),
+  inserts: plan.inserts.map(({ row, title, season, note }) => ({ address: `row ${row + 1}`, title, season, note })),
+});
+
 /** A human-readable rendering of a plan, for the log and for `report` mode. */
 export const describePlan = (plan: SheetPlan, columns: ColumnMap): string[] => {
   const lines: string[] = [];

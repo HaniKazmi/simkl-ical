@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseGrid } from '../../src/sheet/2-grid.ts';
-import { deriveStatus, needsLookup, planLookups, planSync, statusSource, type CatalogueView, type TitleCatalogue } from '../../src/sheet/3-plan.ts';
+import { deriveStatus, needsLookup, planLookups, planRecord, planSync, statusSource, type CatalogueView, type SheetPlan, type TitleCatalogue } from '../../src/sheet/3-plan.ts';
 import { dateSerial, indexLibrary, seasonShapes } from '../../src/sheet/1-progress.ts';
 import type { EpisodeDetail, ShowDetail } from '../../src/api/simkl/types.ts';
 import { daysAgo, libraryItem, sheetSnapshot, SHEET_HEADERS, type CellSpec, type ItemSpec, seasonRow, showRow } from '../helpers.ts';
@@ -572,4 +572,35 @@ test('a season deferred past the per-run cap is reported', () => {
   // poll instead of waiting on unrelated watch activity to wake one.
   assert.equal(result.deferred, 1);
   assert.equal(twoNewSeasons([...before.slice(0, 2)]).plan().deferred, 0, 'nothing deferred when it fits');
+});
+
+// The projection the status page's history is built from. It outlives the run,
+// so what it drops is dropped for good.
+test('planRecord keeps where and what changed, and drops the diagnostics', () => {
+  const plan: SheetPlan = {
+    edits: [
+      { row: 8, column: 3, field: 'Episode', previous: { numberValue: 3 }, value: { numberValue: 5 }, address: 'D9', note: 'Fargo S2: 3 -> 5 episodes' },
+    ],
+    inserts: [{ row: 609, title: 'Fargo', season: 3, fill: [], note: 'Fargo: new season row at 610, 4 episodes' }],
+    skipped: ['Severance S1: two rows claim season 1'],
+    notes: ['Andor: not on the sheet'],
+    deferred: 2,
+  };
+
+  assert.deepEqual(planRecord(plan), {
+    edits: [{ address: 'D9', field: 'Episode', note: 'Fargo S2: 3 -> 5 episodes' }],
+    // An insert has no single cell, so it points at the row it created.
+    inserts: [{ address: 'row 610', title: 'Fargo', season: 3, note: 'Fargo: new season row at 610, 4 episodes' }],
+  });
+});
+
+// `skipped` and `notes` answer "why was this row left alone", which is the
+// per-show diagnostic the status page deliberately does not carry. Widening the
+// record to include them turns a change log into a question the page cannot
+// answer well, and does it in a file that survives restarts.
+test('planRecord carries no skip or note lines', () => {
+  const record = planRecord({ edits: [], inserts: [], skipped: ['a skip'], notes: ['a note'], deferred: 1 });
+  assert.deepEqual(record, { edits: [], inserts: [] });
+  assert.ok(!JSON.stringify(record).includes('a skip'));
+  assert.ok(!JSON.stringify(record).includes('a note'));
 });

@@ -33,7 +33,7 @@ import { applyRequests, listSheets, readSnapshot, type SheetSnapshot } from './i
 import { fetchCatalogue } from './io/catalogue.ts';
 import { parseGrid, type Grid } from './2-grid.ts';
 import { indexLibrary, seasonShapes, type TitleProgress } from './1-progress.ts';
-import { describePlan, planLookups, planSync, type CatalogueStamp, type CatalogueView, type SheetPlan, type TitleCatalogue } from './3-plan.ts';
+import { describePlan, planLookups, planRecord, planSync, type CatalogueStamp, type CatalogueView, type PlanRecord, type SheetPlan, type TitleCatalogue } from './3-plan.ts';
 import { assertPlanSafe, UnsafePlanError } from './4-guard.ts';
 import { backupName, backupRequest, deleteRowRequests, deleteSheetRequest, isBackupTab, renameSheetRequest, repairName, restoreRequest, toRequests } from './5-requests.ts';
 import { verify, type Verification } from './6-verify.ts';
@@ -60,8 +60,15 @@ export type SheetSyncStatus = 'idle' | 'reported' | 'applied' | 'refused' | 'fai
 
 export interface SheetSyncResult {
   status: SheetSyncStatus;
-  edits: number;
-  inserts: number;
+  /**
+   * What the run planned, kept as records rather than two counts.
+   *
+   * The counts it replaces were passed by hand at each return site, and three
+   * of the six — `failed`, `frozen`, `rolled-back` — did not pass them, so the
+   * runs whose detail matters most reported having planned nothing. A `.length`
+   * cannot be forgotten.
+   */
+  plan: PlanRecord;
   /** The report: every proposed edit, skip and note, one per line. */
   lines: string[];
   /** For `errors.sheet`; null when the run was clean. */
@@ -70,10 +77,11 @@ export interface SheetSyncResult {
   retry: boolean;
 }
 
+const NO_PLAN: PlanRecord = { edits: [], inserts: [] };
+
 const idle = (overrides: Partial<SheetSyncResult> = {}): SheetSyncResult => ({
   status: 'idle',
-  edits: 0,
-  inserts: 0,
+  plan: NO_PLAN,
   lines: [],
   error: null,
   retry: false,
@@ -183,12 +191,12 @@ export class SheetSync {
         // the next poll will try it.
         if (!(err instanceof UnsafePlanError)) throw err;
         this.report(`sheet sync REFUSED the plan: ${err.message}`, lines, 'error');
-        return idle({ status: 'refused', edits: plan.edits.length, inserts: plan.inserts.length, lines, error: err.message, retry: catalogueRetry });
+        return idle({ status: 'refused', plan: planRecord(plan), lines, error: err.message, retry: catalogueRetry });
       }
 
       if (config.sheetSyncMode === 'report') {
         this.report(`sheet sync (report mode): ${plan.edits.length} edits, ${plan.inserts.length} inserts — nothing written`, lines);
-        return idle({ status: 'reported', edits: plan.edits.length, inserts: plan.inserts.length, lines, retry });
+        return idle({ status: 'reported', plan: planRecord(plan), lines, retry });
       }
 
       // FRESH. Back to the read, not on to the write: re-planning is the point.
@@ -293,7 +301,7 @@ export class SheetSync {
       if (writeError) this.log.warn(`the sheet write reported "${writeError}" but landed exactly as planned`);
       await this.sweepBackups(signal);
       this.report(`sheet sync applied ${plan.edits.length} edits and ${plan.inserts.length} inserts`, lines);
-      return idle({ status: 'applied', edits: plan.edits.length, inserts: plan.inserts.length, lines, retry });
+      return idle({ status: 'applied', plan: planRecord(plan), lines, retry });
     }
 
     // The write errored and none of it is in the sheet: the batch never landed.
@@ -309,10 +317,10 @@ export class SheetSync {
       // and the row count is the only independent witness to that. A leftover
       // tab is swept by the next clean run; a discarded snapshot is gone.
       if (after.rows.length === grid.snapshot.rows.length) await this.discardBackup(backupId, signal);
-      return idle({ status: 'failed', lines, error: writeError, retry: true });
+      return idle({ status: 'failed', plan: planRecord(plan), lines, error: writeError, retry: true });
     }
 
-    return await this.rollback(grid, after, verification, lines, backupId, name, retry, signal);
+    return await this.rollback(grid, after, verification, lines, planRecord(plan), backupId, name, retry, signal);
   }
 
   /** Best effort: a leftover snapshot tab is untidy, never dangerous. */
@@ -395,6 +403,8 @@ export class SheetSync {
     after: SheetSnapshot,
     verification: Verification,
     lines: string[],
+    /** For the result only. Rollback reports what was planned; it never reasons about it. */
+    planned: PlanRecord,
     backupId: number | undefined,
     name: string,
     retry: boolean,
@@ -467,7 +477,7 @@ export class SheetSync {
         `${grid.snapshot.title}, delete it, then restart. ${urgency}If it is not there, restore from Sheets version history instead. ` +
         `Verify problems: ${detail}. Rows to delete: ${verification.deleteRows.map((r) => r + 1).join(', ') || 'none'}.`;
       this.log.error(this.frozen);
-      return idle({ status: 'frozen', lines, error: this.frozen });
+      return idle({ status: 'frozen', plan: planned, lines, error: this.frozen });
     }
 
     const message = `the write did not verify and was rolled back: ${detail}`;
@@ -475,7 +485,7 @@ export class SheetSync {
     // The rolled-back work is not guaranteed to refuse again — the concurrent
     // edit that triggered this was itself reverted by the restore — so whatever
     // the run wanted another poll for still stands.
-    return idle({ status: 'rolled-back', lines, error: message, retry });
+    return idle({ status: 'rolled-back', plan: planned, lines, error: message, retry });
   }
 
   private report(headline: string, lines: string[], level: 'info' | 'error' = 'info'): void {
