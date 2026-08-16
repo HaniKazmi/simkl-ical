@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { a1, parseGrid, type Grid, type HeaderName } from '../../src/sheet/1-grid.ts';
+import { a1, parseGrid, type Grid, type HeaderName } from '../../src/sheet/2-grid.ts';
 import { deleteRowRequests, toRequests } from '../../src/sheet/5-requests.ts';
-import { dateSerial } from '../../src/sheet/2-progress.ts';
+import { dateSerial } from '../../src/sheet/1-progress.ts';
 import type { CellEdit, RowInsert, SheetPlan } from '../../src/sheet/3-plan.ts';
 import type { ExtendedValue } from '../../src/api/google/types.ts';
 import { sheetSnapshot, SHEET_HEADERS, type CellSpec, seasonRow, showRow } from '../helpers.ts';

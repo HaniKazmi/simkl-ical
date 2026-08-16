@@ -108,12 +108,13 @@ the process, and the rest carries its pipeline position in the filename, so `ls`
 | SAVE | `io/store.ts` — the rendered feed on disk, and back on boot |
 | — | `feed.ts` — the cycle that runs them |
 
-`src/sheet/` — READ → PARSE → PLAN → GUARD → BUILD → APPLY → VERIFY → ROLLBACK
+`src/sheet/` — INDEX → READ → PARSE → PLAN → GUARD → BUILD → APPLY → VERIFY → ROLLBACK
 
 | Step | Module |
 | --- | --- |
+| INDEX | `1-progress.ts` — library → what was watched, and the early-out that decides whether to read the grid at all |
 | READ | `io/spreadsheet.ts` (the tab), `io/catalogue.ts` (SIMKL per-title) |
-| PARSE | `1-grid.ts` — snapshot → blocks; `2-progress.ts` — library → what was watched |
+| PARSE | `2-grid.ts` — snapshot → blocks |
 | PLAN | `3-plan.ts` — grid + library + catalogue → a plan |
 | GUARD | `4-guard.ts` — refuse a plan that does not re-derive |
 | BUILD | `5-requests.ts` — a plan → one ordered batch |
