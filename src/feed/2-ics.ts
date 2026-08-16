@@ -1,6 +1,14 @@
+/**
+ * RENDER — events → an ICS string.
+ *
+ * Third of FETCH (io/) → JOIN → **RENDER** → SAVE. The only module that knows
+ * the output format, which is why it keeps `ics` in its name rather than being
+ * called `2-render.ts`.
+ */
+
 import ical, { ICalCalendarMethod, ICalEventTransparency } from 'ical-generator';
-import { config } from './shared/config.ts';
-import type { FeedEvent } from './join.ts';
+import { config } from '../shared/config.ts';
+import type { FeedEvent } from './1-join.ts';
 
 /** YYYY-MM-DD -> Date at UTC midnight, for all-day events. */
 const dateOnly = (ymd: string, addDays = 0): Date => {

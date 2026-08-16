@@ -9,9 +9,9 @@ import {
   fetchRolling,
   cachedKeys,
   clearCache,
-} from '../src/sources/calendar.ts';
-import type { CalendarFile } from '../src/api/simkl/types.ts';
-import { calendarFile, jsonResponse, withFetch } from './helpers.ts';
+} from '../../../src/feed/io/calendar.ts';
+import type { CalendarFile } from '../../../src/api/simkl/types.ts';
+import { calendarFile, jsonResponse, withFetch } from '../../helpers.ts';
 
 test('archive URLs use an unpadded month', () => {
   // /2026/8/tv.json returns 200; /2026/08/tv.json returns 404. Verified live.

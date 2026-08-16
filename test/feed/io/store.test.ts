@@ -2,9 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { loadFeed, saveFeed } from '../src/feed-store.ts';
-import { FeedState } from '../src/refresh.ts';
-import { calendarFile, emptyCalendars, jsonResponse, quiet, withFetch, withTempDataDir } from './helpers.ts';
+import { loadFeed, saveFeed } from '../../../src/feed/io/store.ts';
+import { FeedState } from '../../../src/refresh.ts';
+import { calendarFile, emptyCalendars, jsonResponse, quiet, withFetch, withTempDataDir } from '../../helpers.ts';
 
 const ICS = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR';
 

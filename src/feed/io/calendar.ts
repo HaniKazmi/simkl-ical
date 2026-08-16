@@ -1,8 +1,15 @@
-import { config } from '../shared/config.ts';
-import { localDate } from '../shared/dates.ts';
-import { errorMessage } from '../shared/errors.ts';
-import { withTimeout } from '../shared/signals.ts';
-import type { CalendarFile, CalendarType } from '../api/simkl/types.ts';
+/**
+ * FETCH — airdates, from the rolling file plus whatever monthly archives the
+ * grace window reaches, merged.
+ *
+ * First of **FETCH** → JOIN → RENDER → SAVE, alongside `movies.ts`.
+ */
+
+import { config } from '../../shared/config.ts';
+import { localDate } from '../../shared/dates.ts';
+import { errorMessage } from '../../shared/errors.ts';
+import { withTimeout } from '../../shared/signals.ts';
+import type { CalendarFile, CalendarType } from '../../api/simkl/types.ts';
 
 const CDN_BASE = 'https://data.simkl.in/calendar/v2/';
 

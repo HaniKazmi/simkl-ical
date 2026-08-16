@@ -1,8 +1,14 @@
-import { apiGet } from '../api/simkl/client.ts';
-import { lookupPool } from '../api/simkl/pool.ts';
-import { localDate, releaseDate } from '../shared/dates.ts';
-import { config } from '../shared/config.ts';
-import type { MovieDetail, MovieRelease, ReleaseDateResult } from '../api/simkl/types.ts';
+/**
+ * FETCH — film release dates, one lookup per title.
+ *
+ * First of **FETCH** → JOIN → RENDER → SAVE, alongside `calendar.ts`.
+ */
+
+import { apiGet } from '../../api/simkl/client.ts';
+import { lookupPool } from '../../api/simkl/pool.ts';
+import { localDate, releaseDate } from '../../shared/dates.ts';
+import { config } from '../../shared/config.ts';
+import type { MovieDetail, MovieRelease, ReleaseDateResult } from '../../api/simkl/types.ts';
 
 /**
  * TMDB-style release types, as used by SIMKL's `release_dates`.

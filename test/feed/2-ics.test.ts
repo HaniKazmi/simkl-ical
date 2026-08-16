@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { renderIcs } from '../src/ics.ts';
-import type { FeedEvent } from '../src/join.ts';
+import { renderIcs } from '../../src/feed/2-ics.ts';
+import type { FeedEvent } from '../../src/feed/1-join.ts';
 
 const event: FeedEvent = {
   uid: 'simkl-3407-s11e03@simkl-ical',
