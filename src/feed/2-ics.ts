@@ -8,13 +8,8 @@
 
 import ical, { ICalCalendarMethod, ICalEventTransparency } from 'ical-generator';
 import { config } from '../shared/config.ts';
+import { plainDateFrom } from '../shared/dates.ts';
 import type { FeedEvent } from './1-join.ts';
-
-/** YYYY-MM-DD -> Date at UTC midnight, for all-day events. */
-const dateOnly = (ymd: string, addDays = 0): Date => {
-  const [y, m, d] = ymd.split('-').map(Number) as [number, number, number];
-  return new Date(Date.UTC(y, m - 1, d + addDays));
-};
 
 /**
  * Episode titles stay out of SUMMARY — a calendar surfaces those without the
@@ -53,10 +48,14 @@ export const renderIcs = (events: FeedEvent[], { name = 'SIMKL', timezone = conf
   cal.x('X-WR-TIMEZONE', timezone);
 
   for (const event of events) {
+    // A `PlainDate` goes to ical-generator unconverted: it accepts Temporal
+    // values directly, so nothing here has to manufacture a `Date` at UTC
+    // midnight and hope the zone never gets applied to it.
+    const start = plainDateFrom(event.date);
     cal.createEvent({
       id: event.uid,
-      start: dateOnly(event.date),
-      end: dateOnly(event.date, 1), // DTEND is exclusive for all-day events
+      start,
+      end: start.add({ days: 1 }), // DTEND is exclusive for all-day events
       allDay: true,
       summary: event.summary,
       description: description(event),
