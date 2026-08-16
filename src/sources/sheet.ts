@@ -1,10 +1,10 @@
 /**
  * Reading and writing one tab of the spreadsheet. The only I/O in the sync.
  *
- * Reads use `spreadsheets.get?includeGridData=true` rather than `values.get`:
- * one request returns `userEnteredValue` (the definitive formula test),
- * `effectiveValue` (true date serials, no locale-formatted `'1,102'` to unpick)
- * and `formattedValue` for logs. Writes use `batchUpdate`, which is atomic and
+ * Reads use `spreadsheets.get` with grid data rather than `values.get`: one
+ * request returns `userEnteredValue` (the definitive formula test) and
+ * `effectiveValue` (true date serials, no locale-formatted `'1,102'` to
+ * unpick). Writes use `batchUpdate`, which is atomic and
  * ordered, leaves number formats alone, and sidesteps the locale trap entirely
  * by sending `{numberValue: 46265}` rather than a date string that `08/15` and
  * `15/08` misparse identically for the first twelve days of every month.

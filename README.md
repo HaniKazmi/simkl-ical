@@ -120,6 +120,11 @@ Your `hold` and `dropped` lists are fetched but contribute nothing to the feed. 
 for the sheet sync below, which needs to tell "you dropped this" from "SIMKL has never
 heard of it".
 
+Putting a show on hold or dropping it stops its episodes appearing, from the next poll.
+SIMKL reports a move only against the list it moved *to*, so the show stays listed under
+`watching` as well — the feed goes by the status on the item rather than by which list it
+turned up in. Un-holding brings it back with no further action.
+
 ## Subscribing
 
 Use the full `https://…/<FEED_TOKEN>/feed.ics` URL as a *subscribed calendar*, not an import.
@@ -172,6 +177,11 @@ Every write is preceded by a server-side snapshot of the tab and followed by a r
 compared against what was planned; anything unexpected restores the snapshot wholesale. If even
 that fails it stops writing for the life of the process and tells you which tab holds the
 pre-write state.
+
+**You will see one `_sync-backup-…` tab in the spreadsheet.** That is the most recent snapshot,
+kept deliberately: a restart clears the "stopped writing" state, so without one held back the
+next clean write would sweep away the very tab a frozen run told you to repair from. Older ones
+are removed on each clean run, so there is never more than one. Deleting it by hand is safe.
 
 Exactly one row is added per run, so starting two seasons between polls adds them over two runs —
 the report names the one it deferred, and the sync asks for the next poll rather than waiting.

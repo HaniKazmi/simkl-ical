@@ -26,6 +26,10 @@ Layering, downward only:
 - `src/simkl/`, `src/sheets/` — transport, one per upstream API. Each owns its base URL, auth,
   retryable statuses and status-to-error mapping; those are what genuinely differ, so the request
   loops stay separate rather than collapsing into one parameterised one.
+- `src/simkl/pool.ts` — bounded-concurrency per-title lookups. Shared by `movies.ts` and `shows.ts`
+  for the three-way split of an error: retryable, gone, or account-level and therefore not a fact
+  about this title at all. A second copy of that last clause drifts silently — a 401 filed as "this
+  title is unavailable" makes an expired token look like a hundred deleted films.
 - `src/sources/` — one module per upstream. `calendar.ts` (CDN, conditional GET, in-process cache,
   monthly archives), `library.ts` (authenticated lists, activities gating), `movies.ts` (per-title
   release dates), `shows.ts` (per-title episode lists and status), `sheet.ts` (read and write one
@@ -63,9 +67,19 @@ read. `tsc` is a checker only. Consequences that bite:
   `iso.slice(0, 10)` is wrong for ~19% of entries in `America/New_York`. Never slice.
 - **The library says `ids.simkl`, the calendar says `simkl_id`.** `itemSimklId` bridges them; that
   is the entire join.
+- **List membership is not status.** SIMKL reports a move against the destination list only, and
+  `listSignature` advances only for the destination — so a show moved to `dropped` or `hold` sits
+  in `watching` indefinitely and nothing ever refetches it out. `item.status` is the field that
+  says which list is current; `idSet` and `indexLibrary` both defer to it. `completed` is
+  deliberately left lingering: everything it contributes is already dated and ages out of the
+  grace window on its own, and SIMKL marks an ongoing show completed the moment you catch up.
 - **Films do not come from the CDN calendar.** `movie_release.json` covers a rolling 33-day window
   with placeholder times, so films are resolved per title and re-read daily on their own clock —
   a studio delay produces no library activity to gate on.
+- **The archive window is enumerated in the viewer's zone**, because the join's cutoff is
+  `localDate(now) - graceDays`. Counting it in UTC instead loses up to a day of grace in any
+  behind-UTC zone near a month boundary: the entry passes the join's filter and lives in an archive
+  nothing fetched.
 - **`config` is a process-wide singleton** built by `buildConfig(env)`. Every numeric setting is
   clamped rather than validated fatally: a running feed beats a container that will not boot.
 
@@ -140,10 +154,13 @@ The whole cycle — read, plan, guard, write, verify — happens inside one poll
 and what was written describe the same grid. A snapshot older than 120s is discarded and the cycle
 restarts **from the read**, not from the write.
 
-- **Reads use `spreadsheets.get?includeGridData=true`, writes use `batchUpdate`.** The read gives
+- **Reads use `spreadsheets.get` with grid data, writes use `batchUpdate`.** The read gives
   `userEnteredValue` (the only definitive formula test) and `effectiveValue` (true date serials);
   the write is atomic, ordered, leaves formats alone, and sends `{numberValue: 46265}` rather than a
   date string that `08/15` and `15/08` misparse identically for twelve days a month.
+- **The read carries a `fields` mask naming exactly those two.** Unmasked, the response is every
+  cell's full format block for 1644 rows — 45 MB against 2.4 MB, measured, for identical values.
+  A field mask supersedes `includeGridData`, so asking for `data` is what returns the grid at all.
 - **A write is never retried.** `batchUpdate` is atomic but not idempotent — a retried
   `insertDimension` inserts two rows. Reads opt into retry; writes never do.
 - **Request order is load-bearing**: edits to pre-existing rows (descending), then the
@@ -151,8 +168,12 @@ restarts **from the read**, not from the write.
   "edits before inserts" rule overwrites a real row.
 - **The write batch snapshots the tab first.** `duplicateSheet` leads the same atomic batch, so
   there is no state in which the sheet changed but nothing recorded what it looked like. It is
-  server-side, so a 1600-row copy costs no data transfer, and it is dropped once a write verifies.
-  Named versions were the obvious alternative and are reachable from no API at all.
+  server-side, so a 1600-row copy costs no data transfer. Named versions were the obvious
+  alternative and are reachable from no API at all.
+- **One snapshot tab survives, and only one.** `frozen` is process state, so a restart forgets
+  that a run told the user to repair from a particular tab — and a clean write sweeping the lot
+  would then destroy the only pre-corruption copy. Everything older than the newest goes on each
+  clean run, because each is a full tab copy against a 10M-cell ceiling for the spreadsheet.
 
 ## Verification, and what it cost to learn
 
@@ -172,12 +193,26 @@ Literals stay strictly compared, and they are what catches a misalignment — ev
 season row moves with the row.
 
 **Rollback is not partial-write recovery**; `batchUpdate` leaves no half-applied state. It exists
-for the case where *the plan was wrong*, and it runs in separate batches: delete the inserted row,
-re-read, then paste the snapshot back over the tab at a zero offset. Deleting first is what shrinks
-the grid — a paste overwrites a range, it cannot remove a row — and it also undoes the reference
-rewriting for free, since Sheets rewrites on the way out exactly as it did on the way in. The paste
-is one server-side request whose cost does not grow with the number of cells that changed, and it
-cannot be off by a row.
+for the case where *the plan was wrong*, and it runs in separate batches: check a snapshot exists,
+delete the inserted row, re-read, then paste the snapshot back over the tab at a zero offset.
+Deleting first is what shrinks the grid — a paste overwrites a range, it cannot remove a row — and
+it also undoes the reference rewriting for free, since Sheets rewrites on the way out exactly as it
+did on the way in. The paste is one server-side request whose cost does not grow with the number of
+cells that changed, and it cannot be off by a row.
+
+Two questions decide whether any of that happens, and both are answered from the **planned writes**
+rather than from the shape of the grid. *Did anything land?* — `batchUpdate` is atomic, so none of
+them being present means the batch never went out, and inferring it from row growth instead turned
+a single transient 503 on a plan containing an insert into a permanent freeze over an untouched
+sheet. *Which rows may be deleted?* — only ones where every planned cell is present at exactly the
+planned index. `insertDimension` lands where it is told, so anything less is a pre-existing row, and
+a grid confused enough to disagree restores wholesale or freezes rather than guessing.
+
+The wholesale restore has one accepted cost: a human edit landing in the seconds-wide window
+between the batch and the verify read sits inside the pasted range, so it is reverted along with
+ours, and the confirming verify reports a clean rollback. A per-cell revert would close that window
+and was rejected as too fragile to be worth it — it is the mechanism that misaligned the sheet once
+already.
 
 If the write landed and no snapshot can be found, the sync **freezes** rather than falling back to
 putting cells back individually — that is the mechanism that produced the misalignment once, and
