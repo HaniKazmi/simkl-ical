@@ -119,28 +119,43 @@ export const seasonsOf = (item: LibraryItem): Map<number, SeasonProgress> => {
  * Every show and anime in the library, keyed by SIMKL id.
  *
  * Films are skipped: they have no seasons, so the whole block model is
- * inapplicable. A title appearing in two lists — which happens, because a move
- * is only reported against its destination — keeps whichever entry has the
- * later `last_watched_at`, so the stale copy cannot win.
+ * inapplicable.
+ *
+ * A title appearing in two lists — which happens, because a move is only
+ * reported against its destination — keeps whichever entry has the later
+ * `last_watched_at`. On a tie the copy whose list matches the item's own
+ * `status` wins, because that is the field that says which list is current.
+ * Without that tie-break the first list in `LISTS` order wins, which is
+ * `watching`: a watching→dropped move with no new watches leaves both copies
+ * carrying the same timestamp, and the sheet keeps saying Watching forever.
  */
 export const indexLibrary = (library: Library | null | undefined): Map<number, TitleProgress> => {
   const out = new Map<number, TitleProgress>();
   if (!library) return out;
+  const picked = new Map<number, { at: string; authoritative: boolean }>();
 
   for (const [key, list] of Object.entries(library) as Array<[ListKey, Library[ListKey]]>) {
     if (key.startsWith('movies_')) continue;
+    // `shows_dropped` → `dropped`, the status this list *is*.
+    const listStatus = key.slice(key.indexOf('_') + 1);
+
     for (const item of [...(list?.shows ?? []), ...(list?.anime ?? [])]) {
       const id = idOf(item);
       if (id === null) continue;
 
       const lastWatchedAt = normaliseInstant(item.last_watched_at);
-      const existing = out.get(id);
-      if (existing && (existing.lastWatchedAt ?? '') >= (lastWatchedAt ?? '')) continue;
+      const status = item.status?.trim().toLowerCase() ?? null;
+      const at = lastWatchedAt ?? '';
+      const authoritative = status === listStatus;
+
+      const current = picked.get(id);
+      if (current && (current.at > at || (current.at === at && (current.authoritative || !authoritative)))) continue;
+      picked.set(id, { at, authoritative });
 
       out.set(id, {
         id,
         title: item.show?.title ?? item.movie?.title ?? String(id),
-        status: item.status?.trim().toLowerCase() ?? null,
+        status,
         lastWatchedAt,
         watchedCount: item.watched_episodes_count ?? 0,
         totalCount: item.total_episodes_count ?? 0,

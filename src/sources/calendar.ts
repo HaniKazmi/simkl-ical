@@ -1,4 +1,5 @@
 import { config } from '../config.ts';
+import { localDate } from '../dates.ts';
 import { errorMessage } from '../errors.ts';
 import { withTimeout } from '../signals.ts';
 import type { CalendarFile, CalendarType } from '../simkl/types.ts';
@@ -60,16 +61,24 @@ const fetchCached = async (url: string, key: string, { signal }: { signal?: Abor
   const headers: Record<string, string> = { 'User-Agent': `${config.appName}/${config.appVersion}` };
   if (cached?.lastModified) headers['If-Modified-Since'] = cached.lastModified;
 
-  // Without a timeout a hung connection blocks a refresh cycle until undici's
-  // 300s default.
-  const res = await fetch(url, { headers, signal: withTimeout(signal, FETCH_TIMEOUT_MS) });
-
   // A stale calendar beats no calendar, so every failure below serves the cache
   // when there is one — flagged stale rather than passing as a success.
   const fallback = (reason: string): FetchResult => {
     if (cached) return { ...cached, stale: true };
     throw new Error(`Calendar ${url} ${reason}`);
   };
+
+  // Without a timeout a hung connection blocks a refresh cycle until undici's
+  // 300s default. The throw is caught for the same reason a bad status is: a
+  // timeout, a DNS failure or a reset are the *likeliest* ways the CDN fails,
+  // and letting one escape past `fallback` discards a perfectly good cached
+  // month — silently, because the caller reads staleness off the rolling file.
+  let res: Response;
+  try {
+    res = await fetch(url, { headers, signal: withTimeout(signal, FETCH_TIMEOUT_MS) });
+  } catch (err) {
+    return fallback(`could not be fetched: ${errorMessage(err)}`);
+  }
 
   if (res.status === 304 && cached) return { ...cached, stale: false };
   if (!res.ok) return fallback(`returned ${res.status}`);
@@ -120,11 +129,24 @@ export interface YearMonth {
   month: number;
 }
 
-/** Distinct {year, month} pairs spanned by the last `days` days, oldest first. */
-export const monthsBack = (days: number, now: Date = new Date()): YearMonth[] => {
+/**
+ * Distinct {year, month} pairs spanned by the last `days` days, oldest first.
+ *
+ * Counted from the **local** date, because the join's cutoff is
+ * `localDate(now) - graceDays` and the two must agree about which months the
+ * window reaches. Counting in UTC instead loses up to a day of grace in any
+ * behind-UTC zone near a month boundary: at 2026-03-15T02:00Z in
+ * America/New_York the local cutoff is 2026-02-28, but a UTC window from the
+ * 15th spans March alone — so an entry dated 2026-02-28T23:00Z passes the
+ * join's filter while living in a February archive nothing ever fetched.
+ */
+export const monthsBack = (days: number, now: Date = new Date(), timezone: string = config.timezone): YearMonth[] => {
+  const [year, month, day] = localDate(now.toISOString(), timezone).split('-').map(Number) as [number, number, number];
   const months = new Map<string, YearMonth>();
   for (let i = days; i >= 0; i -= 1) {
-    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - i));
+    // Plain calendar arithmetic on a plain date: the zone was applied above,
+    // and applying it twice is how an off-by-one gets in.
+    const d = new Date(Date.UTC(year, month - 1, day - i));
     // Unpadded month, matching the archive URL scheme.
     months.set(`${d.getUTCFullYear()}-${d.getUTCMonth() + 1}`, {
       year: d.getUTCFullYear(),
@@ -154,6 +176,8 @@ export const mergeCalendars = (parts: Array<CalendarFile | null | undefined>): C
 
 export interface CalendarOptions {
   graceDays?: number;
+  /** The zone the grace window is measured in — the join's, necessarily. */
+  timezone?: string;
   signal?: AbortSignal;
   now?: Date;
   /** Optional sink for problems that degrade the result without failing it. */
@@ -178,11 +202,11 @@ export interface CalendarResult {
  */
 export const fetchCalendar = async (
   type: CalendarType,
-  { graceDays = config.graceDays, signal, now = new Date(), log }: CalendarOptions = {},
+  { graceDays = config.graceDays, timezone = config.timezone, signal, now = new Date(), log }: CalendarOptions = {},
 ): Promise<CalendarResult> => {
   if (!CALENDAR_FILES[type]) throw new Error(`Unknown calendar type: ${type}`);
 
-  const months = graceDays > ROLLING_PAST_DAYS ? monthsBack(graceDays, now) : [];
+  const months = graceDays > ROLLING_PAST_DAYS ? monthsBack(graceDays, now, timezone) : [];
 
   // Safe to parallelise: unauthenticated and CDN-cached. SIMKL's warning
   // against it covers the authenticated sync endpoints, not these.
@@ -224,9 +248,9 @@ const evictOutside = (keep: string[], type: CalendarType): void => {
 export type Calendars = Record<CalendarType, CalendarResult>;
 
 /** All calendar types. Safe to parallelise: CDN-cached, unauthenticated. */
-export const fetchAllCalendars = async ({ graceDays = config.graceDays, signal, now, log }: CalendarOptions = {}): Promise<Calendars> => {
+export const fetchAllCalendars = async ({ graceDays = config.graceDays, timezone = config.timezone, signal, now, log }: CalendarOptions = {}): Promise<Calendars> => {
   const types = Object.keys(CALENDAR_FILES) as CalendarType[];
-  const results = await Promise.all(types.map((t) => fetchCalendar(t, { graceDays, signal, now, log })));
+  const results = await Promise.all(types.map((t) => fetchCalendar(t, { graceDays, timezone, signal, now, log })));
   return Object.fromEntries(types.map((t, i) => [t, results[i]!])) as Calendars;
 };
 

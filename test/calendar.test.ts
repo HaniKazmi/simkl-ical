@@ -61,6 +61,20 @@ test('a zero-day window is still the current month, not nothing', () => {
   assert.deepEqual(monthsBack(0, new Date('2026-08-10T12:00:00Z')), [{ year: 2026, month: 8 }]);
 });
 
+// The window has to be measured in the same zone the join's cutoff is, or the
+// two disagree about which months the grace period reaches. Behind UTC, near a
+// month boundary, an entry that passes the join's filter would live in an
+// archive nothing ever fetched.
+test('the window is counted from the local date, not the UTC one', () => {
+  const now = new Date('2026-03-15T02:00:00Z'); // 14 March, 22:00 in New York
+  assert.deepEqual(monthsBack(14, now, 'America/New_York'), [
+    { year: 2026, month: 2 },
+    { year: 2026, month: 3 },
+  ]);
+  // The same instant in a zone where it is already the 15th reaches March only.
+  assert.deepEqual(monthsBack(14, now, 'Europe/London'), [{ year: 2026, month: 3 }]);
+});
+
 test('merging de-duplicates episodes and unions metadata', () => {
   const archive: CalendarFile = {
     calendar: [{ simkl_id: 1, date: '2026-07-01T20:00:00Z', finale_type: null, episode: { season: 1, episode: 1, title: null, url: '' } }],
@@ -127,6 +141,37 @@ test('a CDN failure serves the cached copy but reports it as stale', async () =>
         assert.equal(again.data.calendar.length, 1, 'the cached copy is still served');
         assert.equal(again.stale, true, 'and every failed refresh says so');
       }
+    },
+  );
+});
+
+// A timeout, a DNS failure or a reset are the likeliest ways the CDN fails, and
+// they arrive as a throw rather than a status. One escaping past the fallback
+// discarded a perfectly good cached month — silently, because the caller reads
+// staleness off the rolling file alone.
+test('a network throw serves the cached copy, exactly as a bad status does', async () => {
+  let calls = 0;
+  await withFetch(
+    () => {
+      if (++calls === 1) return jsonResponse(GOOD);
+      throw new TypeError('fetch failed');
+    },
+    async () => {
+      await fetchRolling('tv');
+      const again = await fetchRolling('tv');
+      assert.equal(again.data.calendar.length, 1, 'the cached copy is still served');
+      assert.equal(again.stale, true);
+    },
+  );
+});
+
+test('a network throw with nothing cached still fails rather than inventing a feed', async () => {
+  await withFetch(
+    () => {
+      throw new TypeError('fetch failed');
+    },
+    async () => {
+      await assert.rejects(() => fetchRolling('tv'), /could not be fetched/);
     },
   );
 });

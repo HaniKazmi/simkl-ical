@@ -77,6 +77,30 @@ test('a title in two lists keeps the entry with the later activity', () => {
   assert.equal(index.get(7)?.status, 'watching');
 });
 
+// The common shape of a move: nothing new was watched, so both copies carry the
+// same timestamp. Insertion order is LISTS order, which puts `watching` first —
+// so without a tie-break the stale copy wins and the sheet says Watching for
+// good.
+test('on equal timestamps the list matching the item’s own status wins', () => {
+  const at = '2026-08-01T00:00:00Z';
+  const copy = (list: string, status: string) => libraryItem({ id: 7, title: `from ${list}`, status, lastWatchedAt: at });
+
+  // Listed first, and loses anyway.
+  const dropped = indexLibrary({
+    shows_watching: { shows: [copy('watching', 'dropped')] },
+    shows_dropped: { shows: [copy('dropped', 'dropped')] },
+  });
+  assert.equal(dropped.get(7)?.title, 'from dropped');
+
+  // And the other way round, so the rule is the status field rather than a
+  // preference for whichever list happens to come later.
+  const undropped = indexLibrary({
+    shows_dropped: { shows: [copy('dropped', 'watching')] },
+    shows_watching: { shows: [copy('watching', 'watching')] },
+  });
+  assert.equal(undropped.get(7)?.title, 'from watching');
+});
+
 test('films are skipped — the whole block model is inapplicable', () => {
   const index = indexLibrary({ movies_plantowatch: { movies: [{ movie: { title: 'Dune', ids: { simkl: 99 } } }] }, ...libraryOf({ id: 1 }) });
   assert.deepEqual([...index.keys()], [1]);

@@ -182,7 +182,13 @@ const resolveRow = (
       watched: resolved.reduce((total, p) => total + watchedIn(p), 0),
       // Only once *every* id is complete.
       complete: resolved.every((p) => courComplete(p)),
-      // An ordered list, so the last id is the one that ends the row.
+      // An ordered list, so the last id is the one that ends the row — and the
+      // one that dates it. It is also the right *recency* signal, which looks
+      // wrong until you know how the cell is maintained: ids go in release
+      // order, and a second is only added once the first is finished. So the
+      // last id is always the active one, and mid-first-cour the row simply
+      // does not have the second id yet. A max across the ids would be the
+      // obvious alternative and would say the same thing.
       lastWatchedAt: resolved.at(-1)?.lastWatchedAt ?? null,
     };
   }
