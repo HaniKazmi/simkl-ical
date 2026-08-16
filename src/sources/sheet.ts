@@ -10,7 +10,7 @@
  * `15/08` misparse identically for the first twelve days of every month.
  */
 
-import { config } from '../config.ts';
+import { config } from '../shared/config.ts';
 import { sheetsRequest } from '../sheets/client.ts';
 import type { BatchUpdateResponse, CellData, SheetRequest, SpreadsheetResponse } from '../sheets/types.ts';
 

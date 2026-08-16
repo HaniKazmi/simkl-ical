@@ -1,5 +1,5 @@
-import { config } from './config.ts';
-import { localDate, releaseDate, shiftDate } from './dates.ts';
+import { config } from './shared/config.ts';
+import { localDate, releaseDate, shiftDate } from './shared/dates.ts';
 import { itemSimklId, itemStatus } from './simkl/item.ts';
 import type {
   CalendarEntry,

@@ -1,5 +1,5 @@
-import { config, requireClientId, requireValidTimezone } from './config.ts';
-import { errorMessage, errorStack } from './errors.ts';
+import { config, requireClientId, requireValidTimezone } from './shared/config.ts';
+import { errorMessage, errorStack } from './shared/errors.ts';
 import { FeedState } from './refresh.ts';
 import { buildServer } from './server.ts';
 

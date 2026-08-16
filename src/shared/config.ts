@@ -10,7 +10,7 @@ import { resolve } from 'node:path';
 // a single variable skips the whole file — FEED_TOKEN, SHEET_ID, TZ — for an
 // environment that happens to set that one.
 try {
-  process.loadEnvFile(resolve(import.meta.dirname, '../.env'));
+  process.loadEnvFile(resolve(import.meta.dirname, '../../.env'));
 } catch {
   // No .env — rely on real environment variables (the container case).
 }
@@ -53,7 +53,7 @@ const expandHome = (path: string): string => (path === '~' || path.startsWith('~
  */
 const packageVersion = (): string => {
   try {
-    const raw = readFileSync(resolve(import.meta.dirname, '../package.json'), 'utf8');
+    const raw = readFileSync(resolve(import.meta.dirname, '../../package.json'), 'utf8');
     return (JSON.parse(raw) as { version?: string }).version ?? '0.0.0';
   } catch {
     return '0.0.0';

@@ -1,5 +1,5 @@
 import ical, { ICalCalendarMethod, ICalEventTransparency } from 'ical-generator';
-import { config } from './config.ts';
+import { config } from './shared/config.ts';
 import type { FeedEvent } from './join.ts';
 
 /** YYYY-MM-DD -> Date at UTC midnight, for all-day events. */

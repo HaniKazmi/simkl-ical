@@ -11,9 +11,9 @@
  * one-row misalignment.
  */
 
-import { config } from '../config.ts';
+import { config } from '../shared/config.ts';
 import { isBlank, isFormula, numberOf, sameValue, type Grid, type HeaderName } from './grid.ts';
-import { shiftDate } from '../dates.ts';
+import { shiftDate } from '../shared/dates.ts';
 import { dateSerial } from './progress.ts';
 import type { CellEdit, SheetPlan } from './plan.ts';
 import type { ExtendedValue, GridRange, SheetRequest } from '../sheets/types.ts';

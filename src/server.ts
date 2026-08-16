@@ -1,6 +1,6 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 import { timingSafeEqual } from 'node:crypto';
-import { config } from './config.ts';
+import { config } from './shared/config.ts';
 import type { FeedState } from './refresh.ts';
 
 /** Constant-time compare so the token cannot be recovered by timing the 404s. */

@@ -8,8 +8,8 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { config, type Config } from '../src/config.ts';
-import { MS_PER_DAY } from '../src/dates.ts';
+import { config, type Config } from '../src/shared/config.ts';
+import { MS_PER_DAY } from '../src/shared/dates.ts';
 import type { Calendars } from '../src/sources/calendar.ts';
 import type { SheetSnapshot } from '../src/sources/sheet.ts';
 import type { CellData } from '../src/sheets/types.ts';

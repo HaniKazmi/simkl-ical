@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { extractItems, itemSimklId, idSet, episodeCode, join } from '../src/join.ts';
-import { localDate, releaseDate, shiftDate } from '../src/dates.ts';
+import { localDate, releaseDate, shiftDate } from '../src/shared/dates.ts';
 import type { CalendarEntry, CalendarFile, CalendarType, Library, MovieRelease } from '../src/simkl/types.ts';
 import { calendarOf } from './helpers.ts';
 

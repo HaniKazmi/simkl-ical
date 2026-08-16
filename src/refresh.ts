@@ -1,27 +1,20 @@
-import { config, sheetSyncConfigured } from './config.ts';
-import { errorMessage } from './errors.ts';
+import { config, sheetSyncConfigured } from './shared/config.ts';
+import { ageOf } from './shared/dates.ts';
+import { errorMessage } from './shared/errors.ts';
+import type { Logger } from './shared/logger.ts';
 import { SheetSync, type SheetSyncStatus } from './sheet-sync.ts';
 import { readToken } from './simkl/auth.ts';
 import { SimklAuthError } from './simkl/client.ts';
 import { anyStale, fetchAllCalendars, payloads, type Calendars } from './sources/calendar.ts';
-import { fetchLists, getActivities, listSignatures, pruneSuperseded, staleLists, LISTS } from './sources/library.ts';
+import { fetchLists, getActivities, listSignatures, pruneSuperseded, staleLists, LISTS } from './shared/library.ts';
 import { fetchMovieReleases, reconcileReleases } from './sources/movies.ts';
 import { join, idSet, type FeedEvent } from './join.ts';
 import { renderIcs } from './ics.ts';
 import { loadFeed, saveFeed } from './feed-store.ts';
 import type { Library, MovieRelease } from './simkl/types.ts';
 
-/** Age of an ISO timestamp in ms; never-set reads as infinitely old. */
-const ageOf = (iso: string | null): number => (iso ? Date.now() - Date.parse(iso) : Infinity);
-
 /** Shown as the calendar's name in every client. */
 const FEED_NAME = 'SIMKL – Upcoming';
-
-export interface Logger {
-  info: (message: string) => void;
-  warn: (message: string) => void;
-  error: (message: string) => void;
-}
 
 export interface Health {
   ok: boolean;

@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
-import { buildConfig, config, requireClientId, requireValidTimezone, sheetSyncConfigured } from '../src/config.ts';
-import { withTimeout } from '../src/signals.ts';
-import { withConfig } from './helpers.ts';
+import { buildConfig, config, requireClientId, requireValidTimezone, sheetSyncConfigured } from '../../src/shared/config.ts';
+import { withTimeout } from '../../src/shared/signals.ts';
+import { withConfig } from '../helpers.ts';
 
 test('a bad timezone is rejected with an actionable message', () => {
   assert.throws(() => requireValidTimezone('Mars/Olympus_Mons'), /not a valid IANA timezone/);
@@ -71,7 +71,7 @@ test('a leading ~ in the credential path is expanded', () => {
 
 // SIMKL is told this in every request, so it must not drift from the package.
 test('the reported version matches package.json', async () => {
-  const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  const pkg = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8'));
   assert.equal(config.appVersion, pkg.version);
 });
 

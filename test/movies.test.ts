@@ -4,7 +4,7 @@ import { fetchMovieReleases, pickReleaseDate, reconcileReleases } from '../src/s
 import { releaseLabel } from '../src/join.ts';
 import type { MovieDetail, MovieRelease } from '../src/simkl/types.ts';
 import { jsonResponse, withFetch } from './helpers.ts';
-import { config } from '../src/config.ts';
+import { config } from '../src/shared/config.ts';
 
 // Shape taken from a real /movies/2242503 response. Note `released` is two days
 // earlier than every country's actual theatrical date — this is not a typo in

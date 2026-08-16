@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { writeFileAtomic } from '../atomic-write.ts';
-import { config } from '../config.ts';
+import { writeFileAtomic } from '../shared/atomic-write.ts';
+import { config } from '../shared/config.ts';
 import { apiGet } from './client.ts';
 import type { PinResponse } from './types.ts';
 
