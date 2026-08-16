@@ -148,10 +148,12 @@ export class Feed {
    * JOIN → RENDER → SAVE, with any failure contained in `errors.render` rather
    * than the caller's slot.
    *
-   * Serialised: both refresh timers end here and coincide every six hours at
-   * the default intervals, and overlapping runs would race on the save. The
-   * library is captured when this is *called* rather than when the queued render
-   * runs, so a render renders what its caller had.
+   * Serialised: both refresh timers end here, and at the default intervals the
+   * calendar's 6h divides evenly into the library's 2h — so every calendar tick
+   * lands on a poll, and overlapping runs are the norm rather than an edge case.
+   * Unserialised they would race on the disk save. The library is captured when
+   * this is *called* rather than when the queued render runs, so a render
+   * renders what its caller had.
    */
   safeRender(library: Library | null): Promise<void> {
     this.rendering = this.rendering.then(() => this.renderAndSave(library));

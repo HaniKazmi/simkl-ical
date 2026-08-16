@@ -73,7 +73,7 @@ expensive or the thing it fetches rarely changes.
 
 | Call | Fires when | Request |
 | --- | --- | --- |
-| Airdate calendars | calendar timer, **3h** | `GET data.simkl.in/calendar/v2/{tv,anime}.json`, plus `…/{year}/{month}/{tv,anime}.json` per month the grace window reaches — conditional on `If-Modified-Since`, so `304` unless the CDN regenerated |
+| Airdate calendars | calendar timer, **6h** | `GET data.simkl.in/calendar/v2/{tv,anime}.json`, plus `…/{year}/{month}/{tv,anime}.json` per month the grace window reaches — conditional on `If-Modified-Since`, so `304` unless the CDN regenerated |
 | Activities gate | library timer, **2h** | `GET api.simkl.com/sync/activities` |
 | One library list | its signature moved in the gate above | `GET /sync/all-items/{type}/{status}?extended=full&episode_watched_at=yes&include_all_episodes=yes` |
 | Film release date | the film list moved, else **daily** | `GET /movies/{id}?extended=full` — one per plan-to-watch film, 4 at a time |
@@ -137,7 +137,8 @@ exactly what differs between them.
   fetch would overwrite the poll's correct render and stand until the next refresh.
 - **The feed is replaced only when both halves are present**, so a partial refresh never overwrites
   a complete feed loaded from disk. Renders serialise through one promise chain — both timers end
-  there and coincide every six hours at the default intervals.
+  there, and at the default intervals every calendar tick lands on a library poll, so overlapping
+  runs are the norm rather than an edge case.
 - **Nothing in the refresh path may be fatal.** Failures land in a per-subsystem slot and `/healthz`
   reports why. The sheet's error is excluded from both `ok` and `problems`: `/healthz` is the
   container healthcheck and the CI smoke test, and a frozen sync must not restart the container.
