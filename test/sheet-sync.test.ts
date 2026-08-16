@@ -118,8 +118,9 @@ const server = ({ meddle, failWrite, failRollback, episodes = EPISODES, grid = G
     }
 
     if (url.includes('sheets.googleapis.com')) {
-      // The metadata-only read that finds backup tabs.
-      if (url.includes('fields=')) {
+      // The metadata-only read that finds backup tabs. Both reads carry a field
+      // mask now; only the grid read names a range.
+      if (!url.includes('ranges=')) {
         return jsonResponse({ sheets: [...titles].map(([sheetId, title]) => ({ properties: { sheetId, title } })) });
       }
       const rows = tabs.get(1) ?? [];

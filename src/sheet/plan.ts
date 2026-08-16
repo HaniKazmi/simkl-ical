@@ -396,10 +396,17 @@ export const planSync = (
       }
     }
 
-    // --- Status
+    // --- Status, and the season-row insert
+    //
+    // Both are driven by the block's status source, so both are declined when
+    // that id is claimed by another row as well — the same rule `resolveRow`
+    // applies to a season row. Without it one title's progress writes Status on
+    // two unrelated blocks and plans a new row in each.
     const sourceId = statusSource(block);
     const source = (sourceId === null ? null : index.get(sourceId)) ?? null;
-    if (source) {
+    if (sourceId !== null && duplicates.has(sourceId)) {
+      plan.skipped.push(`${block.title}: id ${sourceId} is claimed by more than one row, so Status and new rows are left alone`);
+    } else if (source) {
       const entry = catalogue.titles.get(source.id);
       // Which model applies is decided by where the ids sit — the same rule
       // `planLookups` uses — and never by whether data happened to arrive.
@@ -419,27 +426,26 @@ export const planSync = (
           plan.edits.push(edit(grid, block.row, 'Status', str(status), `${block.title}: ${block.status ?? '(blank)'} -> ${status}`));
         }
       }
-    }
 
-    // --- Inserting a season row
-    const insert = planInsert(grid, block, source, covered, catalogue, { now, timezone, sinceDays });
-    if (typeof insert === 'string') plan.skipped.push(insert);
-    else if (insert) {
-      // One row per run, and not a setting: every request index in a plan is
-      // pre-write, but `insertDimension` applies cumulatively, so a second
-      // insert would land a row above where it was planned. `assertPlanSafe`
-      // refuses more than one for that reason, so this is an invariant of how
-      // the requests are built rather than a number anyone may choose.
-      //
-      // Starting two seasons between polls therefore defers the second. It is
-      // not lost — the job re-plans the whole sheet every run and the next one
-      // takes it — but it has to say so: a silent deferral reads exactly like a
-      // season the sync never noticed, which is the failure a report exists to
-      // rule out.
-      if (!plan.inserts.length) plan.inserts.push(insert);
-      else {
-        plan.deferred += 1;
-        plan.notes.push(`${insert.title} S${insert.season} is ready to add — deferred, one row is added per run`);
+      const insert = planInsert(grid, block, source, covered, catalogue, { now, timezone, sinceDays });
+      if (typeof insert === 'string') plan.skipped.push(insert);
+      else if (insert) {
+        // One row per run, and not a setting: every request index in a plan is
+        // pre-write, but `insertDimension` applies cumulatively, so a second
+        // insert would land a row above where it was planned. `assertPlanSafe`
+        // refuses more than one for that reason, so this is an invariant of how
+        // the requests are built rather than a number anyone may choose.
+        //
+        // Starting two seasons between polls therefore defers the second. It is
+        // not lost — the job re-plans the whole sheet every run and the next one
+        // takes it — but it has to say so: a silent deferral reads exactly like
+        // a season the sync never noticed, which is the failure a report exists
+        // to rule out.
+        if (!plan.inserts.length) plan.inserts.push(insert);
+        else {
+          plan.deferred += 1;
+          plan.notes.push(`${insert.title} S${insert.season} is ready to add — deferred, one row is added per run`);
+        }
       }
     }
   }

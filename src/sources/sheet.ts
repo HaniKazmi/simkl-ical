@@ -35,11 +35,25 @@ const target = (): string => {
   return encodeURIComponent(config.sheetId);
 };
 
+/**
+ * Exactly the four things `parseGrid` and `verify` read, and nothing else.
+ *
+ * Without a mask the response carries every cell's full format block — font,
+ * borders, number format, conditional formatting — for 1644 rows, all of it
+ * parsed and discarded. Naming `userEnteredValue` keeps `formulaValue`, which
+ * is the definitive formula test and the one field the whole design rests on.
+ *
+ * A field mask supersedes `includeGridData`, so asking for `data` here is what
+ * makes the grid come back at all.
+ */
+const GRID_FIELDS =
+  'sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)),data(startRow,startColumn,rowData(values(userEnteredValue,effectiveValue))))';
+
 export const readSnapshot = async ({ signal }: { signal?: AbortSignal } = {}): Promise<SheetSnapshot> => {
   const title = config.sheetName;
   const response = await sheetsRequest<SpreadsheetResponse>(target(), {
     // The tab name is a range, and one containing a space needs quoting.
-    params: { includeGridData: 'true', ranges: `'${title.replaceAll("'", "''")}'` },
+    params: { ranges: `'${title.replaceAll("'", "''")}'`, fields: GRID_FIELDS },
     retry: true,
     signal,
   });

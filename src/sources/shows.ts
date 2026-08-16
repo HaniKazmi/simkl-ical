@@ -16,7 +16,8 @@
  * is allowed — unlike the sync endpoints, which must stay sequential.
  */
 
-import { apiGet, classify } from '../simkl/client.ts';
+import { apiGet } from '../simkl/client.ts';
+import { lookupPool } from '../simkl/pool.ts';
 import type { EpisodeDetail, ShowDetail } from '../simkl/types.ts';
 
 /**
@@ -75,28 +76,16 @@ export const fetchCatalogue = async (
 
   const episodes = new Map<number, EpisodeDetail[]>();
   const details = new Map<number, ShowDetail>();
-  const failed: number[] = [];
-  const unavailable: number[] = [];
-  const queue = [...merged.values()];
 
-  const worker = async (): Promise<void> => {
-    while (queue.length) {
-      const request = queue.shift();
-      if (!request) return;
-      const { id, anime = false } = request;
-      try {
-        if (request.episodes) episodes.set(id, await fetchEpisodes(id, signal));
-        if (request.detail) details.set(id, await fetchDetail(id, anime, signal));
-      } catch (err) {
-        // One missing title must not sink the sync, but an account-level
-        // problem is not a fact about this title and must not be filed as one.
-        const kind = classify(err);
-        if (kind === 'account') throw err;
-        (kind === 'gone' ? unavailable : failed).push(id);
-      }
-    }
-  };
+  const { failed, unavailable } = await lookupPool(
+    [...merged.values()],
+    (request) => request.id,
+    async ({ id, anime = false, ...want }) => {
+      if (want.episodes) episodes.set(id, await fetchEpisodes(id, signal));
+      if (want.detail) details.set(id, await fetchDetail(id, anime, signal));
+    },
+    { concurrency },
+  );
 
-  await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker));
   return { episodes, details, failed, unavailable };
 };
