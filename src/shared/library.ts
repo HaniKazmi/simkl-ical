@@ -1,5 +1,5 @@
-import { apiGet } from '../simkl/client.ts';
-import { itemSimklId, itemStatus } from '../simkl/item.ts';
+import { apiGet } from '../api/simkl/client.ts';
+import { itemSimklId, itemStatus } from '../api/simkl/item.ts';
 import type {
   Activities,
   CategoryActivity,
@@ -9,7 +9,7 @@ import type {
   ListResponse,
   SyncStatus,
   SyncType,
-} from '../simkl/types.ts';
+} from '../api/simkl/types.ts';
 
 /**
  * The lists that feed the calendar and the sheet sync. Anime is a separate

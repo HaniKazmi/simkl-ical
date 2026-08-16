@@ -3,15 +3,15 @@ import { ageOf } from './shared/dates.ts';
 import { errorMessage } from './shared/errors.ts';
 import type { Logger } from './shared/logger.ts';
 import { SheetSync, type SheetSyncStatus } from './sheet-sync.ts';
-import { readToken } from './simkl/auth.ts';
-import { SimklAuthError } from './simkl/client.ts';
+import { readToken } from './api/simkl/auth.ts';
+import { SimklAuthError } from './api/simkl/client.ts';
 import { anyStale, fetchAllCalendars, payloads, type Calendars } from './sources/calendar.ts';
 import { fetchLists, getActivities, listSignatures, pruneSuperseded, staleLists, LISTS } from './shared/library.ts';
 import { fetchMovieReleases, reconcileReleases } from './sources/movies.ts';
 import { join, idSet, type FeedEvent } from './join.ts';
 import { renderIcs } from './ics.ts';
 import { loadFeed, saveFeed } from './feed-store.ts';
-import type { Library, MovieRelease } from './simkl/types.ts';
+import type { Library, MovieRelease } from './api/simkl/types.ts';
 
 /** Shown as the calendar's name in every client. */
 const FEED_NAME = 'SIMKL – Upcoming';

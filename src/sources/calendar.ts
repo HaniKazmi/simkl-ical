@@ -2,7 +2,7 @@ import { config } from '../shared/config.ts';
 import { localDate } from '../shared/dates.ts';
 import { errorMessage } from '../shared/errors.ts';
 import { withTimeout } from '../shared/signals.ts';
-import type { CalendarFile, CalendarType } from '../simkl/types.ts';
+import type { CalendarFile, CalendarType } from '../api/simkl/types.ts';
 
 const CDN_BASE = 'https://data.simkl.in/calendar/v2/';
 

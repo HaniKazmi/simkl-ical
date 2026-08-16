@@ -11,8 +11,8 @@
 
 import { createSign } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { config } from '../shared/config.ts';
-import { errorMessage } from '../shared/errors.ts';
+import { config } from '../../shared/config.ts';
+import { errorMessage } from '../../shared/errors.ts';
 
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 

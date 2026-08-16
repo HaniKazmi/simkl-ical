@@ -4,7 +4,7 @@ import { a1, parseGrid, type Grid, type HeaderName } from '../src/sheet/grid.ts'
 import { assertPlanSafe, deleteRowRequests, toRequests, UnsafePlanError } from '../src/sheet/safety.ts';
 import { dateSerial } from '../src/sheet/progress.ts';
 import type { CellEdit, RowInsert, SheetPlan } from '../src/sheet/plan.ts';
-import type { ExtendedValue } from '../src/sheets/types.ts';
+import type { ExtendedValue } from '../src/api/google/types.ts';
 import { sheetSnapshot, SHEET_HEADERS, type CellSpec, seasonRow, showRow } from './helpers.ts';
 
 const H = SHEET_HEADERS;

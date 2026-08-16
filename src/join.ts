@@ -1,6 +1,6 @@
 import { config } from './shared/config.ts';
 import { localDate, releaseDate, shiftDate } from './shared/dates.ts';
-import { itemSimklId, itemStatus } from './simkl/item.ts';
+import { itemSimklId, itemStatus } from './api/simkl/item.ts';
 import type {
   CalendarEntry,
   FinaleType,
@@ -11,7 +11,7 @@ import type {
   CalendarType,
   MovieRelease,
   ShowMetadata,
-} from './simkl/types.ts';
+} from './api/simkl/types.ts';
 
 /** Library responses nest under the type key, and come back as {} when empty. */
 export const extractItems = (response: ListResponse | LibraryItem[] | null | undefined): LibraryItem[] => {

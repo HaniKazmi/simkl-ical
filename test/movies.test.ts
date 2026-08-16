@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fetchMovieReleases, pickReleaseDate, reconcileReleases } from '../src/sources/movies.ts';
 import { releaseLabel } from '../src/join.ts';
-import type { MovieDetail, MovieRelease } from '../src/simkl/types.ts';
+import type { MovieDetail, MovieRelease } from '../src/api/simkl/types.ts';
 import { jsonResponse, withFetch } from './helpers.ts';
 import { config } from '../src/shared/config.ts';
 

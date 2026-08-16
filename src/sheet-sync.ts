@@ -10,19 +10,19 @@
  * `errors.sheet` and `/healthz`.
  */
 
-import { backoffMs, sleep } from './backoff.ts';
+import { backoffMs, sleep } from './api/backoff.ts';
 import { config } from './shared/config.ts';
 import { errorMessage } from './shared/errors.ts';
 import { parseGrid, type Grid } from './sheet/grid.ts';
 import { describePlan, planLookups, planSync, type CatalogueStamp, type CatalogueView, type SheetPlan, type TitleCatalogue } from './sheet/plan.ts';
 import { indexLibrary, seasonShapes, type TitleProgress } from './sheet/progress.ts';
 import { assertPlanSafe, backupName, backupRequest, deleteRowRequests, deleteSheetRequest, isBackupTab, renameSheetRequest, repairName, restoreRequest, toRequests, UnsafePlanError } from './sheet/safety.ts';
-import { SheetsAccessError } from './sheets/client.ts';
+import { SheetsAccessError } from './api/google/client.ts';
 import { verify, type Verification } from './sheet/verify.ts';
 import { applyRequests, listSheets, readSnapshot, type SheetSnapshot } from './sources/sheet.ts';
 import { fetchCatalogue } from './sources/shows.ts';
 import type { Logger } from './shared/logger.ts';
-import type { Library } from './simkl/types.ts';
+import type { Library } from './api/simkl/types.ts';
 
 /**
  * How old a snapshot may be when the write goes out. Past this the snapshot is

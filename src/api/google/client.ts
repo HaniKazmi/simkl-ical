@@ -9,9 +9,9 @@
  */
 
 import { backoffMs, HttpError, retryDelayMs, sleep } from '../backoff.ts';
-import { config } from '../shared/config.ts';
-import { errorMessage } from '../shared/errors.ts';
-import { withTimeout } from '../shared/signals.ts';
+import { config } from '../../shared/config.ts';
+import { errorMessage } from '../../shared/errors.ts';
+import { withTimeout } from '../../shared/signals.ts';
 import { clearTokenCache, getAccessToken } from './auth.ts';
 
 const API_BASE = 'https://sheets.googleapis.com/v4/spreadsheets/';
