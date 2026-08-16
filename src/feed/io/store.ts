@@ -1,7 +1,14 @@
+/**
+ * SAVE — the rendered feed on disk, and back on boot.
+ *
+ * Last of FETCH → JOIN → RENDER → **SAVE**, and in `io/` because it is the step
+ * that touches something outside the process.
+ */
+
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { writeFileAtomic } from './shared/atomic-write.ts';
-import { config } from './shared/config.ts';
+import { writeFileAtomic } from '../../shared/atomic-write.ts';
+import { config } from '../../shared/config.ts';
 
 /**
  * The last rendered feed, and the only derived thing kept on disk. Storing the

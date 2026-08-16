@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractItems, itemSimklId, idSet, episodeCode, join } from '../src/join.ts';
-import { localDate, releaseDate, shiftDate } from '../src/shared/dates.ts';
-import type { CalendarEntry, CalendarFile, CalendarType, Library, MovieRelease } from '../src/api/simkl/types.ts';
-import { calendarOf } from './helpers.ts';
+import { extractItems, itemSimklId, idSet, episodeCode, join } from '../../src/feed/1-join.ts';
+import { localDate, releaseDate, shiftDate } from '../../src/shared/dates.ts';
+import type { CalendarEntry, CalendarFile, CalendarType, Library, MovieRelease } from '../../src/api/simkl/types.ts';
+import { calendarOf } from '../helpers.ts';
 
 type Cals = Partial<Record<CalendarType, CalendarFile>>;
 

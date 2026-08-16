@@ -1,6 +1,12 @@
-import { config } from './shared/config.ts';
-import { localDate, releaseDate, shiftDate } from './shared/dates.ts';
-import { itemSimklId, itemStatus } from './api/simkl/item.ts';
+/**
+ * JOIN — calendars × library × releases → events. Pure.
+ *
+ * The second step of the feed pipeline: FETCH (io/) → **JOIN** → RENDER → SAVE.
+ */
+
+import { config } from '../shared/config.ts';
+import { localDate, releaseDate, shiftDate } from '../shared/dates.ts';
+import { itemSimklId, itemStatus } from '../api/simkl/item.ts';
 import type {
   CalendarEntry,
   FinaleType,
@@ -11,7 +17,7 @@ import type {
   CalendarType,
   MovieRelease,
   ShowMetadata,
-} from './api/simkl/types.ts';
+} from '../api/simkl/types.ts';
 
 /** Library responses nest under the type key, and come back as {} when empty. */
 export const extractItems = (response: ListResponse | LibraryItem[] | null | undefined): LibraryItem[] => {
