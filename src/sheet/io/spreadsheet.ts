@@ -54,6 +54,7 @@ const GRID_FIELDS =
 export const readSnapshot = async ({ signal }: { signal?: AbortSignal } = {}): Promise<SheetSnapshot> => {
   const title = config.sheetName;
   const response = await sheetsRequest<SpreadsheetResponse>(target(), {
+    component: 'spreadsheet',
     // The tab name is a range, and one containing a space needs quoting.
     params: { ranges: `'${title.replaceAll("'", "''")}'`, fields: GRID_FIELDS },
     retry: true,
@@ -110,6 +111,7 @@ export const applyRequests = async (
   if (!requests.length) return {};
 
   return await sheetsRequest<BatchUpdateResponse>(`${target()}:batchUpdate`, {
+    component: 'spreadsheet',
     method: 'POST',
     body: { requests, includeSpreadsheetInResponse: false },
     signal,
@@ -122,6 +124,7 @@ export const applyRequests = async (
  */
 export const listSheets = async ({ signal }: { signal?: AbortSignal } = {}): Promise<Array<{ sheetId: number; title: string }>> => {
   const response = await sheetsRequest<SpreadsheetResponse>(target(), {
+    component: 'spreadsheet',
     params: { fields: 'sheets.properties(sheetId,title)' },
     retry: true,
     signal,

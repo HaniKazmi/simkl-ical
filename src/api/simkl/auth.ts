@@ -36,7 +36,7 @@ export interface Pin {
  * `device_code` — a placeholder. Polling is keyed on `user_code`.
  */
 export const requestPin = async (): Promise<Pin> => {
-  const res = await apiGet<PinResponse>('/oauth/pin');
+  const res = await apiGet<PinResponse>('/oauth/pin', { component: 'login' });
   if (res.result && res.result !== 'OK') {
     throw new Error(`Could not start PIN flow: ${res.message ?? JSON.stringify(res)}`);
   }
@@ -50,7 +50,7 @@ export const requestPin = async (): Promise<Pin> => {
 
 /** One poll. Returns an access token, or null while the user hasn't approved yet. */
 export const pollPin = async (userCode: string): Promise<string | null> => {
-  const res = await apiGet<PinResponse>(`/oauth/pin/${encodeURIComponent(userCode)}`);
+  const res = await apiGet<PinResponse>(`/oauth/pin/${encodeURIComponent(userCode)}`, { component: 'login' });
   if (res.result === 'OK' && res.access_token) return res.access_token;
   return null;
 };

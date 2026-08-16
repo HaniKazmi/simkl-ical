@@ -1,5 +1,5 @@
 import { backoffMs, HttpError, retryDelayMs, sleep } from '../backoff.ts';
-import { describeUrl, recordRequest } from '../requests.ts';
+import { describeUrl, recordRequest, type RequestComponent } from '../requests.ts';
 import { config, requireClientId } from '../../shared/config.ts';
 import { errorMessage } from '../../shared/errors.ts';
 import { withTimeout } from '../../shared/signals.ts';
@@ -76,6 +76,8 @@ const baseParams = (): Record<string, string> => ({
 });
 
 export interface ApiGetOptions {
+  /** Which part of the service is asking — see `RequestComponent`. */
+  component: RequestComponent;
   token?: string | null;
   params?: Record<string, string | number | undefined | null>;
   signal?: AbortSignal;
@@ -86,7 +88,7 @@ export interface ApiGetOptions {
  * Verified against the live API: omitting client_id entirely returns 412,
  * a valid client_id without a token returns 401.
  */
-export const apiGet = async <T>(path: string, { token, params = {}, signal }: ApiGetOptions = {}): Promise<T> => {
+export const apiGet = async <T>(path: string, { component, token, params = {}, signal }: ApiGetOptions): Promise<T> => {
   const url = new URL(path, API_BASE);
   for (const [k, v] of Object.entries({ ...baseParams(), ...params })) {
     if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
@@ -103,6 +105,7 @@ export const apiGet = async <T>(path: string, { token, params = {}, signal }: Ap
     recordRequest({
       at: new Date().toISOString(),
       service: 'simkl',
+      component,
       method: 'GET',
       path: describeUrl(url),
       status,

@@ -149,6 +149,7 @@ test('a failing request renders its body inert', () => {
       {
         at: before(MINUTE),
         service: 'simkl',
+        component: 'poll',
         method: 'GET',
         path: `/sync/activities?evil=${payload}`,
         status: 401,

@@ -5,6 +5,7 @@ import { clearRequests, describeUrl, recentRequests, recordRequest, type Request
 const record = (over: Partial<RequestRecord> = {}): RequestRecord => ({
   at: '2026-08-16T12:00:00Z',
   service: 'simkl',
+  component: 'poll',
   method: 'GET',
   path: '/sync/activities',
   status: 200,
@@ -94,4 +95,25 @@ test('the Sheets field mask is dropped but the range is kept', () => {
 
 test('something that is not a URL is passed through rather than thrown over', () => {
   assert.equal(describeUrl('not a url'), 'not a url');
+});
+
+// --- who asked, as opposed to who answered ---------------------------------
+
+// SIMKL serves three different parts of this service, so the upstream alone
+// cannot say why a call happened. `/tv/1649662` is the sheet reading a
+// catalogue; `/movies/174094` is the feed dating a film; they look alike.
+test('a record says which part of the service asked', () => {
+  clearRequests();
+  recordRequest(record({ service: 'simkl', component: 'catalogue', path: '/tv/1649662' }));
+  recordRequest(record({ service: 'simkl', component: 'films', path: '/movies/174094' }));
+  recordRequest(record({ service: 'simkl', component: 'poll', path: '/sync/activities' }));
+
+  assert.deepEqual(
+    recentRequests().map((r) => [r.component, r.path]),
+    [
+      ['poll', '/sync/activities'],
+      ['films', '/movies/174094'],
+      ['catalogue', '/tv/1649662'],
+    ],
+  );
 });

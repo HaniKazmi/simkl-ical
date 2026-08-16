@@ -11,7 +11,7 @@
  */
 
 import { config } from '../shared/config.ts';
-import { describeUrl, recordRequest } from './requests.ts';
+import { describeUrl, recordRequest, type RequestComponent } from './requests.ts';
 import { errorMessage } from '../shared/errors.ts';
 import { withTimeout } from '../shared/signals.ts';
 
@@ -57,6 +57,8 @@ export const evictCache = (keep: (key: string) => boolean): void => {
 };
 
 export interface CdnOptions {
+  /** Which part of the service is asking — see `RequestComponent`. */
+  component: RequestComponent;
   /**
    * Why this payload is unusable, or null if it is fine. Parseable is not
    * usable: a 200 carrying `{}` or an error object would otherwise replace a
@@ -73,7 +75,7 @@ export interface CdnOptions {
  * conditional GET against the stored `Last-Modified` is the only way to tell
  * whether a regeneration has actually happened.
  */
-export const fetchCached = async <T>(url: string, key: string, { validate, signal }: CdnOptions = {}): Promise<CdnResult<T>> => {
+export const fetchCached = async <T>(url: string, key: string, { component, validate, signal }: CdnOptions): Promise<CdnResult<T>> => {
   const cached = (cache.get(key) as CachedFile<T> | undefined) ?? null;
   const headers: Record<string, string> = { 'User-Agent': `${config.appName}/${config.appVersion}` };
   if (cached?.lastModified) headers['If-Modified-Since'] = cached.lastModified;
@@ -83,6 +85,7 @@ export const fetchCached = async <T>(url: string, key: string, { validate, signa
     recordRequest({
       at: new Date().toISOString(),
       service: 'cdn',
+      component,
       method: 'GET',
       path: describeUrl(url),
       status,

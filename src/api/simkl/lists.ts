@@ -11,7 +11,7 @@ import type { Activities, AllItemsResponse } from './types.ts';
 
 /** Last-modified timestamps per category. Cheap gate for the expensive pull. */
 export const getActivities = (token: string, { signal }: { signal?: AbortSignal } = {}): Promise<Activities> =>
-  apiGet<Activities>('/sync/activities', { token, signal });
+  apiGet<Activities>('/sync/activities', { component: 'poll', token, signal });
 
 /**
  * `extended=full` is the gatekeeper: it alone turns on `seasons[]`, and the
@@ -51,6 +51,7 @@ export const fetchAllItems = (
   { dateFrom, signal }: { dateFrom?: string | null; signal?: AbortSignal } = {},
 ): Promise<AllItemsResponse> =>
   apiGet<AllItemsResponse>('/sync/all-items', {
+    component: 'poll',
     token,
     params: dateFrom ? { ...EXTENDED, date_from: dateFrom } : EXTENDED,
     signal,
@@ -67,4 +68,4 @@ export const fetchAllItems = (
  * ids nothing here reads.
  */
 export const fetchMembership = (token: string, { signal }: { signal?: AbortSignal } = {}): Promise<AllItemsResponse> =>
-  apiGet<AllItemsResponse>('/sync/all-items', { token, params: { extended: 'simkl_ids_only' }, signal });
+  apiGet<AllItemsResponse>('/sync/all-items', { component: 'poll', token, params: { extended: 'simkl_ids_only' }, signal });

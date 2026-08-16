@@ -214,7 +214,7 @@ export const reconcileReleases = (
  * the parameter is accepted for compatibility while changing nothing.
  */
 const fetchMovie = (id: number, { signal }: { signal?: AbortSignal } = {}): Promise<MovieDetail> =>
-  apiGet<MovieDetail>(`/movies/${id}`, { signal });
+  apiGet<MovieDetail>(`/movies/${id}`, { component: 'films', signal });
 
 /**
  * Release dates for a set of film ids, keyed by id.

@@ -180,6 +180,7 @@ test('a library that has never moved says so rather than showing an empty change
 const request = (over: Partial<Parameters<typeof buildModel>[0]['requests'][number]> = {}) => ({
   at: before(2 * MINUTE),
   service: 'simkl' as const,
+  component: 'poll' as const,
   method: 'GET',
   path: '/sync/activities',
   status: 200,
