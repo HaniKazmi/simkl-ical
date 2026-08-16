@@ -2,7 +2,7 @@
  * Reading the two fields of a library item that everything downstream keys on.
  *
  * One copy, because three modules ask: the join builds its id sets from them,
- * `sources/library.ts` uses them to decide which list membership a refetch has
+ * `library.ts` uses them to decide which list membership a refetch has
  * superseded, and the sheet's progress index does both.
  */
 

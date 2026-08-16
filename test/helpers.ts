@@ -56,7 +56,7 @@ export const withConfig = async (overrides: Partial<Config>, fn: () => void | Pr
   }
 };
 
-/** An ISO timestamp `ms` in the past, for aging a FeedState field. */
+/** An ISO timestamp `ms` in the past, for aging a Feed or Orchestrator clock. */
 export const ago = (ms: number): string => new Date(Date.now() - ms).toISOString();
 
 /** One calendar's payload, as fetchCalendar would return it. */

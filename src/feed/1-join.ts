@@ -35,7 +35,7 @@ export { itemSimklId };
  * SIMKL reports a move against the destination list alone, so a show moved from
  * watching to dropped sits in both — and `listSignature` advances only for the
  * destination, so the source list is never refetched. `item.status` is the one
- * field that says which is current, which is why `sheet/progress.ts` reads it
+ * field that says which is current, which is why `sheet/1-progress.ts` reads it
  * too. Without this a dropped or on-hold show keeps generating its future
  * episodes indefinitely, since a future date is always inside the window.
  *
