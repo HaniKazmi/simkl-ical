@@ -5,7 +5,7 @@
  */
 
 import { config } from '../shared/config.ts';
-import { localDate, releaseDate, shiftDate } from '../shared/dates.ts';
+import { localDate, localDateOf, releaseDate, shiftDate } from '../shared/dates.ts';
 import { itemSimklId, itemStatus } from '../api/simkl/item.ts';
 import type {
   CalendarEntry,
@@ -250,7 +250,7 @@ export const join = (
     moviesPlanned: plannedIds(library, 'movies'),
   };
 
-  const today = localDate(now.toISOString(), timezone);
+  const today = localDateOf(now, timezone);
   const cutoff = shiftDate(today, -graceDays);
   const events = new Map<string, FeedEvent>();
 
@@ -267,8 +267,12 @@ export const join = (
       const inPlanned = planned.has(id) && isPremiere(entry);
       if (!inWatching && !inPlanned) continue;
 
+      // Upstream data, so a malformed `date` is skipped rather than thrown:
+      // `Intl` raises on an Invalid Date, and one bad field in a payload of
+      // several thousand entries would otherwise abort the whole render and
+      // stop the feed updating until the CDN fixed itself.
       const date = localDate(entry.date, timezone);
-      if (date < cutoff) continue;
+      if (date === null || date < cutoff) continue;
 
       const event = buildEpisodeEvent({ entry, meta: metadata?.[String(id)], kind, date });
       events.set(event.uid, event);

@@ -215,7 +215,11 @@ export const buildModel = (input: StatusInput): StatusModel => {
     appName: input.appName,
     version: input.version,
     timezone: input.timezone,
-    ok: input.ok,
+    // `ok` from `/healthz` answers "should this container be restarted", which
+    // is deliberately narrower — a revoked token and a quiet CDN are both real
+    // problems that restarting cannot fix. The page reports what a reader sees,
+    // so anything in `problems` makes it not-healthy here.
+    ok: input.ok && input.problems.length === 0,
     problems: input.problems,
     uptime: input.startedAt === null ? null : duration(now - Date.parse(input.startedAt)),
 

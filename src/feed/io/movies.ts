@@ -6,7 +6,7 @@
 
 import { apiGet } from '../../api/simkl/client.ts';
 import { lookupPool } from '../../api/simkl/pool.ts';
-import { localDate, releaseDate, shiftDate } from '../../shared/dates.ts';
+import { localDateOf, releaseDate, shiftDate } from '../../shared/dates.ts';
 import { config } from '../../shared/config.ts';
 import type { MovieDetail, MovieRelease, ReleaseDateResult } from '../../api/simkl/types.ts';
 
@@ -69,7 +69,7 @@ export const pickReleaseDate = (
   const codes = [...new Set([country.toUpperCase(), 'US'])];
   const territories = codes.map((code) => ({ code, results: datesFor(movie, code) }));
   // The viewer's local date, not UTC — the same question the join asks.
-  const today = localDate(now.toISOString(), timezone);
+  const today = localDateOf(now, timezone);
 
   // A real release anywhere in the preference order beats a premiere anywhere,
   // so both territories are exhausted before the last resorts are considered.
@@ -157,7 +157,7 @@ export const filmDue = (
   if (stamp === undefined) return true;
   if (now.getTime() - stamp <= refreshMs) return false;
   if (!release) return true;
-  return release.date <= shiftDate(localDate(now.toISOString(), timezone), horizonDays);
+  return release.date <= shiftDate(localDateOf(now, timezone), horizonDays);
 };
 
 /**

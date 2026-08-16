@@ -246,8 +246,13 @@ export const parseGrid = (snapshot: SheetSnapshot): Grid => {
       continue;
     }
 
-    // Trailing blank rows are the sheet's empty tail, not data.
+    // Trailing blank rows are the sheet's empty tail, not data. So is a row
+    // carrying nothing but an id: without a parsed Season it has no episode
+    // count to advance and no shape to compare, yet `resolveRow` takes the
+    // by-id branch — which never consults `season` — and a count gets planned
+    // into a row that is not one.
     if (cells.every((cell) => isBlank(cell))) continue;
+    if (numberOf(cells[columns.Season]) === null && cells.every((cell, i) => i === columns.id || isBlank(cell))) continue;
 
     const block = blocks.at(-1);
     if (!block) {
@@ -287,15 +292,28 @@ export const idsFor = (block: ShowBlock, season: SeasonRow): number[] => (season
  * unrelated places.
  */
 export const duplicateIds = (blocks: ShowBlock[]): Set<number> => {
-  const seen = new Set<number>();
+  const owner = new Map<number, ShowBlock>();
   const duplicates = new Set<number>();
-  const claim = (id: number): void => {
-    if (seen.has(id)) duplicates.add(id);
-    seen.add(id);
-  };
   for (const block of blocks) {
-    for (const id of block.ids) claim(id);
-    for (const season of block.seasons) for (const id of season.ids) claim(id);
+    // Claimed per block, so writing the series id on the show row *and*
+    // repeating it on one of that show's own season rows is not a clash — it
+    // says the same true thing twice. Counted per row it made every row in the
+    // block report an id "claimed by more than one row", and the planner then
+    // declined the Status and the insert over a conflict that did not exist.
+    const ids = new Set([...block.ids, ...block.seasons.flatMap((season) => season.ids)]);
+    for (const id of ids) {
+      const first = owner.get(id);
+      if (first !== undefined && first !== block) duplicates.add(id);
+      else owner.set(id, block);
+    }
+
+    // Two *season* rows of one show naming the same id is a real ambiguity
+    // though: one title's progress cannot say which of them to advance.
+    const perSeason = new Map<number, number>();
+    for (const season of block.seasons) {
+      for (const id of new Set(season.ids)) perSeason.set(id, (perSeason.get(id) ?? 0) + 1);
+    }
+    for (const [id, claims] of perSeason) if (claims > 1) duplicates.add(id);
   }
   return duplicates;
 };

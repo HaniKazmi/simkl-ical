@@ -7,7 +7,7 @@
 
 import { evictCache, fetchCached, type CdnResult, type CdnSource } from '../../api/cdn.ts';
 import { config } from '../../shared/config.ts';
-import { localDate } from '../../shared/dates.ts';
+import { localDateOf, parseYmd } from '../../shared/dates.ts';
 import { errorMessage } from '../../shared/errors.ts';
 import type { CalendarFile, CalendarType } from '../../api/simkl/types.ts';
 
@@ -80,7 +80,7 @@ export interface YearMonth {
  * join's filter while living in a February archive nothing ever fetched.
  */
 export const monthsBack = (days: number, now: Date = new Date(), timezone: string = config.timezone): YearMonth[] => {
-  const [year, month, day] = localDate(now.toISOString(), timezone).split('-').map(Number) as [number, number, number];
+  const [year, month, day] = parseYmd(localDateOf(now, timezone));
   const months = new Map<string, YearMonth>();
   for (let i = days; i >= 0; i -= 1) {
     // Plain calendar arithmetic on a plain date: the zone was applied above,

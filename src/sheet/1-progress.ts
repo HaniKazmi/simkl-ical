@@ -18,7 +18,7 @@
  * count of 331, and season 0 holds exactly 7.
  */
 
-import { localDate, MS_PER_DAY } from '../shared/dates.ts';
+import { localDate, MS_PER_DAY, parseYmd } from '../shared/dates.ts';
 import { itemStatus } from '../api/simkl/item.ts';
 import type { EpisodeDetail, Library, LibraryItem } from '../api/simkl/types.ts';
 
@@ -45,7 +45,7 @@ export const normaliseInstant = (raw: string | null | undefined): string | null 
 
 /** Days since the sheet epoch for a local calendar date. */
 export const dateSerial = (ymd: string): number => {
-  const [y, m, d] = ymd.split('-').map(Number) as [number, number, number];
+  const [y, m, d] = parseYmd(ymd);
   return Math.round((Date.UTC(y, m - 1, d) - EPOCH_MS) / MS_PER_DAY);
 };
 
@@ -56,7 +56,9 @@ export const dateSerial = (ymd: string): number => {
  */
 export const watchSerial = (raw: string | null | undefined, timezone: string): number | null => {
   const iso = normaliseInstant(raw);
-  return iso === null ? null : dateSerial(localDate(iso, timezone));
+  if (iso === null) return null;
+  const date = localDate(iso, timezone);
+  return date === null ? null : dateSerial(date);
 };
 
 /** Per-episode minutes → the day fraction the `Episodes` column holds on a season row. */
