@@ -1,4 +1,5 @@
-import { apiGet, classify } from '../simkl/client.ts';
+import { apiGet } from '../simkl/client.ts';
+import { lookupPool } from '../simkl/pool.ts';
 import { localDate, releaseDate } from '../dates.ts';
 import { config } from '../config.ts';
 import type { MovieDetail, MovieRelease, ReleaseDateResult } from '../simkl/types.ts';
@@ -145,37 +146,26 @@ export const fetchMovieReleases = async (
   { signal, concurrency = 4 }: { signal?: AbortSignal; concurrency?: number } = {},
 ): Promise<MovieLookups> => {
   const out = new Map<number, MovieRelease>();
-  const failed: number[] = [];
-  const unavailable: number[] = [];
-  const queue = [...new Set(ids)];
 
-  const worker = async (): Promise<void> => {
-    while (queue.length) {
-      const id = queue.shift();
-      if (id === undefined) return;
-      try {
-        const movie = await fetchMovie(id, { signal });
-        const release = pickReleaseDate(movie);
-        // No announced date is an answer, not a failure.
-        if (!release) continue;
-        out.set(id, {
-          simkl_id: id,
-          title: movie.title,
-          date: release.date,
-          releaseType: release.type,
-          runtime: movie.runtime ? `${movie.runtime}m` : null,
-          url: `https://simkl.com/movies/${id}`,
-        });
-      } catch (err) {
-        // One unavailable film must not sink the refresh, but an account-level
-        // problem is not a fact about this film and must not be filed as one.
-        const kind = classify(err);
-        if (kind === 'account') throw err;
-        (kind === 'gone' ? unavailable : failed).push(id);
-      }
-    }
-  };
+  const { failed, unavailable } = await lookupPool(
+    [...new Set(ids)],
+    (id) => id,
+    async (id) => {
+      const movie = await fetchMovie(id, { signal });
+      const release = pickReleaseDate(movie);
+      // No announced date is an answer, not a failure.
+      if (!release) return;
+      out.set(id, {
+        simkl_id: id,
+        title: movie.title,
+        date: release.date,
+        releaseType: release.type,
+        runtime: movie.runtime ? `${movie.runtime}m` : null,
+        url: `https://simkl.com/movies/${id}`,
+      });
+    },
+    { concurrency },
+  );
 
-  await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker));
   return { releases: out, failed, unavailable };
 };

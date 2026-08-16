@@ -7,11 +7,21 @@
 import { login, writeToken, readToken } from './simkl/auth.ts';
 import { errorMessage } from './errors.ts';
 
-const existing = await readToken();
-if (existing && !process.argv.includes('--force')) {
-  console.log('A token already exists in the data directory.');
-  console.log('Re-run with --force to replace it.');
-  process.exit(0);
+// --force first, and the read inside a try: `readToken` rethrows anything that
+// is not ENOENT, so a corrupt or unreadable token.json would crash the one
+// command that exists to replace it.
+if (!process.argv.includes('--force')) {
+  let existing: string | null = null;
+  try {
+    existing = await readToken();
+  } catch (err) {
+    console.warn(`  The existing token could not be read (${errorMessage(err)}); authorising afresh.`);
+  }
+  if (existing) {
+    console.log('A token already exists in the data directory.');
+    console.log('Re-run with --force to replace it.');
+    process.exit(0);
+  }
 }
 
 try {

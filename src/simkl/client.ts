@@ -1,6 +1,9 @@
+import { backoffMs, HttpError, retryDelayMs, sleep } from '../backoff.ts';
 import { config, requireClientId } from '../config.ts';
 import { errorMessage } from '../errors.ts';
 import { withTimeout } from '../signals.ts';
+
+export { retryDelayMs };
 
 const API_BASE = 'https://api.simkl.com';
 
@@ -20,44 +23,14 @@ const GONE = new Set([404, 410]);
 
 const MAX_ATTEMPTS = 5;
 
-/** Ceiling on a server-requested wait, so a hostile header cannot stall a refresh. */
-const MAX_RETRY_AFTER_MS = 60_000;
-
 // Sync responses are small; without this a hung connection stalls a refresh
 // cycle until undici's 300s default.
 const TIMEOUT_MS = 30_000;
 
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-
-const backoffMs = (attempt: number): number => 2 ** (attempt - 1) * config.retryBaseMs;
-
-/**
- * How long to wait before the next attempt. Cloudflare answers a 429 with
- * `Retry-After` and retrying sooner can extend the throttle. Both forms are
- * accepted — seconds or an HTTP date — and anything unusable falls back to the
- * exponential backoff.
- */
-export const retryDelayMs = (res: Response, attempt: number): number => {
-  // Blank as well as absent: Number('') is 0, which would mean "retry now"
-  // against a server that just asked us to slow down.
-  const header = res.headers.get('retry-after');
-  if (header === null || header.trim() === '') return backoffMs(attempt);
-
-  const seconds = Number(header);
-  const ms = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header) - Date.now();
-  if (!Number.isFinite(ms) || ms < 0) return backoffMs(attempt);
-  return Math.min(ms, MAX_RETRY_AFTER_MS);
-};
-
-export class SimklError extends Error {
-  status: number | undefined;
-  body: string | undefined;
-
+export class SimklError extends HttpError {
   constructor(message: string, status?: number, body?: string) {
-    super(message);
+    super(message, status, body);
     this.name = 'SimklError';
-    this.status = status;
-    this.body = body;
   }
 }
 

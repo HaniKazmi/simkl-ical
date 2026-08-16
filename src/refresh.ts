@@ -1,9 +1,10 @@
-import { config } from './config.ts';
+import { config, sheetSyncConfigured } from './config.ts';
 import { errorMessage } from './errors.ts';
+import { SheetSync, type SheetSyncStatus } from './sheet-sync.ts';
 import { readToken } from './simkl/auth.ts';
 import { SimklAuthError } from './simkl/client.ts';
 import { anyStale, fetchAllCalendars, payloads, type Calendars } from './sources/calendar.ts';
-import { fetchLists, getActivities, listSignatures, staleLists, LISTS } from './sources/library.ts';
+import { fetchLists, getActivities, listSignatures, pruneSuperseded, staleLists, LISTS } from './sources/library.ts';
 import { fetchMovieReleases, reconcileReleases } from './sources/movies.ts';
 import { join, idSet, type FeedEvent } from './join.ts';
 import { renderIcs } from './ics.ts';
@@ -40,12 +41,26 @@ export interface Health {
   lastError: string | null;
   errors: SubsystemErrors;
   timezone: string;
+  sheet: SheetHealth;
+}
+
+export interface SheetHealth {
+  mode: string;
+  configured: boolean;
+  lastRunAt: string | null;
+  status: SheetSyncStatus;
+  frozen: boolean;
 }
 
 export interface SubsystemErrors {
   calendar: string | null;
   library: string | null;
   render: string | null;
+  /**
+   * Fourth slot for the same reason as the other three: the sheet sync shares
+   * the library timer, and the two must not clear each other's failures.
+   */
+  sheet: string | null;
 }
 
 /**
@@ -71,7 +86,16 @@ export class FeedState {
   renderedAt: string | null = null;
   servingCached = false;
   // One slot per subsystem: the two timers must not clear each other's failures.
-  errors: SubsystemErrors = { calendar: null, library: null, render: null };
+  errors: SubsystemErrors = { calendar: null, library: null, render: null, sheet: null };
+  /** Null unless a spreadsheet *and* a credential were both supplied. */
+  sheetSync: SheetSync | null = null;
+  /**
+   * Whether the last sheet sync wants another go. A boolean, not an interval:
+   * the sheet has no upstream clock of its own — everything it writes derives
+   * from watch state, and `staleLists` already detects that. This exists only
+   * so a failed write is not stranded until the user next watches something.
+   */
+  sheetRetryPending = false;
   timers: NodeJS.Timeout[] = [];
   /** Tail of the render chain; see safeRender. Never rejects. */
   private rendering: Promise<void> = Promise.resolve();
@@ -81,6 +105,7 @@ export class FeedState {
   constructor({ logger = console as Logger }: { logger?: Logger } = {}) {
     this.log = logger;
     this.ics = renderIcs([], { name: FEED_NAME });
+    if (sheetSyncConfigured()) this.sheetSync = new SheetSync({ logger });
   }
 
   /**
@@ -111,10 +136,20 @@ export class FeedState {
       stale: stalePoll || staleCalendars || staleRender || undefined,
       // A single headline value; `errors` carries the detail. Library problems
       // outrank calendar ones: a stale calendar still renders, a revoked token
-      // eventually will not.
-      lastError: this.errors.library ?? this.errors.calendar ?? this.errors.render ?? null,
+      // eventually will not. The sheet sits last — it cannot affect the feed.
+      lastError: this.errors.library ?? this.errors.calendar ?? this.errors.render ?? this.errors.sheet ?? null,
       errors: this.errors,
       timezone: config.timezone,
+      // Reported but deliberately excluded from `ok` above: /healthz is the
+      // container healthcheck and the CI smoke test, and a frozen sheet sync
+      // must not restart the container or fail a deploy.
+      sheet: {
+        mode: config.sheetSyncMode,
+        configured: this.sheetSync !== null,
+        lastRunAt: this.sheetSync?.lastRunAt ?? null,
+        status: this.sheetSync?.lastStatus ?? 'idle',
+        frozen: Boolean(this.sheetSync?.frozen),
+      },
     };
   }
 
@@ -243,6 +278,10 @@ export class FeedState {
    * lists — see listSignature in sources/library.ts.
    */
   async refreshLibraryIfChanged({ force = false }: { force?: boolean } = {}): Promise<void> {
+    // Whether anything the feed is built from moved. Declared out here because
+    // the render below sits outside the try, and a failed poll must not claim it.
+    let refetched = false;
+    let libraryFailed = false;
     try {
       // Inside the try: readToken only swallows ENOENT, so an unreadable
       // token.json must degrade the feed rather than escape to the timer.
@@ -262,13 +301,19 @@ export class FeedState {
       // Film dates age out on their own schedule, so a poll with no list
       // changes still has work to do once a day.
       const filmsDue = force || this.filmsDue();
-      if (!stale.length && !filmsDue) return;
+      // The retry term is a boolean, and false when the sync is unconfigured,
+      // so a quiet poll still makes exactly one request.
+      if (!stale.length && !filmsDue && !this.sheetRetryPending) return;
+      refetched = stale.length > 0 || filmsDue;
 
       if (stale.length) {
         this.log.info(`refetching ${stale.length}/${LISTS.length} lists: ${stale.map((l) => l.key).join(', ')}`);
         const library: Library = this.library ?? {};
         Object.assign(library, await fetchLists(token, stale, { signal: this.aborter.signal }));
-        this.library = library;
+        // Which lists are fresh is known here and nowhere else, and it is the
+        // only thing that can tell a stale copy of a moved title from the
+        // current one — see pruneSuperseded.
+        this.library = pruneSuperseded(library, stale);
       }
 
       // Re-read when the film list changed, and otherwise once a day. Marking
@@ -285,20 +330,51 @@ export class FeedState {
         this.log.warn('some film lookups failed; will retry on the next poll');
       }
       this.listSignatures = signatures;
-      this.libraryAt = new Date().toISOString();
+      // Only when a list actually moved. A poll that fell through purely to
+      // retry the sheet would otherwise report librarySyncedAt as now, which
+      // contradicts what that field means.
+      if (stale.length) this.libraryAt = new Date().toISOString();
     } catch (err) {
+      libraryFailed = true;
       // A revoked token must not empty the feed — keep serving the last render.
       const prefix = err instanceof SimklAuthError ? 'AUTH' : 'library';
       this.errors.library = `${prefix}: ${errorMessage(err)}`;
       this.log.error(
         err instanceof SimklAuthError
-          // The `--` matters: npm swallows a bare --force instead of passing it on.
-          ? 'SIMKL rejected the token. Re-run `npm run login -- --force`. Serving the last good feed.'
+          // A burst of uncached sync calls is answered with 401 user_token_failed
+          // rather than a 429, so this looks like a dead token and is usually a
+          // rate limit that clears on its own. Re-authorising fixes nothing the
+          // wait would not, so waiting is the advice.
+          ? 'SIMKL rejected the token. Usually a rate limit on uncached sync calls rather than a dead token — it clears by itself, so wait a few polls before re-running `npm run login -- --force`. Serving the last good feed.'
           : `library refresh failed: ${errorMessage(err)}`,
       );
     }
 
-    await this.safeRender();
+    // Only when something the feed is built from actually moved. A poll that
+    // fell through purely to retry the sheet would otherwise re-join, re-render
+    // and rewrite an identical feed to disk; the calendar timer still renders
+    // on its own schedule, so nothing goes stale.
+    if (refetched) await this.safeRender();
+    // The sheet is built entirely from the library, so if the library refresh
+    // threw there is nothing new for the sync to see — and running it anyway
+    // means a full grid read and re-plan on every poll of a SIMKL outage, plus
+    // a REFUSED line in the log for each one.
+    if (!libraryFailed) await this.syncSheet();
+  }
+
+  /**
+   * The sheet write, after the render and outside the library `try`.
+   *
+   * Outside, so a Sheets failure is never filed as `errors.library`, never
+   * touches `listSignatures`, and never holds the feed up. After, so the feed —
+   * which is the service's actual job — is already out before a spreadsheet is
+   * touched.
+   */
+  private async syncSheet(): Promise<void> {
+    if (!this.sheetSync || !this.library) return;
+    const result = await this.sheetSync.run(this.library, { signal: this.aborter.signal });
+    this.errors.sheet = result.error;
+    this.sheetRetryPending = result.retry;
   }
 
   /**

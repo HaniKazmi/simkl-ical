@@ -25,6 +25,35 @@ services:
       # How long an aired episode lingers in the feed.
       GRACE_DAYS: "14"
 
+      # --- Google Sheet sync (optional) ---------------------------------
+      # Off unless SHEET_ID is set here *and* GOOGLE_SA_KEY_B64 is in the
+      # secrets file. A target with no credential stays inert rather than
+      # failing once per poll, so half-configuring it is safe.
+      #
+      # Uncomment SHEET_ID and paste the id from the spreadsheet URL. Do not
+      # uncomment it empty: values here override the secrets file, so a blank
+      # one would disable a SHEET_ID set there.
+      #
+      # The default mode is `report` — it plans in full and logs every proposed
+      # edit without writing, which is what you want until a run has been read.
+      # Switching to `apply` also needs the spreadsheet shared with the service
+      # account's client_email as **Editor**; Viewer is enough for `report`.
+      #
+      # SHEET_ID: "1AbC…"
+      # SHEET_NAME: "Sheet1"
+      # SHEET_SYNC_MODE: "report"
+      #
+      # Safety limits. Over budget the whole plan is refused rather than
+      # trimmed, and the report still names every edit it wanted — so if a long
+      # absence produces a legitimate catch-up bigger than this, raise it for
+      # one run rather than letting a bug through. New season rows are not
+      # covered: exactly one is added per run, which is a property of how the
+      # requests are built rather than a setting.
+      #
+      # SHEET_SINCE_DAYS: "90"
+      # SHEET_MAX_EDITS: "30"
+      # SHEET_MAX_ROWS: "20"
+
     volumes:
       - simkl-ical-data:/data
 

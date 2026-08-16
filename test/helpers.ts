@@ -9,13 +9,23 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { config, type Config } from '../src/config.ts';
+import { MS_PER_DAY } from '../src/dates.ts';
 import type { Calendars } from '../src/sources/calendar.ts';
-import type { CalendarEntry, CalendarFile, ShowMetadata } from '../src/simkl/types.ts';
+import type { SheetSnapshot } from '../src/sources/sheet.ts';
+import type { CellData } from '../src/sheets/types.ts';
+import type { CalendarEntry, CalendarFile, Library, LibraryItem, ShowMetadata } from '../src/simkl/types.ts';
 
 // Here rather than per file, for the same reason: a file that forgets these
 // reaches the real API, or sleeps 15s per retry path.
 config.clientId ??= 'test-client-id';
 config.retryBaseMs = 1;
+// The same class of guard as withTempDataDir, and not a convenience. SHEET_ID
+// lives in .env, config.ts loads it at import, and a test that forgot to
+// override would write to the real spreadsheet.
+config.sheetId = undefined;
+config.sheetSyncMode = 'off';
+config.googleKeyBase64 = undefined;
+config.googleCredentialsExplicit = false;
 
 /** A logger that records nothing, for states under test. */
 export const quiet = { info() {}, warn() {}, error() {} };
@@ -105,3 +115,98 @@ export const jsonResponse = (body: unknown, { lastModified }: { lastModified?: s
 
 /** A minimal but well-formed calendar file. */
 export const calendarFile = (calendar: unknown[] = [], metadata: Record<string, unknown> = {}) => ({ calendar, metadata });
+
+// --- Sheet fixtures --------------------------------------------------------
+
+/**
+ * A cell, written the way the sheet reads. `{ formula }` is the one that
+ * matters: a formula target must be refused unconditionally, and only
+ * `userEnteredValue.formulaValue` distinguishes one.
+ */
+export type CellSpec = string | number | null | { formula: string; value?: string | number };
+
+export const cellOf = (spec: CellSpec): CellData => {
+  if (spec === null) return {};
+  if (typeof spec === 'object') {
+    const result = typeof spec.value === 'number' ? { numberValue: spec.value } : spec.value === undefined ? undefined : { stringValue: spec.value };
+    return { userEnteredValue: { formulaValue: spec.formula }, ...(result ? { effectiveValue: result } : {}) };
+  }
+  const value = typeof spec === 'number' ? { numberValue: spec } : { stringValue: spec };
+  return { userEnteredValue: value, effectiveValue: value };
+};
+
+/** Today's column order. Tests that care about header resolution shuffle it. */
+export const SHEET_HEADERS = ['Show', 'Status', 'Season', 'Episode', 'Start', 'End', 'Episodes', 'Length', 'id', 'Type'];
+
+export const sheetSnapshot = (rows: CellSpec[][], { sheetId = 1, columnCount }: { sheetId?: number; columnCount?: number } = {}): SheetSnapshot => ({
+  sheetId,
+  title: 'Sheet1',
+  rowCount: rows.length,
+  columnCount: columnCount ?? Math.max(...rows.map((r) => r.length)),
+  rows: rows.map((row) => row.map(cellOf)),
+  readAt: Date.now(),
+});
+
+/**
+ * A show row and a season row, in `SHEET_HEADERS` order.
+ *
+ * Shared rather than re-declared per file: these are positional arrays keyed to
+ * the header list, so a column added or reordered means editing every literal
+ * correctly — and a missed one shifts every index in that file without failing
+ * loudly. The show row's five derived cells are formulas because that is what
+ * they are on the real sheet, and the never-write-a-formula guard depends on it.
+ */
+export const showRow = (title: string, status: string | null, id: number | string | null = null, type = 'show'): CellSpec[] => [
+  title,
+  status,
+  { formula: '=LET(…)', value: 1 },
+  { formula: '=LET(…)', value: 6 },
+  45000,
+  { formula: '=LET(…)' },
+  { formula: '=LET(…)' },
+  { formula: '=LET(…)' },
+  id,
+  type,
+];
+
+export const seasonRow = (
+  season: number,
+  episode: number | null,
+  end: number | null,
+  { id = null, start = 45000 }: { id?: number | string | null; start?: number } = {},
+): CellSpec[] => [null, null, season, episode, start, end, 0.0153, { formula: '=G*F' }, id, null];
+
+/** An ISO instant `days` in the past — the cut-off is the gate on everything. */
+export const daysAgo = (days: number): string => ago(days * MS_PER_DAY);
+
+export interface ItemSpec {
+  id: number;
+  title?: string;
+  status?: string;
+  lastWatchedAt?: string | null;
+  watched?: number;
+  total?: number;
+  notAired?: number;
+  /** Season number → watched timestamps, one per episode. */
+  seasons?: Record<number, Array<string | null>>;
+}
+
+export const libraryItem = ({ id, title = `Show ${id}`, status = 'watching', lastWatchedAt, watched, total, notAired = 0, seasons = {} }: ItemSpec): LibraryItem => {
+  const episodes = Object.values(seasons).flat();
+  const counted = episodes.filter((at) => at !== null).length;
+  return {
+    show: { title, ids: { simkl: id } },
+    status,
+    last_watched_at: lastWatchedAt ?? episodes.filter((at): at is string => at !== null).sort().at(-1) ?? null,
+    watched_episodes_count: watched ?? counted,
+    total_episodes_count: total ?? counted,
+    not_aired_episodes_count: notAired,
+    seasons: Object.entries(seasons).map(([number, watchedAt]) => ({
+      number: Number(number),
+      episodes: watchedAt.map((at, i) => ({ number: i + 1, watched_at: at })),
+    })),
+  };
+};
+
+/** A library holding the given items in one `shows_watching` list. */
+export const libraryOf = (...items: ItemSpec[]): Library => ({ shows_watching: { shows: items.map(libraryItem) } });

@@ -4,7 +4,8 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { config } from '../src/config.ts';
 import { FeedState } from '../src/refresh.ts';
-import { ago, jsonResponse, quiet, recorder, withFetch, withTempDataDir } from './helpers.ts';
+import { LISTS } from '../src/sources/library.ts';
+import { ago, emptyCalendars, jsonResponse, quiet, recorder, withConfig, withFetch, withTempDataDir } from './helpers.ts';
 
 const T = '2026-08-15T12:00:00Z';
 
@@ -53,7 +54,7 @@ test('a cold start fetches every list and resolves the films', async () => {
   await withToken(async (state) => {
     await withFetch(api(activities()), async (calls) => {
       await state.refreshLibraryIfChanged();
-      assert.equal(lists(calls).length, 7, 'all seven lists');
+      assert.equal(lists(calls).length, LISTS.length, 'every list');
       assert.equal(lookups(calls).length, 1, 'and the one film');
       assert.ok(state.library);
       assert.equal(state.movieReleases.size, 1);
@@ -160,7 +161,7 @@ test('force refetches everything regardless of the signatures', async () => {
     await prime(state);
     await withFetch(api(activities()), async (calls) => {
       await state.refreshLibraryIfChanged({ force: true });
-      assert.equal(lists(calls).length, 7);
+      assert.equal(lists(calls).length, LISTS.length);
     });
   });
 });
@@ -283,5 +284,141 @@ test('a revoked token during film lookups is reported as AUTH', async () => {
       },
     );
     assert.match(state.errors.library!, /^AUTH:/);
+  });
+});
+
+// Dropping a show bumps only the destination list's timestamp, so `watching` is
+// never refetched and keeps its pre-move copy — status and all. Nothing in the
+// payloads separates that from an un-drop, so the poll has to resolve it while
+// it still knows which list it just fetched.
+test('a title claimed by a refetched list is evicted from the stale one it left', async () => {
+  await withToken(async (state) => {
+    await prime(state);
+    assert.equal(state.library?.shows_watching?.shows?.length, 1, 'the baseline has it in watching');
+
+    const moved = activities({ tv_shows: { dropped: '2026-08-16T00:00:00Z' } });
+    const dropped = { shows: [{ show: { title: 'A Show', ids: { simkl: 100 } }, status: 'dropped' }] };
+    await withFetch(
+      (url) => {
+        if (url.includes('/sync/activities')) return jsonResponse(moved);
+        if (url.includes('/all-items/shows/dropped')) return jsonResponse(dropped);
+        throw new Error(`unexpected request: ${url}`);
+      },
+      async (calls) => {
+        await state.refreshLibraryIfChanged();
+        assert.deepEqual(lists(calls), ['shows/dropped'], 'only the destination is refetched');
+      },
+    );
+
+    assert.deepEqual(state.library?.shows_watching?.shows, [], 'the stale membership goes');
+    assert.equal(state.library?.shows_dropped?.shows?.length, 1, 'and the fresh one stands');
+  });
+});
+
+// --- the sheet sync -------------------------------------------------------
+//
+// The sheet is a second consumer of the same poll. Everything here is about it
+// staying out of the feed's way: no extra requests when it is off, no library
+// error slot when it fails, and no effect on what /healthz says about SIMKL.
+
+test('SHEET_ID with no credential leaves the sync off rather than half on', async () => {
+  // The credentials path has a default, so testing it for truthiness would say
+  // "a credential was supplied" on every machine — and file an ENOENT per poll.
+  await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: undefined, googleCredentialsExplicit: false }, async () => {
+    await withToken(async (state) => {
+      assert.equal(state.sheetSync, null);
+      await withFetch(api(activities()), async (calls) => {
+        await state.refreshLibraryIfChanged();
+        assert.deepEqual(calls.filter((c) => c.includes('googleapis.com')), []);
+      });
+    });
+  });
+});
+
+test('with the sheet unconfigured a quiet poll still costs exactly one request', async () => {
+  await withToken(async (state) => {
+    await prime(state);
+    await withFetch(api(activities()), async (calls) => {
+      await state.refreshLibraryIfChanged();
+      assert.equal(calls.length, 1);
+    });
+  });
+});
+
+test('a sheet failure is never filed as a library error, and the feed still renders', async () => {
+  await withToken(async (state) => {
+    state.calendars = emptyCalendars();
+    state.calendarsFreshAt = new Date().toISOString();
+    // Stands in for the real SheetSync: the wiring is what is under test.
+    state.sheetSync = {
+      lastRunAt: null,
+      lastStatus: 'idle',
+      frozen: null,
+      run: async () => ({ status: 'failed' as const, edits: 0, inserts: 0, lines: [], error: 'sheets exploded', retry: true }),
+    } as unknown as FeedState['sheetSync'];
+
+    await withFetch(api(activities()), async () => {
+      await state.refreshLibraryIfChanged();
+    });
+
+    assert.equal(state.errors.library, null);
+    assert.equal(state.errors.sheet, 'sheets exploded');
+    assert.equal(state.sheetRetryPending, true);
+    assert.ok(state.renderedAt, 'the feed was rendered before the sheet was touched');
+    // A frozen or failing sheet must not restart the container or fail a deploy.
+    assert.equal(state.health.ok, true);
+    assert.equal(state.health.sheet.configured, true);
+  });
+});
+
+// The sheet is built entirely from the library, so a failed library refresh has
+// nothing new for it to see. Running it anyway costs a full grid read and
+// re-plan on every poll for the duration of a SIMKL outage: the quiet-poll early
+// return cannot prevent that, because the throw goes straight past it.
+test('a failed library refresh skips the sheet sync entirely', async () => {
+  await withToken(async (state) => {
+    state.calendars = emptyCalendars();
+    let runs = 0;
+    state.sheetSync = {
+      lastRunAt: null,
+      lastStatus: 'idle',
+      frozen: null,
+      run: async () => {
+        runs += 1;
+        return { status: 'idle' as const, edits: 0, inserts: 0, lines: [], error: null, retry: false };
+      },
+    } as unknown as FeedState['sheetSync'];
+
+    await prime(state);
+    assert.equal(runs, 1, 'a healthy poll does sync the sheet');
+
+    await withFetch(() => new Response('upstream down', { status: 503 }), async () => {
+      await state.refreshLibraryIfChanged();
+    });
+    assert.ok(state.errors.library, 'the poll really did fail');
+    assert.equal(runs, 1, 'and the sheet was left alone');
+  });
+});
+
+test('a poll that fell through only to retry the sheet does not advance librarySyncedAt', async () => {
+  await withToken(async (state) => {
+    state.calendars = emptyCalendars();
+    state.sheetSync = {
+      lastRunAt: null,
+      lastStatus: 'idle',
+      frozen: null,
+      run: async () => ({ status: 'idle' as const, edits: 0, inserts: 0, lines: [], error: null, retry: true }),
+    } as unknown as FeedState['sheetSync'];
+
+    await prime(state);
+    const synced = state.libraryAt;
+    assert.ok(synced);
+
+    await withFetch(api(activities()), async (calls) => {
+      await state.refreshLibraryIfChanged();
+      assert.equal(calls.length, 1, 'nothing was refetched');
+    });
+    // librarySyncedAt means "SIMKL lists were resynced", and none were.
+    assert.equal(state.libraryAt, synced);
   });
 });

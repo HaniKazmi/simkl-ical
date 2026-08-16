@@ -1,5 +1,6 @@
 import { config } from './config.ts';
 import { localDate, releaseDate, shiftDate } from './dates.ts';
+import { itemSimklId, itemStatus } from './simkl/item.ts';
 import type {
   CalendarEntry,
   FinaleType,
@@ -19,21 +20,33 @@ export const extractItems = (response: ListResponse | LibraryItem[] | null | und
   return response.shows ?? response.anime ?? response.movies ?? [];
 };
 
+export { itemSimklId };
+
 /**
- * The library calls this field `ids.simkl`; the calendar calls it `simkl_id`.
- * Bridging the two names is the whole join.
+ * Statuses that mean an item is only *still* in the list it was fetched from
+ * because nothing has evicted it.
+ *
+ * SIMKL reports a move against the destination list alone, so a show moved from
+ * watching to dropped sits in both — and `listSignature` advances only for the
+ * destination, so the source list is never refetched. `item.status` is the one
+ * field that says which is current, which is why `sheet/progress.ts` reads it
+ * too. Without this a dropped or on-hold show keeps generating its future
+ * episodes indefinitely, since a future date is always inside the window.
+ *
+ * `completed` is deliberately absent. It lingers the same way, but everything a
+ * completed title contributes is already dated, so it ages out of the grace
+ * window on its own — and SIMKL marks an ongoing show completed the moment you
+ * catch up, which is exactly when its next season matters most.
  */
-export const itemSimklId = (item: LibraryItem | null | undefined): number | null => {
-  const ids = item?.show?.ids ?? item?.movie?.ids;
-  return ids?.simkl ?? ids?.simkl_id ?? null;
-};
+const MOVED_ON = new Set(['dropped', 'hold']);
 
 export const idSet = (...responses: Array<ListResponse | LibraryItem[] | null | undefined>): Set<number> => {
   const set = new Set<number>();
   for (const response of responses) {
     for (const item of extractItems(response)) {
+      if (MOVED_ON.has(itemStatus(item) ?? '')) continue;
       const id = itemSimklId(item);
-      if (id != null) set.add(Number(id));
+      if (id !== null) set.add(id);
     }
   }
   return set;

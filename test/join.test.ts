@@ -166,6 +166,27 @@ test('an entry with no episode object gets a date-keyed uid, not "Eundefined"', 
   assert.equal(events[0].uid, 'simkl-600-20260827@simkl-ical');
 });
 
+// SIMKL reports a move against the destination list only, and `listSignature`
+// advances only for the destination — so the source list is never refetched and
+// the show sits in both indefinitely. Membership alone therefore keeps a
+// dropped show's *future* episodes coming forever, since a future date is
+// always inside the grace window.
+test('a show whose status says it moved on contributes nothing, however it is still listed', () => {
+  for (const status of ['dropped', 'hold']) {
+    const moved: Library = { ...library, shows_watching: { shows: [{ ...show(100, 'Watched Show'), status }] } };
+    const events = join(calendars([tvEntry(100, 4, 3, '2026-08-15T20:00:00Z')]), moved, { timezone: 'Europe/London', now: NOW });
+    assert.deepEqual(events, [], `status ${status}`);
+  }
+});
+
+// The counterpart, and the reason `completed` is not on that list: everything a
+// completed title contributes is already dated, so it ages out on its own.
+test('a completed show is still not treated as having moved on', () => {
+  const completed: Library = { ...library, shows_completed: { shows: [{ ...show(400, 'Completed Show'), status: 'completed' }] } };
+  const events = join(calendars([tvEntry(400, 4, 1, '2026-08-15T20:00:00Z')]), completed, { timezone: 'Europe/London', now: NOW });
+  assert.equal(events.length, 1);
+});
+
 test('shows not in any list are excluded', () => {
   const events = join(calendars([tvEntry(999, 1, 1, '2026-08-15T20:00:00Z')]), library, { timezone: 'Europe/London', now: NOW });
   assert.equal(events.length, 0);

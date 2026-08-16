@@ -1,8 +1,10 @@
 import { apiGet } from '../simkl/client.ts';
+import { itemSimklId, itemStatus } from '../simkl/item.ts';
 import type {
   Activities,
   CategoryActivity,
   Library,
+  LibraryItem,
   ListDefinition,
   ListResponse,
   SyncStatus,
@@ -10,9 +12,17 @@ import type {
 } from '../simkl/types.ts';
 
 /**
- * The lists that feed the calendar. Anime is a separate SIMKL type, not a genre
- * of shows, so it needs its own fetch. Movies only matter as plan-to-watch: a
- * film you have already seen has no upcoming release date worth showing.
+ * The lists that feed the calendar and the sheet sync. Anime is a separate
+ * SIMKL type, not a genre of shows, so it needs its own fetch. Movies only
+ * matter as plan-to-watch: a film you have already seen has no upcoming release
+ * date worth showing.
+ *
+ * `hold` and `dropped` earn their place through the sheet sync rather than the
+ * feed — `join` reads library keys by name, so nothing here can leak into it.
+ * The sync needs them because "absent from every list" has to mean *no
+ * information*: without them a dropped show is indistinguishable from one that
+ * never existed, and neither its `Abandoned` status nor its frozen season rows
+ * could be reasoned about.
  */
 export const LISTS: ListDefinition[] = [
   { key: 'shows_watching', type: 'shows', status: 'watching' },
@@ -21,9 +31,13 @@ export const LISTS: ListDefinition[] = [
   // aired so far, so a between-seasons show sits here rather than in watching.
   // Excluding it would silently drop the next season from the feed.
   { key: 'shows_completed', type: 'shows', status: 'completed' },
+  { key: 'shows_hold', type: 'shows', status: 'hold' },
+  { key: 'shows_dropped', type: 'shows', status: 'dropped' },
   { key: 'anime_watching', type: 'anime', status: 'watching' },
   { key: 'anime_plantowatch', type: 'anime', status: 'plantowatch' },
   { key: 'anime_completed', type: 'anime', status: 'completed' },
+  { key: 'anime_hold', type: 'anime', status: 'hold' },
+  { key: 'anime_dropped', type: 'anime', status: 'dropped' },
   { key: 'movies_plantowatch', type: 'movies', status: 'plantowatch' },
 ];
 
@@ -65,12 +79,88 @@ export const staleLists = (activities: Activities | null | undefined, previous: 
   return LISTS.filter((list) => current[list.key] !== previous[list.key]);
 };
 
+/**
+ * The extended params are unconditional, not gated on whether the sheet sync is
+ * configured. Behaviour that varies with an unrelated env var is how you get a
+ * bug that only reproduces on the machine holding the credentials.
+ *
+ * `extended=full` keeps `ids.simkl`, so the feed join is untouched;
+ * `include_all_episodes=yes` is *required* for the completed and dropped lists,
+ * where `seasons[]` is otherwise absent entirely. The cost is bandwidth only —
+ * 227 KB to 716 KB on a cold refresh, and zero extra requests.
+ */
 const fetchList = (
   token: string,
   type: SyncType,
   status: SyncStatus,
   { signal }: { signal?: AbortSignal } = {},
-): Promise<ListResponse> => apiGet<ListResponse>(`/sync/all-items/${type}/${status}`, { token, signal });
+): Promise<ListResponse> =>
+  apiGet<ListResponse>(`/sync/all-items/${type}/${status}`, {
+    token,
+    params: { extended: 'full', episode_watched_at: 'yes', include_all_episodes: 'yes' },
+    signal,
+  });
+
+/**
+ * Drop list membership that this poll's refetch has superseded.
+ *
+ * A move is reported only against the destination, so the list an item left is
+ * never refetched and keeps its copy indefinitely — carrying the status it held
+ * at the time. Nothing in the two payloads separates that from the opposite
+ * move: a stale `watching` copy saying `watching` beside a fresh `dropped` copy
+ * saying `dropped` is identical, field for field, to a fresh `watching` copy
+ * beside a stale `dropped` one. Any rule reading only the payloads gets one of
+ * the two backwards.
+ *
+ * Which list was just fetched is the only thing that tells them apart, and it
+ * is known here and nowhere downstream. So: an item that arrives in the list
+ * its own `status` names is current there, and every other list of the same
+ * type is out of date about it.
+ */
+export const pruneSuperseded = (library: Library, refreshed: ListDefinition[]): Library => {
+  const owner = new Map<number, ListDefinition>();
+  for (const list of refreshed) {
+    for (const item of itemsOf(library[list.key])) {
+      if (itemStatus(item) !== list.status) continue;
+      const id = itemSimklId(item);
+      if (id !== null) owner.set(id, list);
+    }
+  }
+  if (!owner.size) return library;
+
+  const pruned: Library = { ...library };
+  for (const list of LISTS) {
+    const superseded = (item: LibraryItem): boolean => {
+      const id = itemSimklId(item);
+      if (id === null) return false;
+      const claimant = owner.get(id);
+      return claimant !== undefined && claimant.type === list.type && claimant.key !== list.key;
+    };
+    const next = without(library[list.key], superseded);
+    if (next) pruned[list.key] = next;
+  }
+  return pruned;
+};
+
+const itemsOf = (response: ListResponse | undefined): LibraryItem[] => [
+  ...(response?.shows ?? []),
+  ...(response?.anime ?? []),
+  ...(response?.movies ?? []),
+];
+
+/** A copy without the matching items, or undefined when nothing matched. */
+const without = (response: ListResponse | undefined, drop: (item: LibraryItem) => boolean): ListResponse | undefined => {
+  if (!response) return undefined;
+  let changed = false;
+  const keep = (items: LibraryItem[] | undefined): LibraryItem[] | undefined => {
+    if (!items) return items;
+    const kept = items.filter((item) => !drop(item));
+    if (kept.length !== items.length) changed = true;
+    return kept;
+  };
+  const next: ListResponse = { ...response, shows: keep(response.shows), anime: keep(response.anime), movies: keep(response.movies) };
+  return changed ? next : undefined;
+};
 
 /**
  * Sequential on purpose: the SIMKL docs warn against parallelising uncached
