@@ -177,7 +177,11 @@ const due = (last: string | null, everyMs: number, now: number): Due => {
  */
 const calendarDetail = (input: StatusInput, now: number): string => {
   const prefix = 'airdate calendars';
-  if (input.calendarError) return `${prefix} — serving cache`;
+  // `calendarsAt` is stamped only after a fetch returns, so a failure with none
+  // means the CDN has never answered this process and there is nothing cached
+  // to fall back on. Saying "serving cache" there asserts a copy that does not
+  // exist, on exactly the boot where the page is being read to find that out.
+  if (input.calendarError) return input.calendarsAt === null ? `${prefix} — none yet, the CDN has not answered` : `${prefix} — serving cache`;
   if (input.calendarsChangedAt === null) return prefix;
   if (input.calendarsChangedAt === input.calendarsAt) return `${prefix} — new airdates`;
   return `${prefix} — unchanged since ${stamp(input.calendarsChangedAt, now).label}`;
