@@ -228,8 +228,13 @@ special about the setup.
 
 ## Running from source
 
-Requires Node 22.18+ (for native TypeScript support). CI runs the suite on 22.18 and 24,
-so the floor is tested rather than merely claimed.
+Requires Node 26.0.0+ — for native TypeScript support, and for the Temporal API, which this
+codebase uses for every date and duration. CI runs the suite on 26.0.0 and 26, so the floor is
+tested rather than merely claimed.
+
+Temporal is enabled at *build* time, not by a runtime flag, and not every distribution enables it —
+Homebrew's `node` does not. Check with `node -p "typeof Temporal"`, which must print `object`. The
+builds from [nodejs.org](https://nodejs.org) and the official `node:26-alpine` image both have it.
 
 ```sh
 npm install

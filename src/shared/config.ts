@@ -179,6 +179,31 @@ export const requireValidTimezone = (timeZone: string = config.timezone): string
 };
 
 /**
+ * Fail loudly at boot when the runtime has no Temporal.
+ *
+ * Every date and duration in this codebase is a Temporal value, so a runtime
+ * without it does not degrade — it throws `ReferenceError` from wherever the
+ * first date is touched, which on a warm start is inside a render and reads as
+ * a corrupt feed rather than a wrong runtime.
+ *
+ * Worth its own check because the version number does not answer the question.
+ * Temporal is enabled at *build* time, not by a runtime flag: `--harmony-temporal`
+ * already defaults on in V8 and is not the gate. Homebrew's `node` 26 reports
+ * `v8_enable_temporal_support: 0` and has no `Temporal`; the nodejs.org binaries
+ * of the same version, and `node:26-alpine`, report 1 and do.
+ *
+ * The global is a parameter so a test can pass a runtime that lacks it.
+ */
+export const requireTemporal = (globals: { Temporal?: unknown } = globalThis): void => {
+  if (typeof globals.Temporal !== 'undefined') return;
+  throw new Error(
+    'This runtime has no Temporal. It is a build-time option, not a flag, so the version alone ' +
+      'does not settle it — check with `node -p "typeof Temporal"`, which must print `object`. ' +
+      'Homebrew\'s node is built without it; use nodejs.org, fnm or nvm.',
+  );
+};
+
+/**
  * Whether the sheet sync should exist at all: a target *and* a credential that
  * was actually supplied.
  *
