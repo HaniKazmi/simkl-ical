@@ -1,5 +1,8 @@
 /**
- * Per-title catalogue lookups: what SIMKL says *exists*, as opposed to what the
+ * READ — per-title catalogue lookups, and the sync's other input.
+ *
+ * In `io/` because it is SIMKL I/O the steps run on rather than a step itself:
+ * what SIMKL says *exists*, as opposed to what the
  * library says was watched.
  *
  * Two endpoints, and neither substitutes for the other:
@@ -16,9 +19,9 @@
  * is allowed — unlike the sync endpoints, which must stay sequential.
  */
 
-import { apiGet } from '../api/simkl/client.ts';
-import { lookupPool } from '../api/simkl/pool.ts';
-import type { EpisodeDetail, ShowDetail } from '../api/simkl/types.ts';
+import { apiGet } from '../../api/simkl/client.ts';
+import { lookupPool } from '../../api/simkl/pool.ts';
+import type { EpisodeDetail, ShowDetail } from '../../api/simkl/types.ts';
 
 /**
  * No cache here, deliberately — the same division as `movies.ts`, where the

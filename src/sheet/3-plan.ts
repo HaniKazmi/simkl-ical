@@ -1,5 +1,8 @@
 /**
- * Grid + library + catalogue → a plan. Pure, and **never throws**: an
+ * PLAN — grid + library + catalogue → a plan.
+ *
+ * Third of READ → PARSE → **PLAN** → GUARD → BUILD → APPLY → VERIFY. Pure, and
+ * **never throws**: an
  * unresolvable row becomes a skip with a reason, not an exception. The sync
  * calls this from inside a path that must degrade rather than fail.
  *
@@ -10,9 +13,9 @@
 
 import { config } from '../shared/config.ts';
 import { MS_PER_DAY } from '../shared/dates.ts';
-import { a1, columnLetter, duplicateIds, idsFor, type ColumnMap, type Grid, type HeaderName, type SeasonRow, type ShowBlock } from './grid.ts';
-import { courComplete, runtimeDays, seasonComplete, watchSerial, type SeasonShape, type TitleProgress } from './progress.ts';
-import type { CatalogueRequest } from '../sources/shows.ts';
+import { a1, columnLetter, duplicateIds, idsFor, type ColumnMap, type Grid, type HeaderName, type SeasonRow, type ShowBlock } from './1-grid.ts';
+import { courComplete, runtimeDays, seasonComplete, watchSerial, type SeasonShape, type TitleProgress } from './2-progress.ts';
+import type { CatalogueRequest } from './io/catalogue.ts';
 import type { CellData, ExtendedValue } from '../api/google/types.ts';
 
 /**

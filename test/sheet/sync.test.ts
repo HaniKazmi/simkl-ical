@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
-import { SheetSync } from '../src/sheet-sync.ts';
-import { clearTokenCache } from '../src/api/google/auth.ts';
-import type { CellData, SheetRequest } from '../src/api/google/types.ts';
-import { cellOf, daysAgo, jsonResponse, libraryOf, quiet, recorder, sheetSnapshot, SHEET_HEADERS, withConfig, withFetch, type CellSpec, seasonRow, showRow } from './helpers.ts';
+import { SheetSync } from '../../src/sheet/sync.ts';
+import { clearTokenCache } from '../../src/api/google/auth.ts';
+import type { CellData, SheetRequest } from '../../src/api/google/types.ts';
+import { cellOf, daysAgo, jsonResponse, libraryOf, quiet, recorder, sheetSnapshot, SHEET_HEADERS, withConfig, withFetch, type CellSpec, seasonRow, showRow } from '../helpers.ts';
 
 const H = SHEET_HEADERS;
 

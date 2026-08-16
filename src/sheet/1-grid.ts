@@ -1,5 +1,7 @@
 /**
- * Snapshot → blocks. Pure: no config, no clock, no network.
+ * PARSE — snapshot → blocks. Pure: no config, no clock, no network.
+ *
+ * Second of READ (io/) → **PARSE** → PLAN → GUARD → BUILD → APPLY → VERIFY.
  *
  * The sheet's structure is implicit — a row with the `Show` column filled
  * starts a block, and every row after it belongs to that block until the next
@@ -8,7 +10,7 @@
  */
 
 import type { CellData, ExtendedValue } from '../api/google/types.ts';
-import type { SheetSnapshot } from '../sources/sheet.ts';
+import type { SheetSnapshot } from './io/spreadsheet.ts';
 
 /**
  * The labels the sync needs. Columns are resolved by these, never by position:

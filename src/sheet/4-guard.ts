@@ -1,22 +1,22 @@
 /**
- * The last thing between a plan and the spreadsheet. Pure.
+ * GUARD — the last thing between a plan and the spreadsheet. Pure.
+ *
+ * Fourth of READ → PARSE → PLAN → **GUARD** → BUILD → APPLY → VERIFY, and
+ * numbered next to `5-requests.ts` to say the one thing that matters most about
+ * it: nothing is built until this has passed.
  *
  * `assertPlanSafe` re-derives every claim the planner made, against the
  * snapshot the plan was built from, and throws rather than trimming: a plan
  * over budget is refused whole, because the interesting failure is "the planner
  * is wrong about something", and half of a wrong plan is still wrong.
- *
- * `toRequests` is the highest-value function here. batchUpdate applies requests
- * in array order, so that order is the difference between a correct write and a
- * one-row misalignment.
  */
 
 import { config } from '../shared/config.ts';
-import { isBlank, isFormula, numberOf, sameValue, type Grid, type HeaderName } from './grid.ts';
+import { isBlank, isFormula, numberOf, sameValue, type Grid, type HeaderName } from './1-grid.ts';
 import { shiftDate } from '../shared/dates.ts';
-import { dateSerial } from './progress.ts';
-import type { CellEdit, SheetPlan } from './plan.ts';
-import type { ExtendedValue, GridRange, SheetRequest } from '../api/google/types.ts';
+import { dateSerial } from './2-progress.ts';
+import type { CellEdit, SheetPlan } from './3-plan.ts';
+import type { ExtendedValue } from '../api/google/types.ts';
 
 /** What the sync may write to a row that already exists. */
 const EDIT_FIELDS = new Set<HeaderName>(['Status', 'Episode', 'End']);
@@ -168,130 +168,3 @@ export const assertPlanSafe = (
     }
   }
 };
-
-// --- Requests --------------------------------------------------------------
-
-const oneCell = (sheetId: number, row: number, column: number): GridRange => ({
-  sheetId,
-  startRowIndex: row,
-  endRowIndex: row + 1,
-  startColumnIndex: column,
-  endColumnIndex: column + 1,
-});
-
-/** `fields: 'userEnteredValue'` so number formats and conditional formatting survive. */
-const writeCell = (sheetId: number, row: number, column: number, value: ExtendedValue | undefined): SheetRequest => ({
-  updateCells: {
-    range: oneCell(sheetId, row, column),
-    // An absent value clears the cell, which is what a rollback of an inserted
-    // value needs.
-    rows: [{ values: [value === undefined ? {} : { userEnteredValue: value }] }],
-    fields: 'userEnteredValue',
-  },
-});
-
-/**
- * The plan as one ordered batch, in three groups:
- *
- *   a. edits to pre-existing rows, descending by row
- *   b. the insertDimension
- *   c. the new row's fill
- *
- * The fill shares a row index with the insert. Any rule of the form "edits
- * before inserts" therefore applies the fill to whatever currently sits at that
- * index and *then* inserts a blank row below it — overwriting a real row, which
- * is the exact failure this design exists to prevent.
- */
-export const toRequests = (plan: SheetPlan, grid: Grid): SheetRequest[] => {
-  const { sheetId } = grid.snapshot;
-  const requests: SheetRequest[] = [];
-
-  for (const cell of [...plan.edits].sort((a, b) => b.row - a.row || b.column - a.column)) {
-    requests.push(writeCell(sheetId, cell.row, cell.column, cell.value));
-  }
-  for (const insert of plan.inserts) {
-    requests.push({
-      insertDimension: {
-        range: { sheetId, dimension: 'ROWS', startIndex: insert.row, endIndex: insert.row + 1 },
-        inheritFromBefore: true,
-      },
-    });
-    for (const cell of insert.fill) requests.push(writeCell(sheetId, cell.row, cell.column, cell.value));
-  }
-  return requests;
-};
-
-/**
- * Prefix for the snapshot tabs the sync makes before writing. Strict, because
- * it is the sole basis on which a tab is later swept.
- */
-export const BACKUP_PREFIX = '_sync-backup-';
-
-/**
- * Where a snapshot is moved to when the run it belongs to freezes: out of the
- * swept namespace, and into a name that says what it is to whoever opens the
- * spreadsheet next.
- *
- * `frozen` is process state, so a restart forgets that a run told the user to
- * repair from a particular tab. Without the rename the next clean write would
- * sweep it away — and it is the only thing that makes the repair a copy rather
- * than an archaeology exercise in version history.
- */
-export const REPAIR_PREFIX = '_sync-REPAIR-';
-
-export const isBackupTab = (title: string): boolean => title.startsWith(BACKUP_PREFIX);
-
-export const backupName = (now: Date): string => `${BACKUP_PREFIX}${now.toISOString().replaceAll(':', '-').replace('.', '-')}`;
-
-export const repairName = (backup: string): string => backup.replace(BACKUP_PREFIX, REPAIR_PREFIX);
-
-/** `fields: 'title'` so the tab keeps its position, colour and grid size. */
-export const renameSheetRequest = (sheetId: number, title: string): SheetRequest => ({
-  updateSheetProperties: { properties: { sheetId, title }, fields: 'title' },
-});
-
-/**
- * Snapshot the tab, as the first request of the write batch.
- *
- * First, and in the *same* batch, deliberately: batchUpdate applies in order
- * and atomically, so the copy captures the pre-write state and there is no
- * window in which the write landed but the snapshot did not. It duplicates
- * server-side, so a 1644-row tab costs no data transfer.
- */
-export const backupRequest = (sheetId: number, name: string): SheetRequest => ({
-  duplicateSheet: { sourceSheetId: sheetId, newSheetName: name },
-});
-
-export const deleteSheetRequest = (sheetId: number): SheetRequest => ({ deleteSheet: { sheetId } });
-
-/**
- * Put the whole tab back from its snapshot, in one server-side request.
- *
- * Source and destination sit at identical coordinates, so the paste offset is
- * zero and no relative formula reference is adjusted — which is exactly what
- * makes this immune to the off-by-one that a cell-by-cell restore invites.
- *
- * The caller must delete any inserted rows first: this overwrites a range, it
- * does not shrink the grid, so an extra row would survive underneath it.
- */
-export const restoreRequest = (fromSheetId: number, toSheetId: number, rowCount: number, columnCount: number): SheetRequest => ({
-  copyPaste: {
-    source: { sheetId: fromSheetId, startRowIndex: 0, endRowIndex: rowCount, startColumnIndex: 0, endColumnIndex: columnCount },
-    destination: { sheetId: toSheetId, startRowIndex: 0, endRowIndex: rowCount, startColumnIndex: 0, endColumnIndex: columnCount },
-    pasteType: 'PASTE_NORMAL',
-  },
-});
-
-/**
- * Undo the structural half of a write: delete the rows it inserted.
- *
- * Descending, so no index shifts under the deletes. There is no cell-restore
- * counterpart — `SheetSync` restores from the snapshot tab instead, because
- * putting individual cells back cannot be made safe alongside a delete: the
- * delete rewrites the relative references in everything it shifts, including
- * text written moments earlier in the same batch.
- */
-export const deleteRowRequests = (sheetId: number, rows: number[]): SheetRequest[] =>
-  [...rows]
-    .sort((a, b) => b - a)
-    .map((row) => ({ deleteDimension: { range: { sheetId, dimension: 'ROWS' as const, startIndex: row, endIndex: row + 1 } } }));

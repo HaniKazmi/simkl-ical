@@ -1,5 +1,7 @@
 /**
- * Reading and writing one tab of the spreadsheet. The only I/O in the sync.
+ * READ and APPLY — one tab of the spreadsheet, and the only Google I/O in the
+ * sync. In `io/` rather than numbered because it is used at both ends of the
+ * pipeline: the read that starts a cycle and the batch that ends it.
  *
  * Reads use `spreadsheets.get` with grid data rather than `values.get`: one
  * request returns `userEnteredValue` (the definitive formula test) and
@@ -10,9 +12,9 @@
  * `15/08` misparse identically for the first twelve days of every month.
  */
 
-import { config } from '../shared/config.ts';
-import { sheetsRequest } from '../api/google/client.ts';
-import type { BatchUpdateResponse, CellData, SheetRequest, SpreadsheetResponse } from '../api/google/types.ts';
+import { config } from '../../shared/config.ts';
+import { sheetsRequest } from '../../api/google/client.ts';
+import type { BatchUpdateResponse, CellData, SheetRequest, SpreadsheetResponse } from '../../api/google/types.ts';
 
 /**
  * One tab, as read. `rows` is ragged — the API omits trailing blanks — so every

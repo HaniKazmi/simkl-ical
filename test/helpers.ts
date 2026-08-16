@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { config, type Config } from '../src/shared/config.ts';
 import { MS_PER_DAY } from '../src/shared/dates.ts';
 import type { Calendars } from '../src/feed/io/calendar.ts';
-import type { SheetSnapshot } from '../src/sources/sheet.ts';
+import type { SheetSnapshot } from '../src/sheet/io/spreadsheet.ts';
 import type { CellData } from '../src/api/google/types.ts';
 import type { CalendarEntry, CalendarFile, Library, LibraryItem, ShowMetadata } from '../src/api/simkl/types.ts';
 

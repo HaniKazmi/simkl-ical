@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { columnLetter, duplicateIds, findHeaderRow, GridError, idsFor, parseGrid, parseIds, resolveColumns } from '../src/sheet/grid.ts';
-import { cellOf, sheetSnapshot, SHEET_HEADERS, type CellSpec, seasonRow, showRow } from './helpers.ts';
+import { columnLetter, duplicateIds, findHeaderRow, GridError, idsFor, parseGrid, parseIds, resolveColumns } from '../../src/sheet/1-grid.ts';
+import { cellOf, sheetSnapshot, SHEET_HEADERS, type CellSpec, seasonRow, showRow } from '../helpers.ts';
 
 const H = SHEET_HEADERS;
 const show = showRow;
