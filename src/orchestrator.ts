@@ -30,6 +30,12 @@ import { SheetSync, type SheetSyncStatus } from './sheet/sync.ts';
  * comes from `Feed`, `library` from here, `sheet` from `SheetSync`.
  */
 export interface Health {
+  /**
+   * Whether restarting this container would help — not whether anything is
+   * wrong. Deliberately narrower than `problems`: a revoked token is usually a
+   * self-clearing rate limit, and a restart cold-starts into the full pull that
+   * provokes it. The status page reports the wider question.
+   */
   ok: boolean;
   timezone: string;
   /**
@@ -302,6 +308,7 @@ export class Orchestrator {
       // else, so this is what tells it whether there is anything to re-render —
       // and marking an episode watched moves `updated` without moving this.
       let reshaped = 0;
+      let pulled = false;
       // The retry term is a boolean, and false when the sync is unconfigured,
       // so a quiet poll still makes exactly one request.
       if (!full && !changed && !removals && !filmsDue && !this.sheetRetryPending) return;
@@ -318,7 +325,11 @@ export class Orchestrator {
         this.log.info('pulling the whole library');
         this.library = toLibrary(await fetchAllItems(token, { signal }));
         gate.updated = this.library.size;
-        reshaped = this.library.size;
+        // Not the size: a genuinely empty library is still a pull that
+        // succeeded, and leaving it unrendered means `renderedAt` stays null
+        // and the container reports unhealthy until the six-hour calendar
+        // timer renders on its own.
+        pulled = true;
         // A full pull *is* the membership set, so removals need no second call.
         this.removalAt = stamps;
         // Never back to null. `full` is partly `!this.syncedAll`, so a null
@@ -366,7 +377,7 @@ export class Orchestrator {
       // Deliberately not `gate.updated`: watching an episode rewrites a record
       // the feed cannot see any of, so rendering on it re-joins to the identical
       // event set and rewrites the file for a fresh DTSTAMP and nothing else.
-      shouldRender = reshaped > 0 || gate.removed > 0 || filmsDue;
+      shouldRender = pulled || reshaped > 0 || gate.removed > 0 || filmsDue;
 
       // Re-read when the film list changed, and otherwise when one comes into
       // range. Marking an episode watched must not drag every film lookup along.
@@ -376,7 +387,7 @@ export class Orchestrator {
       // films that failed.
       // Same reasoning: a film enters or leaves plan-to-watch by changing
       // status, never by a watch count moving.
-      if (reshaped > 0 || filmsDue) {
+      if (pulled || reshaped > 0 || filmsDue) {
         const complete = await this.feed.resolveFilms(this.library, { signal });
         if (!complete) this.log.warn('some film lookups failed; will retry on the next poll');
       }
@@ -385,6 +396,9 @@ export class Orchestrator {
       // contradicts what that field means.
       if (gate.updated > 0 || gate.removed > 0) this.libraryAt = new Date().toISOString();
     } catch (err) {
+      // Shutdown is not a failure: `stop()` aborts every in-flight fetch, and
+      // reporting that as a library error is the last thing written to the log.
+      if (err instanceof Error && err.name === 'AbortError') return;
       // A revoked token must not empty the feed — keep serving the last render.
       const prefix = err instanceof SimklAuthError ? 'AUTH' : 'library';
       this.errors.library = `${prefix}: ${errorMessage(err)}`;
@@ -452,6 +466,10 @@ export class Orchestrator {
   }
 
   start(): void {
+    // A fresh controller per start: `stop()` aborts the old one, and an aborted
+    // signal never resets, so reusing it makes every later fetch fail instantly
+    // with the failure filed as a library error.
+    if (this.aborter.signal.aborted) this.aborter = new AbortController();
     this.schedule('calendar refresh', () => this.refreshCalendars(), config.calendarRefreshMs);
     this.schedule('library poll', () => this.refreshLibraryIfChanged(), config.activitiesPollMs);
   }

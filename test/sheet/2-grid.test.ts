@@ -148,3 +148,20 @@ test('a non-numeric End still closes the row', () => {
   rows[2]![5] = 'TBD';
   assert.equal(parseGrid(sheetSnapshot(rows)).blocks[0]?.seasons[0]?.closed, true);
 });
+
+// The likeliest false positive, and the one that made a block permanently
+// inert: the series id belongs on the show row, and a user who also writes it
+// on that show's own season row has repeated a true statement, not created a
+// conflict. Counted per row it reported every row in the block as clashing.
+test('a show row and its own season row naming one id is not a duplicate', () => {
+  const grid = parseGrid(sheetSnapshot([H, show('Frieren', 'Watching', 99, 'anime'), season(1, 12, 44000, null, 99)]));
+  assert.deepEqual([...duplicateIds(grid.blocks)], []);
+});
+
+// A row with an id and nothing else has no season to advance and no shape to
+// compare against, but the by-id resolution path never consults `season` — so
+// a count would be planned into a row that is not a season row at all.
+test('a row carrying only an id is not read as a season row', () => {
+  const grid = parseGrid(sheetSnapshot([H, show('Fargo', 'Ended', 100), [null, null, null, null, null, null, null, null, 3381, null]]));
+  assert.deepEqual(grid.blocks[0]?.seasons, []);
+});

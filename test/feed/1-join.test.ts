@@ -363,3 +363,24 @@ test('events are deduplicated by uid and sorted by date', () => {
   assert.equal(events.length, 2);
   assert.deepEqual(events.map((e) => e.date), ['2026-08-12', '2026-08-15']);
 });
+
+// Upstream data, several thousand entries per file, validated on arrival only
+// for `Array.isArray(calendar)`. `Intl.DateTimeFormat.format` raises on an
+// Invalid Date rather than returning anything a NaN check would catch, so one
+// bad `date` field would abort the join, set `errors.render`, and stop the feed
+// updating until the CDN fixed itself.
+test('a malformed airdate skips its entry rather than aborting the render', () => {
+  const cals = calendars([
+    { simkl_id: 100, date: 'not a date', finale_type: null, episode: { season: 4, episode: 2, title: 'bad', url: '' } },
+    tvEntry(100, 4, 3, '2026-08-15T20:00:00Z'),
+  ]);
+
+  const events = join(cals, library, { timezone: 'Europe/London', now: NOW });
+  assert.equal(events.length, 1, 'the good entry still renders');
+  assert.equal(events[0]?.summary, 'Watched Show – S04E03');
+});
+
+test('an entry with no date at all is skipped the same way', () => {
+  const cals = calendars([{ simkl_id: 100, date: '', finale_type: null } as never, tvEntry(100, 4, 3, '2026-08-15T20:00:00Z')]);
+  assert.equal(join(cals, library, { timezone: 'Europe/London', now: NOW }).length, 1);
+});

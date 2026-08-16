@@ -24,8 +24,12 @@ export const loadFeed = async (): Promise<string | null> => {
   let text: string;
   try {
     text = await readFile(feedPath(), 'utf8');
-  } catch {
-    return null; // First run, or no feed saved yet.
+  } catch (err) {
+    // Only a missing file is a first run. A permission error or a directory
+    // where the file belongs reads identically to a cold start otherwise, and
+    // the operator sees a silently empty feed with nothing in the log.
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
   }
 
   // Unlike JSON, a truncated ICS still reads as a string, so it would be served

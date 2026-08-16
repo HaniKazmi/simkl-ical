@@ -12,7 +12,10 @@
 import { createSign } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { config } from '../../shared/config.ts';
+import { withTimeout } from '../../shared/signals.ts';
 import { errorMessage } from '../../shared/errors.ts';
+
+const TIMEOUT_MS = 30_000;
 
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 
@@ -90,7 +93,12 @@ export const exchangeToken = async (key: ServiceAccountKey, { signal }: { signal
       grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
       assertion: `${signingInput}.${signature}`,
     }),
-    signal,
+    // The caller's signal is the orchestrator's, which only fires on shutdown,
+    // so on its own it is no bound at all. Every other fetch here carries one
+    // for the same reason: a hung connection otherwise stalls the sheet run —
+    // and with it the library poll it sits inside — until undici's 300s
+    // default.
+    signal: withTimeout(signal, TIMEOUT_MS),
   });
 
   const body = (await response.json().catch(() => ({}))) as { access_token?: string; expires_in?: number; error_description?: string };

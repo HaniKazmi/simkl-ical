@@ -86,16 +86,20 @@ export const sheetsRequest = async <T>(
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const token = await getAccessToken({ signal });
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/json',
-      'User-Agent': `${config.appName}/${config.appVersion}`,
-    };
-    if (body !== undefined) headers['Content-Type'] = 'application/json';
-
     let res: Response;
     try {
+      // Inside the try as well as inside the loop: re-signing per attempt is
+      // the point, and a transient failure *obtaining* the token is exactly as
+      // retryable as a transient failure using it — left outside, it escaped a
+      // read that had opted into retrying.
+      const token = await getAccessToken({ signal });
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json',
+        'User-Agent': `${config.appName}/${config.appVersion}`,
+      };
+      if (body !== undefined) headers['Content-Type'] = 'application/json';
+
       res = await fetch(url, {
         method,
         headers,

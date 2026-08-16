@@ -1,4 +1,4 @@
-import { mkdir, rename, writeFile } from 'node:fs/promises';
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 /**
@@ -21,5 +21,14 @@ export const writeFileAtomic = async (
   writes += 1;
   const tmp = `${path}.${process.pid}.${writes}.tmp`;
   await writeFile(tmp, data, { mode });
-  await rename(tmp, path);
+  try {
+    await rename(tmp, path);
+  } catch (err) {
+    // The temp file is unique per call, so a failed rename strands it rather
+    // than overwriting anything — on a full disk that is one more file per
+    // write, forever. Unlinking is best-effort: the original error is the one
+    // worth reporting.
+    await rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
 };

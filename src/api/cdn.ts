@@ -96,7 +96,13 @@ export const fetchCached = async <T>(url: string, key: string, { validate, signa
   }
 
   if (res.status === 304 && cached) return { ...cached, source: 'not-modified' };
-  if (!res.ok) return fallback(`returned ${res.status}`);
+  if (!res.ok) {
+    // Drained rather than dropped. An unread body holds its socket out of
+    // undici's pool until GC, and these are the multi-MB files — on exactly
+    // the 5xx path where the CDN is already struggling.
+    await res.body?.cancel().catch(() => {});
+    return fallback(`returned ${res.status}`);
+  }
 
   let data: T;
   try {

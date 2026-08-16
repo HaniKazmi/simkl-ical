@@ -60,7 +60,13 @@ export const readSnapshot = async ({ signal }: { signal?: AbortSignal } = {}): P
     signal,
   });
 
-  const sheet = response.sheets?.find((s) => s.properties?.title === title) ?? response.sheets?.[0];
+  // By name only. Falling back to the first tab is safe solely because
+  // `params.ranges` constrains the response to one — and if that mask were ever
+  // loosened, the sync would read, plan against and write to whatever came
+  // back first, which after a frozen run is a `_sync-REPAIR-…` snapshot. The
+  // title below defaults to the *configured* name, so the mismatch would not
+  // even show up in the log.
+  const sheet = response.sheets?.find((s) => s.properties?.title === title);
   const sheetId = sheet?.properties?.sheetId;
   if (!sheet || sheetId === undefined) {
     throw new Error(`No tab named ${title} in the spreadsheet.`);
@@ -76,8 +82,15 @@ export const readSnapshot = async ({ signal }: { signal?: AbortSignal } = {}): P
   return {
     sheetId,
     title: sheet.properties?.title ?? title,
-    rowCount: sheet.properties?.gridProperties?.rowCount ?? grid?.rowData?.length ?? 0,
-    columnCount: sheet.properties?.gridProperties?.columnCount ?? 0,
+    // Both floored: a rollback pastes over exactly these dimensions, and a zero
+    // restores nothing while reporting success — the confirming verify then
+    // fails and the run freezes, in the one path where freezing is worst.
+    rowCount: Math.max(sheet.properties?.gridProperties?.rowCount ?? grid?.rowData?.length ?? 0, grid?.rowData?.length ?? 0),
+    columnCount: Math.max(
+      sheet.properties?.gridProperties?.columnCount ?? 0,
+      ...(grid?.rowData ?? []).map((row) => row.values?.length ?? 0),
+      0,
+    ),
     rows: (grid?.rowData ?? []).map((row) => row.values ?? []),
     readAt: Date.now(),
   };
