@@ -5,10 +5,11 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { config } from '../src/shared/config.ts';
 import { ago, emptyCalendars, quiet, withFetch, withTempDataDir } from './helpers.ts';
+import { nowIso } from '../src/shared/dates.ts';
 
 const rendered = () => {
   const state = new Orchestrator({ logger: quiet });
-  const now = new Date().toISOString();
+  const now = nowIso();
   state.feed.renderedAt = now;
   state.feed.calendarsAt = now;
   state.feed.calendarsFreshAt = now;
@@ -80,7 +81,7 @@ test('stale calendars go unhealthy', () => {
 // is the entire reason `attemptedAt` and `freshAt` are separate fields.
 test('a CDN outage is unhealthy even though refreshes keep "succeeding"', () => {
   const state = rendered();
-  state.feed.calendarsAt = new Date().toISOString(); // attempts keep happening...
+  state.feed.calendarsAt = nowIso(); // attempts keep happening...
   state.feed.calendarsFreshAt = ago(config.calendarRefresh.total('milliseconds') * 4); // ...but nothing fresh
   assert.equal(state.health.ok, false);
   assert.notEqual(state.health.feed.calendars.attemptedAt, state.health.feed.calendars.freshAt);

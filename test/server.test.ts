@@ -5,6 +5,7 @@ import { buildServer } from '../src/server.ts';
 import { Orchestrator } from '../src/orchestrator.ts';
 import { config } from '../src/shared/config.ts';
 import { quiet, withConfig } from './helpers.ts';
+import { nowIso } from '../src/shared/dates.ts';
 
 const TOKEN = 'a'.repeat(48);
 
@@ -117,9 +118,9 @@ test('healthz is 503 until a render has happened, and 200 after', async () => {
     assert.equal(before.statusCode, 503);
     assert.equal(before.json().ok, false);
 
-    state.feed.renderedAt = new Date().toISOString();
-    state.feed.calendarsFreshAt = new Date().toISOString();
-    state.polledAt = new Date().toISOString();
+    state.feed.renderedAt = nowIso();
+    state.feed.calendarsFreshAt = nowIso();
+    state.polledAt = nowIso();
 
     const after = await app.inject({ method: 'GET', url: '/healthz' });
     assert.equal(after.statusCode, 200);

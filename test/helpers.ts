@@ -16,6 +16,7 @@ import type { SheetSnapshot } from '../src/sheet/io/spreadsheet.ts';
 import type { CellData } from '../src/api/google/types.ts';
 import type { CalendarEntry, CalendarFile, LibraryItem, ShowMetadata, SyncType } from '../src/api/simkl/types.ts';
 import type { Library } from '../src/library.ts';
+import { isoOf } from '../src/shared/dates.ts';
 
 // Here rather than per file, for the same reason: a file that forgets these
 // reaches the real API, or sleeps 15s per retry path.
@@ -69,7 +70,7 @@ export const withConfig = async (overrides: Partial<Config>, fn: () => void | Pr
 };
 
 /** An ISO timestamp `ms` in the past, for aging a Feed or Orchestrator clock. */
-export const ago = (ms: number): string => new Date(Date.now() - ms).toISOString();
+export const ago = (ms: number): string => isoOf(Temporal.Now.instant().subtract({ milliseconds: ms }));
 
 /** One calendar's payload, as fetchCalendar would return it. */
 export const calendarOf = (calendar: CalendarEntry[] = [], metadata: Record<string, ShowMetadata> = {}): CalendarFile => ({

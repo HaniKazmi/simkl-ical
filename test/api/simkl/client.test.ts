@@ -189,14 +189,14 @@ test('Retry-After on a 429 is honoured over the default backoff', async () => {
   // Long enough that honouring the header is unmistakable; the file-wide
   // retryBase of 1 would hide the difference.
   let calls = 0;
-  const started = Date.now();
+  const started = performance.now();
   await withConfig({ retryBase: Temporal.Duration.from({ milliseconds: 5_000 }) }, async () => {
     await withFetch(
       () => (++calls === 1 ? new Response('slow down', { status: 429, headers: { 'retry-after': '0' } }) : jsonResponse({ ok: true })),
       async () => {
         assert.deepEqual(await apiGet('/sync/activities', { component: 'poll' }), { ok: true });
         assert.equal(calls, 2);
-        assert.ok(Date.now() - started < 1_000, `waited ${Date.now() - started}ms instead of honouring Retry-After: 0`);
+        assert.ok(performance.now() - started < 1_000, `waited ${Math.round(performance.now() - started)}ms instead of honouring Retry-After: 0`);
       },
     );
   });
@@ -218,10 +218,16 @@ test('Retry-After in seconds is honoured', () => {
   assert.equal(retryDelayMs(with429({ 'retry-after': '0' }), 4), 0);
 });
 
+// `toUTCString()` is the point, not an oversight: RFC 7231 defines this header's
+// other form as an HTTP-date, which Temporal neither parses nor produces. `Date`
+// is the only thing in the runtime that speaks it.
 test('Retry-After as an HTTP date is honoured', () => {
   const twoSeconds = new Date(Date.now() + 2000).toUTCString();
   const delay = retryDelayMs(with429({ 'retry-after': twoSeconds }), 1);
-  assert.ok(delay > 0 && delay <= 2000, `expected roughly 2s, got ${delay}`);
+  // Bounded below as well as above: the fallback backoff also lands inside
+  // `(0, 2000]`, so a lower bound of zero would pass with the header ignored
+  // entirely.
+  assert.ok(delay > 1_000 && delay <= 2_000, `expected roughly 2s, got ${delay}`);
 });
 
 // A header of hours would stall a whole refresh cycle.

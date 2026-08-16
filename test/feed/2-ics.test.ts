@@ -119,8 +119,8 @@ test('an all-day event renders as a bare DATE, with the exclusive end date', () 
   assert.doesNotMatch(ics, /DTSTART[^\r]*T\d{6}/, 'never a DATE-TIME');
 });
 
-// Month and year rollover, which is where `Date.UTC(y, m - 1, d + 1)` and
-// `PlainDate.add({ days: 1 })` could disagree and nothing else would notice.
+// Month and year rollover. The exclusive end is the only arithmetic this module
+// does, and a day added across either boundary is where it would show.
 test('the exclusive end rolls over the month and the year', () => {
   assert.match(renderIcs([{ ...event, date: plainDateFrom('2026-02-28') }]), /^DTEND;VALUE=DATE:20260301\r$/m);
   assert.match(renderIcs([{ ...event, date: plainDateFrom('2026-12-31') }]), /^DTEND;VALUE=DATE:20270101\r$/m);

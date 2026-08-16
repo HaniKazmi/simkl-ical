@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { config } from '../src/shared/config.ts';
 import { Orchestrator } from '../src/orchestrator.ts';
 import { emptyCalendars, jsonResponse, libraryOf, paramsOf, quiet, recorder, withConfig, withFetch, withTempDataDir } from './helpers.ts';
+import { nowIso, plainDateIn } from '../src/shared/dates.ts';
 
 const T = '2026-08-15T12:00:00Z';
 
@@ -23,8 +24,12 @@ const libraryBody = {
 
 /** The same library in the `simkl_ids_only` shape: ids and nothing else. */
 const membershipBody = { shows: [{ show: { ids: { simkl: 100 } } }], movies: [{ movie: { ids: { simkl: 300 } } }] };
-/** A plain date `days` from now, so a fixture can sit inside or outside the horizon. */
-const dateIn = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+/**
+ * A plain date `days` from now, so a fixture can sit inside or outside the
+ * horizon. In the configured zone, because that is where `filmDue` measures its
+ * horizon from — a UTC date would disagree with it for a fifth of the day.
+ */
+const dateIn = (days: number) => plainDateIn(Temporal.Now.instant(), config.timezone).add({ days }).toString();
 
 /** Dated soon, so it stays inside the re-read horizon whenever the suite runs. */
 const movieDetail = {
@@ -485,7 +490,7 @@ test('a failed daily re-read retries on the next poll, not in another day', asyn
     });
     // The stamp is not refreshed, so the film stays past the floor and due.
     assert.ok(
-      Date.now() - state.feed.filmStamps.get(300)!.epochMilliseconds > config.movieRefresh.total('milliseconds'),
+      Temporal.Now.instant().epochMilliseconds - state.feed.filmStamps.get(300)!.epochMilliseconds > config.movieRefresh.total('milliseconds'),
       'a failed round must not count as resolved',
     );
 
@@ -573,7 +578,7 @@ test('with the sheet unconfigured a quiet poll still costs exactly one request',
 test('a sheet failure is never filed as a library error, and the feed still renders', async () => {
   await withToken(async (state) => {
     state.feed.calendars = emptyCalendars();
-    state.feed.calendarsFreshAt = new Date().toISOString();
+    state.feed.calendarsFreshAt = nowIso();
     // Stands in for the real SheetSync: the wiring is what is under test.
     state.sheetSync = {
       lastRunAt: null,
@@ -663,7 +668,7 @@ test('a calendar refresh renders the library as it is when the fetch finishes', 
   await withToken(async (state) => {
     const airing = {
       simkl_id: 100,
-      date: new Date().toISOString(),
+      date: nowIso(),
       finale_type: null,
       episode: { season: 1, episode: 1, title: 'Ep 1', url: 'https://simkl.com/tv/100/' },
     };
