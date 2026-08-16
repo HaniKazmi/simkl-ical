@@ -392,6 +392,7 @@ const held = (over: Partial<Parameters<typeof evaluateGate>[1]> = {}) => ({
   removalAt: removalStamps(activities()),
   syncedAll: '2026-08-10T11:52:03Z',
   hasLibrary: true,
+  resyncPending: false,
   ...over,
 });
 

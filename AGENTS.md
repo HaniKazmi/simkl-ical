@@ -62,9 +62,12 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   overlap is free. A watermark also advances only *after* the call that consumed it returns.
 - **`removed_from_list` is not a status, and removals are in no delta.** A removal moves that
   timestamp and nothing else, so the only way to learn what went is to pull the membership set
-  (`extended=simkl_ids_only`, 47 KB for 741 items) and intersect. Two traps: a membership response
-  that would drop most of the library is refused rather than applied, because a truncated response
-  and a cleared account are the same bytes; and `/sync/all-items/{type}/{status}` **fails open** —
+  (`extended=simkl_ids_only`, 47 KB for 741 items) and intersect — but only within the categories
+  whose stamp actually moved, since an empty category is *omitted* from the response, so a payload
+  that lost one is the same bytes as a category the user emptied. Two traps: a response that would
+  drop most of a category is refused and answered with a **full pull** rather than re-asked, because
+  the question is unanswerable by diffing and only the whole library settles it; and
+  `/sync/all-items/{type}/{status}` **fails open** —
   an unrecognised status segment returns every item of that type instead of a 404, so
   `/sync/all-items/movies/removed_from_list` is a full-library download, not an error.
 - **`item.status` is the only membership there is.** The library is one record per SIMKL id, so a

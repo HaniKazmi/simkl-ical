@@ -122,6 +122,12 @@ export interface GateState {
   /** The `activities.all` already merged. Absent means there is nothing to delta from. */
   syncedAll: string | null;
   hasLibrary: boolean;
+  /**
+   * Set when a cheaper path could not answer safely — a membership response
+   * that would have deleted implausibly much. The full pull is the way out:
+   * it is authoritative, so it settles what the diff could only guess at.
+   */
+  resyncPending: boolean;
 }
 
 /** What one activities payload decided, and what to store once it is acted on. */
@@ -162,7 +168,7 @@ export const evaluateGate = (
     changed: held.librarySignature !== signature,
     removedFrom,
     removals: removedFrom.size > 0,
-    full: force || !held.hasLibrary || !held.syncedAll,
+    full: force || !held.hasLibrary || !held.syncedAll || held.resyncPending,
     signature,
     stamps,
   };
@@ -247,13 +253,19 @@ export const membershipIds = (response: AllItemsResponse | null | undefined): Se
  * of its ids the response failed to mention.
  *
  * Within a category that did report one, dropping more than half of what is
- * held is still refused — the stamp says *something* went, not that everything
- * did, and applying a partial payload there empties the feed of that type.
- * Refusing costs a stale removal the next poll retries.
+ * held is refused — the stamp says *something* went, not that everything did,
+ * and applying a partial payload there empties the feed of that type.
+ *
+ * Refusing is cheap because it is not the end of the matter: the caller answers
+ * it with a full pull, which is authoritative and settles what the diff could
+ * only guess at. That is what makes the threshold safe to keep at half even for
+ * a category holding two items, where the proportion means very little — a user
+ * emptying a small category and a payload that lost it look identical here, and
+ * the full pull tells them apart instead of a rule that cannot.
  *
  * The refusal lives here, in the only function that deletes, so no caller can
  * reach the delete without it. Reporting `applied` rather than acting on it
- * keeps what happens next — the log line, the withheld stamp — in the shell.
+ * keeps what happens next — the log line, the re-pull — in the shell.
  *
  * The same Map comes back when nothing goes, so a poll that reconciled and
  * found nothing removed does not churn the library or force a re-render.

@@ -273,20 +273,42 @@ test('a category that reported no removal survives being absent from the members
 
 // A truncated response is indistinguishable from a cleared account, and
 // applying one empties the feed.
-test('a membership response that would empty the library is refused and retried', async () => {
+// The response is genuinely ambiguous: a category the user emptied and one the
+// payload lost are the same bytes. So the diff is refused and the question is
+// escalated to the one source that can answer it, rather than re-asked forever.
+test('a membership response that would empty a category re-pulls the whole library', async () => {
   await withToken(async (state) => {
     await prime(state);
 
     const removed = activities({ movies: { removed_from_list: '2026-08-15T18:00:00Z' } });
-    await withFetch(api(removed, { membership: {} }), async () => {
-      await state.refreshLibraryIfChanged();
-    });
-    assert.equal(state.library?.size, 2, 'nothing dropped');
+    await withFetch(api(removed, { membership: {} }), () => state.refreshLibraryIfChanged());
+    assert.equal(state.library?.size, 2, 'nothing dropped on the strength of it');
 
-    await withFetch(api(removed, { membership: {} }), async (calls) => {
+    await withFetch(api(removed), async (calls) => {
       await state.refreshLibraryIfChanged();
-      assert.equal(memberships(calls).length, 1, 'and the next poll asks again');
+      assert.equal(pulls(calls).length, 1, 'the next poll pulls');
+      assert.equal(deltas(calls).length, 0, 'and pulls whole, not a delta');
+      assert.equal(memberships(calls).length, 0, 'so the unanswerable question is not re-asked');
     });
+  });
+});
+
+// The point of escalating: a user who really did empty a category gets that
+// applied, rather than the removal hanging until the process restarts.
+test('a category emptied for real is settled by the re-pull', async () => {
+  await withToken(async (state) => {
+    await prime(state);
+    assert.equal(state.library?.size, 2);
+
+    const removed = activities({ movies: { removed_from_list: '2026-08-15T18:00:00Z' } });
+    await withFetch(api(removed, { membership: {} }), () => state.refreshLibraryIfChanged());
+
+    // The full pull is authoritative, and it says the film is gone.
+    const withoutFilm = { shows: libraryBody.shows };
+    await withFetch(api(removed, { body: withoutFilm }), () => state.refreshLibraryIfChanged());
+
+    assert.deepEqual([...(state.library?.keys() ?? [])], [100], 'the film is gone, without a restart');
+    assert.equal(state.resyncPending, false, 'and the debt is cleared');
   });
 });
 
