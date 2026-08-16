@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { config } from '../../../src/shared/config.ts';
 import { apiGet, SimklAuthError, SimklError } from '../../../src/api/simkl/client.ts';
 import { retryDelayMs } from '../../../src/api/backoff.ts';
+import { clearRequests, recentRequests } from '../../../src/api/requests.ts';
 import { jsonResponse, withConfig, withFetch } from '../../helpers.ts';
 
 
@@ -243,4 +244,79 @@ test('a blank Retry-After falls back to the backoff rather than meaning zero', a
     assert.equal(retryDelayMs(with429({ 'retry-after': '   ' }), 1), 1000);
     assert.equal(retryDelayMs(with429({ 'retry-after': '0' }), 1), 0, 'an explicit zero still means zero');
   });
+});
+
+// --- what the status page is shown -----------------------------------------
+//
+// One record per *call*, because the retries are the fact worth surfacing: this
+// client spends up to five attempts without saying so anywhere today.
+
+test('a successful call is recorded once, with its size', async () => {
+  clearRequests();
+  await withFetch(
+    () => jsonResponse({ hello: 'world' }),
+    async () => {
+      await apiGet('/sync/activities');
+    },
+  );
+
+  const log = recentRequests();
+  assert.equal(log.length, 1);
+  assert.equal(log[0]?.status, 200);
+  assert.equal(log[0]?.attempts, 1);
+  assert.equal(log[0]?.error, null);
+  assert.equal(log[0]?.bytes, JSON.stringify({ hello: 'world' }).length);
+  assert.equal(log[0]?.path, '/sync/activities', 'the boilerplate params are not shown');
+});
+
+test('a retried call is one record carrying the attempt count', async () => {
+  clearRequests();
+  let calls = 0;
+  await withFetch(
+    () => (++calls < 3 ? new Response('nope', { status: 500 }) : jsonResponse({ ok: true })),
+    async () => {
+      await apiGet('/sync/activities');
+    },
+  );
+
+  const log = recentRequests();
+  assert.equal(log.length, 1, 'three attempts, one row');
+  assert.equal(log[0]?.attempts, 3);
+  assert.equal(log[0]?.status, 200, 'and the outcome is the one that stuck');
+});
+
+// The failure that lies: this reads as a dead token and usually is not one.
+// The body is what separates `user_token_failed` from a revoked credential.
+test('a rejected token records its status and body', async () => {
+  clearRequests();
+  await withFetch(
+    () => new Response('{"error":"user_token_failed"}', { status: 401 }),
+    async () => {
+      await assert.rejects(() => apiGet('/sync/activities', { token: 'tok' }), SimklAuthError);
+    },
+  );
+
+  const log = recentRequests();
+  assert.equal(log.length, 1);
+  assert.equal(log[0]?.status, 401);
+  assert.match(log[0]?.error ?? '', /user_token_failed/);
+});
+
+// A timeout or a reset never reaches a status code, and a row with no status is
+// how that is told from a server that answered badly.
+test('a fetch that throws is recorded with no status', async () => {
+  clearRequests();
+  await withFetch(
+    () => {
+      throw new Error('socket hang up');
+    },
+    async () => {
+      await assert.rejects(() => apiGet('/sync/activities'));
+    },
+  );
+
+  const log = recentRequests();
+  assert.equal(log.length, 1);
+  assert.equal(log[0]?.status, null);
+  assert.match(log[0]?.error ?? '', /socket hang up/);
 });

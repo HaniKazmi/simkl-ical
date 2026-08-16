@@ -42,6 +42,8 @@ export const COLD: StatusInput = {
   libraryError: null,
   counts: {},
   gate: null,
+  movement: null,
+  requests: [],
   activitiesPollMs: 2 * HOUR,
   events: 0,
   renderedAt: null,

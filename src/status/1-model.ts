@@ -10,6 +10,7 @@
 
 import { MS_PER_DAY } from '../shared/dates.ts';
 import type { SheetSyncMode } from '../shared/config.ts';
+import type { RequestRecord } from '../api/requests.ts';
 import type { SheetRunRecord } from '../sheet/io/journal.ts';
 import type { SheetSyncStatus } from '../sheet/sync.ts';
 
@@ -27,6 +28,14 @@ export interface StatusInput {
   /** Every type and status, including the empty ones — see `libraryCounts`. */
   counts: Record<string, number>;
   gate: { pull: 'none' | 'delta' | 'full'; updated: number; removed: number } | null;
+  /**
+   * How the counts moved on the last poll that moved them, and when. Null until
+   * a poll has pulled — and deliberately *not* cleared by a quiet poll, so the
+   * line keeps reporting the last thing that happened rather than blanking
+   * every half hour.
+   */
+  movement: { at: string; deltas: Record<string, number>; updated: number; removed: number } | null;
+  requests: RequestRecord[];
   activitiesPollMs: number;
 
   events: number;
@@ -74,8 +83,6 @@ export interface Due {
 export interface CountRow {
   key: string;
   count: number;
-  /** Share of the largest row, for a bar. 0 when everything is empty. */
-  share: number;
 }
 
 export interface Step {
@@ -88,6 +95,16 @@ export interface Step {
 /** A journal record with its instant made readable. */
 export type RunView = Omit<SheetRunRecord, 'at'> & { at: Stamp };
 
+export interface MovementView {
+  at: Stamp;
+  /** `shows/watching −1`, already ordered and signed. Empty when only progress moved. */
+  deltas: string[];
+  /** `14 records updated, 1 removed` — always present, since a pull always did something. */
+  summary: string;
+}
+
+export type RequestView = Omit<RequestRecord, 'at'> & { at: Stamp; size: string };
+
 export interface StatusModel {
   appName: string;
   version: string;
@@ -99,9 +116,12 @@ export interface StatusModel {
     polled: Stamp;
     error: string | null;
     total: number;
+    /** Totals per type: the sanity check, in one line rather than fourteen. */
     counts: CountRow[];
     /** What the last poll did, in one phrase. */
     gate: string;
+    /** How the library moved when it last moved, or null if it never has. */
+    movement: MovementView | null;
     due: Due;
   };
   feed: {
@@ -122,6 +142,7 @@ export interface StatusModel {
     error: string | null;
     runs: RunView[];
   };
+  requests: RequestView[];
 }
 
 const MINUTE = 60_000;
@@ -203,10 +224,67 @@ const gateDetail = (gate: StatusInput['gate']): string => {
   return parts.length ? parts.join(' · ') : 'nothing moved';
 };
 
+/** `+1` / `−1`, with a real minus sign rather than a hyphen. */
+/**
+ * Totals per type rather than per status.
+ *
+ * The per-status breakdown was fourteen rows that move perhaps twice a week,
+ * and eleven of them are usually the same number. Three totals answer the
+ * question the section is actually for — is the library the size I expect,
+ * which is what would catch a bad full pull — and leave the space to what
+ * changed. `other` appears only when it is not zero, since it exists to keep
+ * the rows summing rather than to be read.
+ */
+const typeTotals = (counts: Record<string, number>): CountRow[] => {
+  const totals = new Map<string, number>([
+    ['shows', 0],
+    ['anime', 0],
+    ['films', 0],
+  ]);
+  let other = 0;
+  for (const [key, count] of Object.entries(counts)) {
+    const type = key.startsWith('movies/') ? 'films' : key.split('/')[0];
+    if (type === undefined || !totals.has(type)) other += count;
+    else totals.set(type, (totals.get(type) ?? 0) + count);
+  }
+  const rows = [...totals].map(([key, count]) => ({ key, count }));
+  return other ? [...rows, { key: 'other', count: other }] : rows;
+};
+
+const signed = (n: number): string => (n > 0 ? `+${n}` : `\u2212${Math.abs(n)}`);
+
+/**
+ * How the library moved, in the terms the poll actually distinguishes.
+ *
+ * The two lines say different things and both matter. `deltas` is membership —
+ * a title left one status and arrived in another — and is empty on the common
+ * poll, because watching an episode moves no counts at all. `summary` is what
+ * the delta carried, which is non-zero whenever anything was pulled. Together
+ * they are `reshaped` versus `updated` made legible, and that distinction is
+ * what the feed's own render gate keys on.
+ */
+const movementView = (movement: StatusInput['movement'], now: number): MovementView | null => {
+  if (movement === null) return null;
+  const deltas = Object.entries(movement.deltas)
+    .filter(([, delta]) => delta !== 0)
+    .map(([key, delta]) => `${key} ${signed(delta)}`);
+  const parts = [`${movement.updated} ${movement.updated === 1 ? 'record' : 'records'} updated`];
+  if (movement.removed) parts.push(`${movement.removed} removed`);
+  if (!deltas.length) parts.push('nothing moved between statuses');
+  return { at: stamp(movement.at, now), deltas, summary: parts.join(', ') };
+};
+
+/** `21K`, `2.4M`, or `—` for a response that carried no body. */
+const size = (bytes: number | null): string => {
+  if (bytes === null) return '\u2014';
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)}K`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}M`;
+};
+
 export const buildModel = (input: StatusInput): StatusModel => {
   const { now } = input;
   const counts = Object.entries(input.counts);
-  const largest = Math.max(1, ...counts.map(([, n]) => n));
   // One instant, three places: the join, the render and the section heading all
   // describe the same moment.
   const rendered = stamp(input.renderedAt, now);
@@ -227,8 +305,9 @@ export const buildModel = (input: StatusInput): StatusModel => {
       polled: stamp(input.polledAt, now),
       error: input.libraryError,
       total: counts.reduce((sum, [, n]) => sum + n, 0),
-      counts: counts.map(([key, count]) => ({ key, count, share: count / largest })),
+      counts: typeTotals(input.counts),
       gate: gateDetail(input.gate),
+      movement: movementView(input.movement, now),
       due: due(input.polledAt, input.activitiesPollMs, now),
     },
 
@@ -253,6 +332,8 @@ export const buildModel = (input: StatusInput): StatusModel => {
       // instant says when the next one falls due.
       filmsDue: input.filmsDue,
     },
+
+    requests: input.requests.map((request) => ({ ...request, at: stamp(request.at, now), size: size(request.bytes) })),
 
     sheet: {
       configured: input.sheetConfigured,

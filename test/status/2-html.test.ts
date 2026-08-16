@@ -139,3 +139,45 @@ test('the page is inert: no script, no form, no off-origin request', () => {
     assert.ok(!rendered.includes(forbidden), `the page must contain no ${forbidden}`);
   }
 });
+
+// An upstream failure body is untrusted text of unknown shape — exactly what
+// the `html` tag exists for, and now rendered in a second place.
+test('a failing request renders its body inert', () => {
+  const payload = `</td></tr><script>alert(1)</script>`;
+  const rendered = page({
+    requests: [
+      {
+        at: before(MINUTE),
+        service: 'simkl',
+        method: 'GET',
+        path: `/sync/activities?evil=${payload}`,
+        status: 401,
+        ms: 90,
+        bytes: 40,
+        attempts: 5,
+        error: payload,
+      },
+    ],
+  });
+
+  assert.ok(!rendered.includes('<script>'), 'the body must not open a tag');
+  assert.match(rendered, /&lt;script&gt;/, 'and must still be readable, escaped');
+  assert.match(rendered, /401/);
+  assert.match(rendered, /×5/, 'the retries are the fact worth surfacing');
+});
+
+test('an empty request log renders the section rather than breaking the page', () => {
+  const rendered = page({ requests: [] });
+  assert.match(rendered, /nothing requested yet/);
+  assert.ok(!rendered.includes('undefined'));
+});
+
+// The change line is the part that says whether anything actually happened.
+test('the library movement reaches the page', () => {
+  const rendered = page({
+    movement: { at: before(MINUTE), deltas: { 'shows/watching': -1, 'shows/completed': 1 }, updated: 3, removed: 0 },
+  });
+  assert.match(rendered, /shows\/watching \u22121/);
+  assert.match(rendered, /shows\/completed \+1/);
+  assert.match(rendered, /3 records updated/);
+});

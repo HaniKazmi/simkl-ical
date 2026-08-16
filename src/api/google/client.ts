@@ -10,6 +10,7 @@
 
 import { backoffMs, HttpError, retryDelayMs, sleep } from '../backoff.ts';
 import { config } from '../../shared/config.ts';
+import { describeUrl, recordRequest } from '../requests.ts';
 import { errorMessage } from '../../shared/errors.ts';
 import { withTimeout } from '../../shared/signals.ts';
 import { clearTokenCache, getAccessToken } from './auth.ts';
@@ -85,7 +86,25 @@ export const sheetsRequest = async <T>(
   const attempts = retry ? MAX_ATTEMPTS : 1;
   let lastError: unknown;
 
+  // One record per call. `method` earns its place here: this is the only
+  // transport that writes, and a write is never retried.
+  const started = Date.now();
+  let tried = 0;
+  const log = (status: number | null, bytes: number | null, error: string | null): void =>
+    recordRequest({
+      at: new Date().toISOString(),
+      service: 'sheets',
+      method,
+      path: describeUrl(url),
+      status,
+      ms: Date.now() - started,
+      bytes,
+      attempts: tried,
+      error,
+    });
+
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    tried = attempt;
     let res: Response;
     try {
       // Inside the try as well as inside the loop: re-signing per attempt is
@@ -110,28 +129,37 @@ export const sheetsRequest = async <T>(
       if (signal?.aborted) throw err;
       lastError = err;
       if (attempt < attempts) await sleep(backoffMs(attempt));
+      else log(null, null, errorMessage(err));
       continue;
     }
 
     if (res.ok) {
+      // Read as text for the size; `res.json()` does the same internally.
+      const ok = await res.text().catch(() => '');
       try {
-        return (await res.json()) as T;
+        const data = JSON.parse(ok) as T;
+        log(res.status, ok.length, null);
+        return data;
       } catch (err) {
         lastError = new SheetsError(`Sheets returned unparseable JSON for ${path}: ${errorMessage(err)}`, res.status);
         if (attempt < attempts) await sleep(backoffMs(attempt));
+        else log(res.status, ok.length, errorMessage(lastError));
         continue;
       }
     }
 
     const text = await res.text().catch(() => '');
+    const failure = text || describe(res.status, text);
 
     if (res.status === 401) {
       // Almost always an expired assertion rather than a revoked key. Dropping
       // the cache means the next poll signs a fresh one and recovers by itself.
       clearTokenCache();
+      log(res.status, text.length, failure);
       throw new SheetsAccessError(`Google rejected the credential (${describe(res.status, text)})`, res.status, text);
     }
     if (res.status === 403 || res.status === 404) {
+      log(res.status, text.length, failure);
       throw new SheetsAccessError(
         `${describe(res.status, text)} — share the spreadsheet with the service account as Editor, and check SHEET_ID.`,
         res.status,
@@ -139,11 +167,13 @@ export const sheetsRequest = async <T>(
       );
     }
     if (!RETRYABLE.has(res.status)) {
+      log(res.status, text.length, failure);
       throw new SheetsError(`Sheets ${describe(res.status, text)} for ${path}`, res.status, text);
     }
 
     lastError = new SheetsError(`Sheets ${describe(res.status, text)} for ${path}`, res.status, text);
     if (attempt < attempts) await sleep(retryDelayMs(res, attempt));
+    else log(res.status, text.length, failure);
   }
 
   throw lastError;

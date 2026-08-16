@@ -102,6 +102,14 @@ td{padding:4px 8px 4px 0;border-bottom:1px solid var(--panel);font-size:12.5px}
 tr:last-child td{border-bottom:0}
 .num{text-align:right;width:64px}.bar{width:110px}.bar span{display:block;height:6px;border-radius:2px;background:var(--accent);opacity:.5}
 .dim{color:var(--faint)}
+.totals{display:flex;flex-wrap:wrap;gap:0 1.1rem;padding:.5rem .9rem;border-bottom:1px solid var(--line)}
+.tot b{font-weight:600;color:var(--faint)}
+.moved{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 .6rem;padding:.5rem .9rem}
+.deltas{display:flex;flex-wrap:wrap;gap:0 .5rem}
+.delta{color:var(--ok)}
+td.svc{color:var(--faint)}
+td.path{word-break:break-all}
+tr.bad td{color:var(--crit)}
 .step{display:grid;grid-template-columns:14px 62px minmax(0,1fr) auto;gap:12px;align-items:baseline;padding:5px 0}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);align-self:center}
 .step.bad .dot{background:var(--crit)}
@@ -143,11 +151,45 @@ const pill = (status: string): string => (Object.hasOwn(STATE_PILL, status) ? ST
 const time = (s: Stamp) => (s.iso === null ? html`<span class="dim">never</span>` : html`<time datetime="${s.iso}">${s.label}</time>`);
 
 const countRows = (model: StatusModel) =>
-  model.library.counts.map(
-    (row) => html`<tr>
-      <td>${row.key}</td>
-      <td class="num">${row.count}</td>
-      <td class="bar"><span style="width:${Math.round(row.share * 100)}%"></span></td>
+  model.library.counts.map((row) => html`<span class="tot"><b>${row.key}</b> ${row.count}</span>`);
+
+/**
+ * How the library last moved — the part a count on its own cannot say.
+ *
+ * The two lines are different questions. The deltas are membership, and are
+ * absent on the commonest poll there is, because watching an episode moves no
+ * count at all. The summary is what the delta carried, which is never zero on a
+ * poll that pulled. Showing both is what separates "your library changed" from
+ * "the poll did some work".
+ */
+const movement = (model: StatusModel) => {
+  const moved = model.library.movement;
+  if (moved === null) return html`<div class="moved dim">no library movement seen yet</div>`;
+  return html`<div class="moved">
+    <span class="run-when">${time(moved.at)}</span>
+    ${moved.deltas.length === 0 ? null : html`<span class="deltas">${moved.deltas.map((d) => html`<span class="delta">${d}</span>`)}</span>`}
+    <span class="dim">${moved.summary}</span>
+  </div>`;
+};
+
+/**
+ * Every outbound call this process made, newest first.
+ *
+ * The one view that shows whether the gate is working: a column of lone
+ * `/sync/activities` rows with the occasional delta beside them is the delta
+ * sync doing its job, and nothing else on this page can show it. A failure
+ * carries its body, because `user_token_failed` and a revoked credential look
+ * identical without one.
+ */
+const requestRows = (model: StatusModel) =>
+  model.requests.map(
+    (r) => html`<tr class="${r.error === null ? '' : 'bad'}">
+      <td class="svc">${r.service}</td>
+      <td class="path">${r.method === 'GET' ? null : html`${r.method} `}${r.path}</td>
+      <td class="num">${r.status === null ? '—' : r.status}${r.attempts > 1 ? html` ×${r.attempts}` : null}</td>
+      <td class="num">${r.size}</td>
+      <td class="num">${r.ms}ms</td>
+      <td class="when">${time(r.at)}</td>
     </tr>`,
   );
 
@@ -211,10 +253,8 @@ ${model.problems.length === 0 ? null : html`<div class="problems"><ul>${model.pr
     <span class="pill mute">${model.library.gate}</span>
     <span class="sum">gated ${time(model.library.polled)} · ${model.library.total} items</span>
   </div>
-  <table>
-    <thead><tr><th>Type / status</th><th class="num">Items</th><th class="bar"></th></tr></thead>
-    <tbody>${countRows(model)}</tbody>
-  </table>
+  <div class="totals">${countRows(model)}</div>
+  ${movement(model)}
   <div class="next">
     <span><b>next gate</b> ${model.library.due.label}</span>
     <span class="dim">one /sync/activities call, then a delta pull, a render and a sheet sync if anything moved</span>
@@ -243,6 +283,21 @@ ${model.problems.length === 0 ? null : html`<div class="problems"><ul>${model.pr
     <span class="sum">${model.sheet.configured ? html`${model.sheet.mode} mode · tab “${model.sheet.tab}” · ${time(model.sheet.lastRun)}` : 'off'}</span>
   </div>
   ${sheetBody(model)}
+</section>
+
+<section>
+  <div class="head">
+    <span class="name">Requests</span>
+    <span class="pill mute">${model.requests.length} recent</span>
+    <span class="sum">every outbound call, newest first</span>
+  </div>
+  ${model.requests.length === 0
+    ? html`<div class="moved dim">nothing requested yet</div>`
+    : html`<table>
+        <thead><tr><th></th><th>Path</th><th class="num">Status</th><th class="num">Size</th><th class="num">Took</th><th>When</th></tr></thead>
+        <tbody>${requestRows(model)}</tbody>
+      </table>`}
+  ${model.requests.filter((r) => r.error !== null).slice(0, 3).map((r) => html`<div class="msg">${r.path} — ${r.error}</div>`)}
 </section>
 
 <footer>Read-only. Nothing on this page triggers a fetch.</footer>
