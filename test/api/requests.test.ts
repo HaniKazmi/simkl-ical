@@ -28,13 +28,44 @@ test('the newest request is first, because that is the order it is read in', () 
 
 // Bounded because this is a live view, not a session log: it has to stay small
 // enough to render every request and old enough to show a pattern.
-test('the log is capped, and drops the oldest', () => {
+test('the log is capped, and drops the oldest of that component', () => {
   clearRequests();
   for (let i = 0; i < 40; i += 1) recordRequest(record({ path: `/${i}` }));
   const kept = recentRequests();
-  assert.equal(kept.length, 30);
+  assert.equal(kept.length, 8);
   assert.equal(kept[0]?.path, '/39', 'the newest survives');
-  assert.equal(kept.at(-1)?.path, '/10', 'and the oldest fall off');
+  assert.equal(kept.at(-1)?.path, '/32', 'and the oldest fall off');
+});
+
+// The property the cap exists for. A cold start looks up every due film in one
+// unbounded pass, so under a single shared ring the two rows that prove the
+// delta sync is working are evicted before anyone can load the page.
+test('a burst on one component cannot evict another', () => {
+  clearRequests();
+  recordRequest(record({ component: 'poll', path: '/sync/activities' }));
+  recordRequest(record({ component: 'poll', path: '/sync/all-items?date_from=x' }));
+  for (let i = 0; i < 300; i += 1) recordRequest(record({ component: 'films', path: `/movies/${i}` }));
+
+  const polls = recentRequests().filter((r) => r.component === 'poll');
+  assert.deepEqual(
+    polls.map((r) => r.path),
+    ['/sync/all-items?date_from=x', '/sync/activities'],
+    'both poll rows survive 300 film lookups',
+  );
+  assert.equal(recentRequests().filter((r) => r.component === 'films').length, 8);
+});
+
+// One array, not a map of six: a delta landing between two film lookups is what
+// says the poll did more than one thing, and only the interleaving shows it.
+test('the log keeps components interleaved in time order', () => {
+  clearRequests();
+  recordRequest(record({ component: 'films', path: '/movies/1' }));
+  recordRequest(record({ component: 'poll', path: '/sync/activities' }));
+  recordRequest(record({ component: 'films', path: '/movies/2' }));
+  assert.deepEqual(
+    recentRequests().map((r) => r.path),
+    ['/movies/2', '/sync/activities', '/movies/1'],
+  );
 });
 
 test('clearing empties it', () => {

@@ -137,8 +137,9 @@ silently when copied. Retry timing — a blank `Retry-After` is not zero, and th
 HTTP date. The per-title lookup pool — an account-level failure is not a fact about the title
 that hit it, and a 401 filed as "this title is unavailable" makes an expired token look like a
 hundred deleted films. And the request log, where all three transports otherwise assemble the same
-eleven-field record from the same four constants, so a new field would have to be added in three
-places. The clients themselves stay separate, because base URL, auth and status mapping are
+ten-field record from the same four constants, so a new field would have to be added in three
+places — and read a response body three ways, one of which turns a download that died mid-flight
+into a 200 carrying unparseable JSON. The clients themselves stay separate, because base URL, auth and status mapping are
 exactly what differs between them.
 
 ---

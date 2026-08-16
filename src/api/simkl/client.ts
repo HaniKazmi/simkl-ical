@@ -1,5 +1,5 @@
 import { backoffMs, HttpError, retryDelayMs, sleep } from '../backoff.ts';
-import { beginRequest, type RequestComponent } from '../requests.ts';
+import { beginRequest, readBody, type RequestComponent } from '../requests.ts';
 import { config, requireClientId } from '../../shared/config.ts';
 import { errorMessage } from '../../shared/errors.ts';
 import { withTimeout } from '../../shared/signals.ts';
@@ -130,10 +130,17 @@ export const apiGet = async <T>(path: string, { component, token, params = {}, s
       status = res.status;
 
       if (res.ok) {
-        // Read as text so the size is known. `res.json()` does exactly this
-        // internally, so it is the same work, and the parse keeps its guard.
-        const text = await res.text().catch(() => '');
-        bytes = text.length;
+        const read = await readBody(res);
+        bytes = read.bytes;
+        if (read.failure) {
+          // The download died mid-body. Retryable, and named as itself rather
+          // than left to reach the parser as a truncation.
+          lastError = new SimklError(`SIMKL ${path}: ${read.failure}`, res.status);
+          failure = read.failure;
+          if (attempts < MAX_ATTEMPTS) await sleep(backoffMs(attempts));
+          continue;
+        }
+        const { text } = read;
         try {
           return JSON.parse(text) as T;
         } catch (err) {
@@ -146,9 +153,11 @@ export const apiGet = async <T>(path: string, { component, token, params = {}, s
         }
       }
 
-      const body = await res.text().catch(() => '');
-      bytes = body.length;
-      failure = body || `SIMKL ${res.status} for ${path}`;
+      const read = await readBody(res);
+      const body = read.text;
+      bytes = read.bytes;
+      // An error body that could not be read still has a status worth the row.
+      failure = read.failure ?? (body || `SIMKL ${res.status} for ${path}`);
 
       if (res.status === 401 || res.status === 403) {
         throw new SimklAuthError(`SIMKL rejected the token (${res.status})`, res.status, body);

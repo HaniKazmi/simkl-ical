@@ -342,3 +342,26 @@ test('a CDN failure served from cache is still recorded as a failure', async () 
   assert.equal(log[0]?.status, 503);
   assert.match(log[0]?.error ?? '', /503/);
 });
+
+// `Orchestrator.stop()` aborts in-flight calendar fetches, so a shutdown would
+// otherwise file an error row per calendar and feed them to the page's error
+// summary — a clean stop reading as three CDN failures.
+test('a fetch the caller cancelled is not recorded as a failure', async () => {
+  clearCache();
+  clearRequests();
+  const controller = new AbortController();
+  controller.abort();
+
+  await withFetch(
+    () => {
+      // What undici does with an aborted signal, which the stub does not model
+      // on its own — and without the rejection the guard is never reached.
+      throw new DOMException('This operation was aborted', 'AbortError');
+    },
+    async () => {
+      await assert.rejects(() => fetchRolling('tv', { signal: controller.signal }));
+    },
+  );
+
+  assert.deepEqual(recentRequests(), [], 'a cancelled call is not an outcome worth a row');
+});

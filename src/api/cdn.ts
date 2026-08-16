@@ -11,7 +11,7 @@
  */
 
 import { config } from '../shared/config.ts';
-import { beginRequest, type RequestComponent } from './requests.ts';
+import { beginRequest, readBody, type RequestComponent } from './requests.ts';
 import { errorMessage } from '../shared/errors.ts';
 import { withTimeout } from '../shared/signals.ts';
 
@@ -81,12 +81,17 @@ export const fetchCached = async <T>(url: string, key: string, { component, vali
   if (cached?.lastModified) headers['If-Modified-Since'] = cached.lastModified;
 
   const finish = beginRequest({ service: 'cdn', component, method: 'GET', url });
-  const log = (status: number | null, bytes: number | null, error: string | null): void => finish({ status, bytes, error });
+  // A call the caller cancelled is not an outcome worth a row. `Orchestrator.stop()`
+  // aborts in-flight calendar fetches, so without this every shutdown files an
+  // error row and feeds it to the page's error summary.
+  const log = (status: number | null, bytes: number | null, error: string | null): void => {
+    if (!signal?.aborted) finish({ status, bytes, error });
+  };
 
   // Stale data beats no data, so every failure below serves the cache when
   // there is one — flagged stale rather than passing as a success.
-  const fallback = (reason: string, status: number | null = null): CdnResult<T> => {
-    log(status, null, reason);
+  const fallback = (reason: string, status: number | null = null, bytes: number | null = null): CdnResult<T> => {
+    log(status, bytes, reason);
     if (cached) return { ...cached, source: 'cache' };
     throw new Error(`${url} ${reason}`);
   };
@@ -115,20 +120,23 @@ export const fetchCached = async <T>(url: string, key: string, { component, vali
     return fallback(`returned ${res.status}`, res.status);
   }
 
-  // Read as text so the size is known; `res.json()` does the same internally.
-  const text = await res.text().catch(() => '');
+  const { text, bytes, failure } = await readBody(res);
+  if (failure) return fallback(failure, res.status);
+
   let data: T;
   try {
     data = JSON.parse(text) as T;
   } catch (err) {
-    // An HTML interstitial served with a 200 must not discard a good cache.
-    return fallback(`returned unparseable JSON: ${errorMessage(err)}`, res.status);
+    // An HTML interstitial served with a 200 must not discard a good cache. The
+    // size is the tell that separates the two: a 2 KB interstitial against the
+    // multi-megabyte file that was expected.
+    return fallback(`returned unparseable JSON: ${errorMessage(err)}`, res.status, bytes);
   }
 
   const problem = validate?.(data);
-  if (problem) return fallback(problem, res.status);
+  if (problem) return fallback(problem, res.status, bytes);
 
-  log(res.status, text.length, null);
+  log(res.status, bytes, null);
   const entry: CachedFile<T> = { data, lastModified: res.headers.get('last-modified') };
   cache.set(key, entry);
   return { ...entry, source: 'fresh' };

@@ -10,7 +10,7 @@
 
 import { backoffMs, HttpError, retryDelayMs, sleep } from '../backoff.ts';
 import { config } from '../../shared/config.ts';
-import { beginRequest, type RequestComponent } from '../requests.ts';
+import { beginRequest, readBody, type RequestComponent } from '../requests.ts';
 import { errorMessage } from '../../shared/errors.ts';
 import { withTimeout } from '../../shared/signals.ts';
 import { clearTokenCache, getAccessToken } from './auth.ts';
@@ -134,11 +134,16 @@ export const sheetsRequest = async <T>(
       status = res.status;
 
       if (res.ok) {
-        // Read as text for the size; `res.json()` does exactly this internally.
-        const ok = await res.text().catch(() => '');
-        bytes = ok.length;
+        const read = await readBody(res);
+        bytes = read.bytes;
+        if (read.failure) {
+          lastError = new SheetsError(`Sheets ${path}: ${read.failure}`, res.status);
+          failure = read.failure;
+          if (attempts < maxAttempts) await sleep(backoffMs(attempts));
+          continue;
+        }
         try {
-          return JSON.parse(ok) as T;
+          return JSON.parse(read.text) as T;
         } catch (err) {
           lastError = new SheetsError(`Sheets returned unparseable JSON for ${path}: ${errorMessage(err)}`, res.status);
           failure = errorMessage(lastError);
@@ -147,9 +152,10 @@ export const sheetsRequest = async <T>(
         }
       }
 
-      const text = await res.text().catch(() => '');
-      bytes = text.length;
-      failure = text || describe(res.status, text);
+      const read = await readBody(res);
+      const text = read.text;
+      bytes = read.bytes;
+      failure = read.failure ?? (text || describe(res.status, text));
 
       if (res.status === 401) {
         // Almost always an expired assertion rather than a revoked key. Dropping
