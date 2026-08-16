@@ -14,6 +14,7 @@
  */
 
 import { backoffMs, sleep } from '../api/backoff.ts';
+import { isoOf } from '../shared/dates.ts';
 import { errorMessage } from '../shared/errors.ts';
 import type { Logger } from '../shared/logger.ts';
 import { applyRequests, listSheets } from './io/spreadsheet.ts';
@@ -39,7 +40,7 @@ export const isBackupTab = (title: string): boolean => title.startsWith(BACKUP_P
  * some runs a shorter name than others.
  */
 export const backupName = (now: Temporal.Instant): string =>
-  `${BACKUP_PREFIX}${now.toString({ smallestUnit: 'millisecond' }).replaceAll(':', '-').replace('.', '-')}`;
+  `${BACKUP_PREFIX}${isoOf(now).replaceAll(':', '-').replace('.', '-')}`;
 
 export const repairName = (backup: string): string => backup.replace(BACKUP_PREFIX, REPAIR_PREFIX);
 

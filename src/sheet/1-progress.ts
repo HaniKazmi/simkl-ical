@@ -29,16 +29,6 @@ import type { Library } from '../library.ts';
 const SHEET_EPOCH = Temporal.PlainDate.from('1899-12-30');
 
 /**
- * A usable instant, or null.
- *
- * Thin over `instantFrom`, which owns the parse and SIMKL's one quirk — a space
- * where the `T` belongs. Kept as a name here because "what the sheet accepts
- * from a watch record" is a question about this pipeline, and the planner never
- * throws: an unusable timestamp costs that episode's date, not the run.
- */
-export const normaliseInstant = (raw: string | null | undefined): Temporal.Instant | null => instantFrom(raw);
-
-/**
  * Days since the sheet epoch for a local calendar date.
  *
  * A count of whole days between two dates, which is what a Sheets serial is —
@@ -97,7 +87,7 @@ export const seasonsOf = (item: LibraryItem): Map<number, SeasonProgress> => {
     let first: Temporal.Instant | null = null;
     let last: Temporal.Instant | null = null;
     for (const episode of season.episodes ?? []) {
-      const at = normaliseInstant(episode.watched_at);
+      const at = instantFrom(episode.watched_at);
       if (at === null) continue;
       watched += 1;
       // Instants, so this is a comparison of values rather than of the strings
@@ -127,7 +117,7 @@ export const indexLibrary = (library: Library | null | undefined): Map<number, T
       id,
       title: item.show?.title ?? item.movie?.title ?? String(id),
       status: itemStatus(item),
-      lastWatchedAt: normaliseInstant(item.last_watched_at),
+      lastWatchedAt: instantFrom(item.last_watched_at),
       watchedCount: item.watched_episodes_count ?? 0,
       totalCount: item.total_episodes_count ?? 0,
       notAiredCount: item.not_aired_episodes_count ?? 0,
