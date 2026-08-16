@@ -160,8 +160,9 @@ exactly what differs between them.
 - **Nothing in the refresh path may be fatal.** Failures land in a per-subsystem slot and `/healthz`
   reports why. The sheet's error is excluded from both `ok` and `problems`: `/healthz` is the
   container healthcheck and the CI smoke test, and a frozen sync must not restart the container.
-- **`localDate()` is the highest-risk conversion here.** Airdates are UTC instants; `iso.slice(0, 10)`
-  is wrong for ~19% of entries in `America/New_York`. Never slice. The archive window is enumerated
+- **`plainDateIn()` is the highest-risk conversion here.** Airdates are UTC instants; `iso.slice(0, 10)`
+  is wrong for ~19% of entries in `America/New_York`. Never slice. A `Temporal.Instant` cannot become
+  a `PlainDate` without being handed a zone, so the type asks the question the comment used to. The archive window is enumerated
   in the viewer's zone for the same reason: counting it in UTC loses up to a day of grace near a
   month boundary, and the entry then passes the join's filter while living in an archive nothing
   fetched.

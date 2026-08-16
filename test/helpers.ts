@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { config, type Config } from '../src/shared/config.ts';
 import { clearSheetRuns } from '../src/sheet/io/journal.ts';
-import { MS_PER_DAY } from '../src/shared/dates.ts';
+
 import type { Calendars } from '../src/feed/io/calendar.ts';
 import type { SheetSnapshot } from '../src/sheet/io/spreadsheet.ts';
 import type { CellData } from '../src/api/google/types.ts';
@@ -214,7 +214,7 @@ export const seasonRow = (
 ): CellSpec[] => [null, null, season, episode, start, end, 0.0153, { formula: '=G*F' }, id, null];
 
 /** An ISO instant `days` in the past — the cut-off is the gate on everything. */
-export const daysAgo = (days: number): string => ago(days * MS_PER_DAY);
+export const daysAgo = (days: number): string => ago(Temporal.Duration.from({ days }).total('milliseconds'));
 
 export interface ItemSpec {
   id: number;

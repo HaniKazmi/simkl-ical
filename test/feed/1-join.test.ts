@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { airingIds, plannedIds, episodeCode, join } from '../../src/feed/1-join.ts';
 import { itemSimklId } from '../../src/api/simkl/item.ts';
-import { localDate, plainDateFrom, releaseDate, shiftDate } from '../../src/shared/dates.ts';
+import { plainDateFrom, releaseDate } from '../../src/shared/dates.ts';
 import type { CalendarEntry, CalendarFile, CalendarType, LibraryItem } from '../../src/api/simkl/types.ts';
 import type { Library, LibraryEntry } from '../../src/library.ts';
 import type { MovieRelease } from '../../src/feed/io/movies.ts';
@@ -13,23 +13,6 @@ type Cals = Partial<Record<CalendarType, CalendarFile>>;
 const show = (simkl: number, title = `Show ${simkl}`) => ({ show: { title, ids: { simkl } } });
 const movie = (simkl: number, title = `Film ${simkl}`) => ({ movie: { title, ids: { simkl } } });
 
-
-// A 9pm Tuesday ET broadcast is stamped 01:00Z Wednesday. Slicing the ISO string
-// would put it on Wednesday for everyone, which is wrong for the US audience.
-const NINE_PM_ET_TUESDAY = '2026-08-12T01:00:00Z';
-
-test('localDate resolves a US evening airing to the correct day in each zone', () => {
-  assert.equal(localDate(NINE_PM_ET_TUESDAY, 'America/New_York'), '2026-08-11');
-  assert.equal(localDate(NINE_PM_ET_TUESDAY, 'Europe/London'), '2026-08-12');
-  // Naive slicing agrees with London and is wrong for New York.
-  assert.equal(NINE_PM_ET_TUESDAY.slice(0, 10), localDate(NINE_PM_ET_TUESDAY, 'Europe/London'));
-  assert.notEqual(NINE_PM_ET_TUESDAY.slice(0, 10), localDate(NINE_PM_ET_TUESDAY, 'America/New_York'));
-});
-
-test('localDate handles the midnight-UTC boundary', () => {
-  assert.equal(localDate('2026-08-12T00:00:00Z', 'America/New_York'), '2026-08-11');
-  assert.equal(localDate('2026-08-12T00:00:00Z', 'Europe/London'), '2026-08-12');
-});
 
 test('releaseDate normalises to a plain date', () => {
   assert.equal(releaseDate('2026-12-18').toString(), '2026-12-18');
@@ -306,19 +289,6 @@ test('a recently released film lingers too', () => {
   const events = join(calendars(), library, { timezone: 'Europe/London', now: NOW, graceDays: 14, movieReleases: filmReleases('2026-08-05') });
   assert.equal(events.length, 1);
   assert.equal(String(events[0]?.date), '2026-08-05');
-});
-
-test('shiftDate crosses month and year boundaries', () => {
-  assert.equal(shiftDate('2026-08-10', -14), '2026-07-27');
-  assert.equal(shiftDate('2026-01-05', -14), '2025-12-22');
-  assert.equal(shiftDate('2026-03-01', -1), '2026-02-28');
-  assert.equal(shiftDate('2026-08-10', 0), '2026-08-10');
-});
-
-test('shiftDate is unaffected by DST transitions', () => {
-  // BST ends 25 Oct 2026; midnight arithmetic would be at risk here, noon is not.
-  assert.equal(shiftDate('2026-10-26', -1), '2026-10-25');
-  assert.equal(shiftDate('2026-03-30', -1), '2026-03-29');
 });
 
 test('finale type decorates the summary', () => {

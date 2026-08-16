@@ -72,7 +72,7 @@ export interface YearMonth {
  * Distinct {year, month} pairs spanned by the last `days` days, oldest first.
  *
  * Counted from the **local** date, because the join's cutoff is
- * `localDate(now) - graceDays` and the two must agree about which months the
+ * the local date minus `graceDays`, and the two must agree about which months the
  * window reaches. Counting in UTC instead loses up to a day of grace in any
  * behind-UTC zone near a month boundary: at 2026-03-15T02:00Z in
  * America/New_York the local cutoff is 2026-02-28, but a UTC window from the
