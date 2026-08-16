@@ -10,7 +10,7 @@
 
 import { backoffMs, HttpError, retryDelayMs, sleep } from '../backoff.ts';
 import { config } from '../../shared/config.ts';
-import { describeUrl, recordRequest } from '../requests.ts';
+import { describeUrl, recordRequest, type RequestComponent } from '../requests.ts';
 import { errorMessage } from '../../shared/errors.ts';
 import { withTimeout } from '../../shared/signals.ts';
 import { clearTokenCache, getAccessToken } from './auth.ts';
@@ -56,6 +56,8 @@ const describe = (status: number, body: string): string => {
 };
 
 export interface SheetsRequestOptions {
+  /** Which part of the service is asking — see `RequestComponent`. */
+  component: RequestComponent;
   method?: 'GET' | 'POST';
   params?: Record<string, string | undefined>;
   body?: unknown;
@@ -73,7 +75,7 @@ export interface SheetsRequestOptions {
  */
 export const sheetsRequest = async <T>(
   path: string,
-  { method = 'GET', params = {}, body, retry = false, signal }: SheetsRequestOptions = {},
+  { component, method = 'GET', params = {}, body, retry = false, signal }: SheetsRequestOptions,
 ): Promise<T> => {
   // Concatenated, not `new URL(path, API_BASE)`: the batchUpdate path is
   // `${id}:batchUpdate`, and the URL parser reads that leading `id:` as a
@@ -94,6 +96,7 @@ export const sheetsRequest = async <T>(
     recordRequest({
       at: new Date().toISOString(),
       service: 'sheets',
+      component,
       method,
       path: describeUrl(url),
       status,

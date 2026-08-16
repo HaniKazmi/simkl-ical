@@ -11,7 +11,7 @@ test('a successful call returns the parsed body', async () => {
   await withFetch(
     () => jsonResponse({ hello: 'world' }),
     async (calls) => {
-      assert.deepEqual(await apiGet('/sync/activities'), { hello: 'world' });
+      assert.deepEqual(await apiGet('/sync/activities', { component: 'poll' }), { hello: 'world' });
       assert.equal(calls.length, 1);
     },
   );
@@ -21,7 +21,7 @@ test('every request carries the client id, app name and version', async () => {
   await withFetch(
     () => jsonResponse({}),
     async (calls) => {
-      await apiGet('/movies/1');
+      await apiGet('/movies/1', { component: 'poll' });
       const url = new URL(calls[0]!);
       assert.equal(url.searchParams.get('client_id'), config.clientId);
       assert.equal(url.searchParams.get('app-name'), config.appName);
@@ -39,7 +39,7 @@ test('the api key header is sent, and a token becomes a bearer', async () => {
       return jsonResponse({});
     },
     async () => {
-      await apiGet('/sync/activities', { token: 'tok' });
+      await apiGet('/sync/activities', { component: 'poll', token: 'tok' });
     },
   );
 });
@@ -51,7 +51,7 @@ test('an anonymous call sends no authorization header', async () => {
       return jsonResponse({});
     },
     async () => {
-      await apiGet('/movies/1');
+      await apiGet('/movies/1', { component: 'poll' });
     },
   );
 });
@@ -60,7 +60,7 @@ test('extra params are appended, and null or undefined ones are dropped', async 
   await withFetch(
     () => jsonResponse({}),
     async (calls) => {
-      await apiGet('/movies/1', { params: { extended: 'full', missing: undefined, empty: null } });
+      await apiGet('/movies/1', { component: 'poll', params: { extended: 'full', missing: undefined, empty: null } });
       const url = new URL(calls[0]!);
       assert.equal(url.searchParams.get('extended'), 'full');
       assert.equal(url.searchParams.has('missing'), false);
@@ -78,7 +78,7 @@ for (const status of [401, 403]) {
     await withFetch(
       () => new Response('nope', { status }),
       async (calls) => {
-        await assert.rejects(() => apiGet('/sync/activities', { token: 'stale' }), SimklAuthError);
+        await assert.rejects(() => apiGet('/sync/activities', { component: 'poll', token: 'stale' }), SimklAuthError);
         assert.equal(calls.length, 1, 'retrying a revoked token is pointless');
       },
     );
@@ -89,7 +89,7 @@ test('a 412 is a plain SimklError, not an auth error', async () => {
   await withFetch(
     () => new Response('rejected', { status: 412 }),
     async (calls) => {
-      const err = await apiGet('/sync/activities').catch((e: unknown) => e);
+      const err = await apiGet('/sync/activities', { component: 'poll' }).catch((e: unknown) => e);
       assert.ok(err instanceof SimklError, 'is a SimklError');
       assert.ok(!(err instanceof SimklAuthError), 'but not an auth error');
       assert.equal(calls.length, 1);
@@ -101,7 +101,7 @@ test('a 404 fails immediately rather than burning the retry budget', async () =>
   await withFetch(
     () => new Response('gone', { status: 404 }),
     async (calls) => {
-      await assert.rejects(() => apiGet('/movies/999'), SimklError);
+      await assert.rejects(() => apiGet('/movies/999', { component: 'poll' }), SimklError);
       assert.equal(calls.length, 1);
     },
   );
@@ -111,7 +111,7 @@ test('an error carries the status and body for the log', async () => {
   await withFetch(
     () => new Response('the reason', { status: 404 }),
     async () => {
-      const err = (await apiGet('/movies/999').catch((e: unknown) => e)) as SimklError;
+      const err = (await apiGet('/movies/999', { component: 'poll' }).catch((e: unknown) => e)) as SimklError;
       assert.equal(err.status, 404);
       assert.equal(err.body, 'the reason');
     },
@@ -125,7 +125,7 @@ test('a retryable status is retried and can succeed', async () => {
   await withFetch(
     () => (++calls === 1 ? new Response('busy', { status: 503 }) : jsonResponse({ ok: true })),
     async () => {
-      assert.deepEqual(await apiGet('/sync/activities'), { ok: true });
+      assert.deepEqual(await apiGet('/sync/activities', { component: 'poll' }), { ok: true });
       assert.equal(calls, 2);
     },
   );
@@ -139,7 +139,7 @@ test('a network failure is retried and can succeed', async () => {
       return jsonResponse({ ok: true });
     },
     async () => {
-      assert.deepEqual(await apiGet('/sync/activities'), { ok: true });
+      assert.deepEqual(await apiGet('/sync/activities', { component: 'poll' }), { ok: true });
       assert.equal(calls, 2);
     },
   );
@@ -153,7 +153,7 @@ test('a caller-supplied abort is not retried', async () => {
       throw new DOMException('aborted', 'AbortError');
     },
     async (calls) => {
-      await assert.rejects(() => apiGet('/sync/activities', { signal: controller.signal }));
+      await assert.rejects(() => apiGet('/sync/activities', { component: 'poll', signal: controller.signal }));
       assert.equal(calls.length, 1, 'an intentional abort must not be retried');
     },
   );
@@ -166,7 +166,7 @@ test('an unparseable success is wrapped as a SimklError and retried', async () =
   await withFetch(
     () => (++calls === 1 ? new Response('<html>maintenance</html>', { status: 200 }) : jsonResponse({ ok: true })),
     async () => {
-      assert.deepEqual(await apiGet('/sync/activities'), { ok: true });
+      assert.deepEqual(await apiGet('/sync/activities', { component: 'poll' }), { ok: true });
       assert.equal(calls, 2);
     },
   );
@@ -176,7 +176,7 @@ test('an unparseable success that never recovers throws a SimklError', async () 
   await withFetch(
     () => new Response('<html>maintenance</html>', { status: 200 }),
     async () => {
-      const err = (await apiGet('/sync/activities').catch((e: unknown) => e)) as SimklError;
+      const err = (await apiGet('/sync/activities', { component: 'poll' }).catch((e: unknown) => e)) as SimklError;
       assert.ok(err instanceof SimklError, `expected a SimklError, got ${String(err)}`);
       assert.match(err.message, /unparseable/i);
     },
@@ -194,7 +194,7 @@ test('Retry-After on a 429 is honoured over the default backoff', async () => {
     await withFetch(
       () => (++calls === 1 ? new Response('slow down', { status: 429, headers: { 'retry-after': '0' } }) : jsonResponse({ ok: true })),
       async () => {
-        assert.deepEqual(await apiGet('/sync/activities'), { ok: true });
+        assert.deepEqual(await apiGet('/sync/activities', { component: 'poll' }), { ok: true });
         assert.equal(calls, 2);
         assert.ok(Date.now() - started < 1_000, `waited ${Date.now() - started}ms instead of honouring Retry-After: 0`);
       },
@@ -256,7 +256,7 @@ test('a successful call is recorded once, with its size', async () => {
   await withFetch(
     () => jsonResponse({ hello: 'world' }),
     async () => {
-      await apiGet('/sync/activities');
+      await apiGet('/sync/activities', { component: 'poll' });
     },
   );
 
@@ -275,7 +275,7 @@ test('a retried call is one record carrying the attempt count', async () => {
   await withFetch(
     () => (++calls < 3 ? new Response('nope', { status: 500 }) : jsonResponse({ ok: true })),
     async () => {
-      await apiGet('/sync/activities');
+      await apiGet('/sync/activities', { component: 'poll' });
     },
   );
 
@@ -292,7 +292,7 @@ test('a rejected token records its status and body', async () => {
   await withFetch(
     () => new Response('{"error":"user_token_failed"}', { status: 401 }),
     async () => {
-      await assert.rejects(() => apiGet('/sync/activities', { token: 'tok' }), SimklAuthError);
+      await assert.rejects(() => apiGet('/sync/activities', { component: 'poll', token: 'tok' }), SimklAuthError);
     },
   );
 
@@ -311,7 +311,7 @@ test('a fetch that throws is recorded with no status', async () => {
       throw new Error('socket hang up');
     },
     async () => {
-      await assert.rejects(() => apiGet('/sync/activities'));
+      await assert.rejects(() => apiGet('/sync/activities', { component: 'poll' }));
     },
   );
 

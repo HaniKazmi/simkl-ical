@@ -107,6 +107,7 @@ tr:last-child td{border-bottom:0}
 .moved{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 .6rem;padding:.5rem .9rem}
 .deltas{display:flex;flex-wrap:wrap;gap:0 .5rem}
 .delta{color:var(--ok)}
+td.src{color:var(--slate)}
 td.svc{color:var(--faint)}
 td.path{word-break:break-all}
 tr.bad td{color:var(--crit)}
@@ -184,6 +185,7 @@ const movement = (model: StatusModel) => {
 const requestRows = (model: StatusModel) =>
   model.requests.map(
     (r) => html`<tr class="${r.error === null ? '' : 'bad'}">
+      <td class="src">${r.component}</td>
       <td class="svc">${r.service}</td>
       <td class="path">${r.method === 'GET' ? null : html`${r.method} `}${r.path}</td>
       <td class="num">${r.status === null ? '—' : r.status}${r.attempts > 1 ? html` ×${r.attempts}` : null}</td>
@@ -294,7 +296,7 @@ ${model.problems.length === 0 ? null : html`<div class="problems"><ul>${model.pr
   ${model.requests.length === 0
     ? html`<div class="moved dim">nothing requested yet</div>`
     : html`<table>
-        <thead><tr><th></th><th>Path</th><th class="num">Status</th><th class="num">Size</th><th class="num">Took</th><th>When</th></tr></thead>
+        <thead><tr><th>From</th><th></th><th>Path</th><th class="num">Status</th><th class="num">Size</th><th class="num">Took</th><th>When</th></tr></thead>
         <tbody>${requestRows(model)}</tbody>
       </table>`}
   ${model.requests.filter((r) => r.error !== null).slice(0, 3).map((r) => html`<div class="msg">${r.path} — ${r.error}</div>`)}

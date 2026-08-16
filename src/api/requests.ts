@@ -29,9 +29,23 @@ const MAX_ERROR_CHARS = 300;
 
 export type RequestService = 'simkl' | 'cdn' | 'sheets';
 
+/**
+ * Which part of the service asked, which is not the same question as which
+ * upstream answered. SIMKL serves three of these — the poll, the feed's film
+ * dates and the sheet's per-title reads — so `simkl /tv/1649662` says nothing
+ * about *why* without this.
+ *
+ * A property of the calling module rather than of the request, so every `io/`
+ * module names itself once. Required rather than defaulted: a new call site
+ * should have to decide, and `tsc` asking is the difference between a label
+ * that stays true and one that quietly rots.
+ */
+export type RequestComponent = 'poll' | 'calendars' | 'films' | 'catalogue' | 'spreadsheet' | 'login';
+
 export interface RequestRecord {
   at: string;
   service: RequestService;
+  component: RequestComponent;
   method: string;
   /** Path plus the parameters worth reading — see `describeUrl`. */
   path: string;

@@ -37,7 +37,7 @@ const usable = (data: unknown): string | null =>
   Array.isArray((data as CalendarFile | undefined)?.calendar) ? null : 'returned JSON with no calendar array';
 
 const fetchFile = (url: string, key: string, signal?: AbortSignal): Promise<CdnResult<CalendarFile>> =>
-  fetchCached<CalendarFile>(url, key, { validate: usable, signal });
+  fetchCached<CalendarFile>(url, key, { component: 'calendars', validate: usable, signal });
 
 export const rollingUrl = (type: CalendarType): string => CDN_BASE + CALENDAR_FILES[type];
 
