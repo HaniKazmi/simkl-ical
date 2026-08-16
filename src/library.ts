@@ -115,6 +115,59 @@ export const deltaFrom = (watermark: string | null | undefined): string | null =
   return Number.isNaN(at) ? watermark : new Date(at - 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
 };
 
+/** What the poll holds between runs, and compares each new payload against. */
+export interface GateState {
+  librarySignature: string;
+  removalAt: Record<SyncType, string>;
+  /** The `activities.all` already merged. Absent means there is nothing to delta from. */
+  syncedAll: string | null;
+  hasLibrary: boolean;
+}
+
+/** What one activities payload decided, and what to store once it is acted on. */
+export interface GateDecision {
+  /** A status timestamp moved — the gate's own answer, before `force`. */
+  changed: boolean;
+  /** Categories whose `removed_from_list` moved; empty means no reconcile. */
+  removedFrom: Set<SyncType>;
+  removals: boolean;
+  /** Nothing to delta from, or the caller insisted. */
+  full: boolean;
+  /** Computed here so the branches store what the comparison already derived. */
+  signature: string;
+  stamps: Record<SyncType, string>;
+}
+
+/**
+ * Whether this payload is worth a request, and which kind.
+ *
+ * Pure, and separated from the poll for that reason: it is the trickiest
+ * reasoning in the refresh path — three independent triggers, one of which
+ * (`force`) deliberately diverges from what the gate itself observed — and
+ * inline it could only be exercised through a fake HTTP layer.
+ *
+ * `changed` stays the gate's own answer rather than being folded into `full`.
+ * A forced poll pulls everything while every signature still matches, and
+ * reporting that as a change would be reporting one that did not happen.
+ */
+export const evaluateGate = (
+  activities: Activities | null | undefined,
+  held: GateState,
+  { force = false }: { force?: boolean } = {},
+): GateDecision => {
+  const signature = librarySignature(activities);
+  const stamps = removalStamps(activities);
+  const removedFrom = movedRemovals(held.removalAt, stamps);
+  return {
+    changed: held.librarySignature !== signature,
+    removedFrom,
+    removals: removedFrom.size > 0,
+    full: force || !held.hasLibrary || !held.syncedAll,
+    signature,
+    stamps,
+  };
+};
+
 /** Each item in the response, tagged with the type key it arrived under. */
 const entriesOf = function* (response: AllItemsResponse | null | undefined): Generator<[number, SyncType, LibraryItem]> {
   for (const type of TYPES) {

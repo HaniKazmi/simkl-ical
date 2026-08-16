@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   COUNT_KEYS,
+  evaluateGate,
   deltaFrom,
   libraryCounts,
   librarySignature,
@@ -378,4 +379,68 @@ test('an unrecognised status lands in other rather than vanishing', () => {
 
 test('a library that was never fetched counts as zero, not as missing rows', () => {
   assert.deepEqual(Object.keys(libraryCounts(null)), COUNT_KEYS);
+});
+
+// --- The gate --------------------------------------------------------------
+//
+// Three independent triggers, one of which deliberately disagrees with what the
+// gate observed. Inline in the poll this could only be reached through a fake
+// HTTP layer.
+
+const held = (over: Partial<Parameters<typeof evaluateGate>[1]> = {}) => ({
+  librarySignature: librarySignature(activities()),
+  removalAt: removalStamps(activities()),
+  syncedAll: '2026-08-10T11:52:03Z',
+  hasLibrary: true,
+  ...over,
+});
+
+test('a payload identical to the one held decides nothing', () => {
+  const decision = evaluateGate(activities(), held());
+  assert.equal(decision.changed, false);
+  assert.equal(decision.removals, false);
+  assert.equal(decision.full, false);
+});
+
+test('a moved status timestamp asks for a delta, not a full pull', () => {
+  const after = activities();
+  after.tv_shows.watching = '2026-08-11T09:00:00Z';
+  const decision = evaluateGate(after, held());
+  assert.equal(decision.changed, true);
+  assert.equal(decision.full, false);
+});
+
+test('no watermark forces a full pull however quiet the payload', () => {
+  assert.equal(evaluateGate(activities(), held({ syncedAll: null })).full, true);
+});
+
+test('no library forces a full pull', () => {
+  assert.equal(evaluateGate(activities(), held({ hasLibrary: false })).full, true);
+});
+
+// The distinction the two fields exist for: a forced poll pulls everything
+// while the gate itself saw nothing move, and conflating them would report a
+// change that did not happen.
+test('force pulls whole without claiming anything changed', () => {
+  const decision = evaluateGate(activities(), held(), { force: true });
+  assert.equal(decision.full, true);
+  assert.equal(decision.changed, false);
+});
+
+test('only the categories whose removal stamp moved are named', () => {
+  const after = activities();
+  after.anime.removed_from_list = '2026-08-11T09:00:00Z';
+  const decision = evaluateGate(after, held());
+  assert.equal(decision.removals, true);
+  assert.deepEqual([...decision.removedFrom], ['anime']);
+});
+
+// The stored values come back with the decision, so the branches that act on it
+// cannot recompute them from a payload that has moved on.
+test('the decision carries what the caller must store', () => {
+  const after = activities();
+  after.tv_shows.watching = '2026-08-11T09:00:00Z';
+  const decision = evaluateGate(after, held());
+  assert.equal(decision.signature, librarySignature(after));
+  assert.deepEqual(decision.stamps, removalStamps(after));
 });
