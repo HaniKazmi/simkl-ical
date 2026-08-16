@@ -56,9 +56,9 @@ export const renderStatus = (state: Orchestrator, { now = Date.now() }: { now?: 
 
       sheetConfigured: sheetSync !== null,
       sheetMode: config.sheetSyncMode,
-      // The tab, never `sheetId`. This repo is public and the spreadsheet's only
-      // protection is its Drive sharing staying Restricted, so the id must not
-      // be somewhere a screenshot can carry it.
+      // The tab name rather than the id, because the name is what a reader can
+      // act on: it is the label on the tab in front of them, and the id names
+      // nothing they can find without following it.
       sheetTab: config.sheetName,
       sheetStatus: sheetSync?.lastStatus ?? 'idle',
       sheetLastRunAt: sheetSync?.lastRunAt ?? null,

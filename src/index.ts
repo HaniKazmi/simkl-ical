@@ -28,10 +28,10 @@ app.log.info(`listening on :${config.port} in ${config.timezone}, warming up`);
 // What this process answers, early in the log, complete enough to paste
 // straight into a calendar client.
 //
-// The token is printed in full, which is why `buildServer` still redacts
-// `req.url`: the difference that matters is one line at boot against a line per
-// request for the life of the process, and only the second turns a log tail or
-// a shipped log volume into a rolling disclosure.
+// The token is printed in full: these are the URLs to paste into a calendar
+// client, and a redacted one would be useless for the job this block exists to
+// do. `buildServer` still redacts `req.url` so the same string does not then
+// repeat once per request for the life of the process.
 for (const [name, path] of [
   ['feed  ', `/${config.feedToken}/feed.ics`],
   ['status', `/${config.feedToken}/status`],

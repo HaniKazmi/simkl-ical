@@ -116,7 +116,8 @@ export class Orchestrator {
   /**
    * The three watermarks the poll gates on, all in memory. Nothing here is
    * persisted: `data/` holds the token, the rendered feed and an observational
-   * journal, so a restart is a cold start — which is now two requests.
+   * journal, so a restart is a cold start — two library requests, plus one
+   * per plan-to-watch film.
    *
    * `syncedAll` is the `activities.all` of the poll whose data is already
    * merged, and is what `date_from` gets, verbatim. It is deliberately not the
@@ -243,7 +244,7 @@ export class Orchestrator {
    * MB, the library poll runs on its own timer meanwhile, and this render is
    * queued last — so a library captured before the fetch would overwrite the
    * poll's correct render with a pre-prune one, and stand until the next
-   * refresh three hours later.
+   * refresh six hours later.
    */
   async refreshCalendars(): Promise<void> {
     await this.feed.refreshCalendars({ signal: this.aborter.signal });

@@ -125,7 +125,8 @@ export interface CalendarOptions {
 
 /**
  * A fetched calendar and how fresh it is. Freshness sits beside the payload
- * rather than on it — api/simkl/types.ts holds only shapes SIMKL actually sends.
+ * rather than on it: this is the shape after merging, which no single SIMKL
+ * response has.
  */
 export interface CalendarResult {
   data: CalendarFile;

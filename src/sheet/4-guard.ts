@@ -13,7 +13,7 @@
 
 import { config } from '../shared/config.ts';
 import { isBlank, isFormula, numberOf, sameValue, type Grid, type HeaderName } from './2-grid.ts';
-import { shiftDate } from '../shared/dates.ts';
+import { localDateOf, shiftDate } from '../shared/dates.ts';
 import { dateSerial } from './1-progress.ts';
 import type { CellEdit, SheetPlan } from './3-plan.ts';
 import type { ExtendedValue } from '../api/google/types.ts';
@@ -58,8 +58,10 @@ export const assertPlanSafe = (
   grid: Grid,
   { maxEdits = config.sheetMaxEdits, maxRows = config.sheetMaxRows, now = new Date() }: SafetyLimits = {},
 ): void => {
-  // Tomorrow, via the shared date arithmetic rather than slicing an instant.
-  const maxSerial = dateSerial(shiftDate(now.toISOString().slice(0, 10), 1));
+  // Tomorrow, in the viewer's zone. The slice would be a UTC date, which is a
+  // day out for a fifth of the clock — and the +1 day here would absorb it,
+  // making the bound quietly two days wide instead of one.
+  const maxSerial = dateSerial(shiftDate(localDateOf(now, config.timezone), 1));
   const showRows = new Set(grid.blocks.map((b) => b.row));
   const seasonRows = new Map(grid.blocks.flatMap((b) => b.seasons.map((s) => [s.row, s] as const)));
 

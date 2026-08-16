@@ -28,8 +28,11 @@ export const buildServer = (state: Orchestrator, { logger = true, logStream }: S
     routerOptions: { maxParamLength: 512 },
     logger: logger && {
       ...(logStream ? { stream: logStream } : {}),
-      // The feed token is a credential and it sits in the path. Only `req.url`
-      // needs redacting: Fastify's request serializer emits no headers.
+      // The token sits in the path, so an unredacted request log is a log of
+      // the credential once per request. The logs are a trusted surface here —
+      // the boot lines print the token in full — so this is not a disclosure
+      // boundary; it keeps the volume of a long-lived log down to the one line
+      // at startup that an operator actually wants to copy.
       redact: {
         paths: ['req.url'],
         censor: '[redacted]',
