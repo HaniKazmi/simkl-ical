@@ -1,16 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { FeedState } from '../src/refresh.ts';
+import { Orchestrator } from '../src/orchestrator.ts';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { config } from '../src/shared/config.ts';
 import { ago, emptyCalendars, quiet, withTempDataDir } from './helpers.ts';
 
 const rendered = () => {
-  const state = new FeedState({ logger: quiet });
-  state.renderedAt = new Date().toISOString();
-  state.calendarsAt = new Date().toISOString();
-  state.calendarsFreshAt = new Date().toISOString();
+  const state = new Orchestrator({ logger: quiet });
+  state.feed.renderedAt = new Date().toISOString();
+  state.feed.calendarsAt = new Date().toISOString();
+  state.feed.calendarsFreshAt = new Date().toISOString();
   state.polledAt = new Date().toISOString();
   return state;
 };
@@ -20,7 +20,7 @@ test('a freshly rendered feed is healthy', () => {
 });
 
 test('nothing rendered yet is unhealthy', () => {
-  assert.equal(new FeedState({ logger: quiet }).health.ok, false);
+  assert.equal(new Orchestrator({ logger: quiet }).health.ok, false);
 });
 
 // A revoked token must eventually read as unhealthy.
@@ -36,7 +36,7 @@ test('a feed that has stopped polling goes unhealthy', () => {
 test('a calendar success does not erase a library failure', () => {
   const state = rendered();
   state.errors.library = 'AUTH: SIMKL rejected the token (401)';
-  state.errors.calendar = null; // as if a calendar refresh just succeeded
+  state.feed.errors.calendar = null; // as if a calendar refresh just succeeded
 
   assert.equal(state.health.lastError, 'AUTH: SIMKL rejected the token (401)');
   assert.equal(state.health.errors.library, 'AUTH: SIMKL rejected the token (401)');
@@ -44,7 +44,7 @@ test('a calendar success does not erase a library failure', () => {
 
 test('a library failure outranks a calendar one in the headline error', () => {
   const state = rendered();
-  state.errors.calendar = 'calendar boom';
+  state.feed.errors.calendar = 'calendar boom';
   assert.equal(state.health.lastError, 'calendar boom');
   state.errors.library = 'library boom';
   assert.equal(state.health.lastError, 'library boom');
@@ -52,7 +52,7 @@ test('a library failure outranks a calendar one in the headline error', () => {
 
 test('stale calendars go unhealthy', () => {
   const state = rendered();
-  state.calendarsFreshAt = ago(config.calendarRefreshMs * 4);
+  state.feed.calendarsFreshAt = ago(config.calendarRefreshMs * 4);
   assert.equal(state.health.ok, false);
 });
 
@@ -60,8 +60,8 @@ test('stale calendars go unhealthy', () => {
 // "succeeding". Health is keyed on when the CDN last actually answered.
 test('a CDN outage is unhealthy even though refreshes keep "succeeding"', () => {
   const state = rendered();
-  state.calendarsAt = new Date().toISOString(); // attempts keep happening...
-  state.calendarsFreshAt = ago(config.calendarRefreshMs * 4); // ...but nothing fresh
+  state.feed.calendarsAt = new Date().toISOString(); // attempts keep happening...
+  state.feed.calendarsFreshAt = ago(config.calendarRefreshMs * 4); // ...but nothing fresh
   assert.equal(state.health.ok, false);
   assert.equal(state.health.stale, true);
 });
@@ -71,7 +71,7 @@ test('a CDN outage is unhealthy even though refreshes keep "succeeding"', () => 
 test('a render that keeps failing is unhealthy', () => {
   const state = rendered();
   assert.equal(state.health.ok, true, 'precondition');
-  state.errors.render = 'Invalid time value';
+  state.feed.errors.render = 'Invalid time value';
   assert.equal(state.health.ok, false);
   assert.equal(state.health.lastError, 'Invalid time value');
 });
@@ -80,7 +80,7 @@ test('a render that keeps failing is unhealthy', () => {
 // means rendering has stopped even when nothing reported an error.
 test('a feed that has stopped rendering is unhealthy', () => {
   const state = rendered();
-  state.renderedAt = ago(config.calendarRefreshMs * 4);
+  state.feed.renderedAt = ago(config.calendarRefreshMs * 4);
   assert.equal(state.health.ok, false);
   assert.equal(state.health.stale, true);
 });
@@ -98,7 +98,7 @@ test('an old library sync time alone does not mean unhealthy', () => {
 test('an unreadable token file degrades the feed rather than throwing', async () => {
   await withTempDataDir(async (dir) => {
     await writeFile(join(dir, 'token.json'), '{ truncated');
-    const state = new FeedState({ logger: quiet });
+    const state = new Orchestrator({ logger: quiet });
     await state.refreshLibraryIfChanged();
     assert.ok(state.errors.library, 'the failure is recorded');
     assert.match(state.errors.library, /library:/);
@@ -108,23 +108,23 @@ test('an unreadable token file degrades the feed rather than throwing', async ()
 // On values, not key presence — tsc already proves the fields exist.
 test('health reports the timestamps a human would want', () => {
   const state = rendered();
-  state.events = [];
+  state.feed.events = [];
   const health = state.health;
 
   assert.equal(health.events, 0);
   assert.equal(health.timezone, config.timezone);
-  assert.equal(health.calendarsRefreshedAt, state.calendarsAt);
-  assert.equal(health.calendarsFreshAt, state.calendarsFreshAt);
+  assert.equal(health.calendarsRefreshedAt, state.feed.calendarsAt);
+  assert.equal(health.calendarsFreshAt, state.feed.calendarsFreshAt);
   assert.equal(health.librarySyncedAt, state.libraryAt);
   assert.equal(health.lastPolledAt, state.polledAt);
-  assert.equal(health.renderedAt, state.renderedAt);
+  assert.equal(health.renderedAt, state.feed.renderedAt);
   assert.equal(health.servingCached, false);
 });
 
 test('the event count reflects what was actually joined', () => {
   const state = rendered();
-  state.calendars = emptyCalendars();
+  state.feed.calendars = emptyCalendars();
   state.library = { shows_watching: {} };
-  state.render();
+  state.feed.render(state.library);
   assert.equal(state.health.events, 0);
 });

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { config } from '../src/shared/config.ts';
-import { FeedState } from '../src/refresh.ts';
+import { Orchestrator } from '../src/orchestrator.ts';
 import { LISTS } from '../src/shared/library.ts';
 import { ago, emptyCalendars, jsonResponse, quiet, recorder, withConfig, withFetch, withTempDataDir } from './helpers.ts';
 
@@ -37,14 +37,14 @@ const api =
     throw new Error(`unexpected request: ${url}`);
   };
 
-const withToken = (fn: (state: FeedState) => Promise<void>, logger: FeedState['log'] = quiet) =>
+const withToken = (fn: (state: Orchestrator) => Promise<void>, logger: Orchestrator['log'] = quiet) =>
   withTempDataDir(async (dir) => {
     await writeFile(join(dir, 'token.json'), JSON.stringify({ access_token: 'tok' }));
-    await fn(new FeedState({ logger }));
+    await fn(new Orchestrator({ logger }));
   });
 
 /** Get a state to a warm, fully-synced baseline. Twelve tests started this way. */
-const prime = (state: FeedState, acts: unknown = activities(), opts: { movieStatus?: number } = {}) =>
+const prime = (state: Orchestrator, acts: unknown = activities(), opts: { movieStatus?: number } = {}) =>
   withFetch(api(acts, opts), () => state.refreshLibraryIfChanged());
 
 const lists = (calls: string[]) => calls.filter((c) => c.includes('/all-items/')).map((c) => c.split('/all-items/')[1]!.split('?')[0]!);
@@ -57,7 +57,7 @@ test('a cold start fetches every list and resolves the films', async () => {
       assert.equal(lists(calls).length, LISTS.length, 'every list');
       assert.equal(lookups(calls).length, 1, 'and the one film');
       assert.ok(state.library);
-      assert.equal(state.movieReleases.size, 1);
+      assert.equal(state.feed.movieReleases.size, 1);
     });
   });
 });
@@ -147,7 +147,7 @@ test('film dates are re-resolved once they age out, with no library change', asy
   await withToken(async (state) => {
     await prime(state);
 
-    state.filmsResolvedAt = ago(config.movieRefreshMs + 1000);
+    state.feed.filmsResolvedAt = ago(config.movieRefreshMs + 1000);
     await withFetch(api(activities()), async (calls) => {
       await state.refreshLibraryIfChanged();
       assert.equal(lists(calls).length, 0, 'no list changed, so none is refetched');
@@ -170,7 +170,7 @@ test('force refetches everything regardless of the signatures', async () => {
 
 test('no token is reported without touching the network', async () => {
   await withTempDataDir(async () => {
-    const state = new FeedState({ logger: quiet });
+    const state = new Orchestrator({ logger: quiet });
     await withFetch(
       () => {
         throw new Error('should not have been called');
@@ -188,7 +188,7 @@ test('a revoked token keeps the last good feed and says how to fix it', async ()
   const log = recorder();
   await withToken(async (state) => {
     await prime(state);
-    const good = state.ics;
+    const good = state.feed.ics;
 
     await withFetch(
       () => new Response('unauthorized', { status: 401 }),
@@ -198,7 +198,7 @@ test('a revoked token keeps the last good feed and says how to fix it', async ()
     );
 
     assert.match(state.errors.library!, /^AUTH:/);
-    assert.equal(state.ics, good, 'the feed must survive a revoked token');
+    assert.equal(state.feed.ics, good, 'the feed must survive a revoked token');
     assert.ok(
       log.lines.some((l) => l.includes('npm run login -- --force')),
       log.lines.join('\n'),
@@ -221,8 +221,8 @@ test('a failed daily re-read retries on the next poll, not in another day', asyn
   await withToken(async (state) => {
     await prime(state);
 
-    const before = state.filmsResolvedAt;
-    state.filmsResolvedAt = ago(config.movieRefreshMs + 1000);
+    const before = state.feed.filmsResolvedAt;
+    state.feed.filmsResolvedAt = ago(config.movieRefreshMs + 1000);
 
     await withFetch(api(activities(), { movieStatus: 500 }), async (calls) => {
       await state.refreshLibraryIfChanged();
@@ -230,9 +230,9 @@ test('a failed daily re-read retries on the next poll, not in another day', asyn
       // that the re-read happened at all.
       assert.ok(lookups(calls).length >= 1, 'the re-read was attempted');
     });
-    assert.notEqual(state.filmsResolvedAt, before, 'precondition: it was aged');
+    assert.notEqual(state.feed.filmsResolvedAt, before, 'precondition: it was aged');
     assert.ok(
-      Date.now() - Date.parse(state.filmsResolvedAt!) > config.movieRefreshMs,
+      Date.now() - Date.parse(state.feed.filmsResolvedAt!) > config.movieRefreshMs,
       'a failed round must not count as resolved',
     );
 
@@ -246,7 +246,7 @@ test('a failed daily re-read retries on the next poll, not in another day', asyn
 test('a successful daily re-read does reset the clock', async () => {
   await withToken(async (state) => {
     await prime(state);
-    state.filmsResolvedAt = ago(config.movieRefreshMs + 1000);
+    state.feed.filmsResolvedAt = ago(config.movieRefreshMs + 1000);
 
     await prime(state);
     await withFetch(api(activities()), async (calls) => {
@@ -260,12 +260,12 @@ test('a successful daily re-read does reset the clock', async () => {
 test('a sustained rate limit keeps the films and retries rather than dropping them', async () => {
   await withToken(async (state) => {
     await prime(state);
-    assert.equal(state.movieReleases.size, 1, 'precondition');
+    assert.equal(state.feed.movieReleases.size, 1, 'precondition');
 
-    state.filmsResolvedAt = ago(config.movieRefreshMs + 1000);
+    state.feed.filmsResolvedAt = ago(config.movieRefreshMs + 1000);
     await prime(state, activities(), { movieStatus: 429 });
 
-    assert.equal(state.movieReleases.size, 1, 'the known date is kept, not dropped');
+    assert.equal(state.feed.movieReleases.size, 1, 'the known date is kept, not dropped');
     await withFetch(api(activities()), async (calls) => {
       await state.refreshLibraryIfChanged();
       assert.equal(lookups(calls).length, 1, 'and it is retried promptly');
@@ -347,15 +347,15 @@ test('with the sheet unconfigured a quiet poll still costs exactly one request',
 
 test('a sheet failure is never filed as a library error, and the feed still renders', async () => {
   await withToken(async (state) => {
-    state.calendars = emptyCalendars();
-    state.calendarsFreshAt = new Date().toISOString();
+    state.feed.calendars = emptyCalendars();
+    state.feed.calendarsFreshAt = new Date().toISOString();
     // Stands in for the real SheetSync: the wiring is what is under test.
     state.sheetSync = {
       lastRunAt: null,
       lastStatus: 'idle',
       frozen: null,
       run: async () => ({ status: 'failed' as const, edits: 0, inserts: 0, lines: [], error: 'sheets exploded', retry: true }),
-    } as unknown as FeedState['sheetSync'];
+    } as unknown as Orchestrator['sheetSync'];
 
     await withFetch(api(activities()), async () => {
       await state.refreshLibraryIfChanged();
@@ -364,7 +364,7 @@ test('a sheet failure is never filed as a library error, and the feed still rend
     assert.equal(state.errors.library, null);
     assert.equal(state.errors.sheet, 'sheets exploded');
     assert.equal(state.sheetRetryPending, true);
-    assert.ok(state.renderedAt, 'the feed was rendered before the sheet was touched');
+    assert.ok(state.feed.renderedAt, 'the feed was rendered before the sheet was touched');
     // A frozen or failing sheet must not restart the container or fail a deploy.
     assert.equal(state.health.ok, true);
     assert.equal(state.health.sheet.configured, true);
@@ -377,7 +377,7 @@ test('a sheet failure is never filed as a library error, and the feed still rend
 // return cannot prevent that, because the throw goes straight past it.
 test('a failed library refresh skips the sheet sync entirely', async () => {
   await withToken(async (state) => {
-    state.calendars = emptyCalendars();
+    state.feed.calendars = emptyCalendars();
     let runs = 0;
     state.sheetSync = {
       lastRunAt: null,
@@ -387,7 +387,7 @@ test('a failed library refresh skips the sheet sync entirely', async () => {
         runs += 1;
         return { status: 'idle' as const, edits: 0, inserts: 0, lines: [], error: null, retry: false };
       },
-    } as unknown as FeedState['sheetSync'];
+    } as unknown as Orchestrator['sheetSync'];
 
     await prime(state);
     assert.equal(runs, 1, 'a healthy poll does sync the sheet');
@@ -402,13 +402,13 @@ test('a failed library refresh skips the sheet sync entirely', async () => {
 
 test('a poll that fell through only to retry the sheet does not advance librarySyncedAt', async () => {
   await withToken(async (state) => {
-    state.calendars = emptyCalendars();
+    state.feed.calendars = emptyCalendars();
     state.sheetSync = {
       lastRunAt: null,
       lastStatus: 'idle',
       frozen: null,
       run: async () => ({ status: 'idle' as const, edits: 0, inserts: 0, lines: [], error: null, retry: true }),
-    } as unknown as FeedState['sheetSync'];
+    } as unknown as Orchestrator['sheetSync'];
 
     await prime(state);
     const synced = state.libraryAt;
