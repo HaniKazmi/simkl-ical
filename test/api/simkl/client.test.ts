@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { config } from '../../../src/shared/config.ts';
-import { apiGet, retryDelayMs, SimklAuthError, SimklError } from '../../../src/api/simkl/client.ts';
+import { apiGet, SimklAuthError, SimklError } from '../../../src/api/simkl/client.ts';
+import { retryDelayMs } from '../../../src/api/backoff.ts';
 import { jsonResponse, withConfig, withFetch } from '../../helpers.ts';
 
 

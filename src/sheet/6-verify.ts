@@ -16,7 +16,7 @@
  */
 
 import { errorMessage } from '../shared/errors.ts';
-import { a1, isFormulaValue, parseGrid, sameValue, type Grid, type HeaderName } from './2-grid.ts';
+import { a1, HEADERS, isFormulaValue, parseGrid, sameValue, type Grid, type HeaderName } from './2-grid.ts';
 import type { CellEdit, RowInsert, SheetPlan } from './3-plan.ts';
 import type { CellData, ExtendedValue } from '../api/google/types.ts';
 import type { SheetSnapshot } from './io/spreadsheet.ts';
@@ -25,8 +25,14 @@ import type { SheetSnapshot } from './io/spreadsheet.ts';
  * The columns the diff inspects. Scoping it to the edit columns alone would
  * leave four of the insert's six cells uninspected; scoping it to everything
  * would mean editing the banner URL in `W2` aborts a sync for no reason.
+ *
+ * Derived rather than listed, because this is the one list where forgetting an
+ * entry is a corruption nobody sees: a new header added to `HEADERS` would
+ * otherwise be written by the sync and never inspected by the verify. `id` and
+ * `Type` are the exclusions — the sync never writes either, and both carry
+ * hand-maintained values a user edits between polls.
  */
-const INSPECTED: HeaderName[] = ['Show', 'Status', 'Season', 'Episode', 'Start', 'End', 'Episodes', 'Length'];
+const INSPECTED: HeaderName[] = HEADERS.filter((header) => header !== 'id' && header !== 'Type');
 
 /** Where a pre-existing row ends up once the inserts have been applied. */
 export const shiftRow = (row: number, insertRows: number[]): number => row + insertRows.filter((at) => at <= row).length;

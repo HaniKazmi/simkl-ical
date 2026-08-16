@@ -126,7 +126,6 @@ export interface AllItemsResponse {
 }
 
 export type SyncType = 'shows' | 'anime' | 'movies';
-export type SyncStatus = 'watching' | 'plantowatch' | 'completed' | 'hold' | 'dropped';
 
 /**
  * One library record, and the type it belongs to.

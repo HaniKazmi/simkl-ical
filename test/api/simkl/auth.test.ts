@@ -130,8 +130,8 @@ test('polling uses the user code, not the device code placeholder', async () => 
     () => jsonResponse({ result: 'KO' }),
     async (calls) => {
       await pollPin('ABC123');
-      assert.ok(calls[0]!.includes('/oauth/pin/ABC123'), calls[0]);
-      assert.ok(!calls[0]!.includes('DEVICE_CODE'), calls[0]);
+      assert.ok(calls[0]!.includes('/oauth/pin/ABC123'), String(calls[0]));
+      assert.ok(!calls[0]!.includes('DEVICE_CODE'), String(calls[0]));
     },
   );
 });

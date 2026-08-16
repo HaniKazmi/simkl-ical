@@ -21,6 +21,11 @@
     // with `_` to keep it for its position.
     "noUnusedLocals": true,
     "noUnusedParameters": true,
+    // The code is already written as though this were on — the positional sheet
+    // fixtures, the ragged-row accessors, the A1 helpers all guard their
+    // indexing. Turning it on converts that discipline into a check, and `tsc`
+    // is the only build step there is.
+    "noUncheckedIndexedAccess": true,
 
     "skipLibCheck": true
   },

@@ -195,7 +195,7 @@ test('apply mode writes exactly what it planned and verifies it', async () => {
     assert.deepEqual(sheets.map((c) => (c.includes(':batchUpdate') ? 'write' : 'read')), ['read', 'write', 'read', 'read', 'write']);
     // Pinned because `new URL('SID:batchUpdate', base)` reads `SID:` as a
     // scheme and silently sends the request somewhere else entirely.
-    assert.ok(sheets[1]?.startsWith('https://sheets.googleapis.com/v4/spreadsheets/SID:batchUpdate'), sheets[1]);
+    assert.ok(sheets[1]?.startsWith('https://sheets.googleapis.com/v4/spreadsheets/SID:batchUpdate'), String(sheets[1]));
   });
 });
 

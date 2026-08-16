@@ -11,7 +11,7 @@
 import { config } from '../shared/config.ts';
 
 /** Ceiling on a server-requested wait, so a hostile header cannot stall a refresh. */
-export const MAX_RETRY_AFTER_MS = 60_000;
+const MAX_RETRY_AFTER_MS = 60_000;
 
 export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 

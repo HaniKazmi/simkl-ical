@@ -6,7 +6,7 @@
 
 import { config } from '../shared/config.ts';
 import { localDate, localDateOf, releaseDate, shiftDate } from '../shared/dates.ts';
-import { itemSimklId, itemStatus } from '../api/simkl/item.ts';
+import { itemStatus } from '../api/simkl/item.ts';
 import type {
   CalendarEntry,
   FinaleType,
@@ -17,8 +17,6 @@ import type {
   ShowMetadata,
   SyncType,
 } from '../api/simkl/types.ts';
-
-export { itemSimklId };
 
 /**
  * Statuses whose upcoming episodes do not belong in the feed.
