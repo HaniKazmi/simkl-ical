@@ -22,19 +22,22 @@ interface CachedFile<T> {
   lastModified: string | null;
 }
 
+/**
+ * Where the bytes came from. Three outcomes, one field: two booleans would make
+ * a fourth combination representable that cannot happen, and force every reader
+ * to spell "the CDN regenerated" as a double negative.
+ *
+ * - `fresh` — a body, newer than anything held
+ * - `not-modified` — a 304: the CDN answered and has nothing new
+ * - `cache` — the CDN did not answer, so the held copy was served instead
+ *
+ * Only `cache` is a fault. A 304 is the expected answer at an interval matched
+ * to how often the file regenerates.
+ */
+export type CdnSource = 'fresh' | 'not-modified' | 'cache';
+
 export interface CdnResult<T> extends CachedFile<T> {
-  /**
-   * The network failed and the cached copy was served instead, so health can
-   * tell an outage from a quiet CDN. A 304 is not stale: the CDN answered.
-   */
-  stale: boolean;
-  /**
-   * The CDN answered 304 — it has not regenerated since the copy in hand.
-   * `stale` cannot answer this: it is false for both a 304 and a fresh body,
-   * which is the same value for "nothing changed" and "everything did". False
-   * on a cached copy served after a failure, where the CDN said nothing at all.
-   */
-  notModified: boolean;
+  source: CdnSource;
 }
 
 const cache = new Map<string, CachedFile<unknown>>();
@@ -77,7 +80,7 @@ export const fetchCached = async <T>(url: string, key: string, { validate, signa
   // Stale data beats no data, so every failure below serves the cache when
   // there is one — flagged stale rather than passing as a success.
   const fallback = (reason: string): CdnResult<T> => {
-    if (cached) return { ...cached, stale: true, notModified: false };
+    if (cached) return { ...cached, source: 'cache' };
     throw new Error(`${url} ${reason}`);
   };
 
@@ -92,7 +95,7 @@ export const fetchCached = async <T>(url: string, key: string, { validate, signa
     return fallback(`could not be fetched: ${errorMessage(err)}`);
   }
 
-  if (res.status === 304 && cached) return { ...cached, stale: false, notModified: true };
+  if (res.status === 304 && cached) return { ...cached, source: 'not-modified' };
   if (!res.ok) return fallback(`returned ${res.status}`);
 
   let data: T;
@@ -108,5 +111,5 @@ export const fetchCached = async <T>(url: string, key: string, { validate, signa
 
   const entry: CachedFile<T> = { data, lastModified: res.headers.get('last-modified') };
   cache.set(key, entry);
-  return { ...entry, stale: false, notModified: false };
+  return { ...entry, source: 'fresh' };
 };

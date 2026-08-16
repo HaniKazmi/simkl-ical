@@ -5,7 +5,7 @@
  * First of **FETCH** → JOIN → RENDER → SAVE, alongside `movies.ts`.
  */
 
-import { evictCache, fetchCached, type CdnResult } from '../../api/cdn.ts';
+import { evictCache, fetchCached, type CdnResult, type CdnSource } from '../../api/cdn.ts';
 import { config } from '../../shared/config.ts';
 import { localDate } from '../../shared/dates.ts';
 import { errorMessage } from '../../shared/errors.ts';
@@ -129,13 +129,12 @@ export interface CalendarOptions {
  */
 export interface CalendarResult {
   data: CalendarFile;
-  stale: boolean;
   /**
-   * The CDN had nothing new. Read from the rolling file alone: a closed month's
-   * archive answers from cache every time by design, so folding archives in
-   * would report "unchanged" on a poll where the rolling file did change.
+   * Read from the rolling file alone: a closed month's archive answers from
+   * cache every time by design, so folding archives in would report both an
+   * outage and "unchanged" on a poll where the rolling file was perfectly fine.
    */
-  notModified: boolean;
+  source: CdnSource;
 }
 
 /**
@@ -180,7 +179,7 @@ export const fetchCalendar = async (
   const wanted = new Set([rollingKey(type), ...months.map((m) => archiveKey(type, m.year, m.month))]);
   evictCache((key) => !key.startsWith(`calendar-${type}`) || wanted.has(key));
 
-  return { data: mergeCalendars(parts), stale: rolling.stale, notModified: rolling.notModified };
+  return { data: mergeCalendars(parts), source: rolling.source };
 };
 
 export type Calendars = Record<CalendarType, CalendarResult>;
@@ -193,14 +192,14 @@ export const fetchAllCalendars = async ({ graceDays = config.graceDays, timezone
 };
 
 /** True when any calendar was served from cache after the CDN failed. */
-export const anyStale = (calendars: Calendars): boolean => Object.values(calendars).some((c) => c.stale);
+export const anyStale = (calendars: Calendars): boolean => Object.values(calendars).some((c) => c.source === 'cache');
 
 /**
  * True when the CDN sent new bytes for any type. A 304 on every file means the
  * poll cost two conditional requests and changed nothing — which is the normal,
  * healthy outcome, and worth being able to say rather than infer.
  */
-export const anyChanged = (calendars: Calendars): boolean => Object.values(calendars).some((c) => !c.stale && !c.notModified);
+export const anyChanged = (calendars: Calendars): boolean => Object.values(calendars).some((c) => c.source === 'fresh');
 
 /** Just the payloads, for the join, which has no use for freshness. */
 export const payloads = (calendars: Calendars): Record<CalendarType, CalendarFile> =>

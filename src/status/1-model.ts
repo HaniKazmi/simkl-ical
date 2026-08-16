@@ -8,7 +8,10 @@
  * assembling a live service.
  */
 
+import { MS_PER_DAY } from '../shared/dates.ts';
+import type { SheetSyncMode } from '../shared/config.ts';
 import type { SheetRunRecord } from '../sheet/io/journal.ts';
+import type { SheetSyncStatus } from '../sheet/sync.ts';
 
 export interface StatusInput {
   now: number;
@@ -20,7 +23,6 @@ export interface StatusInput {
   problems: string[];
 
   polledAt: string | null;
-  librarySyncedAt: string | null;
   libraryError: string | null;
   /** Every list, including the empty ones — see `listCounts`. */
   counts: Record<string, number>;
@@ -32,7 +34,6 @@ export interface StatusInput {
   servingCached: boolean;
   renderError: string | null;
   calendarsAt: string | null;
-  calendarsFreshAt: string | null;
   calendarsChangedAt: string | null;
   calendarError: string | null;
   calendarRefreshMs: number;
@@ -41,9 +42,9 @@ export interface StatusInput {
   movieRefreshMs: number;
 
   sheetConfigured: boolean;
-  sheetMode: string;
+  sheetMode: SheetSyncMode;
   sheetTab: string;
-  sheetStatus: string;
+  sheetStatus: SheetSyncStatus;
   sheetLastRunAt: string | null;
   /** The whole repair message, which `/healthz` reduces to a boolean. */
   sheetFrozen: string | null;
@@ -64,8 +65,9 @@ export interface Stamp {
  * the previous one is still going, so this is an expectation, not a promise.
  */
 export interface Due {
+  /** `in 1h 46m`, `overdue by 1h`, or `due now`. Carries its own state — a
+   * separate flag would be a styling hook nothing reads. */
   label: string;
-  overdue: boolean;
 }
 
 export interface ListRow {
@@ -83,15 +85,8 @@ export interface Step {
   ok: boolean;
 }
 
-export interface RunView {
-  at: Stamp;
-  status: string;
-  mode: string;
-  edits: SheetRunRecord['edits'];
-  inserts: SheetRunRecord['inserts'];
-  error: string | null;
-  repeats: number;
-}
+/** A journal record with its instant made readable. */
+export type RunView = Omit<SheetRunRecord, 'at'> & { at: Stamp };
 
 export interface StatusModel {
   appName: string;
@@ -102,7 +97,6 @@ export interface StatusModel {
   uptime: string | null;
   library: {
     polled: Stamp;
-    synced: Stamp;
     error: string | null;
     total: number;
     lists: ListRow[];
@@ -113,7 +107,6 @@ export interface StatusModel {
   feed: {
     events: number;
     rendered: Stamp;
-    servingCached: boolean;
     error: string | null;
     steps: Step[];
     calendarsDue: Due;
@@ -121,9 +114,9 @@ export interface StatusModel {
   };
   sheet: {
     configured: boolean;
-    mode: string;
+    mode: SheetSyncMode;
     tab: string;
-    status: string;
+    status: SheetSyncStatus;
     lastRun: Stamp;
     frozen: string | null;
     error: string | null;
@@ -133,7 +126,7 @@ export interface StatusModel {
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
-const DAY = 24 * HOUR;
+const DAY = MS_PER_DAY;
 
 /**
  * Coarse on purpose: two units is what a person reads at a glance, and a page
@@ -168,9 +161,26 @@ const stamp = (iso: string | null, now: number): Stamp => ({
  * shows as overdue instead of quietly reporting the next one.
  */
 const due = (last: string | null, everyMs: number, now: number): Due => {
-  if (last === null) return { label: 'due now', overdue: false };
+  if (last === null) return { label: 'due now' };
   const remaining = Date.parse(last) + everyMs - now;
-  return remaining <= 0 ? { label: `overdue by ${duration(-remaining)}`, overdue: true } : { label: `in ${duration(remaining)}`, overdue: false };
+  return { label: remaining <= 0 ? `overdue by ${duration(-remaining)}` : `in ${duration(remaining)}` };
+};
+
+/**
+ * What the last calendar fetch actually achieved. Early returns rather than a
+ * nested ternary, because the branch a reader comes here for — why it says
+ * *unchanged* — is the one a ternary buries deepest.
+ *
+ * The `changed === attempted` test is string identity, and holds because
+ * `Feed.refreshCalendars` assigns `calendarsChangedAt` the very value it just
+ * put in `calendarsAt`.
+ */
+const calendarDetail = (input: StatusInput, now: number): string => {
+  const prefix = 'airdate calendars';
+  if (input.calendarError) return `${prefix} — serving cache`;
+  if (input.calendarsChangedAt === null) return prefix;
+  if (input.calendarsChangedAt === input.calendarsAt) return `${prefix} — new airdates`;
+  return `${prefix} — unchanged since ${stamp(input.calendarsChangedAt, now).label}`;
 };
 
 export const buildModel = (input: StatusInput): StatusModel => {
@@ -178,6 +188,9 @@ export const buildModel = (input: StatusInput): StatusModel => {
   const counts = Object.entries(input.counts);
   const largest = Math.max(1, ...counts.map(([, n]) => n));
   const refetched = new Set(input.gate?.refetched ?? []);
+  // One instant, three places: the join, the render and the section heading all
+  // describe the same moment.
+  const rendered = stamp(input.renderedAt, now);
 
   return {
     appName: input.appName,
@@ -189,7 +202,6 @@ export const buildModel = (input: StatusInput): StatusModel => {
 
     library: {
       polled: stamp(input.polledAt, now),
-      synced: stamp(input.librarySyncedAt, now),
       error: input.libraryError,
       total: counts.reduce((sum, [, n]) => sum + n, 0),
       lists: counts.map(([key, count]) => ({
@@ -207,31 +219,16 @@ export const buildModel = (input: StatusInput): StatusModel => {
 
     feed: {
       events: input.events,
-      rendered: stamp(input.renderedAt, now),
-      servingCached: input.servingCached,
+      rendered,
       error: input.renderError,
       steps: [
-        {
-          name: 'fetch',
-          // `calendarsChangedAt` is what separates "the CDN answered" from "the
-          // CDN had something new" — at an interval matched to its regeneration
-          // cycle, unchanged is the expected answer, not a fault.
-          detail: input.calendarError
-            ? 'airdate calendars — serving cache'
-            : input.calendarsChangedAt === null
-              ? 'airdate calendars'
-              : input.calendarsChangedAt === input.calendarsAt
-                ? 'airdate calendars — new airdates'
-                : `airdate calendars — unchanged since ${stamp(input.calendarsChangedAt, now).label}`,
-          at: stamp(input.calendarsAt, now),
-          ok: input.calendarError === null,
-        },
+        { name: 'fetch', detail: calendarDetail(input, now), at: stamp(input.calendarsAt, now), ok: input.calendarError === null },
         { name: 'fetch', detail: `film releases — ${input.films} resolved`, at: stamp(input.filmsResolvedAt, now), ok: true },
-        { name: 'join', detail: `${input.events} events`, at: stamp(input.renderedAt, now), ok: input.renderError === null },
+        { name: 'join', detail: `${input.events} events`, at: rendered, ok: input.renderError === null },
         {
           name: 'render',
           detail: input.servingCached ? 'serving the last saved feed' : 'serving live',
-          at: stamp(input.renderedAt, now),
+          at: rendered,
           ok: input.renderError === null,
         },
       ],
@@ -250,17 +247,7 @@ export const buildModel = (input: StatusInput): StatusModel => {
       frozen: input.sheetFrozen,
       error: input.sheetError,
       // Newest first for reading; the journal stores oldest first for appending.
-      runs: input.runs
-        .map((run) => ({
-          at: stamp(run.at, now),
-          status: run.status,
-          mode: run.mode,
-          edits: run.edits,
-          inserts: run.inserts,
-          error: run.error,
-          repeats: run.repeats,
-        }))
-        .reverse(),
+      runs: input.runs.map((run) => ({ ...run, at: stamp(run.at, now) })).reverse(),
     },
   };
 };

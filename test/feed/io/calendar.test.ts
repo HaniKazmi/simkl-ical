@@ -133,12 +133,12 @@ test('a CDN failure serves the cached copy but reports it as stale', async () =>
     () => (++calls === 1 ? jsonResponse(GOOD) : new Response('upstream down', { status: 503 })),
     async () => {
       const first = await fetchRolling('tv');
-      assert.equal(first.stale, false, 'a real fetch is not stale');
+      assert.equal(first.source, 'fresh', 'a real fetch is not from cache');
 
       for (let i = 0; i < 3; i += 1) {
         const again = await fetchRolling('tv');
         assert.equal(again.data.calendar.length, 1, 'the cached copy is still served');
-        assert.equal(again.stale, true, 'and every failed refresh says so');
+        assert.equal(again.source, 'cache', 'and every failed refresh says so');
       }
     },
   );
@@ -159,7 +159,7 @@ test('a network throw serves the cached copy, exactly as a bad status does', asy
       await fetchRolling('tv');
       const again = await fetchRolling('tv');
       assert.equal(again.data.calendar.length, 1, 'the cached copy is still served');
-      assert.equal(again.stale, true);
+      assert.equal(again.source, 'cache');
     },
   );
 });
@@ -175,19 +175,18 @@ test('a network throw with nothing cached still fails rather than inventing a fe
   );
 });
 
-test('a 304 is fresh, not stale — the CDN answered', async () => {
+test('a 304 reports the CDN answered with nothing new', async () => {
   let calls = 0;
   await withFetch(
     () => (++calls === 1 ? jsonResponse(GOOD, { lastModified: 'Sat, 01 Aug 2026 00:00:00 GMT' }) : new Response(null, { status: 304 })),
     async () => {
       const first = await fetchRolling('tv');
-      assert.equal(first.notModified, false, 'a body is not a 304');
+      assert.equal(first.source, 'fresh', 'a body is not a 304');
       const cached = await fetchRolling('tv');
-      assert.equal(cached.stale, false);
       assert.equal(cached.data.calendar.length, 1);
-      // `stale` is false for both a 304 and a fresh body, so on its own it
-      // cannot say whether the CDN regenerated. This is what separates them.
-      assert.equal(cached.notModified, true);
+      // Not `cache`: a 304 means the CDN answered and had nothing new, which is
+      // the healthy outcome and must not read as an outage.
+      assert.equal(cached.source, 'not-modified');
     },
   );
 });
@@ -217,7 +216,7 @@ test('a parseable 200 with no calendar array falls back instead of replacing the
       await fetchRolling('tv');
       const bad = await fetchRolling('tv');
       assert.equal(bad.data.calendar.length, 1, 'the good calendar survived');
-      assert.equal(bad.stale, true, 'and the caller is told it is not fresh');
+      assert.equal(bad.source, 'cache', 'and the caller is told it is not fresh');
     },
   );
 });
@@ -271,30 +270,28 @@ test('an unavailable archive is reported rather than swallowed', async () => {
   await withFetch(
     (url) => (url.includes('/2026/') ? new Response('gone', { status: 404 }) : jsonResponse(GOOD)),
     async () => {
-      const { data: merged, stale } = await fetchCalendar('tv', {
+      const { data: merged, source } = await fetchCalendar('tv', {
         graceDays: 14,
         now: new Date('2026-08-20T12:00:00Z'),
         log: (m) => void logged.push(m),
       });
       assert.equal(merged.calendar.length, 1, 'the rolling file still carries the feed');
-      assert.equal(stale, false, 'a failed archive is not rolling-file staleness');
+      assert.equal(source, 'fresh', 'a failed archive is not the rolling file falling back to cache');
       assert.ok(logged.some((l) => /archive .* unavailable/.test(l)), logged.join('\n'));
     },
   );
 });
 
-// Three outcomes that `stale` alone reduces to two: a fresh body and a 304 are
-// both "not stale", and a cache served after a failure must not read as "the
-// CDN said nothing changed" — it said nothing at all.
-test('a cache served after a failure is stale and not a 304', async () => {
+// The third outcome, and the only one that is a fault: a cache served after a
+// failure must not read as "the CDN said nothing changed" — it said nothing.
+test('a cache served after a failure is neither fresh nor a 304', async () => {
   let calls = 0;
   await withFetch(
     () => (++calls === 1 ? jsonResponse(GOOD, { lastModified: 'Sat, 01 Aug 2026 00:00:00 GMT' }) : Promise.reject(new Error('offline'))),
     async () => {
       await fetchRolling('tv');
       const fallback = await fetchRolling('tv');
-      assert.equal(fallback.stale, true);
-      assert.equal(fallback.notModified, false, 'the CDN never answered, so it never said "unchanged"');
+      assert.equal(fallback.source, 'cache');
     },
   );
 });
