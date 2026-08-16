@@ -63,6 +63,23 @@ test('an instant lands on the local calendar date, not the UTC one', () => {
   assert.equal('2026-08-14T02:30:00Z'.slice(0, 10), '2026-08-14', 'what the slice would have said');
 });
 
+// A 9pm Tuesday ET broadcast is stamped 01:00Z Wednesday. Slicing the ISO string
+// would put it on Wednesday for everyone, which is wrong for the US audience.
+test('a US evening airing resolves to the correct day in each zone', () => {
+  const at = instantFrom('2026-08-12T01:00:00Z')!;
+  assert.equal(plainDateIn(at, 'America/New_York').toString(), '2026-08-11');
+  assert.equal(plainDateIn(at, 'Europe/London').toString(), '2026-08-12');
+  // The naive slice agrees with London and is wrong for New York.
+  assert.equal('2026-08-12T01:00:00Z'.slice(0, 10), plainDateIn(at, 'Europe/London').toString());
+  assert.notEqual('2026-08-12T01:00:00Z'.slice(0, 10), plainDateIn(at, 'America/New_York').toString());
+});
+
+test('the midnight-UTC boundary falls on the previous day west of it', () => {
+  const at = instantFrom('2026-08-12T00:00:00Z')!;
+  assert.equal(plainDateIn(at, 'America/New_York').toString(), '2026-08-11');
+  assert.equal(plainDateIn(at, 'Europe/London').toString(), '2026-08-12');
+});
+
 test('the zone is applied rather than the offset assumed', () => {
   const at = instantFrom('2026-08-14T23:30:00Z')!;
   assert.equal(plainDateIn(at, 'Europe/London').toString(), '2026-08-15', 'BST puts it past midnight');
@@ -95,8 +112,30 @@ test('months without an anchor throw, which is why they are never constructed', 
   assert.throws(() => Temporal.Duration.compare(Temporal.Duration.from({ months: 1 }), { days: 1 }), RangeError);
 });
 
-// `sheetSinceDays` is an exact span today (`sinceDays * MS_PER_DAY`), and the
-// recency window it drives must not start drifting by an hour twice a year.
+// `cutoffFrom` builds the sheet's recency window from `sheetSinceDays`, and that
+// window must not start drifting by an hour twice a year.
 test('a day-based span stays exact, so the sheet cutoff does not drift with DST', () => {
   assert.equal(Temporal.Duration.from({ days: 90 }).total('milliseconds'), 90 * 86_400_000);
+});
+
+// --- day arithmetic --------------------------------------------------------
+
+test('a day shift crosses month and year boundaries', () => {
+  assert.equal(plainDateFrom('2026-08-10').subtract({ days: 14 }).toString(), '2026-07-27');
+  assert.equal(plainDateFrom('2026-01-05').subtract({ days: 14 }).toString(), '2025-12-22');
+  assert.equal(plainDateFrom('2026-03-01').subtract({ days: 1 }).toString(), '2026-02-28');
+  assert.equal(plainDateFrom('2026-08-10').subtract({ days: 0 }).toString(), '2026-08-10');
+});
+
+/**
+ * The property that let the old UTC-noon workaround be deleted rather than
+ * ported: a `PlainDate` has no time and no zone, so a DST transition has nothing
+ * to act on. Arithmetic anchored at midnight would have been at risk here.
+ */
+test('a day shift is unaffected by a DST transition', () => {
+  // BST ends 25 October 2026.
+  assert.equal(plainDateFrom('2026-10-26').subtract({ days: 1 }).toString(), '2026-10-25');
+  assert.equal(plainDateFrom('2026-10-25').add({ days: 1 }).toString(), '2026-10-26');
+  // And in a zone that springs forward on a different date.
+  assert.equal(plainDateFrom('2026-03-09').subtract({ days: 1 }).toString(), '2026-03-08');
 });

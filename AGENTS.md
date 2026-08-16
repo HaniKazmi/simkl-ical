@@ -38,7 +38,26 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
 - **Import specifiers carry the real extension** — `import { config } from '../shared/config.ts'` — and
   type-only imports must say `import type`.
 - **Never slice an ISO airdate.** Airdates are UTC instants; `iso.slice(0, 10)` is wrong for ~19%
-  of entries in `America/New_York`. Use `localDate()`.
+  of entries in `America/New_York`. Parse with `instantFrom()` and convert with `plainDateIn()`,
+  which cannot produce a date without being told a zone.
+- **Every date and duration is a Temporal value.** A moment is a `Temporal.Instant`, a local calendar
+  date a `Temporal.PlainDate`, a span or an interval a `Temporal.Duration`. ISO strings survive only
+  where they cross a boundary — persisted JSON, HTTP params, `/healthz` — and are parsed at the first
+  consumer. `Date` is gone from `src/` apart from `Retry-After`, which may be an RFC 7231 HTTP-date
+  that Temporal cannot parse, and `ageOf`'s epoch subtraction.
+- **Build durations from days and below, never years, months or weeks.** `Duration.compare`, `total`
+  and `round` require a `relativeTo` anchor exactly when one of those three is nonzero; below that a
+  day is exactly 24 hours and the operations are total. It also keeps the sheet's 90-day recency
+  window an exact span rather than one that moves by an hour twice a year. Pinned in
+  `test/shared/dates.test.ts`.
+- **`Temporal.PlainYearMonth` is never used.** `monthsBack` builds `${year}/${month}/` archive URLs
+  and `PlainYearMonth.toString()` pads the month, which is a 404. Read `.year` and `.month` off a
+  `PlainDate`.
+- **Measure a span on a monotonic clock, a moment on the wall clock.** `performance.now()` where both
+  endpoints are readings taken inside this process and the window is fine enough that a clock step
+  matters — request latency, the snapshot freshness gate. Wall time where either endpoint is the
+  timestamp of a real event, which is why `cutoffFrom` cannot move: it compares against a SIMKL
+  timestamp from another machine.
 - **UIDs are derived, never random.** A fresh UID each render makes calendar clients duplicate
   events instead of updating them.
 - **Nothing in the refresh path may be fatal.** Failures land in a per-subsystem error slot and are
