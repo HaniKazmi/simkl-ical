@@ -46,6 +46,23 @@ test('the saved feed is served on boot', async () => {
   });
 });
 
+// The structural half of the guarantee: because this renders nothing, the only
+// render is the caller's, which reads the library after this returns. See the
+// overlapping-timers test in orchestrator.test.ts for why that matters.
+test('a calendar fetch renders nothing by itself', async () => {
+  await withTempDataDir(async () => {
+    const feed = new Feed({ logger: quiet });
+    await withFetch(
+      () => jsonResponse(calendarFile()),
+      async () => {
+        await feed.refreshCalendars({ signal: live });
+      },
+    );
+    assert.ok(feed.calendars, 'the calendars are fetched');
+    assert.equal(feed.renderedAt, null, 'but nothing is rendered — the caller does that, after reading the library');
+  });
+});
+
 test('hydrating warms the calendars but renders nothing without a library', async () => {
   await withTempDataDir(async () => {
     const feed = new Feed({ logger: quiet });
