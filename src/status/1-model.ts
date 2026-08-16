@@ -8,7 +8,7 @@
  * assembling a live service.
  */
 
-import { MS_PER_DAY } from '../shared/dates.ts';
+import { instantFrom } from '../shared/dates.ts';
 import type { SheetSyncMode } from '../shared/config.ts';
 import { totalsByType } from '../library.ts';
 import type { RequestRecord } from '../api/requests.ts';
@@ -16,7 +16,7 @@ import type { SheetRunRecord } from '../sheet/io/journal.ts';
 import type { SheetSyncStatus } from '../sheet/sync.ts';
 
 export interface StatusInput {
-  now: number;
+  now: Temporal.Instant;
   appName: string;
   version: string;
   timezone: string;
@@ -37,7 +37,7 @@ export interface StatusInput {
    */
   movement: { at: string; deltas: Record<string, number>; updated: number; removed: number } | null;
   requests: RequestRecord[];
-  activitiesPollMs: number;
+  activitiesPoll: Temporal.Duration;
 
   events: number;
   renderedAt: string | null;
@@ -46,7 +46,7 @@ export interface StatusInput {
   calendarsAt: string | null;
   calendarsChangedAt: string | null;
   calendarError: string | null;
-  calendarRefreshMs: number;
+  calendarRefresh: Temporal.Duration;
   films: number;
   /** The last round that completed — not a countdown; films have no timer. */
   filmsResolvedAt: string | null;
@@ -148,46 +148,45 @@ export interface StatusModel {
   requestErrors: string[];
 }
 
-const MINUTE = 60_000;
-const HOUR = 60 * MINUTE;
-const DAY = MS_PER_DAY;
-
 /**
  * Coarse on purpose: two units is what a person reads at a glance, and a page
  * that says `4d 6h 12m 3s` is reporting precision the underlying timers do not
  * have.
+ *
+ * `round` does the unit-splitting, so the only arithmetic left here is choosing
+ * which two units to print. Days and below throughout, so no `relativeTo` anchor
+ * is needed and a day is exactly 24 hours.
  */
-export const duration = (ms: number): string => {
-  const abs = Math.max(0, Math.round(ms));
-  if (abs < MINUTE) return `${Math.round(abs / 1000)}s`;
-  if (abs < HOUR) return `${Math.floor(abs / MINUTE)}m`;
-  if (abs < DAY) {
-    const h = Math.floor(abs / HOUR);
-    const m = Math.floor((abs % HOUR) / MINUTE);
-    return m ? `${h}h ${m}m` : `${h}h`;
-  }
-  const d = Math.floor(abs / DAY);
-  const h = Math.floor((abs % DAY) / HOUR);
-  return h ? `${d}d ${h}h` : `${d}d`;
+export const duration = (span: Temporal.Duration): string => {
+  const total = span.total('milliseconds');
+  if (total <= 0) return '0s';
+  const { days, hours, minutes, seconds } = span.round({ largestUnit: 'day', smallestUnit: 'second' });
+  if (days) return hours ? `${days}d ${hours}h` : `${days}d`;
+  if (hours) return minutes ? `${hours}h ${minutes}m` : `${hours}h`;
+  if (minutes) return `${minutes}m`;
+  return `${seconds}s`;
 };
 
 /**
  * Never `iso.slice(0, 10)`. The stored value is a UTC instant, and this is the
  * layer where slicing it silently shifts a fifth of them by a day.
  */
-const stamp = (iso: string | null, now: number): Stamp => ({
-  iso,
-  label: iso === null ? 'never' : `${duration(now - Date.parse(iso))} ago`,
-});
+const stamp = (iso: string | null, now: Temporal.Instant): Stamp => {
+  const at = instantFrom(iso);
+  return { iso, label: at === null ? 'never' : `${duration(at.until(now))} ago` };
+};
 
 /**
  * Counted from the last run rather than from process start, so a skipped tick
  * shows as overdue instead of quietly reporting the next one.
  */
-const due = (last: string | null, everyMs: number, now: number): Due => {
-  if (last === null) return { label: 'due now' };
-  const remaining = Date.parse(last) + everyMs - now;
-  return { label: remaining <= 0 ? `overdue by ${duration(-remaining)}` : `in ${duration(remaining)}` };
+const due = (last: string | null, every: Temporal.Duration, now: Temporal.Instant): Due => {
+  const at = instantFrom(last);
+  if (at === null) return { label: 'due now' };
+  const next = at.add(every);
+  return Temporal.Instant.compare(next, now) <= 0
+    ? { label: `overdue by ${duration(now.until(next).negated())}` }
+    : { label: `in ${duration(now.until(next))}` };
 };
 
 /**
@@ -199,7 +198,7 @@ const due = (last: string | null, everyMs: number, now: number): Due => {
  * `Feed.refreshCalendars` assigns `calendarsChangedAt` the very value it just
  * put in `calendarsAt`.
  */
-const calendarDetail = (input: StatusInput, now: number): string => {
+const calendarDetail = (input: StatusInput, now: Temporal.Instant): string => {
   const prefix = 'airdate calendars';
   // `calendarsAt` is stamped only after a fetch returns, so a failure with none
   // means the CDN has never answered this process and there is nothing cached
@@ -253,7 +252,7 @@ const signed = (n: number): string => (n > 0 ? `+${n}` : `\u2212${Math.abs(n)}`)
  * they are `reshaped` versus `updated` made legible, and that distinction is
  * what the feed's own render gate keys on.
  */
-const movementView = (movement: StatusInput['movement'], now: number): MovementView | null => {
+const movementView = (movement: StatusInput['movement'], now: Temporal.Instant): MovementView | null => {
   if (movement === null) return null;
   const deltas = Object.entries(movement.deltas)
     .filter(([, delta]) => delta !== 0)
@@ -274,6 +273,7 @@ const size = (bytes: number | null): string => {
 
 export const buildModel = (input: StatusInput): StatusModel => {
   const { now } = input;
+  const startedAt = instantFrom(input.startedAt);
   // One instant, three places: the join, the render and the section heading all
   // describe the same moment.
   const rendered = stamp(input.renderedAt, now);
@@ -288,7 +288,7 @@ export const buildModel = (input: StatusInput): StatusModel => {
     // so anything in `problems` makes it not-healthy here.
     ok: input.ok && input.problems.length === 0,
     problems: input.problems,
-    uptime: input.startedAt === null ? null : duration(now - Date.parse(input.startedAt)),
+    uptime: startedAt === null ? null : duration(startedAt.until(now)),
 
     library: {
       polled: stamp(input.polledAt, now),
@@ -297,7 +297,7 @@ export const buildModel = (input: StatusInput): StatusModel => {
       counts: countRows(input.counts),
       gate: gateDetail(input.gate),
       movement: movementView(input.movement, now),
-      due: due(input.polledAt, input.activitiesPollMs, now),
+      due: due(input.polledAt, input.activitiesPoll, now),
     },
 
     feed: {
@@ -315,7 +315,7 @@ export const buildModel = (input: StatusInput): StatusModel => {
           ok: input.renderError === null,
         },
       ],
-      calendarsDue: due(input.calendarsAt, input.calendarRefreshMs, now),
+      calendarsDue: due(input.calendarsAt, input.calendarRefresh, now),
       // A boolean, not a countdown: whether a film is due is per-film — a new or
       // undated one is due now, a date most of a year out is not — so no single
       // instant says when the next one falls due.

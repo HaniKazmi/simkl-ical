@@ -4,12 +4,12 @@ import { buildModel, duration } from '../../src/status/1-model.ts';
 import { before, input, moved, request, COLD, DAY, HOUR, MINUTE, runRecord } from './fixtures.ts';
 
 test('duration reads at a glance rather than to the second', () => {
-  assert.equal(duration(30_000), '30s');
-  assert.equal(duration(14 * MINUTE), '14m');
-  assert.equal(duration(HOUR + 46 * MINUTE), '1h 46m');
-  assert.equal(duration(6 * HOUR), '6h');
-  assert.equal(duration(4 * DAY + 6 * HOUR), '4d 6h');
-  assert.equal(duration(-5), '0s', 'a clock that went backwards is not negative time');
+  assert.equal(duration(Temporal.Duration.from({ milliseconds: 30_000 })), '30s');
+  assert.equal(duration(Temporal.Duration.from({ milliseconds: 14 * MINUTE })), '14m');
+  assert.equal(duration(Temporal.Duration.from({ milliseconds: HOUR + 46 * MINUTE })), '1h 46m');
+  assert.equal(duration(Temporal.Duration.from({ milliseconds: 6 * HOUR })), '6h');
+  assert.equal(duration(Temporal.Duration.from({ milliseconds: 4 * DAY + 6 * HOUR })), '4d 6h');
+  assert.equal(duration(Temporal.Duration.from({ milliseconds: -5 })), '0s', 'a clock that went backwards is not negative time');
 });
 
 // The state a fresh container is in, and the state the CI smoke test hits. It

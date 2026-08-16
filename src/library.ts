@@ -13,6 +13,7 @@
 
 import { itemSimklId, itemStatus } from './api/simkl/item.ts';
 import type { Activities, AllItemsResponse, CategoryActivity, LibraryItem, SyncType } from './api/simkl/types.ts';
+import { instantFrom } from './shared/dates.ts';
 
 /**
  * One library record, and the type it belongs to.
@@ -134,8 +135,14 @@ export const movedRemovals = (
  */
 export const deltaFrom = (watermark: string | null | undefined): string | null => {
   if (!watermark) return null;
-  const at = Date.parse(watermark);
-  return Number.isNaN(at) ? watermark : new Date(at - 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const at = instantFrom(watermark);
+  // `smallestUnit` rather than a regex over the rendered string: SIMKL compares
+  // `date_from` at one-second granularity, so the milliseconds are not merely
+  // noise, they are a precision the endpoint does not have.
+  //
+  // No `timeZone` option — the default renders `Z`, and naming a zone would
+  // render an offset instead. This string goes to SIMKL verbatim.
+  return at === null ? watermark : at.subtract({ seconds: 1 }).toString({ smallestUnit: 'second' });
 };
 
 /** What the poll holds between runs, and compares each new payload against. */

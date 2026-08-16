@@ -38,7 +38,7 @@ const wired = (): Orchestrator => {
 
 test('the counts the library holds reach the page, totalled by type', async () => {
   await withConfig({ timezone: 'Europe/London' }, () => {
-    const page = renderStatus(wired(), { now: Date.now() });
+    const page = renderStatus(wired(), { now: Temporal.Now.instant() });
     // Two shows in the fixture, one watching and one dropped — one total, not
     // a row per status.
     assert.match(page, /shows<\/b> 2/);
@@ -48,7 +48,7 @@ test('the counts the library holds reach the page, totalled by type', async () =
 
 test('what the last gate did reaches the page', async () => {
   await withConfig({ timezone: 'Europe/London' }, () => {
-    const page = renderStatus(wired(), { now: Date.now() });
+    const page = renderStatus(wired(), { now: Temporal.Now.instant() });
     assert.match(page, /7 updated/);
     assert.match(page, /3 removed/);
   });
@@ -60,13 +60,13 @@ test('a library error makes the page say so rather than showing a healthy pill',
   await withConfig({ timezone: 'Europe/London' }, () => {
     const healthy = wired();
     assert.equal(healthy.health.ok, true, 'precondition: nothing else is making it degraded');
-    assert.match(renderStatus(healthy, { now: Date.now() }), /class="pill ok">healthy/);
+    assert.match(renderStatus(healthy, { now: Temporal.Now.instant() }), /class="pill ok">healthy/);
 
     const state = wired();
     state.errors.library = 'AUTH: SIMKL rejected the token';
     assert.equal(state.health.ok, true, 'precondition: `ok` is the restart signal and stays narrow');
 
-    const page = renderStatus(state, { now: Date.now() });
+    const page = renderStatus(state, { now: Temporal.Now.instant() });
     assert.match(page, /SIMKL rejected the token/, 'the problem is listed');
     assert.match(page, /class="pill warn">degraded/, 'and the page agrees with its own problems box');
   });
@@ -76,7 +76,7 @@ test('a library error makes the page say so rather than showing a healthy pill',
 // map shows up as one of these rather than as a visible gap.
 test('nothing renders as undefined or as an object', async () => {
   await withConfig({ timezone: 'Europe/London' }, () => {
-    const page = renderStatus(wired(), { now: Date.now() });
+    const page = renderStatus(wired(), { now: Temporal.Now.instant() });
     assert.doesNotMatch(page, /undefined/);
     assert.doesNotMatch(page, /\[object Object\]/);
     assert.doesNotMatch(page, /NaN/);
@@ -85,7 +85,7 @@ test('nothing renders as undefined or as an object', async () => {
 
 test('the configured timezone and tab reach the page', async () => {
   await withConfig({ timezone: 'America/New_York', sheetName: 'Watchlist' }, () => {
-    const page = renderStatus(wired(), { now: Date.now() });
+    const page = renderStatus(wired(), { now: Temporal.Now.instant() });
     assert.match(page, /America\/New_York/);
   });
 });

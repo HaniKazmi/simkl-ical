@@ -74,8 +74,11 @@ export const readServiceAccountKey = (c = config): ServiceAccountKey => {
 };
 
 /** Split out from the signing so the claims can be asserted without an RSA key. */
-export const claimSet = (clientEmail: string, now: Date = new Date()): Record<string, string | number> => {
-  const issued = Math.floor(now.getTime() / 1000);
+export const claimSet = (clientEmail: string, now: Temporal.Instant = Temporal.Now.instant()): Record<string, string | number> => {
+  // Unix seconds, because RFC 7519 defines NumericDate that way. The conversion
+  // stays here rather than becoming a shared helper: this is the only wire
+  // format in the project that counts in seconds.
+  const issued = Math.floor(now.epochMilliseconds / 1000);
   return { iss: clientEmail, scope: SCOPE, aud: TOKEN_URL, iat: issued, exp: issued + 3600 };
 };
 

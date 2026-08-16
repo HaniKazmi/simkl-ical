@@ -401,8 +401,9 @@ export class Orchestrator {
    * `movieReleases` and `filmStamps` on the feed — a cross-object invariant now,
    * held by the fact that the library timer is the sole writer of all of them.
    */
-  private schedule(name: string, job: () => Promise<void>, everyMs: number): void {
+  private schedule(name: string, job: () => Promise<void>, every: Temporal.Duration): void {
     let running = false;
+    // `setInterval` takes a number; this is the boundary the span crosses.
     const timer = setInterval(() => {
       if (running) {
         this.log.warn(`${name} is still running from the last tick; skipping this one`);
@@ -414,7 +415,7 @@ export class Orchestrator {
         .finally(() => {
           running = false;
         });
-    }, everyMs);
+    }, every.total('milliseconds'));
     timer.unref?.();
     this.timers.push(timer);
   }
@@ -424,8 +425,8 @@ export class Orchestrator {
     // signal never resets, so reusing it makes every later fetch fail instantly
     // with the failure filed as a library error.
     if (this.aborter.signal.aborted) this.aborter = new AbortController();
-    this.schedule('calendar refresh', () => this.refreshCalendars(), config.calendarRefreshMs);
-    this.schedule('library poll', () => this.refreshLibraryIfChanged(), config.activitiesPollMs);
+    this.schedule('calendar refresh', () => this.refreshCalendars(), config.calendarRefresh);
+    this.schedule('library poll', () => this.refreshLibraryIfChanged(), config.activitiesPoll);
   }
 
   /**

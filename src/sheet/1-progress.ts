@@ -18,7 +18,7 @@
  * count of 331, and season 0 holds exactly 7.
  */
 
-import { instantFrom, MS_PER_DAY, plainDateIn } from '../shared/dates.ts';
+import { instantFrom, plainDateIn } from '../shared/dates.ts';
 import { itemStatus } from '../api/simkl/item.ts';
 import type { EpisodeDetail, LibraryItem } from '../api/simkl/types.ts';
 import type { Library } from '../library.ts';
@@ -26,7 +26,7 @@ import type { Library } from '../library.ts';
 // --- Timestamps ------------------------------------------------------------
 
 /** Sheets counts days from 1899-12-30. */
-const EPOCH_MS = Date.UTC(1899, 11, 30);
+const SHEET_EPOCH = Temporal.PlainDate.from('1899-12-30');
 
 /**
  * A usable instant, or null.
@@ -41,12 +41,11 @@ export const normaliseInstant = (raw: string | null | undefined): Temporal.Insta
 /**
  * Days since the sheet epoch for a local calendar date.
  *
- * Still arithmetic on a UTC instant rather than a Temporal duration: the output
- * is a Sheets serial, a number of whole days since 1899-12-30, and `PlainDate`
- * offers no epoch-day accessor that would shorten this.
+ * A count of whole days between two dates, which is what a Sheets serial is —
+ * no instants, no zone, and nothing to round. Both operands are `PlainDate`, so
+ * there is no hour that could make the difference come out fractional.
  */
-export const dateSerial = (date: Temporal.PlainDate): number =>
-  Math.round((Date.UTC(date.year, date.month - 1, date.day) - EPOCH_MS) / MS_PER_DAY);
+export const dateSerial = (date: Temporal.PlainDate): number => SHEET_EPOCH.until(date, { largestUnit: 'day' }).days;
 
 /**
  * The sheet serial for a watch timestamp, in the viewer's zone — never

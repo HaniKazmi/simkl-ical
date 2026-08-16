@@ -187,10 +187,10 @@ test('an unparseable success that never recovers throws a SimklError', async () 
 // sooner than asked can extend the throttle.
 test('Retry-After on a 429 is honoured over the default backoff', async () => {
   // Long enough that honouring the header is unmistakable; the file-wide
-  // retryBaseMs of 1 would hide the difference.
+  // retryBase of 1 would hide the difference.
   let calls = 0;
   const started = Date.now();
-  await withConfig({ retryBaseMs: 5_000 }, async () => {
+  await withConfig({ retryBase: Temporal.Duration.from({ milliseconds: 5_000 }) }, async () => {
     await withFetch(
       () => (++calls === 1 ? new Response('slow down', { status: 429, headers: { 'retry-after': '0' } }) : jsonResponse({ ok: true })),
       async () => {
@@ -206,7 +206,7 @@ test('Retry-After on a 429 is honoured over the default backoff', async () => {
 const with429 = (headers: Record<string, string> = {}) => new Response('slow down', { status: 429, headers });
 
 test('a missing Retry-After falls back to the exponential backoff', async () => {
-  await withConfig({ retryBaseMs: 1000 }, () => {
+  await withConfig({ retryBase: Temporal.Duration.from({ milliseconds: 1000 }) }, () => {
     assert.equal(retryDelayMs(with429(), 1), 1000);
     assert.equal(retryDelayMs(with429(), 2), 2000);
     assert.equal(retryDelayMs(with429(), 4), 8000);
@@ -230,7 +230,7 @@ test('an absurd Retry-After is capped at a minute', () => {
 });
 
 test('a nonsense or past Retry-After falls back to the backoff', async () => {
-  await withConfig({ retryBaseMs: 1000 }, () => {
+  await withConfig({ retryBase: Temporal.Duration.from({ milliseconds: 1000 }) }, () => {
     assert.equal(retryDelayMs(with429({ 'retry-after': 'soon' }), 1), 1000);
     assert.equal(retryDelayMs(with429({ 'retry-after': new Date(Date.now() - 60_000).toUTCString() }), 1), 1000);
   });
@@ -239,7 +239,7 @@ test('a nonsense or past Retry-After falls back to the backoff', async () => {
 // Number('') is 0 and finite, so a present-but-empty header would mean "retry
 // now" against a server asking us to slow down.
 test('a blank Retry-After falls back to the backoff rather than meaning zero', async () => {
-  await withConfig({ retryBaseMs: 1000 }, () => {
+  await withConfig({ retryBase: Temporal.Duration.from({ milliseconds: 1000 }) }, () => {
     assert.equal(retryDelayMs(with429({ 'retry-after': '' }), 1), 1000);
     assert.equal(retryDelayMs(with429({ 'retry-after': '   ' }), 1), 1000);
     assert.equal(retryDelayMs(with429({ 'retry-after': '0' }), 1), 0, 'an explicit zero still means zero');

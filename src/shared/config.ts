@@ -30,6 +30,21 @@ const int = (value: string | undefined, fallback: number, { min = 0, max = Numbe
 };
 
 /**
+ * The same, as a duration.
+ *
+ * The environment still speaks milliseconds — `ACTIVITIES_POLL_MS=1800000` is
+ * documented in the README and `.env.example`, and an ISO-8601 duration there
+ * would be a breaking change for no gain. Only the field this produces is a
+ * `Duration`, so the unit stops living in the field's name.
+ *
+ * Built from milliseconds alone, which keeps it inside the rule every duration
+ * here obeys: no years, months or weeks, so `compare`, `total` and `round` need
+ * no `relativeTo` anchor.
+ */
+const ms = (value: string | undefined, fallback: number, range: { min?: number; max?: number } = {}): Temporal.Duration =>
+  Temporal.Duration.from({ milliseconds: int(value, fallback, range) });
+
+/**
  * A value from a closed set, falling back rather than throwing — same posture
  * as `int`, and for the same reason. No enum: Node strips the types, so an enum
  * is not erasable syntax.
@@ -79,10 +94,10 @@ export interface Config {
   graceDays: number;
   appName: string;
   appVersion: string;
-  calendarRefreshMs: number;
-  activitiesPollMs: number;
-  movieRefreshMs: number;
-  retryBaseMs: number;
+  calendarRefresh: Temporal.Duration;
+  activitiesPoll: Temporal.Duration;
+  movieRefresh: Temporal.Duration;
+  retryBase: Temporal.Duration;
 
   sheetId: string | undefined;
   sheetName: string;
@@ -128,23 +143,23 @@ export const buildConfig = (env: NodeJS.ProcessEnv): Config => ({
   // buys 304s and a re-merge of several MB, and asking less often means seeing
   // only some regenerations. `/healthz` keys its staleness alarms off this, so
   // raising it also raises how long a wedged render stays invisible.
-  calendarRefreshMs: int(env.CALENDAR_REFRESH_MS, 6 * 60 * 60 * 1000, { min: 60_000 }),
+  calendarRefresh: ms(env.CALENDAR_REFRESH_MS, 6 * 60 * 60 * 1000, { min: 60_000 }),
   // One tiny request that gates the library pull, and on a quiet poll the only
   // request made at all. Half an hour: a poll where something moved costs one
   // small delta rather than the whole library, so polling often is cheaper here
   // than polling rarely was, and the feed tracks what you watch far more
   // closely. `/healthz` keys its staleness alarm off this at three intervals.
-  activitiesPollMs: int(env.ACTIVITIES_POLL_MS, 30 * 60 * 1000, { min: 60_000 }),
+  activitiesPoll: ms(env.ACTIVITIES_POLL_MS, 30 * 60 * 1000, { min: 60_000 }),
   // The floor on how often any one film's release date is re-read. A studio
   // moving a release changes nothing in your library, so nothing else would ever
   // trigger the re-read; but the poll runs far more often than dates change, so
   // this bounds it per film. Which films are due past that floor is a separate
   // question, and the rule that answers it is `filmDue` in feed/io/movies.ts.
-  movieRefreshMs: int(env.MOVIE_REFRESH_MS, 24 * 60 * 60 * 1000, { min: 60_000 }),
+  movieRefresh: ms(env.MOVIE_REFRESH_MS, 24 * 60 * 60 * 1000, { min: 60_000 }),
   // First step of the API retry backoff, doubling each attempt: 1s, 2s, 4s, 8s.
   // Configurable mainly for tests; lowering it in production only makes a
   // struggling API struggle harder.
-  retryBaseMs: int(env.RETRY_BASE_MS, 1000, { min: 1 }),
+  retryBase: ms(env.RETRY_BASE_MS, 1000, { min: 1 }),
 
   // --- Google Sheet sync. Absent SHEET_ID, the whole feature is inert.
   sheetId: env.SHEET_ID,
