@@ -25,6 +25,21 @@ const app = buildServer(service);
 await app.listen({ port: config.port, host: '0.0.0.0' });
 app.log.info(`listening on :${config.port} in ${config.timezone}, warming up`);
 
+// What this process answers, early in the log, complete enough to paste
+// straight into a calendar client.
+//
+// The token is printed in full, which is why `buildServer` still redacts
+// `req.url`: the difference that matters is one line at boot against a line per
+// request for the life of the process, and only the second turns a log tail or
+// a shipped log volume into a rolling disclosure.
+for (const [name, path] of [
+  ['feed  ', `/${config.feedToken}/feed.ics`],
+  ['status', `/${config.feedToken}/status`],
+  ['health', '/healthz'],
+] as const) {
+  app.log.info(`  ${name}  http://localhost:${config.port}${path}`);
+}
+
 void (async () => {
   try {
     await service.hydrate();
