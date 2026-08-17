@@ -307,7 +307,7 @@ export interface CatalogueStamp {
  *
  * The age ceiling is the backstop for the case that does not: `/tv/{id}` status
  * flipping on a renewal, which produces no library activity at all. Same
- * reasoning as `movieRefreshMs`, and the same daily cadence — a studio moving a
+ * reasoning as `movieRefresh`, and the same daily cadence — a studio moving a
  * release, or a network renewing a show, changes nothing you could gate on.
  */
 export const needsLookup = (

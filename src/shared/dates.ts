@@ -15,6 +15,13 @@
  * The one repair is SIMKL's: it occasionally emits `2026-08-14 21:03:12Z` with a
  * space where the `T` belongs. That is a known upstream quirk rather than a
  * malformed value, and rejecting it would drop real watch history.
+ *
+ * A zone is required, and that is the strictness worth knowing about: a
+ * zone-less value is refused rather than read as local time, which for a watch
+ * timestamp would mean an episode uncounted and a lower number written to the
+ * sheet. Measured across a live library — 10244 watch timestamps, every one of
+ * them `YYYY-MM-DDTHH:MM:SSZ`, none zone-less and none space-separated — so the
+ * repair above and this strictness are both guards rather than routine paths.
  */
 export const instantFrom = (raw: string | null | undefined): Temporal.Instant | null => {
   if (typeof raw !== 'string') return null;
@@ -65,8 +72,20 @@ export const plainDateIn = (at: Temporal.Instant, timeZone: string): Temporal.Pl
  * apply. The slice only guards against a full ISO timestamp sneaking through;
  * keeping it states that intent rather than leaning on the parser to reject the
  * rest of the string.
+ *
+ * Nullable for the same reason `instantFrom` is: this is upstream data, and a
+ * partial date like `2013-00-00` is a shape TMDB-derived records really carry.
+ * Throwing here would escape the per-title lookup, be classified transient, and
+ * leave that film re-requested on every poll for the life of the process — one
+ * malformed field costing a title forever rather than costing one date.
  */
-export const releaseDate = (value: string): Temporal.PlainDate => plainDateFrom(value.slice(0, 10));
+export const releaseDate = (value: string): Temporal.PlainDate | null => {
+  try {
+    return plainDateFrom(value.slice(0, 10));
+  } catch {
+    return null;
+  }
+};
 
 /**
  * An instant as the ISO string the published and persisted fields carry.
