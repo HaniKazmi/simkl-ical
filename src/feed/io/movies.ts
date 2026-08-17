@@ -57,6 +57,7 @@ const relevantDate = (results: ReleaseDateResult[], type: number, today: Tempora
   const dates = results
     .filter((r) => r.type === type && r.release_date)
     .map((r) => releaseDate(r.release_date))
+    .filter((d): d is Temporal.PlainDate => d !== null)
     .sort(Temporal.PlainDate.compare);
   return dates.find((d) => Temporal.PlainDate.compare(d, today) >= 0) ?? dates.at(-1);
 };
@@ -102,10 +103,16 @@ export const pickReleaseDate = (
   // have no name for. Better than falling through to the unreliable `released`.
   for (const territory of territories) {
     const other = territory.results.find((r) => r.release_date && !NAMED_TYPES.has(r.type));
-    if (other) return { date: releaseDate(other.release_date), type: other.type ?? null, country: territory.code };
+    if (other) {
+      const date = releaseDate(other.release_date);
+      if (date) return { date, type: other.type ?? null, country: territory.code };
+    }
   }
 
-  if (movie.released) return { date: releaseDate(movie.released), type: null, country: null };
+  if (movie.released) {
+    const date = releaseDate(movie.released);
+    if (date) return { date, type: null, country: null };
+  }
   return null;
 };
 

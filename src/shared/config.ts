@@ -178,21 +178,6 @@ export const buildConfig = (env: NodeJS.ProcessEnv): Config => ({
   googleCredentialsExplicit: Boolean(env.GOOGLE_APPLICATION_CREDENTIALS),
 });
 
-export const config: Config = buildConfig(process.env);
-
-/**
- * Fail loudly at boot on an unusable timezone. Otherwise a bad TZ surfaces as a
- * bare RangeError from deep inside the join, on the first render.
- */
-export const requireValidTimezone = (timeZone: string = config.timezone): string => {
-  try {
-    Temporal.Now.zonedDateTimeISO(timeZone);
-  } catch {
-    throw new Error(`TZ is not a valid IANA timezone: ${timeZone}. Try e.g. Europe/London or America/New_York.`);
-  }
-  return timeZone;
-};
-
 /**
  * Fail loudly at boot when the runtime has no Temporal.
  *
@@ -216,6 +201,34 @@ export const requireTemporal = (globals: { Temporal?: unknown } = globalThis): v
       'does not settle it — check with `node -p "typeof Temporal"`, which must print `object`. ' +
       'Homebrew\'s node is built without it; use nodejs.org, fnm or nvm.',
   );
+};
+
+/**
+ * Before the first `Temporal` value this process constructs, which
+ * `buildConfig` does on the line below.
+ *
+ * It cannot sit in `index.ts` beside the other boot checks: `import` is
+ * hoisted, so this module is fully evaluated before any statement there runs,
+ * and a runtime without Temporal would die here with a bare `ReferenceError`
+ * naming a global rather than the message that says what to install. Every
+ * entry point — the server, the login CLI, the tests — reaches config, so
+ * guarding here covers all of them.
+ */
+requireTemporal();
+
+export const config: Config = buildConfig(process.env);
+
+/**
+ * Fail loudly at boot on an unusable timezone. Otherwise a bad TZ surfaces as a
+ * bare RangeError from deep inside the join, on the first render.
+ */
+export const requireValidTimezone = (timeZone: string = config.timezone): string => {
+  try {
+    Temporal.Now.zonedDateTimeISO(timeZone);
+  } catch {
+    throw new Error(`TZ is not a valid IANA timezone: ${timeZone}. Try e.g. Europe/London or America/New_York.`);
+  }
+  return timeZone;
 };
 
 /**

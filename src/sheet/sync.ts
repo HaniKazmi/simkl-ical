@@ -53,7 +53,7 @@ const MAX_ATTEMPTS = 3;
 
 /**
  * How long a title's catalogue is trusted without any watch activity to
- * prompt a re-read. Daily, for the reason `movieRefreshMs` is daily: a network
+ * prompt a re-read. Daily, for the reason `movieRefresh` is daily: a network
  * renewing a show produces nothing in your library to gate on.
  */
 const CATALOGUE_MAX_AGE = Temporal.Duration.from({ hours: 24 });

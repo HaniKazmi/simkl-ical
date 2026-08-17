@@ -342,7 +342,7 @@ test('an empty id list makes no requests at all', async () => {
 // --- what counts as permanently gone --------------------------------------
 
 // These reach the caller only after apiGet has exhausted its own retries, so
-// filing them as "gone" would drop every film for a full movieRefreshMs.
+// filing them as "gone" would drop every film for a full movieRefresh.
 for (const status of [408, 429]) {
   test(`a ${status} stays retryable rather than counting as gone`, async () => {
     await withFetch(

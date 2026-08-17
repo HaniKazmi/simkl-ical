@@ -15,8 +15,17 @@ const movie = (simkl: number, title = `Film ${simkl}`) => ({ movie: { title, ids
 
 
 test('releaseDate normalises to a plain date', () => {
-  assert.equal(releaseDate('2026-12-18').toString(), '2026-12-18');
-  assert.equal(releaseDate('2026-12-18T04:00:00Z').toString(), '2026-12-18');
+  assert.equal(releaseDate('2026-12-18')?.toString(), '2026-12-18');
+  assert.equal(releaseDate('2026-12-18T04:00:00Z')?.toString(), '2026-12-18');
+});
+
+// A partial date is a shape TMDB-derived records really carry. Throwing would
+// escape the per-title lookup, be classified transient, and leave that film
+// re-requested on every poll for the life of the process.
+test('a release date that is not a date costs the date, not the film', () => {
+  for (const bad of ['2013-00-00', '2026-13-01', 'unknown', '']) {
+    assert.equal(releaseDate(bad), null, `${bad} should not parse`);
+  }
 });
 
 test('itemSimklId bridges the library ids.simkl to the calendar simkl_id', () => {

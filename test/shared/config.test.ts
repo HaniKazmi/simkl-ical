@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import { buildConfig, config, requireClientId, requireTemporal, requireValidTimezone, sheetSyncConfigured } from '../../src/shared/config.ts';
 import { withTimeout } from '../../src/shared/signals.ts';
 import { withConfig } from '../helpers.ts';
+import { spawnSync } from 'node:child_process';
 
 test('a bad timezone is rejected with an actionable message', () => {
   assert.throws(() => requireValidTimezone('Mars/Olympus_Mons'), /not a valid IANA timezone/);
@@ -162,6 +163,26 @@ test('a runtime without Temporal is refused at boot, with a message that says wh
 
 test('a runtime with Temporal passes', () => {
   assert.doesNotThrow(() => requireTemporal());
+});
+
+/**
+ * That the guard *works* is asserted above; this asserts it is *reached*, which
+ * is a different claim and the one that broke. `import` is hoisted, so a check
+ * written into `index.ts` runs after every imported module has been evaluated —
+ * including the one that builds a `Temporal.Duration` for each interval. The
+ * only way to see that ordering is from outside the process.
+ */
+test('the guard runs before anything constructs a Temporal value', async () => {
+  const entry = resolve(import.meta.dirname, '../../src/index.ts');
+  const child = spawnSync(
+    process.execPath,
+    ['--input-type=module', '-e', `delete globalThis.Temporal; await import(${JSON.stringify(entry)});`],
+    { encoding: 'utf8', timeout: 30_000 },
+  );
+
+  const output = `${child.stdout}${child.stderr}`;
+  assert.match(output, /This runtime has no Temporal/, 'the message that says what to install');
+  assert.doesNotMatch(output, /ReferenceError: Temporal is not defined/, 'not a bare global-not-defined from somewhere deeper');
 });
 
 // The environment still speaks milliseconds — `ACTIVITIES_POLL_MS=1800000` is
