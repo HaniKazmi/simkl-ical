@@ -855,12 +855,19 @@ test('every row the plan waits on is a row the lookup asked about', () => {
     closing({ rows: [show('Silo', 'Watching', 800), seasonRow(1, 9, null, { episodes: null }), seasonRow(2, 3, null, { episodes: null })] }),
     closing({ items: [{ id: 800, status: 'completed', seasons: { 1: watched(10) }, watched: 10, total: 10 }] }),
     closing({ details: { 800: { status: 'airing', runtime: 43 } } }),
+    closing({ rows: [show('Silo', 'Watching', 800), seasonRow(1, 9, null, { episodes: null }), seasonRow(1, 4, null, { episodes: null })] }),
+    closing({ rows: [show('Silo', 'Watching', 800), seasonRow(1, 9, null, { episodes: null })], runtimes: { 800: { 2: 40 } } }),
   ];
-  for (const c of cases) {
-    const asked = new Set(c.lookups().map((r) => `${r.id}:${r.season}`));
-    const waiting = c.plan().skipped.filter((line) => line.includes('have not come back'));
-    for (const line of waiting) {
-      assert.ok(asked.size > 0, `deferred with nothing requested: ${line}`);
+  for (const [i, c] of cases.entries()) {
+    const asked = new Set(c.lookups().map((r) => r.season));
+    for (const line of c.plan().skipped) {
+      if (!line.includes('have not come back')) continue;
+      // "Silo S1: complete, but …" — the season the planner is waiting on.
+      const season = Number(/ S(\d+):/.exec(line)?.[1]);
+      assert.ok(
+        asked.has(season),
+        `case ${i}: waiting on S${season} that the lookup never requested — it would defer for ever\n  ${line}`,
+      );
     }
   }
 });
