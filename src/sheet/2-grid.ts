@@ -183,7 +183,12 @@ export interface ShowBlock {
   row: number;
   title: string;
   status: string | null;
-  /** `show` or `anime`. Governs exactly one thing: whether a row may be inserted. */
+  /**
+   * `show` or `anime`. Governs two things, both about what may be written: a
+   * row may only be inserted into a `show` block, and only a `show` block's
+   * season rows can be given a runtime — a SIMKL anime record numbers every
+   * cour "season 1", so the row's number addresses no TVDB season.
+   */
   type: string | null;
   /** Ids on the *show* row. A season row's own id wins over these. */
   ids: number[];

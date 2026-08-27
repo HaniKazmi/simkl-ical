@@ -9,7 +9,12 @@ Two data sources that are useless alone, joined on the SIMKL id:
 data.simkl.in/calendar/v2/*.json   (public CDN, airdates, whole database)  ─┐
 api.simkl.com/sync/all-items        (OAuth, your library, no dates)         ─┤─ join ─→ ICS
 api.simkl.com/movies/{id}          (per-film release dates)                ─┘
+
+api4.thetvdb.com/v4/series/{id}/episodes/official   (per-episode runtimes)  ─→ the sheet only
 ```
+
+The fourth is not part of the join. It answers one question the other three cannot — how long a
+season's episodes are — and only for a season the sheet is about to close.
 
 One poll drives two independent consumers. `Orchestrator` owns the SIMKL library — the only input
 both halves need — plus the timers and `/healthz`, and hands the library to `Feed` and `SheetSync`
@@ -42,14 +47,16 @@ separate SIMKL type rather than a genre, and carries no season number.
 
 ### The sheet sync — INDEX → READ → PARSE → PLAN → GUARD → BUILD → APPLY → VERIFY → ROLLBACK
 
-Inert unless `SHEET_ID` **and** a Google credential are both set. It writes exactly three things —
-a season row's `Episode` count, a season row's `End` date, and a show row's `Status` — and inserts
-a season row when a new season is started. Nothing else, ever.
+Inert unless `SHEET_ID` **and** a Google credential are both set. It writes exactly four things —
+a season row's `Episode` count, a season row's `End` date, a season row's `Episodes` runtime *into a
+blank cell only*, and a show row's `Status` — and inserts a season row when a new season is started.
+Nothing else, ever. The runtime additionally needs `TVDB_API_KEY`; without it the other three behave
+exactly as they do with it.
 
 | Step | What happens | Upstream calls |
 | --- | --- | --- |
 | INDEX | The library, reduced to what was watched per title. An empty index ends the run here, before anything is read. | none — the library is already in hand |
-| READ | The tab, and the catalogue of every title whose watch time moved | `GET spreadsheets/{id}` (grid, field-masked); `GET /tv/episodes/{id}` and `GET /tv/{id}` or `/anime/{id}` per moved title |
+| READ | The tab, and the catalogue of every title whose watch time moved. Then, for each season the catalogue has just revealed to be *completing* with a blank runtime cell, that season's episode lengths | `GET spreadsheets/{id}` (grid, field-masked); `GET /tv/episodes/{id}` and `GET /tv/{id}` or `/anime/{id}` per moved title; `GET api4.thetvdb.com/v4/series/{id}/episodes/official?season={n}` per closing season |
 | PARSE | Snapshot → blocks | none |
 | PLAN | Grid + library + catalogue → a plan | none |
 | GUARD | Re-derive every claim the plan made against the snapshot it was built from. Refuses whole; never trims. | none |
@@ -81,6 +88,8 @@ expensive or the thing it fetches rarely changes.
 | Film release date | a film is new, undated, or dated inside **30 days**; at most once per **24h** each | `GET /movies/{id}` — 4 at a time |
 | A title's episode list | that title's `lastWatchedAt` moved, else after **24h** | `GET /tv/episodes/{id}` |
 | A title's status | same trigger as its episode list | `GET /tv/{id}`, or `/anime/{id}` for a cour |
+| A season's episode lengths | that season is completing with a blank runtime cell — then never again, since a finished season's lengths cannot change | `GET api4.thetvdb.com/v4/series/{id}/episodes/official?season={n}` — one call is one whole season |
+| TVDB access token | first runtime lookup, then every **20 days**, or after any `401` | `POST api4.thetvdb.com/v4/login` |
 | Read the spreadsheet | start of every sheet-sync run, and again to verify a write | `GET sheets.googleapis.com/v4/spreadsheets/{id}?ranges='Sheet1'&fields=…` |
 | Write the spreadsheet | a plan passed the guard, in `apply` mode only | `POST …/spreadsheets/{id}:batchUpdate` |
 | List the tabs | after a write, to find or sweep the snapshot tab | `GET …/spreadsheets/{id}?fields=sheets.properties(sheetId,title)` |
@@ -219,6 +228,10 @@ The structure is implicit, so parsing fails closed rather than guessing.
 - **`Episode` on a season row is a count, not an episode number**, because `Length = Episodes ×
   Episode`. The two coincide for in-order viewing — which is exactly why writing the highest episode
   number would survive testing and corrupt every total.
+- **`Episodes` on a season row is the per-episode runtime as a day fraction**, minutes ÷ 1440,
+  despite the plural. That identity is also what forces the season average to be the arithmetic
+  mean: 21 episodes at 22m plus a 44m finale is 506 minutes, and only the mean — exactly 23 — makes
+  `23 × 22` come back to 506. A median would answer 22 and leave every affected total short.
 - **A non-blank `End` closes the row even if it does not parse as a date.** A hand-typed `TBD` is not
   a missing end date.
 
@@ -309,7 +322,17 @@ the time, and re-requests only ids whose value moved.
 **The retention lives in `SheetSync`, not in `io/catalogue.ts`** — the source fetches, the caller
 decides when, exactly as `io/movies.ts` and `Feed` divide it. A TTL cache under the source would
 serve a stale episode list for a show the caller just decided to refresh *because* it changed. It
-keeps only what the planner reads — per-season shapes, `status`, `runtime` — so per-episode
-descriptions and images do not accumulate for the life of the process.
+keeps only what the planner reads — per-season shapes, `status`, `runtime`, the TVDB id — so
+per-episode descriptions and images do not accumulate for the life of the process.
+
+Season runtimes are retained beside them with **no age ceiling**, unlike the stamps above. A
+finished season's episode lengths are terminal, where `/tv/{id}`'s `status` flips on a renewal and
+has to be re-read on a timer. The gate is simply whether the season is in the map.
+
+Being *in* the map is also the whole state machine, which is why a season that came back with
+nothing usable is stored as `null` rather than left out. Present means settled, and the row may be
+dated; absent means the lookup has not answered, and dating the row on that would forfeit its
+runtime cell for good, since a dated row is never touched again. Two collections would let those
+two states be confused; one map with a nullable value cannot.
 
 Upstream API references, and what they do not offer, are at the end of [AGENTS.md](AGENTS.md).
