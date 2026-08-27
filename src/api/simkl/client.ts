@@ -3,6 +3,7 @@ import { beginRequest, readBody, type RequestComponent } from '../requests.ts';
 import { config, requireClientId } from '../../shared/config.ts';
 import { errorMessage } from '../../shared/errors.ts';
 import { withTimeout } from '../../shared/signals.ts';
+import type { FailureKind } from '../pool.ts';
 
 
 const API_BASE = 'https://api.simkl.com';
@@ -45,16 +46,7 @@ export class SimklAuthError extends SimklError {
   }
 }
 
-/**
- * How a caller should treat a failure apiGet could not retry away.
- *
- * - `account`: a revoked token or rejected client id, not a fact about the
- *   resource; callers doing per-item work must let it propagate.
- * - `gone`: settled. Retrying never starts working.
- * - `transient`: worth trying again later.
- */
-export type FailureKind = 'account' | 'gone' | 'transient';
-
+/** SIMKL's status mapping onto the shared three-way split. */
 export const classify = (err: unknown): FailureKind => {
   if (err instanceof SimklAuthError) return 'account';
   if (!(err instanceof SimklError) || err.status === undefined) return 'transient';

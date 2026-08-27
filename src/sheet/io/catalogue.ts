@@ -19,8 +19,8 @@
  * is allowed — unlike the sync endpoints, which must stay sequential.
  */
 
-import { apiGet } from '../../api/simkl/client.ts';
-import { lookupPool } from '../../api/simkl/pool.ts';
+import { apiGet, classify } from '../../api/simkl/client.ts';
+import { lookupPool } from '../../api/pool.ts';
 import type { EpisodeDetail, ShowDetail } from '../../api/simkl/types.ts';
 
 /**
@@ -89,7 +89,7 @@ export const fetchCatalogue = async (
       if (want.episodes) episodes.set(id, await fetchEpisodes(id, signal));
       if (want.detail) details.set(id, await fetchDetail(id, anime, signal));
     },
-    { concurrency },
+    { concurrency, classify },
   );
 
   return { episodes, details, failed, unavailable };

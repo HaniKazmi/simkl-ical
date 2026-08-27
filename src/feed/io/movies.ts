@@ -4,8 +4,8 @@
  * First of **FETCH** → JOIN → RENDER → SAVE, alongside `calendar.ts`.
  */
 
-import { apiGet } from '../../api/simkl/client.ts';
-import { lookupPool } from '../../api/simkl/pool.ts';
+import { apiGet, classify } from '../../api/simkl/client.ts';
+import { lookupPool } from '../../api/pool.ts';
 import { plainDateIn, releaseDate } from '../../shared/dates.ts';
 import { config } from '../../shared/config.ts';
 import type { MovieDetail, ReleaseDateResult } from '../../api/simkl/types.ts';
@@ -255,7 +255,7 @@ export const fetchMovieReleases = async (
         url: `https://simkl.com/movies/${id}`,
       });
     },
-    { concurrency },
+    { concurrency, classify },
   );
 
   return { releases: out, failed, unavailable };

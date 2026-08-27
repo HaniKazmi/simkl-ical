@@ -134,9 +134,10 @@ above. AGENTS.md has the file-by-file map; layering runs downward only.
 
 Three things inside `api/` are shared, and all for the same reason: they encode a rule that drifts
 silently when copied. Retry timing — a blank `Retry-After` is not zero, and the header may be an
-HTTP date. The per-title lookup pool — an account-level failure is not a fact about the title
+HTTP date. The per-item lookup pool — an account-level failure is not a fact about the item
 that hit it, and a 401 filed as "this title is unavailable" makes an expired token look like a
-hundred deleted films. And the request log, where all three transports otherwise assemble the same
+hundred deleted films. It takes each upstream's `classify` as a parameter, because the split is
+the shared rule while which status means "the credential is wrong" is not. And the request log, where all three transports otherwise assemble the same
 ten-field record from the same four constants, so a new field would have to be added in three
 places — and read a response body three ways, one of which turns a download that died mid-flight
 into a 200 carrying unparseable JSON. The clients themselves stay separate, because base URL, auth and status mapping are
