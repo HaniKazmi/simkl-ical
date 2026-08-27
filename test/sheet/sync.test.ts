@@ -151,8 +151,12 @@ const server = ({ meddle, failWrite, failRollback, hideReplies, failTabLists, ep
       });
     }
 
-    if (url.includes('/tv/episodes/')) return jsonResponse(episodes);
-    if (url.includes('/tv/')) return jsonResponse({ status: 'airing', runtime: 45 });
+    // Host-qualified, so a call to another upstream falls through to the throw
+    // rather than being answered with a SIMKL body. `/tv/` alone also matches
+    // TVDB's season path, which would hand it `{status, runtime}` and make a
+    // test asserting nothing look green.
+    if (url.startsWith('https://api.simkl.com/tv/episodes/')) return jsonResponse(episodes);
+    if (url.startsWith('https://api.simkl.com/tv/')) return jsonResponse({ status: 'airing', runtime: 45 });
     throw new Error(`unexpected request: ${url}`);
   };
 

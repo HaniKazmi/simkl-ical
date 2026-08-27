@@ -207,12 +207,19 @@ export const showRow = (title: string, status: string | null, id: number | strin
   type,
 ];
 
+/**
+ * `episodes` is the per-episode runtime as a day fraction, and `null` leaves the
+ * cell blank — the state the runtime write is the only thing that fills. An
+ * option rather than a sixth positional argument: this array is keyed to
+ * `SHEET_HEADERS` and every suite indexes into it, so a name cannot drift the
+ * way a position can.
+ */
 export const seasonRow = (
   season: number,
   episode: number | null,
   end: number | null,
-  { id = null, start = 45000 }: { id?: number | string | null; start?: number } = {},
-): CellSpec[] => [null, null, season, episode, start, end, 0.0153, { formula: '=G*F' }, id, null];
+  { id = null, start = 45000, episodes = 0.0153 }: { id?: number | string | null; start?: number; episodes?: number | null } = {},
+): CellSpec[] => [null, null, season, episode, start, end, episodes, { formula: '=G*F' }, id, null];
 
 /** An ISO instant `days` in the past — the cut-off is the gate on everything. */
 export const daysAgo = (days: number): string => ago(Temporal.Duration.from({ days }).total('milliseconds'));
