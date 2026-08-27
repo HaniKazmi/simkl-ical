@@ -31,6 +31,7 @@ import type { Library } from '../library.ts';
 import { applyRequests, readSnapshot, type SheetSnapshot } from './io/spreadsheet.ts';
 import { fetchCatalogue } from './io/catalogue.ts';
 import { fetchSeasonRuntimes, runtimeKeyOf } from './io/runtimes.ts';
+import { classify } from '../api/tvdb/client.ts';
 import { parseGrid, type Grid } from './2-grid.ts';
 import { averageRuntime, indexLibrary, seasonShapes, tvdbIdOf, type TitleProgress } from './1-progress.ts';
 import { describePlan, planLookups, planRecord, planRuntimeLookups, planSync, type CatalogueStamp, type CatalogueView, type PlanRecord, type SheetPlan, type TitleCatalogue } from './3-plan.ts';
@@ -208,7 +209,15 @@ export class SheetSync {
       // Second, and it cannot be folded into the first: which seasons need a
       // runtime is a question about which are *completing*, which the episode
       // list above is what answers.
-      const runtimesFailed = await this.runtimesFor(grid, index, catalogue, signal, now);
+      //
+      // First attempt only. A failed lookup is deliberately not recorded, so a
+      // re-plan would re-issue exactly the lookups that aged the snapshot past
+      // FRESH_MS — and a throttled season can spend a minute apiece obeying
+      // `Retry-After`. Three attempts of that ends the run `failed`, losing the
+      // `Episode`, `Status` and insert writes the poll had already earned to an
+      // optional column. Skipping leaves those seasons pending, which is the
+      // outcome they already had this poll.
+      const runtimesFailed = attempt === 1 ? await this.runtimesFor(grid, index, catalogue, signal, now) : 0;
       const plan = planSync(grid, index, catalogue, { now });
       lines = describePlan(plan, grid.columns);
       // Once per scope: five separate calls read as five projections a reader
@@ -354,14 +363,27 @@ export class SheetSync {
     try {
       fetched = await fetchSeasonRuntimes(requests, { signal });
     } catch (err) {
-      // An account-level TVDB failure — a rejected key, a login that would not
-      // answer — escapes the pool by design, because it is not a fact about any
-      // one season. It must not escape the *run*: the grid read and every SIMKL
-      // call this poll already made would be thrown away, and the sheet would go
-      // a poll without a write, over an optional column. Degrade to the same
-      // outcome a transient failure gets — those rows stay open.
-      this.log.warn(`sheet sync: TVDB is not answering (${errorMessage(err)}); ${requests.length} season(s) stay open`);
-      return requests.length;
+      // An account-level failure escapes the pool by design, because it is not a
+      // fact about any one season. It must not escape the *run* either: the grid
+      // read and every SIMKL call this poll already made would be thrown away,
+      // and the sheet would go a poll without a write, over an optional column.
+      //
+      // What it does to the rows depends on which kind it is, and the difference
+      // matters more than it looks. A rejected key is **settled** — no number of
+      // polls will make a typo answer — so those seasons record `null` and close
+      // with the cell blank. Left pending instead, every completing season stays
+      // open for ever and the sheet quietly stops being dated at all, which is
+      // strictly worse than never setting the key. A restart re-reads them, so a
+      // corrected key is one restart away rather than lost.
+      const settled = classify(err) === 'account';
+      this.log.warn(
+        settled
+          ? `sheet sync: TVDB rejected the credential (${errorMessage(err)}); ${requests.length} season(s) close without a runtime`
+          : `sheet sync: TVDB is not answering (${errorMessage(err)}); ${requests.length} season(s) stay open`,
+      );
+      if (!settled) return requests.length;
+      for (const request of requests) catalogue.titles.get(request.id)?.seasonRuntimes.set(request.season, null);
+      return 0;
     }
 
     // Same discipline as the catalogue's stamps. A retryable failure is

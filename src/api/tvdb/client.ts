@@ -20,8 +20,9 @@ import type { FailureKind } from '../pool.ts';
 
 const API_BASE = 'https://api4.thetvdb.com/v4/';
 
-// 408 and the 5xx range only. TVDB answers a 429 with `Retry-After`, which is
-// the header `retryDelayMs` exists to read.
+// 429 is in here as well as the 5xx range: TVDB answers a throttle with
+// `Retry-After`, which is the header `retryDelayMs` exists to read, and honouring
+// it is what stops a retry extending the throttle.
 const RETRYABLE = new Set([408, 429, 500, 502, 503, 504]);
 
 /**
@@ -31,7 +32,9 @@ const RETRYABLE = new Set([408, 429, 500, 502, 503, 504]);
  * (120s), and blowing that budget re-reads the whole grid and re-plans. Nothing
  * here is load-bearing — an unanswered season just stays open for a poll — so it
  * should be the first thing to give up, not the thing that costs the run its
- * snapshot. Two attempts against a 10s timeout is a 21s ceiling per season.
+ * snapshot. Two attempts against a 10s timeout is 21s of *timeout*; a throttled
+ * season can still spend `MAX_RETRY_AFTER_MS` on top, which is why `sync.ts`
+ * runs this phase on the first planning attempt only.
  */
 const MAX_ATTEMPTS = 2;
 
@@ -53,10 +56,15 @@ export class TvdbError extends HttpError {
  * `averageRuntime` returning null that settles it.
  */
 export const classify = (err: unknown): FailureKind => {
-  if (err instanceof TvdbAuthError) return 'account';
-  if (!(err instanceof TvdbError) || err.status === undefined) return 'transient';
-  if (err.status === 401 || err.status === 403) return 'account';
-  return err.status === 404 ? 'gone' : 'transient';
+  // Read the status even on an auth error. `exchangeToken` raises one for *any*
+  // non-ok login, so a 503 from the login endpoint arrives as the same class as
+  // a rejected key — and calling that `account` would settle every season on a
+  // TVDB outage, while calling a rejected key `transient` retries a typo for
+  // ever. Only the status separates them.
+  const status = err instanceof TvdbAuthError || err instanceof TvdbError ? err.status : undefined;
+  if (status === undefined) return 'transient';
+  if (status === 401 || status === 403) return 'account';
+  return status === 404 ? 'gone' : 'transient';
 };
 
 export interface TvdbGetOptions {

@@ -751,22 +751,47 @@ test('a TVDB outage leaves the row open and asks for another poll', async () => 
 // about any one season — but it must not escape the run. Letting it through
 // throws away the grid read and every SIMKL call this poll already made, and
 // costs the sheet a write, over an optional column.
-test('a rejected TVDB key leaves the run to finish what it can', async () => {
+const loginFails = (status: number) => (over: Parameters<typeof server>[0] = {}) => {
+  const sheet = closingRun(over);
+  return {
+    sheet,
+    handler: (url: string, init?: RequestInit) =>
+      url.startsWith('https://api4.thetvdb.com/v4/login') ? new Response('{"message":"nope"}', { status }) : sheet.handler(url, init),
+  };
+};
+
+// A typo in the key will never start answering, so leaving the rows pending
+// would stop the sheet being dated at all — silently, and for ever.
+test('a rejected TVDB key settles: the season closes with the cell blank', async () => {
   clearTokenCache();
   clearTvdbTokenCache();
-  const sheet = closingRun({ tvdb: () => new Response('{"message":"InvalidAPIKey"}', { status: 401 }) });
+  const { sheet, handler } = loginFails(401)();
   await withKey(() =>
-    withFetch(
-      (url, init) => (url.startsWith('https://api4.thetvdb.com/v4/login') ? new Response('{"message":"InvalidAPIKey"}', { status: 401 }) : sheet.handler(url, init)),
-      async () => {
-        const result = await new SheetSync({ logger: quiet }).run(CLOSING_LIBRARY);
-        assert.notEqual(result.status, 'failed', 'the run is not sunk by an optional lookup');
-        assert.equal(result.retry, true);
-        const row = sheet.tabs.get(1)![3]!;
-        assert.equal(row[H.indexOf('End')]?.userEnteredValue?.numberValue, undefined, 'that row waits');
-        assert.equal(row[H.indexOf('Episode')]?.userEnteredValue?.numberValue, 10, 'but its count still advanced');
-      },
-    ),
+    withFetch(handler, async () => {
+      const result = await new SheetSync({ logger: quiet }).run(CLOSING_LIBRARY);
+      assert.notEqual(result.status, 'failed', 'the run is not sunk by an optional lookup');
+      assert.equal(result.retry, false, 'and does not re-ask for a poll that cannot help');
+      const row = sheet.tabs.get(1)![3]!;
+      assert.ok(row[H.indexOf('End')]?.userEnteredValue?.numberValue, 'the season is dated');
+      assert.equal(row[H.indexOf('Episodes')]?.userEnteredValue, undefined, 'with no runtime');
+    }),
+  );
+});
+
+// The same error class, and the opposite answer: `exchangeToken` raises an auth
+// error for any non-ok login, so only the status separates an outage from a typo.
+test('a login outage leaves the row open rather than settling it', async () => {
+  clearTokenCache();
+  clearTvdbTokenCache();
+  const { sheet, handler } = loginFails(503)();
+  await withKey(() =>
+    withFetch(handler, async () => {
+      const result = await new SheetSync({ logger: quiet }).run(CLOSING_LIBRARY);
+      assert.equal(result.retry, true, 'worth asking again');
+      const row = sheet.tabs.get(1)![3]!;
+      assert.equal(row[H.indexOf('End')]?.userEnteredValue?.numberValue, undefined, 'that row waits');
+      assert.equal(row[H.indexOf('Episode')]?.userEnteredValue?.numberValue, 10, 'but its count still advanced');
+    }),
   );
 });
 
@@ -801,5 +826,34 @@ test('a runtime already read is not looked up a second time', async () => {
       await sync.run(CLOSING_LIBRARY);
       assert.equal(calls.filter((c) => c.includes('/episodes/official')).length, first, 'asked once');
     }),
+  );
+});
+
+// A failed runtime lookup is deliberately left unrecorded so the next poll asks
+// again — which means a re-plan would re-issue exactly the lookups that aged the
+// snapshot past FRESH_MS in the first place, and a throttled season can spend a
+// minute apiece obeying Retry-After. Three rounds of that ends the run `failed`,
+// losing the Episode and Status writes the poll had already earned.
+test('a re-plan does not re-issue the runtime lookups that aged the snapshot', () => {
+  clearTokenCache();
+  clearTvdbTokenCache();
+  // A *failing* lookup is the case that matters: it is deliberately left
+  // unrecorded so the next poll asks again, so nothing stops a re-plan asking
+  // again inside this same run — where it would stall on exactly what made the
+  // snapshot stale, three times over, and end the run `failed`.
+  const sheet = closingRun({ tvdb: () => new Response('boom', { status: 500 }) });
+  return withRunawayClock(() =>
+    withKey(() =>
+      withFetch(sheet.handler, async (calls) => {
+        await new SheetSync({ logger: quiet }).run(CLOSING_LIBRARY);
+        assert.ok(calls.filter((c) => c.includes('ranges=')).length > 1, 'the grid was re-read, so a re-plan happened');
+        // Two: the client's own retry cap, spent once on the first attempt.
+        assert.equal(
+          calls.filter((c) => c.includes('/episodes/official')).length,
+          2,
+          'TVDB was asked on the first planning attempt only',
+        );
+      }),
+    ),
   );
 });

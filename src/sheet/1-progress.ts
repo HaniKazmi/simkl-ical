@@ -46,9 +46,19 @@ export const dateSerial = (date: Temporal.PlainDate): number => SHEET_EPOCH.unti
 export const watchSerial = (at: Temporal.Instant | null | undefined, timezone: string): number | null =>
   at ? dateSerial(plainDateIn(at, timezone)) : null;
 
-/** Per-episode minutes → the day fraction the `Episodes` column holds on a season row. */
+/**
+ * Per-episode minutes → the day fraction the `Episodes` column holds on a season
+ * row, or null where that is not a length an episode has.
+ *
+ * Bounded at both ends, and the upper one matters: a day or more is not a
+ * runtime, and a value at or above 1 written into this column multiplies every
+ * `Length` in the block by 1440. The guard refuses one too, but refusal is
+ * whole-plan — so a single title with bad upstream data would stop every
+ * unrelated edit in the run, every poll, for as long as its row sat inside the
+ * activity window. Returning null here makes it one skipped cell instead.
+ */
 export const runtimeDays = (minutes: number | null | undefined): number | null =>
-  typeof minutes === 'number' && Number.isFinite(minutes) && minutes > 0 ? minutes / 1440 : null;
+  typeof minutes === 'number' && Number.isFinite(minutes) && minutes > 0 && minutes < 1440 ? minutes / 1440 : null;
 
 // --- Library ---------------------------------------------------------------
 
@@ -220,7 +230,13 @@ export const averageRuntime = (episodes: TvdbEpisode[] | null | undefined, expec
   for (const episode of episodes ?? []) {
     if (episode.isMovie) continue;
     if (typeof episode.number !== 'number') continue;
-    if (!byNumber.has(episode.number)) byNumber.set(episode.number, episode.runtime);
+    // A usable duplicate wins over an unusable one, whichever came first. One
+    // missing runtime refuses the whole season below, and that refusal is
+    // recorded as settled — so taking the null when a real length was sitting in
+    // the same payload forfeits the cell permanently.
+    const held = byNumber.get(episode.number);
+    if (typeof held === 'number' && held > 0) continue;
+    byNumber.set(episode.number, episode.runtime);
   }
   // Season counts must agree before anything is averaged, so a season that is
   // not the one the row means is refused rather than averaged confidently. This

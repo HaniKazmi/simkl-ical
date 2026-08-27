@@ -146,6 +146,22 @@ test('a count that disagrees with SIMKL refuses, in either direction', () => {
   assert.equal(averageRuntime(eps([1, 24]), 0), null, 'no SIMKL count is not a match');
 });
 
+// The guard refuses a day fraction at or above 1 too, but refusal is whole-plan
+// — so one title with bad upstream data would stop every unrelated edit in the
+// run. Bounded here, it costs that one cell.
+test('a length no episode has yields no cell rather than a refused plan', () => {
+  assert.equal(runtimeDays(1440), null, 'a full day is not a runtime');
+  assert.equal(runtimeDays(5000), null);
+  assert.equal(runtimeDays(1439), 1439 / 1440);
+});
+
+// The refusal a null causes is recorded as settled, so preferring the null when
+// a real length sat in the same payload forfeits the cell for good.
+test('a usable duplicate beats an unusable one, whichever came first', () => {
+  assert.equal(averageRuntime([{ number: 1, runtime: null }, { number: 1, runtime: 24 }, { number: 2, runtime: 26 }], 2), 25);
+  assert.equal(averageRuntime([{ number: 1, runtime: 24 }, { number: 1, runtime: null }, { number: 2, runtime: 26 }], 2), 25);
+});
+
 test('a film inside a numbered season is dropped, and a duplicate counted once', () => {
   // Dropped before the count check, so the season still matches SIMKL's two.
   assert.equal(averageRuntime([{ number: 1, runtime: 24 }, { number: 2, runtime: 24 }, { number: 3, runtime: 120, isMovie: 1 }], 2), 24);
