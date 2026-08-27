@@ -83,18 +83,37 @@ export const exchangeToken = async (c = config, { signal }: { signal?: AbortSign
 let cached: { token: string; expiresAt: number } | null = null;
 
 /**
+ * The exchange while it is in flight.
+ *
+ * Held as well as the token because this is the first authenticated upstream the
+ * project calls *in parallel*: `lookupPool` starts four workers at once, and on
+ * a cold cache each would miss and log in separately. Google's cache has the
+ * same shape and needs no such thing, because every Sheets call is sequential.
+ */
+let pending: Promise<string> | null = null;
+
+/**
  * Dropped between tests, and after any 401 — the assumed lifetime above is a
  * guess, and this is what makes a wrong guess cost one poll rather than persist.
  */
 export const clearTokenCache = (): void => {
   cached = null;
+  pending = null;
 };
 
 export const getTvdbToken = async ({ signal }: { signal?: AbortSignal } = {}): Promise<string> => {
   // Epoch milliseconds: a countdown with both endpoints inside this process, no
   // zone and no calendar in it. Same category as the Google token cache.
   if (cached && cached.expiresAt > Date.now()) return cached.token;
-  const token = await exchangeToken(config, { signal });
-  cached = { token, expiresAt: Date.now() + ASSUMED_TTL_MS };
-  return token;
+  pending ??= exchangeToken(config, { signal })
+    .then((token) => {
+      cached = { token, expiresAt: Date.now() + ASSUMED_TTL_MS };
+      return token;
+    })
+    // Cleared either way: a failed exchange must not be handed to the next
+    // caller, which would make one bad login the answer for the whole process.
+    .finally(() => {
+      pending = null;
+    });
+  return pending;
 };

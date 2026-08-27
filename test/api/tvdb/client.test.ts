@@ -169,7 +169,11 @@ test('a 404 is settled and a 500 is worth retrying', async () => {
     withFetch(server({}, { status: 500 }), async (calls) => {
       const err = await apiGet('/series/9/episodes/official', { component: 'runtimes' }).catch((e: unknown) => e);
       assert.equal(classify(err), 'transient');
-      assert.equal(calls.filter((c) => !c.endsWith('/login')).length, 4, 'retried to the cap');
+      // Two, not the five the other clients allow. This phase sits inside a
+      // sheet run whose snapshot goes stale at 120s, and nothing it produces is
+      // load-bearing — so it gives up first rather than costing the run a
+      // re-read.
+      assert.equal(calls.filter((c) => !c.endsWith('/login')).length, 2, 'retried to the cap');
     }),
   );
 });

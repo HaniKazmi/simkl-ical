@@ -32,11 +32,9 @@ interface Scenario {
   tvdbIds?: Record<number, number>;
   /** SIMKL id -> season -> average minutes, or null for "asked, nothing usable". */
   runtimes?: Record<number, Record<number, number | null>>;
-  /** Whether a TVDB credential exists at all. */
-  lookups?: boolean;
 }
 
-const scenario = ({ rows, items, episodes = {}, details = {}, failed = [], tvdbIds = {}, runtimes = {}, lookups = true }: Scenario) => {
+const scenario = ({ rows, items, episodes = {}, details = {}, failed = [], tvdbIds = {}, runtimes = {} }: Scenario) => {
   const grid = parseGrid(sheetSnapshot([H, ...rows]));
   const index = indexLibrary(libraryOf(...items));
   const titles = new Map<number, TitleCatalogue>();
@@ -52,8 +50,8 @@ const scenario = ({ rows, items, episodes = {}, details = {}, failed = [], tvdbI
     grid,
     index,
     catalogue,
-    plan: () => planSync(grid, index, catalogue, { timezone: TZ, runtimes: lookups }),
-    lookups: () => planRuntimeLookups(grid, index, catalogue, { runtimes: lookups }),
+    plan: () => planSync(grid, index, catalogue, { timezone: TZ }),
+    lookups: () => planRuntimeLookups(grid, index, catalogue),
   };
 };
 
@@ -778,25 +776,22 @@ test('a settled null closes the season and leaves the cell blank', () => {
   assert.match(plan.notes.join(' '), /no usable episode runtimes/);
 });
 
-// The bug this guards: runtimeKey resolves without a credential, because the
-// TVDB id arrives on the same detail call either way. Read as pending, every
-// season in the sheet would stop being dated.
-test('with no credential a season closes exactly as it did before', () => {
-  const plan = closing({ lookups: false }).plan();
-  closedBare(plan);
-  assert.deepEqual(plan.skipped, []);
-  assert.deepEqual(closing({ lookups: false }).lookups(), []);
-});
-
-test('a title with no tvdb id closes without waiting for one', () => {
-  closedBare(closing({ tvdbIds: {} }).plan());
-  assert.deepEqual(closing({ tvdbIds: {} }).lookups(), []);
+// No join key is the one state that means "no runtime is obtainable here",
+// whether SIMKL carries no id or there is no credential to ask with — the shell
+// withholds it in both cases. Read as *pending* instead, every season in the
+// sheet would stop being dated, which is why this asserts the skips are empty
+// rather than only that the End landed.
+test('a row with no tvdb id closes exactly as it did before this existed', () => {
+  const bare = closing({ tvdbIds: {} });
+  closedBare(bare.plan());
+  assert.deepEqual(bare.plan().skipped, []);
+  assert.deepEqual(bare.lookups(), []);
 });
 
 // --- which seasons are asked about -----------------------------------------
 
 test('the lookup asks for the completing season, with SIMKL’s own count to check against', () => {
-  assert.deepEqual(closing().lookups(), [{ id: 800, tvdbId: 403245, season: 1, expected: 10 }]);
+  assert.deepEqual(closing().lookups(), [{ id: 800, tvdbId: 403245, season: 1 }]);
 });
 
 test('an answer already held is never asked for again, including a null one', () => {

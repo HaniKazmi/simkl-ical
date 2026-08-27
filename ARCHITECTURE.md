@@ -146,9 +146,9 @@ silently when copied. Retry timing — a blank `Retry-After` is not zero, and th
 HTTP date. The per-item lookup pool — an account-level failure is not a fact about the item
 that hit it, and a 401 filed as "this title is unavailable" makes an expired token look like a
 hundred deleted films. It takes each upstream's `classify` as a parameter, because the split is
-the shared rule while which status means "the credential is wrong" is not. And the request log, where all three transports otherwise assemble the same
-ten-field record from the same four constants, so a new field would have to be added in three
-places — and read a response body three ways, one of which turns a download that died mid-flight
+the shared rule while which status means "the credential is wrong" is not. And the request log, where four transports otherwise assemble the same
+ten-field record from the same four constants across five call sites, so a new field would have to
+be added in five places — and read a response body three ways, one of which turns a download that died mid-flight
 into a 200 carrying unparseable JSON. The clients themselves stay separate, because base URL, auth and status mapping are
 exactly what differs between them.
 

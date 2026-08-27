@@ -701,8 +701,8 @@ const CLOSING_LIBRARY = libraryOf({
   notAired: 0,
 });
 
-const tvdbSeason = (...runtimes: number[]) => () =>
-  jsonResponse({ data: { episodes: runtimes.map((runtime, i) => ({ number: i + 1, runtime })) } });
+const tvdbSeason = (minutes: number, count = 10) => () =>
+  jsonResponse({ data: { episodes: Array.from({ length: count }, (_, i) => ({ number: i + 1, runtime: minutes })) } });
 
 /** Season 2 fully aired, so the row is due its end date this run. */
 const CLOSING_EPISODES = [
@@ -719,7 +719,7 @@ const withKey = (fn: () => Promise<void>) =>
 test('a season closing writes its end date and its runtime in one verified batch', async () => {
   clearTokenCache();
   clearTvdbTokenCache();
-  const sheet = closingRun({ tvdb: tvdbSeason(...Array.from({ length: 10 }, () => 54)) });
+  const sheet = closingRun({ tvdb: tvdbSeason(54) });
   await withKey(() =>
     withFetch(sheet.handler, async () => {
       assert.equal((await new SheetSync({ logger: quiet }).run(CLOSING_LIBRARY)).status, 'applied');
@@ -747,6 +747,29 @@ test('a TVDB outage leaves the row open and asks for another poll', async () => 
   );
 });
 
+// An account-level TVDB failure escapes the pool by design — it is not a fact
+// about any one season — but it must not escape the run. Letting it through
+// throws away the grid read and every SIMKL call this poll already made, and
+// costs the sheet a write, over an optional column.
+test('a rejected TVDB key leaves the run to finish what it can', async () => {
+  clearTokenCache();
+  clearTvdbTokenCache();
+  const sheet = closingRun({ tvdb: () => new Response('{"message":"InvalidAPIKey"}', { status: 401 }) });
+  await withKey(() =>
+    withFetch(
+      (url, init) => (url.startsWith('https://api4.thetvdb.com/v4/login') ? new Response('{"message":"InvalidAPIKey"}', { status: 401 }) : sheet.handler(url, init)),
+      async () => {
+        const result = await new SheetSync({ logger: quiet }).run(CLOSING_LIBRARY);
+        assert.notEqual(result.status, 'failed', 'the run is not sunk by an optional lookup');
+        assert.equal(result.retry, true);
+        const row = sheet.tabs.get(1)![3]!;
+        assert.equal(row[H.indexOf('End')]?.userEnteredValue?.numberValue, undefined, 'that row waits');
+        assert.equal(row[H.indexOf('Episode')]?.userEnteredValue?.numberValue, 10, 'but its count still advanced');
+      },
+    ),
+  );
+});
+
 // The inert path, and the one the whole suite has been exercising by default:
 // without a key the run must be indistinguishable from before this existed.
 test('with no TVDB key the season closes and nothing reaches thetvdb.com', async () => {
@@ -769,7 +792,7 @@ test('with no TVDB key the season closes and nothing reaches thetvdb.com', async
 test('a runtime already read is not looked up a second time', async () => {
   clearTokenCache();
   clearTvdbTokenCache();
-  const sheet = closingRun({ tvdb: tvdbSeason(...Array.from({ length: 10 }, () => 54)) });
+  const sheet = closingRun({ tvdb: tvdbSeason(54) });
   await withKey(() =>
     withFetch(sheet.handler, async (calls) => {
       const sync = new SheetSync({ logger: quiet });

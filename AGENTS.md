@@ -123,8 +123,10 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   `season: 1` and all cours of a franchise share one TVDB id, so the row's number addresses no TVDB
   season — Attack on Titan's six records all point at tvdb 267440, whose season 1 holds 25 episodes
   against their 25/12/12/16/12/2. The episode-count cross-check cannot rescue it either: over 36
-  anime records it agrees 12 times in 29 while describing a different season, so `runtimeKey` tests
-  `Type`, the show-row id *and* the row's own id, and the count check is a live-action backstop only.
+  anime records it agrees 12 times in 29 while describing a different season, so `runtimeTarget` tests
+  `Type`, the show-row id *and* the row's own id — the same pair `planInsert` guards itself with, and
+  a stricter test than the bare "no block ids" that `planSync` and `planLookups` call anime. The
+  count check is a live-action backstop only.
   Live-action needs none of that care — 35 of 35 seasons measured agree, Doctor Who's 2024
   renumbering included, because SIMKL keeps that as a separate record.
 - **Never write a formula cell, and never write a show row except `Status`.** Every derived cell on

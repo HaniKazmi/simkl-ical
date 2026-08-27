@@ -10,7 +10,6 @@
 export interface TvdbEpisode {
   /** Episode number within the season. The deduplication key. */
   number?: number;
-  seasonNumber?: number;
   /**
    * Minutes, and nullable in the schema. Null means TVDB does not know one —
    * never a zero-length episode, which is why it is dropped from an average
@@ -18,10 +17,9 @@ export interface TvdbEpisode {
    */
   runtime?: number | null;
   /**
-   * Set on a film filed inside a numbered season. The one contaminant the
-   * season filter does not remove: specials sit in season 0 and are excluded by
-   * the URL naming a season, so unlike `seasonShapes` there is no type filter
-   * here — a reader who knows that function will come looking for one.
+   * Set on a film filed inside a numbered season — the one contaminant asking
+   * for a single season does not already exclude, since specials sit in season
+   * 0 and the URL names the season.
    */
   isMovie?: number;
 }

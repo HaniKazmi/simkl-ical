@@ -24,10 +24,18 @@ const API_BASE = 'https://api4.thetvdb.com/v4/';
 // the header `retryDelayMs` exists to read.
 const RETRYABLE = new Set([408, 429, 500, 502, 503, 504]);
 
-const MAX_ATTEMPTS = 4;
+/**
+ * Deliberately below the other clients' five.
+ *
+ * This phase sits inside a sheet run whose snapshot goes stale at `FRESH_MS`
+ * (120s), and blowing that budget re-reads the whole grid and re-plans. Nothing
+ * here is load-bearing — an unanswered season just stays open for a poll — so it
+ * should be the first thing to give up, not the thing that costs the run its
+ * snapshot. Two attempts against a 10s timeout is a 21s ceiling per season.
+ */
+const MAX_ATTEMPTS = 2;
 
-// A season payload is tens of KB, so SIMKL's 30s would be generous here.
-const TIMEOUT_MS = 15_000;
+const TIMEOUT_MS = 10_000;
 
 export class TvdbError extends HttpError {
   constructor(message: string, status?: number, body?: string) {

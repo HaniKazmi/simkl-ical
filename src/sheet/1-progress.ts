@@ -213,38 +213,37 @@ export const tvdbIdOf = (detail: ShowDetail | undefined): number | null => {
  * entirely, which is why the planner never asks about an anime row at all.
  */
 export const averageRuntime = (episodes: TvdbEpisode[] | null | undefined, expected: number): number | null => {
-  // A film filed inside a numbered season is the one contaminant the season
-  // filter in the URL does not remove. Deduplicated on `number` because TVDB
+  // A film filed inside a numbered season is the one contaminant asking for a
+  // single season does not exclude. Deduplicated on `number` because TVDB
   // occasionally lists a record twice, which would weight that episode double.
-  const byNumber = new Map<number, TvdbEpisode>();
+  const byNumber = new Map<number, number | null | undefined>();
   for (const episode of episodes ?? []) {
     if (episode.isMovie) continue;
     if (typeof episode.number !== 'number') continue;
-    if (!byNumber.has(episode.number)) byNumber.set(episode.number, episode);
+    if (!byNumber.has(episode.number)) byNumber.set(episode.number, episode.runtime);
   }
-  if (byNumber.size === 0) return null;
   // Season counts must agree before anything is averaged, so a season that is
-  // not the one the row means is refused rather than averaged confidently.
+  // not the one the row means is refused rather than averaged confidently. This
+  // also covers the empty list a season TVDB does not have comes back as.
   if (expected <= 0 || byNumber.size !== expected) return null;
 
-  const minutes: number[] = [];
-  for (const episode of byNumber.values()) {
-    const runtime = episode.runtime;
+  let total = 0;
+  for (const runtime of byNumber.values()) {
     // Null is "TVDB does not know", never a zero-length episode — averaging it
     // in as zero drags the mean down. Same filter as `seasonsOf` on a null
     // `watched_at`, and for the same reason.
-    if (typeof runtime !== 'number' || !Number.isFinite(runtime) || runtime <= 0) continue;
-    minutes.push(runtime);
+    //
+    // One missing runtime refuses the season outright. It has finished airing —
+    // that is the only reason an end date is being written — so a hole is not a
+    // season still filling in, and extrapolating over it would be a guess frozen
+    // into a cell nothing revisits.
+    if (typeof runtime !== 'number' || !Number.isFinite(runtime) || runtime <= 0) return null;
+    total += runtime;
   }
-  // The season has finished airing — that is the only reason an end date is
-  // being written — so a hole in the data is not a season still filling in. It
-  // is a season this cannot answer for, and extrapolating over the missing ones
-  // would be a guess frozen into a cell nothing revisits.
-  if (minutes.length !== byNumber.size) return null;
 
   // Whole minutes, so the cell holds the same kind of number every other row
   // does and a reader can check it against TVDB by eye. Rounding here also fails
   // closed for free: a mean under 30 seconds rounds to 0, and `runtimeDays`
   // returns null for anything not above zero.
-  return Math.round(minutes.reduce((total, m) => total + m, 0) / minutes.length);
+  return Math.round(total / byNumber.size);
 };

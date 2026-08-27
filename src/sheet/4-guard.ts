@@ -142,10 +142,9 @@ export const assertPlanSafe = (
 
     const season = seasonRows.get(cell.row);
     if (!season) refuse(`${where}: ${cell.field} may only be written on a season row.`);
-    // A dated season is closed by the user's decision and never revisited. This
-    // does not stop the runtime write above, which reads as a contradiction only
-    // until you notice the ordering: that edit rides the same batch as the `End`
-    // that closes the row, and the snapshot this checks is from before the write.
+    // A dated season is closed by the user's decision and never revisited. The
+    // runtime write above is not an exception to this: it rides the batch that
+    // closes the row, which the check there enforces.
     if (season.closed) refuse(`${where}: the season already has an end date.`);
 
     if (cell.field === 'Episodes') {
@@ -154,12 +153,20 @@ export const assertPlanSafe = (
         refuse(`${where}: ${describeValue(cell.value)} is not a plausible per-episode day fraction.`);
       }
       // Blank only, and unconditional. A runtime typed by hand is a deliberate
-      // correction; this has no way to tell a better number from a worse one,
-      // and the row closes in the same batch, so the write could never be
-      // undone. `isBlank` rather than a `previous === undefined` test, so a
+      // correction and this has no way to tell a better number from a worse one.
+      // `isBlank` rather than a `previous === undefined` test, so a
       // whitespace-only cell is read the way `2-grid.ts` reads it everywhere.
       if (!isBlank(grid.snapshot.rows[cell.row]?.[cell.column])) {
         refuse(`${where}: the cell already holds a value.`);
+      }
+      // The claim that makes the two rules above safe, re-derived rather than
+      // trusted: a runtime is only ever written onto a row this same batch is
+      // closing. That is why the closed-row refusal below is not a contradiction
+      // — the snapshot it reads is from before the write — and without this
+      // check, a plan that wrote a runtime onto a row it left open would pass,
+      // and the cell would be filled with nothing to freeze it.
+      if (!plan.edits.some((e) => e.row === cell.row && e.field === 'End')) {
+        refuse(`${where}: a runtime may only be written on the row that is being closed.`);
       }
       continue;
     }

@@ -32,7 +32,7 @@ import { applyRequests, readSnapshot, type SheetSnapshot } from './io/spreadshee
 import { fetchCatalogue } from './io/catalogue.ts';
 import { fetchSeasonRuntimes, runtimeKeyOf } from './io/runtimes.ts';
 import { parseGrid, type Grid } from './2-grid.ts';
-import { indexLibrary, seasonShapes, tvdbIdOf, type TitleProgress } from './1-progress.ts';
+import { averageRuntime, indexLibrary, seasonShapes, tvdbIdOf, type TitleProgress } from './1-progress.ts';
 import { describePlan, planLookups, planRecord, planRuntimeLookups, planSync, type CatalogueStamp, type CatalogueView, type PlanRecord, type SheetPlan, type TitleCatalogue } from './3-plan.ts';
 import { assertPlanSafe, UnsafePlanError } from './4-guard.ts';
 import { backupRequest, deleteRowRequests, restoreRequest, toRequests } from './5-requests.ts';
@@ -289,7 +289,15 @@ export class SheetSync {
       return existing;
     };
     for (const [id, episodes] of fetched.episodes) entry(id).shapes = seasonShapes(episodes);
-    for (const [id, detail] of fetched.details) Object.assign(entry(id), { status: detail.status, runtime: detail.runtime, tvdbId: tvdbIdOf(detail) });
+    for (const [id, detail] of fetched.details) Object.assign(entry(id), {
+      status: detail.status,
+      runtime: detail.runtime,
+      // Withheld without a credential, rather than stored and then ignored: an
+      // absent join key is already "no runtime is obtainable for this row" to
+      // every rule in the planner, so the planner needs no second switch — and
+      // a switch it did have could be set the wrong way and strand every row.
+      tvdbId: tvdbConfigured() ? tvdbIdOf(detail) : null,
+    });
 
     // A retryable failure is deliberately not stamped, so the next poll asks
     // again — the same reason the film path withholds its list signature. A
@@ -334,26 +342,44 @@ export class SheetSync {
     signal: AbortSignal | undefined,
     now: Temporal.Instant,
   ): Promise<number> {
-    // Where the feature costs nothing at all when it is switched off. The
-    // planner is told separately, so an unconfigured install reads every row as
-    // settled rather than waiting for an answer no one will ask for.
+    // Where the feature costs nothing when it is switched off. Not the switch
+    // itself — `catalogueFor` withholds the join key, so the planner already
+    // reads every row as settled — just the grid walk this would otherwise do.
     if (!tvdbConfigured()) return 0;
 
     const requests = planRuntimeLookups(grid, index, catalogue, { now });
     if (!requests.length) return 0;
 
-    const fetched = await fetchSeasonRuntimes(requests, { signal });
+    let fetched;
+    try {
+      fetched = await fetchSeasonRuntimes(requests, { signal });
+    } catch (err) {
+      // An account-level TVDB failure — a rejected key, a login that would not
+      // answer — escapes the pool by design, because it is not a fact about any
+      // one season. It must not escape the *run*: the grid read and every SIMKL
+      // call this poll already made would be thrown away, and the sheet would go
+      // a poll without a write, over an optional column. Degrade to the same
+      // outcome a transient failure gets — those rows stay open.
+      this.log.warn(`sheet sync: TVDB is not answering (${errorMessage(err)}); ${requests.length} season(s) stay open`);
+      return requests.length;
+    }
 
     // Same discipline as the catalogue's stamps. A retryable failure is
     // deliberately left unrecorded, so the next poll asks again and the row
     // stays open in the meantime; anything else — an answer, or an id TVDB says
     // is gone — is recorded, including as null, because a season left unrecorded
     // would be re-requested every poll forever.
+    //
+    // Reduced here rather than in the source, the way `seasonShapes` is above:
+    // the count it checks against is SIMKL's, and one upstream's answer having
+    // to agree with another's is a rule about the sheet, not about the call.
     const stalled = new Set(fetched.failed);
     for (const request of requests) {
       const key = runtimeKeyOf(request.tvdbId, request.season);
       if (stalled.has(key)) continue;
-      catalogue.titles.get(request.id)?.seasonRuntimes.set(request.season, fetched.runtimes.get(key) ?? null);
+      const entry = catalogue.titles.get(request.id);
+      const expected = entry?.shapes.get(request.season)?.total ?? 0;
+      entry?.seasonRuntimes.set(request.season, averageRuntime(fetched.episodes.get(key), expected));
     }
 
     this.log.info(`sheet sync: read ${requests.length} season runtime(s) from TVDB`);
