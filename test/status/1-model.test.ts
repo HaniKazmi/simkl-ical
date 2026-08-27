@@ -191,3 +191,33 @@ test('a request keeps its instant for a machine and its age for a reader', () =>
   assert.match(model.requests[0]?.at.label ?? '', /ago$/);
   assert.equal(model.requests[0]?.at.iso, before(2 * MINUTE));
 });
+
+// An unconfigured runtime lookup makes zero requests, so nothing else on the
+// page separates "no credential" from "no season has closed yet" — while the
+// Episodes column silently stays blank. This line is the only signal.
+test('the page says when runtime lookups are off, and stays quiet when they work', () => {
+  assert.equal(buildModel(input({ sheetConfigured: true, runtimesConfigured: false })).sheet.runtimes, false);
+  assert.equal(buildModel(input({ sheetConfigured: true, runtimesConfigured: true })).sheet.runtimes, true);
+});
+
+// The claim that the request log carries this for free: a TVDB failure needs no
+// new plumbing to reach the reader.
+test('a failing TVDB lookup reaches the promoted errors', () => {
+  const model = buildModel(
+    input({
+      requests: [
+        request({
+          service: 'tvdb',
+          component: 'runtimes',
+          path: '/v4/series/269613/episodes/official?season=2',
+          status: 500,
+          attempts: 4,
+          error: 'boom',
+        }),
+      ],
+    }),
+  );
+  assert.equal(model.requests[0]?.service, 'tvdb');
+  assert.equal(model.requests[0]?.component, 'runtimes');
+  assert.match(model.requestErrors.join(' '), /episodes\/official.*boom/);
+});

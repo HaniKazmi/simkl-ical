@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { escapeHtml, html, raw, renderPage, toHtml } from '../../src/status/2-html.ts';
 import { buildModel, type StatusInput } from '../../src/status/1-model.ts';
-import { COLD, MINUTE, before, moved, request } from './fixtures.ts';
+import { COLD, MINUTE, before, input, moved, request } from './fixtures.ts';
 
 test('escapeHtml covers every character that can break out of markup', () => {
   assert.equal(escapeHtml(`<script>"x" & 'y'</script>`), '&lt;script&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/script&gt;');
@@ -168,4 +168,11 @@ test('the library movement reaches the page', () => {
   assert.match(rendered, /shows\/watching \u22121/);
   assert.match(rendered, /shows\/completed \+1/);
   assert.match(rendered, /3 records updated/);
+});
+
+test('the summary says when runtime lookups are off, and nothing when they work', () => {
+  const off = renderPage(buildModel(input({ sheetConfigured: true, runtimesConfigured: false })));
+  assert.match(off, /runtimes off/);
+  const on = renderPage(buildModel(input({ sheetConfigured: true, runtimesConfigured: true })));
+  assert.doesNotMatch(on, /runtimes off/, 'a page that works says nothing about it');
 });

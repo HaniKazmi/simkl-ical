@@ -59,6 +59,7 @@ export const COLD: StatusInput = {
   filmsResolvedAt: null,
   filmsDue: false,
   sheetConfigured: false,
+  runtimesConfigured: false,
   sheetMode: 'off',
   sheetTab: 'Sheet1',
   sheetStatus: 'idle',

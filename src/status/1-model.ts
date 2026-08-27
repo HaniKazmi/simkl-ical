@@ -53,6 +53,13 @@ export interface StatusInput {
   filmsDue: boolean;
 
   sheetConfigured: boolean;
+  /**
+   * Whether per-episode runtimes can be looked up. Its own line because an
+   * unconfigured one makes *zero* requests, so nothing else on this page would
+   * distinguish "no credential" from "no season has closed yet" — while the
+   * Episodes column silently stays blank.
+   */
+  runtimesConfigured: boolean;
   sheetMode: SheetSyncMode;
   sheetTab: string;
   sheetStatus: SheetSyncStatus;
@@ -135,6 +142,7 @@ export interface StatusModel {
   };
   sheet: {
     configured: boolean;
+    runtimes: boolean;
     mode: SheetSyncMode;
     tab: string;
     status: SheetSyncStatus;
@@ -334,6 +342,7 @@ export const buildModel = (input: StatusInput): StatusModel => {
 
     sheet: {
       configured: input.sheetConfigured,
+      runtimes: input.runtimesConfigured,
       mode: input.sheetMode,
       tab: input.sheetTab,
       status: input.sheetStatus,
