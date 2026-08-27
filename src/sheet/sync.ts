@@ -274,7 +274,7 @@ export class SheetSync {
     // Derive on the way in: the shapes are computed once per title here rather
     // than once per season row inside the planner.
     const entry = (id: number): TitleCatalogue => {
-      const existing = this.retained.get(id) ?? { shapes: new Map() };
+      const existing = this.retained.get(id) ?? { shapes: new Map(), seasonRuntimes: new Map() };
       this.retained.set(id, existing);
       return existing;
     };

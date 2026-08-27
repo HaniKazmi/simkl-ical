@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { deleteRowRequests, toRequests } from '../../src/sheet/5-requests.ts';
-import { cell, grid, insertAt, planOf } from './fixtures.ts';
+import { cell, grid, insertAt, planOf, TODAY } from './fixtures.ts';
 
 /** The batch as a readable shape: what each request is, and which row it hits. */
 const kinds = (requests: ReturnType<typeof toRequests>) =>
@@ -40,5 +40,24 @@ test('row deletions are emitted descending', () => {
   assert.deepEqual(
     deleteRowRequests(1, [4, 40, 9]).map((r) => ('deleteDimension' in r ? r.deleteDimension.range.startIndex : -1)),
     [40, 9, 4],
+  );
+});
+
+// The builder reads only row, column and value, so a third field on one row is
+// structurally the same as the two it already emits. Pinned rather than assumed:
+// this is what says `5-requests.ts` needed no change for the runtime write.
+test('a season closing with its runtime emits three cell writes on one row', () => {
+  const plan = planOf([
+    cell(3, 'Episode', { numberValue: 10 }),
+    cell(3, 'End', { numberValue: TODAY }),
+    cell(3, 'Episodes', { numberValue: 49 / 1440 }),
+  ]);
+  const requests = toRequests(plan, grid);
+  assert.equal(requests.length, 3);
+  const columns = requests.map((r) => ('updateCells' in r ? r.updateCells.range.startColumnIndex : -1));
+  assert.deepEqual(
+    columns,
+    [grid.columns.Episodes, grid.columns.End, grid.columns.Episode].sort((a, b) => b - a),
+    'all three are cell writes, descending by column',
   );
 });

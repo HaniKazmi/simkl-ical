@@ -19,7 +19,15 @@ import type { CellEdit, SheetPlan } from './3-plan.ts';
 import type { ExtendedValue } from '../api/google/types.ts';
 
 /** What the sync may write to a row that already exists. */
-const EDIT_FIELDS = new Set<HeaderName>(['Status', 'Episode', 'End']);
+const EDIT_FIELDS = new Set<HeaderName>(['Status', 'Episode', 'End', 'Episodes']);
+
+/**
+ * The bounds of a per-episode runtime, as the day fraction the column holds.
+ * One whole minute to just under a day: at or above 1 the value is minutes
+ * written where `runtimeDays`' output belongs, which multiplies every `Length`
+ * in the block by 1440.
+ */
+const MIN_RUNTIME_DAYS = 1 / 1440;
 
 /**
  * What it may write into a row it is creating. A *separate* whitelist on
@@ -134,8 +142,27 @@ export const assertPlanSafe = (
 
     const season = seasonRows.get(cell.row);
     if (!season) refuse(`${where}: ${cell.field} may only be written on a season row.`);
-    // A dated season is closed by the user's decision and never revisited.
+    // A dated season is closed by the user's decision and never revisited. This
+    // does not stop the runtime write above, which reads as a contradiction only
+    // until you notice the ordering: that edit rides the same batch as the `End`
+    // that closes the row, and the snapshot this checks is from before the write.
     if (season.closed) refuse(`${where}: the season already has an end date.`);
+
+    if (cell.field === 'Episodes') {
+      const days = cell.value.numberValue;
+      if (days === undefined || !(days >= MIN_RUNTIME_DAYS) || days >= 1) {
+        refuse(`${where}: ${describeValue(cell.value)} is not a plausible per-episode day fraction.`);
+      }
+      // Blank only, and unconditional. A runtime typed by hand is a deliberate
+      // correction; this has no way to tell a better number from a worse one,
+      // and the row closes in the same batch, so the write could never be
+      // undone. `isBlank` rather than a `previous === undefined` test, so a
+      // whitespace-only cell is read the way `2-grid.ts` reads it everywhere.
+      if (!isBlank(grid.snapshot.rows[cell.row]?.[cell.column])) {
+        refuse(`${where}: the cell already holds a value.`);
+      }
+      continue;
+    }
 
     if (cell.field === 'Episode') {
       const next = cell.value.numberValue;

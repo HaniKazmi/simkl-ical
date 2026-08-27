@@ -4,7 +4,7 @@ import { assertPlanSafe, UnsafePlanError } from '../../src/sheet/4-guard.ts';
 import { a1, parseGrid } from '../../src/sheet/2-grid.ts';
 import type { CellEdit, SheetPlan } from '../../src/sheet/3-plan.ts';
 import type { HeaderName } from '../../src/sheet/2-grid.ts';
-import { sheetSnapshot } from '../helpers.ts';
+import { seasonRow, SHEET_HEADERS, sheetSnapshot } from '../helpers.ts';
 import { cell, grid, H, insertAt, planOf, season, show, TODAY } from './fixtures.ts';
 import { dateSerial } from '../../src/sheet/1-progress.ts';
 import { plainDateIn } from '../../src/shared/dates.ts';
@@ -189,4 +189,84 @@ test('the plausibility ceiling is tomorrow in the viewer zone, not in UTC', () =
     () => assertPlanSafe(planOf([cell(3, 'End', { numberValue: dayAfterLocalTomorrow })]), grid, { now, timezone: 'UTC' }),
     'the same serial is inside the ceiling for a viewer already on that date',
   );
+});
+
+// --- the runtime cell ------------------------------------------------------
+
+/**
+ * The fixture grid's season rows carry a runtime already, which is the state
+ * this write must refuse. A blank one is the state it is for.
+ *
+ * Row 2 is the closed season, row 3 the open one — the same indices every other
+ * assertion in this file uses.
+ */
+const blankRuntime = parseGrid(
+  sheetSnapshot([H, show('Fargo', 'Ended'), season(1, 6, 44000), seasonRow(2, 3, null, { episodes: null })]),
+);
+
+const runtimeCell = (value: number, row = 3): CellEdit => ({
+  row,
+  column: blankRuntime.columns.Episodes,
+  field: 'Episodes',
+  previous: blankRuntime.snapshot.rows[row]?.[blankRuntime.columns.Episodes]?.userEnteredValue,
+  value: { numberValue: value },
+  address: a1(row, blankRuntime.columns.Episodes),
+  note: 'test',
+});
+
+const refusesRuntime = (plan: SheetPlan, pattern: RegExp): void =>
+  assert.throws(
+    () => assertPlanSafe(plan, blankRuntime),
+    (err: Error) => err instanceof UnsafePlanError && pattern.test(err.message),
+  );
+
+// The baseline: without this the refusals below could all be passing for the
+// wrong reason.
+test('a runtime into a blank cell on an open season is allowed', () => {
+  assert.doesNotThrow(() => assertPlanSafe(planOf([runtimeCell(49 / 1440)]), blankRuntime));
+});
+
+// The rule the whole feature rests on: a hand-typed runtime is a correction, and
+// the row closes in the same batch, so an overwrite could never be undone.
+test('a runtime over a cell that already holds one is refused', () => {
+  // Row 3 of the shared fixture carries 0.0153.
+  refuses(planOf([cell(3, 'Episodes', { numberValue: 49 / 1440 })]), /already holds a value/);
+});
+
+// At or above 1 the number is minutes where a day fraction belongs, which
+// multiplies every Length in the block by 1440.
+test('minutes written where a day fraction belongs are refused', () => {
+  refusesRuntime(planOf([runtimeCell(49)]), /not a plausible per-episode day fraction/);
+  refusesRuntime(planOf([runtimeCell(1)]), /not a plausible per-episode day fraction/);
+  refusesRuntime(planOf([runtimeCell(0)]), /not a plausible per-episode day fraction/);
+  refusesRuntime(planOf([runtimeCell(-1 / 1440)]), /not a plausible per-episode day fraction/);
+  // Under half a minute rounds to nothing the sheet can show.
+  refusesRuntime(planOf([runtimeCell(0.4 / 1440)]), /not a plausible per-episode day fraction/);
+});
+
+// Two rules, and which one fires depends on the cell. On the real sheet a show
+// row's Episodes cell is a roll-up formula, so the unconditional formula rule
+// gets there first; strip the formula and the season-row rule catches it. Both
+// paths are asserted, because relying on the formula alone would leave a show
+// row with an empty runtime cell writable.
+test('a runtime is refused on a show row, by whichever rule reaches it first', () => {
+  refuses(planOf([cell(1, 'Episodes', { numberValue: 49 / 1440 })]), /is a formula/);
+
+  const bareShow = [...show('Fargo', 'Ended')];
+  bareShow[SHEET_HEADERS.indexOf('Episodes')] = null;
+  const stripped = parseGrid(sheetSnapshot([H, bareShow, season(1, 6, 44000), seasonRow(2, 3, null, { episodes: null })]));
+  assert.throws(
+    () =>
+      assertPlanSafe(
+        planOf([{ ...runtimeCell(49 / 1440, 1), previous: undefined }]),
+        stripped,
+      ),
+    (err: Error) => err instanceof UnsafePlanError && /may only be written on a season row/.test(err.message),
+  );
+});
+
+// A dated row is frozen for good, and this is that invariant asserted from the
+// new direction: the runtime rides the batch that closes the row, never a later one.
+test('a runtime is refused on a row that already has an end date', () => {
+  refusesRuntime(planOf([runtimeCell(49 / 1440, 2)]), /already has an end date/);
 });
