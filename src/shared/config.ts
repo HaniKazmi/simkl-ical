@@ -114,6 +114,11 @@ export interface Config {
    * truthiness would say "a credential was supplied" on every machine.
    */
   googleCredentialsExplicit: boolean;
+
+  /** TVDB v4, for per-episode runtimes. Absent, no runtime is ever looked up. */
+  tvdbApiKey: string | undefined;
+  /** Only a user-supported key needs one; a licensed key logs in without it. */
+  tvdbPin: string | undefined;
 }
 
 /**
@@ -176,6 +181,12 @@ export const buildConfig = (env: NodeJS.ProcessEnv): Config => ({
   googleKeyBase64: env.GOOGLE_SA_KEY_B64,
   googleCredentialsPath: env.GOOGLE_APPLICATION_CREDENTIALS ? expandHome(env.GOOGLE_APPLICATION_CREDENTIALS) : resolve(homedir(), '.config/plot-device/sa.json'),
   googleCredentialsExplicit: Boolean(env.GOOGLE_APPLICATION_CREDENTIALS),
+
+  // --- Per-episode runtimes. Absent TVDB_API_KEY, the season a run closes gets
+  // its End date and its count exactly as it does now, and the Episodes cell is
+  // left alone. Additive, so there is nothing to clamp and no default to pick.
+  tvdbApiKey: env.TVDB_API_KEY,
+  tvdbPin: env.TVDB_PIN,
 });
 
 /**
@@ -241,6 +252,16 @@ export const requireValidTimezone = (timeZone: string = config.timezone): string
  */
 export const sheetSyncConfigured = (c: Config = config): boolean =>
   Boolean(c.sheetId) && c.sheetSyncMode !== 'off' && Boolean(c.googleKeyBase64 || c.googleCredentialsExplicit);
+
+/**
+ * Whether per-episode runtimes can be looked up at all.
+ *
+ * One credential with no target to pair it with, so unlike `sheetSyncConfigured`
+ * this is a single test. The pin is deliberately not part of it: a licensed key
+ * logs in without one, and TVDB accepts a wrong pin rather than rejecting it, so
+ * requiring one here would disable the feature for a key that works.
+ */
+export const tvdbConfigured = (c: Config = config): boolean => Boolean(c.tvdbApiKey);
 
 export const requireClientId = (): string => {
   if (!config.clientId) {

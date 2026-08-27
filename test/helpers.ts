@@ -32,6 +32,10 @@ config.feedToken = undefined;
 config.sheetSyncMode = 'off';
 config.googleKeyBase64 = undefined;
 config.googleCredentialsExplicit = false;
+// Same guard again: TVDB_API_KEY lives in .env beside the others, and a test
+// that forgot to override would reach the live API on a real checkout.
+config.tvdbApiKey = undefined;
+config.tvdbPin = undefined;
 // Same guard, for writes rather than reads. Anything that persists — the feed,
 // the sheet run log — lands under config.dataDir, which defaults to ./data and
 // on a real checkout holds a live token. A suite that writes there passes green

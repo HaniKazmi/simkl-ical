@@ -40,7 +40,7 @@ const MAX_PER_COMPONENT = 8;
 /** A failure body is upstream text of unknown length; the page needs a line, not a page. */
 const MAX_ERROR_CHARS = 300;
 
-export type RequestService = 'simkl' | 'cdn' | 'sheets';
+export type RequestService = 'simkl' | 'cdn' | 'sheets' | 'tvdb';
 
 /**
  * Which part of the service asked, which is not the same question as which
@@ -53,12 +53,17 @@ export type RequestService = 'simkl' | 'cdn' | 'sheets';
  * opposite fixes, and filed under `spreadsheet` the row would point a reader at
  * an endpoint that was never called.
  *
+ * `runtimes` is separate from `catalogue` on the same ground. Both are the sheet
+ * asking what exists, but one asks SIMKL for an episode list and the other asks
+ * TVDB for a season's lengths, and a reader chasing a failure needs to know
+ * which upstream to go and look at.
+ *
  * A property of the calling module rather than of the request, so every `io/`
  * module names itself once. Required rather than defaulted: a new call site
  * should have to decide, and `tsc` asking is the difference between a label
  * that stays true and one that quietly rots.
  */
-export type RequestComponent = 'poll' | 'calendars' | 'films' | 'catalogue' | 'spreadsheet' | 'auth' | 'login';
+export type RequestComponent = 'poll' | 'calendars' | 'films' | 'catalogue' | 'spreadsheet' | 'runtimes' | 'auth' | 'login';
 
 export interface RequestRecord {
   at: string;
