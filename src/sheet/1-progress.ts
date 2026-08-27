@@ -20,7 +20,8 @@
 
 import { instantFrom, plainDateIn } from '../shared/dates.ts';
 import { itemStatus } from '../api/simkl/item.ts';
-import type { EpisodeDetail, LibraryItem } from '../api/simkl/types.ts';
+import type { EpisodeDetail, LibraryItem, ShowDetail } from '../api/simkl/types.ts';
+import type { TvdbEpisode } from '../api/tvdb/types.ts';
 import type { Library } from '../library.ts';
 
 // --- Timestamps ------------------------------------------------------------
@@ -176,3 +177,74 @@ export const seasonComplete = (shape: SeasonShape | undefined, watched: number):
  */
 export const courComplete = (progress: TitleProgress): boolean =>
   progress.totalCount > 0 && progress.notAiredCount === 0 && progress.watchedCount >= progress.totalCount;
+
+// --- Runtimes --------------------------------------------------------------
+
+/**
+ * The TVDB id off a SIMKL detail record, or null.
+ *
+ * SIMKL sends it as a string. A non-numeric or absent one is "no TVDB id", never
+ * an error: the runtime lookup is additive, and a title without one simply keeps
+ * its `Episodes` cell blank.
+ */
+export const tvdbIdOf = (detail: ShowDetail | undefined): number | null => {
+  const raw = detail?.ids?.tvdb;
+  if (typeof raw !== 'string') return null;
+  const id = Number(raw.trim());
+  return Number.isInteger(id) && id > 0 ? id : null;
+};
+
+/**
+ * A season's average episode runtime in whole minutes, or null if there is no
+ * usable answer.
+ *
+ * **The arithmetic mean, and that is forced rather than chosen.** The sheet
+ * computes `Length = Episodes x Episode`, where `Episode` is the count watched,
+ * so for a season's total to come out right `Episodes` has to be total minutes
+ * divided by the count — which is the mean and nothing else. 21 episodes at 22m
+ * plus a 44m finale is 506 minutes; the mean is exactly 23, and 23 x 22 = 506.
+ * A median would be robust to that finale and would make the total wrong.
+ *
+ * `expected` is SIMKL's own count for the season, from `seasonShapes`. Requiring
+ * it to match is the cheap evidence that TVDB's season *n* is the same season
+ * the sheet's row means, and it is also what keeps the mean-times-count identity
+ * exact. It is a backstop against future drift rather than the main protection:
+ * on anime it agrees 12 times in 29 while describing a different season
+ * entirely, which is why the planner never asks about an anime row at all.
+ */
+export const averageRuntime = (episodes: TvdbEpisode[] | null | undefined, expected: number): number | null => {
+  // A film filed inside a numbered season is the one contaminant the season
+  // filter in the URL does not remove. Deduplicated on `number` because TVDB
+  // occasionally lists a record twice, which would weight that episode double.
+  const byNumber = new Map<number, TvdbEpisode>();
+  for (const episode of episodes ?? []) {
+    if (episode.isMovie) continue;
+    if (typeof episode.number !== 'number') continue;
+    if (!byNumber.has(episode.number)) byNumber.set(episode.number, episode);
+  }
+  if (byNumber.size === 0) return null;
+  // Season counts must agree before anything is averaged, so a season that is
+  // not the one the row means is refused rather than averaged confidently.
+  if (expected <= 0 || byNumber.size !== expected) return null;
+
+  const minutes: number[] = [];
+  for (const episode of byNumber.values()) {
+    const runtime = episode.runtime;
+    // Null is "TVDB does not know", never a zero-length episode — averaging it
+    // in as zero drags the mean down. Same filter as `seasonsOf` on a null
+    // `watched_at`, and for the same reason.
+    if (typeof runtime !== 'number' || !Number.isFinite(runtime) || runtime <= 0) continue;
+    minutes.push(runtime);
+  }
+  // The season has finished airing — that is the only reason an end date is
+  // being written — so a hole in the data is not a season still filling in. It
+  // is a season this cannot answer for, and extrapolating over the missing ones
+  // would be a guess frozen into a cell nothing revisits.
+  if (minutes.length !== byNumber.size) return null;
+
+  // Whole minutes, so the cell holds the same kind of number every other row
+  // does and a reader can check it against TVDB by eye. Rounding here also fails
+  // closed for free: a mean under 30 seconds rounds to 0, and `runtimeDays`
+  // returns null for anything not above zero.
+  return Math.round(minutes.reduce((total, m) => total + m, 0) / minutes.length);
+};
