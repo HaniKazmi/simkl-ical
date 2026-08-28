@@ -191,14 +191,6 @@ export interface TitleCatalogue {
   seasonRuntimes: Map<number, number | null>;
 }
 
-/** The planner's read surface: the retained titles, plus this run's failures. */
-export interface CatalogueView {
-  titles: Map<number, TitleCatalogue>;
-  /** Ids whose lookup errored in a way worth retrying. */
-  failed: number[];
-  unavailable: number[];
-}
-
 /**
  * What we already hold for one title's catalogue, and how current it is.
  *

@@ -23,7 +23,7 @@ npm run login                              # SIMKL device/PIN flow; writes data/
 npm run login -- --force                   # re-authorise over an existing token (the `--` is required)
 npm test                                   # whole suite (node --test)
 npm run typecheck                          # tsc --noEmit; the only "build" that exists
-node --test test/feed/1-join.test.ts       # one file
+node --test test/feed/2-join.test.ts       # one file
 node --test --test-name-pattern 'grace'    # one test by name
 ```
 
@@ -32,7 +32,7 @@ Run `npm run typecheck && npm test` before calling a change done.
 ## Rules that bite
 
 Each of these is cheap to violate and expensive to notice. Reasoning for all of them is in
-[ARCHITECTURE.md](ARCHITECTURE.md).
+[ARCHITECTURE.md](ARCHITECTURE.md) or the named module.
 
 - **Erasable syntax only.** Node strips the types; there is no compiler. No enums, namespaces,
   parameter properties or decorators.
@@ -59,8 +59,8 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
 - **Measure a span on a monotonic clock, a moment on the wall clock.** `performance.now()` where both
   endpoints are readings taken inside this process and the window is fine enough that a clock step
   matters — request latency, the snapshot freshness gate. Wall time where either endpoint is the
-  timestamp of a real event, which is why `cutoffFrom` cannot move: it compares against a SIMKL
-  timestamp from another machine.
+  timestamp of a real event, which is why the activity cut-off cannot move: it compares against a
+  SIMKL timestamp from another machine.
 - **UIDs are derived, never random.** A fresh UID each render makes calendar clients duplicate
   events instead of updating them.
 - **Nothing in the refresh path may be fatal.** Failures land in a per-subsystem error slot and are
@@ -78,19 +78,16 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   on `all` instead would pull a delta on every poll, because it rolls up `playback` — a scrobbler
   reporting progress moves it continuously and changes nothing the feed or the sheet can see.
 - **Ask for a second more than you need.** `date_from` is compared strictly greater at one-second
-  granularity, so passing back `activities.all` verbatim returns nothing at all, and a write landing
-  in that same second but committed after the activities read would never be asked for again.
-  `deltaFrom` backs the watermark off by a second; `mergeDelta` is an idempotent upsert so the
-  overlap is free. A watermark also advances only *after* the call that consumed it returns.
+  granularity, so passing back `activities.all` verbatim returns nothing at all. `deltaFrom` backs
+  the watermark off by a second; `mergeDelta` is an idempotent upsert so the overlap is free. A
+  watermark also advances only *after* the call that consumed it returns.
 - **`removed_from_list` is not a status, and removals are in no delta.** A removal moves that
   timestamp and nothing else, so the only way to learn what went is to pull the membership set
-  (`extended=simkl_ids_only`, 47 KB for 741 items) and intersect — but only within the categories
-  whose stamp actually moved, since an empty category is *omitted* from the response, so a payload
-  that lost one is the same bytes as a category the user emptied. Two traps: a response that would
-  drop most of a category is refused and answered with a **full pull** rather than re-asked, because
-  the question is unanswerable by diffing and only the whole library settles it; and
-  `/sync/all-items/{type}/{status}` **fails open** —
-  an unrecognised status segment returns every item of that type instead of a 404, so
+  (`extended=simkl_ids_only`) and intersect — but only within the categories whose stamp actually
+  moved, since an empty category is *omitted* from the response. A response that would drop most of
+  a category is refused and answered with a **full pull**, because only the whole library settles
+  what a diff can only guess at. And `/sync/all-items/{type}/{status}` **fails open** — an
+  unrecognised status segment returns every item of that type instead of a 404, so
   `/sync/all-items/movies/removed_from_list` is a full-library download, not an error.
 - **`item.status` is the only membership there is.** The library is one record per SIMKL id, so a
   move is a replacement and no stale copy survives to disagree. The one thing a record cannot supply
@@ -100,97 +97,66 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   film rule is positive, because the library retains every completed film and a negative rule there
   would sweep hundreds of them into the feed and into a per-title lookup each.
 - **The feed reads membership, never progress.** `join` takes exactly two things off a library
-  record: its id and its `status`. Watch counts, `seasons[]` and `last_watched_at` are the sheet's
-  business, and a title moving between `watching` and `completed` — which SIMKL does every time you
-  catch up and every time the next episode drops — must produce the identical feed. So the render is
-  gated on `mergeDelta`'s `reshaped`, not its `updated`: the poll fires on every episode you mark, and
-  rendering on that rewrites the file for a fresh `DTSTAMP` and nothing else. `test/feed/1-join.test.ts`
-  holds the invariance directly; `test/orchestrator.test.ts` holds the render gate.
+  record: its id and its `status`. A title moving between `watching` and `completed` — which SIMKL
+  does every time you catch up — must produce the identical feed, so the render is gated on
+  `mergeDelta`'s `reshaped`, not its `updated`. `test/feed/2-join.test.ts` holds the invariance
+  directly; `test/orchestrator.test.ts` holds the render gate.
 - **`extended` does nothing on the per-title endpoints.** `/movies/{id}`, `/tv/{id}`, `/anime/{id}`
   and `/tv/episodes/{id}` return byte-identical responses with and without it. On `/sync/all-items`
   it is the gatekeeper: `extended=full` alone turns on `seasons[]`, and `episode_watched_at=yes` and
   `include_all_episodes=yes` are no-ops without it. `ids.simkl` needs none of them.
-- **A dated season row is never revisited, so every cell it will ever carry has to be right in the
-  one batch that closes it.** The runtime write rides the same batch as the `End` beside it, which
-  is why the guard's refusal of a closed row is not a contradiction — the snapshot it checks is from
-  before the write. It is also why a season whose runtimes have not come back holds its `End` rather
-  than closing blank: the date comes from the watch timestamp, not from now, so waiting a poll costs
-  nothing and closing early forfeits the cell permanently. Only a *transient* failure waits; a
-  settled "no answer" closes the row with the cell left blank.
-- **A runtime is only ever written into a blank cell, and only for a live-action row that inherits
-  its block's id.** A typed number is a deliberate correction and nothing here can tell a better one
-  from a worse one. The scope rule is not a preference: a SIMKL anime record numbers every cour
-  `season: 1` and all cours of a franchise share one TVDB id, so the row's number addresses no TVDB
-  season — Attack on Titan's six records all point at tvdb 267440, whose season 1 holds 25 episodes
-  against their 25/12/12/16/12/2. The episode-count cross-check cannot rescue it either: over 36
-  anime records it agrees 12 times in 29 while describing a different season, so `runtimeTarget` tests
-  `Type`, the show-row id *and* the row's own id — the same pair `planInsert` guards itself with, and
-  a stricter test than the bare "no block ids" that `planSync` and `planLookups` call anime. The
-  count check is a live-action backstop only. `4-guard.ts` re-derives that scope rather than
-  trusting it, which it does for no other planner claim about *which* row may be written: this is
-  the one the row cannot take back, since the same batch dates the row and fills the cell, so
-  neither the blank-cell rule nor the closed-row rule protects it a second time. An **inserted**
-  row is the sharper case of the same thing — one fill creates it *and* dates it, so there is no
-  blank cell to find and no `End` edit to ride, and scope plus bounds are the whole of what the
-  guard can re-derive there.
-  Live-action needs none of that care — 35 of 35 seasons measured agree, Doctor Who's 2024
+- **A dated season row is never revisited**, so every cell it will ever carry has to be right in the
+  one batch that closes it. That is the fact behind most of the planner's conservatism: a season
+  whose runtimes have not come back holds its `End` open rather than closing blank (the date comes
+  from the watch timestamp, so waiting a poll costs nothing), and an inserted row leaves its runtime
+  cell blank while the season is still airing. The runtime follows *airing* and the `End` date
+  follows *watching* — `seasonAired` versus `seasonComplete` in `3-catalogue.ts`.
+- **The runtime write's scope is `runtimeScopeOk`, and it is stricter than `usesCourModel`** — both
+  in `2-grid.ts`, with the Attack on Titan measurement in the doc comment. A SIMKL anime record
+  numbers every cour `season: 1` and all cours share one TVDB id, so an anime row's number
+  addresses no TVDB season; live-action agrees 35 of 35 seasons measured, Doctor Who's 2024
   renumbering included, because SIMKL keeps that as a separate record.
-- **A row the sync inserts leaves its runtime cell blank while the season is still airing.**
-  `runtimeTarget` writes only into a blank cell, so any number in there is the last one that cell
-  will ever hold: filling it on insert is what puts the season's own average permanently out of
-  reach. `Length` reads zero for that row until the season closes, which is the price.
-  Blank is only ever chosen where something can still fill it. With no TVDB id and no
-  `TVDB_API_KEY` there is nothing to wait for, so the show-wide runtime goes in; and an absent
-  `tvdbId` is the detail call not having *answered*, where null is it answering that there is no
-  key — reading the first as the second dates a row on a 503 and forfeits its cell.
-  **The runtime follows airing and the `End` date follows watching**, which is why `seasonAired` is
-  split out of `seasonComplete`: episode lengths settle when the last one airs and stay settled
-  however little of the season anyone has seen, so a row added one episode into a finished season
-  carries its average straight away and is nowhere near dated. Gating the runtime on watching
-  instead leaves a binge-started season blank, and its `Length` zero, for as long as it takes to get
-  through it. A season over *and* watched out is dated and averaged in the one fill; one whose
-  runtimes have not come back is inserted **open**, because dating it would freeze a blank cell and
-  the date is not lost by waiting. So the same season must be picked by
-  `planRuntimeLookups` before the fetch and by `planInsert` after it — one `insertTarget` answers
-  both. They can disagree in only one safe direction: an insert refused for its own reasons after
-  the lookup was made costs one cached call, and a row whose number never arrived falls back to the
-  ordinary per-row close path a poll later. **The insert must never require the runtime to have
-  arrived** — that is what keeps a bug there costing a poll rather than a cell.
+- **The planner is one pass, run to a fixpoint.** `planSync` returns the plan *and* the lookups it
+  still needs; the sync fetches, folds them into the catalogue store, and re-plans until nothing
+  new is demanded. There are no separate what-to-fetch passes to keep in agreement — a row the
+  planner waits on is by construction a row the same pass demanded. Do not reintroduce a second
+  planning path.
+- **A runtime is only ever written into a blank cell**, and the bounds the guard checks are the same
+  constants the planner converts with (`values.ts`) — a bound that exists twice is a whole-plan
+  refusal waiting to fire on good data.
 - **Never write a formula cell, and never write a show row except `Status`.** Every derived cell on
   a show row rolls up from the season rows beneath it. Writing one replaces a live roll-up with a
   frozen number, and nothing would ever notice.
 - **Ask the plan, not the grid.** Whether a write landed and which rows a rollback may delete are
-  both answered from the planned writes — is this cell present where it was planned? Row growth
-  answers neither: `batchUpdate` is atomic, and an insert whose batch failed leaves the count
-  unchanged. Reading growth as "it landed" freezes the process over an untouched sheet.
+  both answered from the planned writes. Row growth answers neither: `batchUpdate` is atomic, and an
+  insert whose batch failed leaves the count unchanged. Reading growth as "it landed" freezes the
+  process over an untouched sheet.
 - **`userEnteredValue` is only stable while the grid is.** Inserting a row makes Sheets rewrite the
   relative A1 references in every formula it shifts, so the verifier compares formulas for still
   *being* formulas across an insert rather than for their text. Tightening that back to text
   equality is the one change here that can corrupt the sheet outright — read
-  `src/sheet/6-verify.ts` before going near it.
-- **One inserted row per run is an invariant, not a setting.** Plan indices are pre-write and
-  `insertDimension` applies cumulatively, so a second insert would land a row high;
-  `assertPlanSafe` refuses it outright.
+  `src/sheet/7-verify.ts` before going near it.
+- **One inserted row per run is carried by the plan's type** — `SheetPlan.insert` is a single value,
+  because plan indices are pre-write and `insertDimension` applies cumulatively, so a second insert
+  would land a row high. Do not widen it back to an array.
 - **Every value interpolated into the status page goes through the `html` tag.** Show titles,
   spreadsheet contents and upstream error bodies all reach it, so `2-html.ts` escapes by default and
   `raw()` is reserved for the stylesheet. The safe-HTML brand is a module-private `Symbol` because a
   `{ html: string }` duck type is forgeable by any object with that key — including one parsed out of
   `sheet-runs.json`, which the page renders verbatim. That file is the only one to audit for this.
 - **The status page loads nothing off-origin, and sends `Referrer-Policy: no-referrer`.** The feed
-  token is in the page's own URL, so any external asset — a font, a CDN script, an image — would
-  carry it to a third party in a `Referer` header. That is the live concern, and it is about who
-  else sees the token rather than about the page showing it: the logs, `/healthz` and this page are
-  all trusted surfaces, and printing the token or the spreadsheet id in them is fine. The page
-  renders the tab *name* because that is what a reader can act on, not because the id is a secret.
+  token is in the page's own URL, so any external asset would carry it to a third party in a
+  `Referer` header. That is about who else sees the token, not about the page showing it: the logs,
+  `/healthz` and this page are all trusted surfaces, and printing the token or the spreadsheet id in
+  them is fine.
 - **`sheet-runs.json` is observational, never control.** Nothing may read it to decide behaviour, so
-  a corrupt or deleted history cannot change what the sync does. See ARCHITECTURE.md.
+  a corrupt or deleted history cannot change what the sync does.
 - **Tests must not reach the network, the real `./data`, or the real spreadsheet.** Use `withFetch`,
   `withConfig` and `withTempDataDir` from `test/helpers.ts` — on a real checkout `./data` holds a
   live OAuth token, and `.env` holds a live `SHEET_ID`. The helpers module forces `sheetId` to
   undefined, `sheetSyncMode` to `off`, and `dataDir` to a throwaway path on import for exactly that
-  reason: the sheet run log made a green suite write into the live data dir beside a real token.
-  `clearSheetRuns()` from `sheet/io/journal.ts` belongs in any test that touches the history, the
-  same way `clearCache()` does for the CDN.
+  reason. `clearSheetRuns()` from `sheet/io/journal.ts` belongs in any test that touches the
+  history, the same way `clearCache()` does for the CDN.
 
 ## Where things live
 
@@ -199,73 +165,70 @@ needs it**, and **is it transport or business logic**.
 
 | Path | Role |
 | --- | --- |
-| `src/orchestrator.ts` | `Orchestrator` — the poll, the timers, the state `/healthz` projects from; owns the library and drives both halves |
+| `src/orchestrator.ts` | `Orchestrator` — the poll, the timers, and `snapshot()`, the one export of state; owns the library and drives both halves. The poll's consequences are named predicates (`feedChanged`, `filmsNeedResolving`, `libraryMoved`) over one `PollOutcome` |
 | `src/server.ts`, `src/index.ts`, `src/login.ts` | Fastify (three routes, no state of its own), boot, and the device-flow CLI |
 | `src/shared/` | Used by both halves, and with no feature knowledge at all: config, dates, errors, logger, signals, atomic-write |
-| `src/health.ts` | The state projection both `/healthz` and the status page read. Pure; `buildHealth` takes flat state, `healthResponse` narrows it to the endpoint's contract |
-| `src/library.ts` | How the library is gated, merged and read: the signatures, the delta merge, the removal diff, the counts. Beside the orchestrator, which is the only thing that owns a library |
-| `src/api/` | Every HTTP client, and no domain rules. `backoff.ts`, `cdn.ts`, `pool.ts`, `requests.ts`, `simkl/`, `google/`, `tvdb/`. `simkl/types.ts` holds only shapes SIMKL sends; anything this service derives lives with the module that derives it. `requests.ts` is the one exception to "no domain rules": `RequestComponent` names the callers, because which part of the service asked is not a fact any transport holds |
+| `src/health.ts` | What the state *means*: `assess` (restart-worthiness, the `/healthz` status code) and `pageHealthy` (the page's stricter question), plus the `/healthz` body |
+| `src/library.ts` | How the library is gated, merged and read: the signatures, the delta merge, the removal diff |
+| `src/library-counts.ts` | The library, counted — the status page's totals and movement deltas |
+| `src/api/` | Every HTTP client, and no domain rules. `http.ts` is the one retrying transport; `simkl/`, `google/`, `tvdb/` are specs over it; `token-cache.ts` the one bearer cache; `pool.ts`, `requests.ts`, `cdn.ts` shared. `requests.ts` is the one exception to "no domain rules": `RequestComponent` names the callers, because which part of the service asked is not a fact any transport holds |
 | `src/feed/` | iCal only |
 | `src/sheet/` | Google Sheet sync only |
-| `src/status/` | The HTML status page. Reads both halves and the request log; `server.ts` is its only reader |
+| `src/status/` | The HTML status page. Reads the snapshot and the request log; `server.ts` is its only reader |
 
 `src/status/` is a **layer**, not a fourth peer: it sits above both halves and below `server.ts`,
-may read from either, and names `Orchestrator` as a *type only*. **Nothing in `feed/`, `sheet/`,
-`api/`, `shared/` or `orchestrator.ts` may import from it** — the last of those would be a real
-runtime cycle, not an erased one. Layering still runs downward only; there is one more level.
+and names `Orchestrator` as a *type only*. **Nothing in `feed/`, `sheet/`, `api/`, `shared/` or
+`orchestrator.ts` may import from it.** Layering still runs downward only.
 
 Each half is an **impure shell around a numbered pure core**: `io/` holds whatever talks outside
 the process, and the rest carries its pipeline position in the filename, so `ls` prints the order.
 
-`src/feed/` — FETCH → JOIN → RENDER → SAVE
+`src/feed/` — FILMS → JOIN → RENDER
 
 | Step | Module |
 | --- | --- |
-| FETCH | `io/calendar.ts` (CDN airdates), `io/movies.ts` (per-title film releases) |
-| JOIN | `1-join.ts` — calendars × library × releases → events |
-| RENDER | `2-ics.ts` — events → an ICS string |
-| SAVE | `io/store.ts` — the rendered feed on disk, and back on boot |
+| FILMS | `1-films.ts` — every rule about film release dates; the fetch is `io/movies.ts` |
+| JOIN | `2-join.ts` — calendars × library × releases → events |
+| RENDER | `3-ics.ts` — events → an ICS string |
+| io | `io/calendar.ts` (CDN airdates), `io/movies.ts` (per-title film fetch), `io/store.ts` (the rendered feed on disk) |
 | — | `feed.ts` — the cycle that runs them |
 
-`src/sheet/` — INDEX → READ → PARSE → PLAN → GUARD → BUILD → APPLY → VERIFY → ROLLBACK
+`src/sheet/` — INDEX → READ/PARSE → (PLAN ⇄ FETCH) → GUARD → BUILD → APPLY → VERIFY → ROLLBACK
 
 | Step | Module |
 | --- | --- |
-| INDEX | `1-progress.ts` — library → what was watched, the early-out that decides whether to read the grid at all, and the reductions of both upstreams' episode lists |
-| READ | `io/spreadsheet.ts` (the tab), `io/catalogue.ts` (SIMKL per-title), `io/runtimes.ts` (TVDB per-season) |
-| PARSE | `2-grid.ts` — snapshot → blocks |
-| PLAN | `3-plan.ts` — grid + library + catalogue → a plan, plus the two "what to fetch" passes that must agree with it |
-| GUARD | `4-guard.ts` — refuse a plan that does not re-derive |
-| BUILD | `5-requests.ts` — a plan → one ordered batch |
-| APPLY | `io/spreadsheet.ts` again |
-| VERIFY | `6-verify.ts` — did the write do exactly what was planned |
-| ROLLBACK | `5-requests.ts` again, in separate batches |
-| — | `backups.ts` — the snapshot tab's whole life: what it is called, how it is found, and the three ways it ends |
-| — | `sync.ts` — the protocol that runs them |
+| INDEX | `1-index.ts` — library → what was watched, and the early-out that decides whether to read the grid at all |
+| PARSE | `2-grid.ts` — snapshot → blocks, plus the two block predicates (`usesCourModel`, `runtimeScopeOk`) |
+| FOLD | `3-catalogue.ts` — what the upstreams said, reduced and retained across polls: the `CatalogueStore`, the stamping discipline, and the reductions of both payloads |
+| PLAN | `4-plan.ts` — grid + library + catalogue → `{ plan, demands }`; the sync re-plans until nothing new is demanded |
+| GUARD | `5-guard.ts` — a checklist of named rules; refuses a plan that does not re-derive |
+| BUILD | `6-requests.ts` — a plan → one ordered batch, plus the rollback request builders |
+| VERIFY | `7-verify.ts` — did the write do exactly what was planned |
+| — | `values.ts` — the sheet's value conventions (serials, runtime bounds), one copy for planner and guard |
+| io | `io/spreadsheet.ts` (read/apply/list), `io/catalogue.ts` and `io/runtimes.ts` (fetch only), `io/apply.ts` (the write-and-recover protocol), `io/backups.ts` (the snapshot tab's whole life), `io/journal.ts` (the run history) |
+| — | `sync.ts` — the driver: run states, the freshness loop, the plan-fetch fixpoint, the journal choke point |
 
 `src/status/` — MODEL → RENDER
 
 | Step | Module |
 | --- | --- |
-| MODEL | `1-model.ts` — a `StatusInput` of plain data → a `StatusModel`. Pure |
+| MODEL | `1-model.ts` — `{ snapshot, assessment, … }` → a `StatusModel`. Pure |
 | RENDER | `2-html.ts` — a `StatusModel` → one self-contained page. Pure; owns `html`/`raw`/`escapeHtml` |
-| — | `status.ts` — the shell: the only file here that names `Orchestrator`, the only one that reads the clock, and the only one that reaches past both halves to `api/requests.ts` |
+| — | `status.ts` — the shell: the only file here that names `Orchestrator`, reads the clock, the request ring and the journal |
 
-Layering runs downward only, and everything numbered stays pure — those modules take options with
-config-backed defaults rather than reading `config` mid-body.
-
-Renumbering on insertion is the cost of this, and is the right move when it comes up: appending a
-step out of order forfeits the only thing the scheme buys. One number is already approximate —
-`5-requests.ts` builds the write batch *and* the rollback requests that run after `6-verify.ts`.
+Everything numbered stays pure (the catalogue store is stateful but I/O-free) — numbered modules
+take options with config-backed defaults rather than reading `config` mid-body. Renumbering on
+insertion is the cost of the scheme, and the right move when it comes up: appending a step out of
+order forfeits the only thing the numbers buy.
 
 Where a sheet run stopped is `SheetSyncStatus`, which `/healthz` reports as `sheet.status`:
 
 | Status | Reached after |
 | --- | --- |
-| `idle` | PLAN produced nothing to write |
+| `idle` | PLAN produced nothing to write (also: the sync is off, unconfigured, or has not run) |
 | `reported` | GUARD passed, and `report` mode stops there |
 | `refused` | GUARD threw — nothing was written |
-| `failed` | the batch errored and VERIFY found none of it in the sheet |
+| `failed` | the batch errored and VERIFY found none of it in the sheet; also a run-level failure |
 | `applied` | VERIFY passed |
 | `rolled-back` | VERIFY failed and the snapshot went back cleanly |
 | `frozen` | the rollback did not complete; no further writes this process |
@@ -280,7 +243,7 @@ Where a sheet run stopped is `SheetSyncStatus`, which `/healthz` reports as `she
 - `withConfig(overrides, fn)` — config is a singleton; a missed restore leaks into other files.
 - `withTempDataDir(fn)` — `config.dataDir` defaults to `./data`, which on a real checkout holds a
   live OAuth token.
-- On import it sets `config.retryBaseMs = 1`, so a retry path takes microseconds rather than 15
+- On import it sets `config.retryBase` to 1ms, so a retry path takes microseconds rather than 15
   seconds, and blanks the sheet and TVDB credentials as described above.
 - `sheetSnapshot(rows)`, `cellOf(spec)`, `showRow`/`seasonRow` and `libraryOf(...items)` build sheet
   and library fixtures. A cell spec of `{ formula }` is the one that matters: only
@@ -290,25 +253,23 @@ Where a sheet run stopped is `SheetSyncStatus`, which `/healthz` reports as `she
 - A fetch handler must be **host-qualified**. `url.includes('/tv/')` matches TVDB's season path as
   well as SIMKL's, and answering one upstream with the other's body makes a test assert nothing.
 
+`test/goldens/` pins the refactor-stable outputs byte-for-byte: the reference library's rendered
+ICS, the reference grid's planned write set, and the `/healthz` key set. `UPDATE_GOLDENS=1 npm
+test` rewrites them — do that only when the change to the output is the point of the commit.
+
+`test/sheet/fixture.ts` builds grids with **named rows** — `fx.cell('fargoS2', …)` rather than a
+bare index that re-points silently when a row is added — and `test/sheet/fake-sheets.ts` is the one
+in-memory Sheets server every whole-run suite drives. One fake, deliberately: it is coupled to the
+Google client's URL shapes, and a second copy is a second place that coupling breaks silently.
+
 `api/cdn.ts` keeps a module-level cache; call its `clearCache()` in tests that touch a calendar,
-and
-`clearTokenCache()` from `api/google/auth.ts` in tests that reach Google — and the one from
-`api/tvdb/auth.ts` in tests that reach TVDB, which caches its own bearer the same way. `sheet/io/catalogue.ts`
-has no cache of its own — `SheetSync` retains catalogue results and decides when to re-read.
+and `clearTokenCache()` from `api/google/auth.ts` in tests that reach Google — and the one from
+`api/tvdb/auth.ts` in tests that reach TVDB. `api/cdn.ts` has no test file of its own: every path
+through it is exercised by `test/feed/io/calendar.test.ts`, its only caller.
 
-`api/cdn.ts` has no test of its own: every path through it is exercised by
-`test/feed/io/calendar.test.ts`, which is the only caller and the one that knows what a usable
-payload looks like.
-
-`test/sheet/fixtures.ts` holds the one grid every sheet suite plans against, plus `cell`, `planOf`
-and `insertAt`. It is there rather than in `helpers.ts` for the reason that file already gives about
-`showRow`/`seasonRow`, one level up: `grid` is a positional array and every suite hard-codes row
-indices against it, so a second copy that drifts re-points every index in the file that has it —
-silently. The `test/**/*.test.ts` glob never runs it as a suite.
-
-The sheet sync's tests are weighted towards `4-guard.test.ts` and `5-requests.test.ts` on purpose:
-a one-row misalignment is the only catastrophic failure the feature has, and the guard and the
-request ordering are what prevent it.
+The sheet sync's tests are weighted towards `5-guard.test.ts` and `sync.test.ts` on purpose: a
+one-row misalignment is the only catastrophic failure the feature has, and the guard, the request
+ordering and the verify/rollback protocol are what prevent it.
 
 ## CI
 
@@ -331,16 +292,15 @@ the only claim being made.
 SIMKL documents its API in an agent-readable form at <https://api.simkl.org/llms.txt>. It covers
 every upstream this project touches — PIN device flow, `/sync/activities`, `/sync/all-items`, the
 calendar files, per-title lookups — along with the rate limits. Read it before changing anything in
-`src/api/simkl/` or the `io/` modules; `src/api/simkl/types.ts` still wins on payload *shape*, because it is
-written from live responses and the docs disagree in places.
+`src/api/simkl/` or the `io/` modules; `src/api/simkl/types.ts` still wins on payload *shape*,
+because it is written from live responses and the docs disagree in places.
 
 TVDB v4 is at <https://thetvdb.github.io/v4-api/>, and supplies the one thing SIMKL holds but does
 not serve: per-episode runtime. `/tv/episodes/{id}` returns the same nine fields under every
-`extended` value (`full`, `runtime`, `full,runtime`, `episodes`, `metadata`, `discover`), there is
-no episode-level endpoint — `/tv/episodes/{episode_simkl_id}` answers `[]` and `/episodes/{id}`
-404s — and simkl.com renders the number server-side but answers a non-browser User-Agent with a
-Cloudflare 403. TVDB is also what simkl.com *shows*: its numbers match episode for episode where
-TMDb's differ by up to five minutes, in both directions, with no rule behind it.
+`extended` value, there is no episode-level endpoint, and simkl.com renders the number server-side
+but answers a non-browser User-Agent with a Cloudflare 403. TVDB is also what simkl.com *shows*:
+its numbers match episode for episode where TMDb's differ by up to five minutes, in both
+directions, with no rule behind it.
 
 `GET /series/{id}/episodes/official?season={n}` returns one season, and one call is one season —
 `links.page_size` is 500 and `next` is null on every season measured, up to a 28-episode cour. Three

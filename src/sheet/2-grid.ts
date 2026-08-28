@@ -73,7 +73,7 @@ export const numberOf = (cell: CellData | undefined): number | null => {
   return typeof n === 'number' && Number.isFinite(n) ? n : null;
 };
 
-export const textOf = (cell: CellData | undefined): string | null => {
+const textOf = (cell: CellData | undefined): string | null => {
   const s = cell?.effectiveValue?.stringValue ?? cell?.userEnteredValue?.stringValue;
   const trimmed = s?.trim();
   return trimmed ? trimmed : null;

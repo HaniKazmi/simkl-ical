@@ -27,8 +27,8 @@ import { deleteSheetRequest, renameSheetRequest } from '../6-requests.ts';
  * next clean write would otherwise delete the one tab the user was told to
  * repair from.
  */
-export const BACKUP_PREFIX = '_sync-backup-';
-export const REPAIR_PREFIX = '_sync-REPAIR-';
+const BACKUP_PREFIX = '_sync-backup-';
+const REPAIR_PREFIX = '_sync-REPAIR-';
 
 export const isBackupTab = (title: string): boolean => title.startsWith(BACKUP_PREFIX);
 

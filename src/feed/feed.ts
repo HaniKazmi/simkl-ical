@@ -64,7 +64,7 @@ export class Feed {
    * someone has to remember.
    */
   errors: FeedErrors = { calendar: null, render: null };
-  /** Tail of the render chain; see safeRender. Never rejects. */
+  /** Tail of the render chain; see render(). Never rejects. */
   private rendering: Promise<void> = Promise.resolve();
 
   constructor({ logger = console as Logger }: { logger?: Logger } = {}) {

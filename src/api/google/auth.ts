@@ -31,7 +31,7 @@ const SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
 /** Assertions last an hour; refresh early so a long poll cannot expire mid-run. */
 const REFRESH_MARGIN_MS = 5 * 60 * 1000;
 
-export interface ServiceAccountKey {
+interface ServiceAccountKey {
   client_email: string;
   private_key: string;
 }
@@ -43,7 +43,7 @@ export interface ServiceAccountKey {
  * volume with no host side to place a file into, and the private key is a
  * 29-line PEM passing through three parsers that disagree about quoting.
  */
-export const readServiceAccountKey = (c = config): ServiceAccountKey => {
+const readServiceAccountKey = (c = config): ServiceAccountKey => {
   let raw: string;
   if (c.googleKeyBase64) {
     raw = Buffer.from(c.googleKeyBase64, 'base64').toString('utf8');
@@ -74,8 +74,7 @@ export const readServiceAccountKey = (c = config): ServiceAccountKey => {
   return { client_email: key.client_email, private_key: key.private_key };
 };
 
-/** Split out from the signing so the claims can be asserted without an RSA key. */
-export const claimSet = (clientEmail: string, now: Temporal.Instant = Temporal.Now.instant()): Record<string, string | number> => {
+const claimSet = (clientEmail: string, now: Temporal.Instant = Temporal.Now.instant()): Record<string, string | number> => {
   // Unix seconds, because RFC 7519 defines NumericDate that way. The conversion
   // stays here rather than becoming a shared helper: this is the only wire
   // format in the project that counts in seconds.
@@ -85,7 +84,7 @@ export const claimSet = (clientEmail: string, now: Temporal.Instant = Temporal.N
 
 const base64url = (input: string): string => Buffer.from(input).toString('base64url');
 
-export const exchangeToken = async (key: ServiceAccountKey, { signal }: { signal?: AbortSignal } = {}): Promise<{ token: string; expiresIn: number }> => {
+const exchangeToken = async (key: ServiceAccountKey, { signal }: { signal?: AbortSignal } = {}): Promise<{ token: string; expiresIn: number }> => {
   const header = base64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
   const claims = base64url(JSON.stringify(claimSet(key.client_email)));
   const signingInput = `${header}.${claims}`;
