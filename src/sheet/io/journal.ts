@@ -21,7 +21,7 @@ import { config } from '../../shared/config.ts';
 import { errorMessage } from '../../shared/errors.ts';
 import type { Logger } from '../../shared/logger.ts';
 import type { SheetSyncMode } from '../../shared/config.ts';
-import type { RecordedEdit, RecordedInsert } from '../3-plan.ts';
+import type { RecordedEdit, RecordedInsert } from '../4-plan.ts';
 import type { SheetSyncStatus } from '../sync.ts';
 import { instantFrom } from '../../shared/dates.ts';
 

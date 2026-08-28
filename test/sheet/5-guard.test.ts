@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { assertPlanSafe, UnsafePlanError } from '../../src/sheet/4-guard.ts';
+import { assertPlanSafe, UnsafePlanError } from '../../src/sheet/5-guard.ts';
 import { a1, type Grid } from '../../src/sheet/2-grid.ts';
-import type { SheetPlan } from '../../src/sheet/3-plan.ts';
+import type { SheetPlan } from '../../src/sheet/4-plan.ts';
 import type { HeaderName } from '../../src/sheet/2-grid.ts';
 import { fx, gridFixture, H, planOf, raw, season, show, TODAY } from './fixture.ts';
-import { dateSerial } from '../../src/sheet/1-progress.ts';
+import { dateSerial } from '../../src/sheet/values.ts';
 import { plainDateIn } from '../../src/shared/dates.ts';
 
 const refuses = (plan: SheetPlan, pattern: RegExp, against: Grid = fx.grid): void =>

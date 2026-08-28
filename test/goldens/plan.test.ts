@@ -9,9 +9,10 @@
  */
 import { test } from 'node:test';
 import { parseGrid } from '../../src/sheet/2-grid.ts';
-import { indexLibrary } from '../../src/sheet/1-progress.ts';
-import { planRecord, planSync, type CatalogueView } from '../../src/sheet/3-plan.ts';
-import { assertPlanSafe } from '../../src/sheet/4-guard.ts';
+import { indexLibrary } from '../../src/sheet/1-index.ts';
+import { planRecord, planSync } from '../../src/sheet/4-plan.ts';
+import type { CatalogueView } from '../../src/sheet/3-catalogue.ts';
+import { assertPlanSafe } from '../../src/sheet/5-guard.ts';
 import { libraryOf, seasonRow, sheetSnapshot, SHEET_HEADERS, showRow } from '../helpers.ts';
 import { expectGolden } from './golden.ts';
 

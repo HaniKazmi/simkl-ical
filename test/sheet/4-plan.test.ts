@@ -1,12 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { assertPlanSafe } from '../../src/sheet/4-guard.ts';
+import { assertPlanSafe } from '../../src/sheet/5-guard.ts';
 import { parseGrid } from '../../src/sheet/2-grid.ts';
-import { deriveStatus, needsLookup, planLookups, planRecord, planRuntimeLookups, planSync, statusSource, type CatalogueView, type SheetPlan, type TitleCatalogue } from '../../src/sheet/3-plan.ts';
-import { dateSerial, indexLibrary, seasonShapes } from '../../src/sheet/1-progress.ts';
+import { deriveStatus, planLookups, planRecord, planRuntimeLookups, planSync, statusSource, type SheetPlan } from '../../src/sheet/4-plan.ts';
+import { needsLookup, seasonShapes, type CatalogueView, type TitleCatalogue } from '../../src/sheet/3-catalogue.ts';
+import { indexLibrary } from '../../src/sheet/1-index.ts';
+import { dateSerial } from '../../src/sheet/values.ts';
 import { plainDateIn } from '../../src/shared/dates.ts';
 import type { EpisodeDetail, ShowDetail } from '../../src/api/simkl/types.ts';
-import type { RowInsert } from '../../src/sheet/3-plan.ts';
+import type { RowInsert } from '../../src/sheet/4-plan.ts';
 import { daysAgo, libraryOf, sheetSnapshot, SHEET_HEADERS, type CellSpec, type ItemSpec, seasonRow, showRow } from '../helpers.ts';
 
 const H = SHEET_HEADERS;

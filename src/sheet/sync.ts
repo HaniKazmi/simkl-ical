@@ -5,16 +5,17 @@
  * cycle inside one poll so that what was planned and what was written describe
  * the same grid:
  *
- *   INDEX     1-progress.ts     — the library, and the early-out
- *   READ      io/spreadsheet.ts, io/catalogue.ts
+ *   INDEX     1-index.ts        — the library, and the early-out
+ *   READ      io/spreadsheet.ts, io/catalogue.ts, io/runtimes.ts
  *   PARSE     2-grid.ts
- *   PLAN      3-plan.ts
- *   GUARD     4-guard.ts        — nothing is built until this passes
+ *   FOLD      3-catalogue.ts    — what the reads mean, retained across polls
+ *   PLAN      4-plan.ts
+ *   GUARD     5-guard.ts        — nothing is built until this passes
  *   FRESH     a snapshot older than 120s restarts the cycle from the READ
- *   BUILD     5-requests.ts
+ *   BUILD     6-requests.ts
  *   APPLY     io/spreadsheet.ts
- *   VERIFY    6-verify.ts
- *   ROLLBACK  5-requests.ts again, in separate batches
+ *   VERIFY    7-verify.ts
+ *   ROLLBACK  6-requests.ts again, in separate batches
  *   FROZEN    no further writes this process
  *
  * `run()` never rejects: it is called from the refresh path, where nothing may
@@ -30,15 +31,16 @@ import type { Library } from '../library.ts';
 // The steps, in the order this file runs them.
 import { applyRequests, readSnapshot, type SheetSnapshot } from './io/spreadsheet.ts';
 import { fetchCatalogue } from './io/catalogue.ts';
-import { fetchSeasonRuntimes, runtimeKeyOf } from './io/runtimes.ts';
+import { fetchSeasonRuntimes } from './io/runtimes.ts';
 import { classify } from '../api/tvdb/client.ts';
 import { parseGrid, type Grid } from './2-grid.ts';
-import { averageRuntime, indexLibrary, seasonShapes, tvdbIdOf, type TitleProgress } from './1-progress.ts';
-import { describePlan, planLookups, planRecord, planRuntimeLookups, planSync, type CatalogueStamp, type CatalogueView, type PlanRecord, type SheetPlan, type TitleCatalogue } from './3-plan.ts';
-import { assertPlanSafe, UnsafePlanError } from './4-guard.ts';
-import { backupRequest, deleteRowRequests, restoreRequest, toRequests } from './5-requests.ts';
+import { indexLibrary, type TitleProgress } from './1-index.ts';
+import { CatalogueStore, type CatalogueView } from './3-catalogue.ts';
+import { describePlan, planLookups, planRecord, planRuntimeLookups, planSync, type PlanRecord, type SheetPlan } from './4-plan.ts';
+import { assertPlanSafe, UnsafePlanError } from './5-guard.ts';
+import { backupRequest, deleteRowRequests, restoreRequest, toRequests } from './6-requests.ts';
 import { backupName, discardBackup, findBackup, isBackupTab, markForRepair, sweepBackups } from './backups.ts';
-import { verify, type Verification } from './6-verify.ts';
+import { verify, type Verification } from './7-verify.ts';
 import { appendSheetRun, loadSheetRuns } from './io/journal.ts';
 import { nowIso } from '../shared/dates.ts';
 
@@ -104,21 +106,8 @@ export class SheetSync {
   frozen: string | null = null;
   lastRunAt: string | null = null;
   lastStatus: SheetSyncStatus = 'idle';
-  /**
-   * Catalogue results retained across polls, so the planner always sees a
-   * complete picture even though only the titles that moved were re-read.
-   *
-   * Reduced to what the planner reads — per-season shapes, `status`, `runtime`
-   * — rather than the raw payloads, so this does not accumulate per-episode
-   * descriptions and images for the life of the process.
-   *
-   * The gating belongs here rather than in a cache under `fetchCatalogue`: the
-   * decision needs the library, and the source has no business knowing about
-   * it. Process-local, so a restart re-reads everything — which is the right
-   * answer after a restart anyway.
-   */
-  private retained = new Map<number, TitleCatalogue>();
-  private stamps = new Map<number, CatalogueStamp>();
+  /** What the upstreams have said so far, retained across polls — see `3-catalogue.ts`. */
+  private store = new CatalogueStore();
 
   constructor({ logger = console as Logger }: { logger?: Logger } = {}) {
     this.log = logger;
@@ -287,37 +276,9 @@ export class SheetSync {
    * retry loop's second pass asks for nothing: it has already been read.
    */
   private async catalogueFor(grid: Grid, index: Map<number, TitleProgress>, signal: AbortSignal | undefined, now: Temporal.Instant): Promise<CatalogueView> {
-    const requests = planLookups(grid, index, { now, stamps: this.stamps, maxAge: CATALOGUE_MAX_AGE });
+    const requests = planLookups(grid, index, { now, stamps: this.store.stamps, maxAge: CATALOGUE_MAX_AGE });
     const fetched = await fetchCatalogue(requests, { signal });
-
-    // Derive on the way in: the shapes are computed once per title here rather
-    // than once per season row inside the planner.
-    const entry = (id: number): TitleCatalogue => {
-      const existing = this.retained.get(id) ?? { shapes: new Map(), seasonRuntimes: new Map() };
-      this.retained.set(id, existing);
-      return existing;
-    };
-    for (const [id, episodes] of fetched.episodes) entry(id).shapes = seasonShapes(episodes);
-    for (const [id, detail] of fetched.details) Object.assign(entry(id), {
-      status: detail.status,
-      runtime: detail.runtime,
-      // Withheld without a credential, rather than stored and then ignored: an
-      // absent join key is already "no runtime is obtainable for this row" to
-      // every rule in the planner, so the planner needs no second switch — and
-      // a switch it did have could be set the wrong way and strand every row.
-      tvdbId: tvdbConfigured() ? tvdbIdOf(detail) : null,
-    });
-
-    // A retryable failure is deliberately not stamped, so the next poll asks
-    // again — the same reason the film path withholds its list signature. A
-    // `gone` id is stamped: retrying never starts working, and leaving it
-    // unstamped would re-request it on every poll forever.
-    const stalled = new Set(fetched.failed);
-    const at = Temporal.Now.instant();
-    for (const { id } of requests) {
-      if (stalled.has(id)) continue;
-      this.stamps.set(id, { watchedAt: index.get(id)?.lastWatchedAt ?? null, at });
-    }
+    this.store.foldCatalogue(requests, fetched, index);
 
     if (requests.length) {
       // Titles, not requests: a live-action block emits two request records for
@@ -330,7 +291,7 @@ export class SheetSync {
       this.log.warn(`${fetched.unavailable.length} SIMKL titles are gone upstream: ${fetched.unavailable.join(', ')}`);
     }
 
-    return { titles: this.retained, failed: fetched.failed, unavailable: fetched.unavailable };
+    return { titles: this.store.titles, failed: fetched.failed, unavailable: fetched.unavailable };
   }
 
   /**
@@ -382,27 +343,11 @@ export class SheetSync {
           : `sheet sync: TVDB is not answering (${errorMessage(err)}); ${requests.length} season(s) stay open`,
       );
       if (!settled) return requests.length;
-      for (const request of requests) catalogue.titles.get(request.id)?.seasonRuntimes.set(request.season, null);
+      this.store.settleSeasonsUnusable(requests);
       return 0;
     }
 
-    // Same discipline as the catalogue's stamps. A retryable failure is
-    // deliberately left unrecorded, so the next poll asks again and the row
-    // stays open in the meantime; anything else — an answer, or an id TVDB says
-    // is gone — is recorded, including as null, because a season left unrecorded
-    // would be re-requested every poll forever.
-    //
-    // Reduced here rather than in the source, the way `seasonShapes` is above:
-    // the count it checks against is SIMKL's, and one upstream's answer having
-    // to agree with another's is a rule about the sheet, not about the call.
-    const stalled = new Set(fetched.failed);
-    for (const request of requests) {
-      const key = runtimeKeyOf(request.tvdbId, request.season);
-      if (stalled.has(key)) continue;
-      const entry = catalogue.titles.get(request.id);
-      const expected = entry?.shapes.get(request.season)?.total ?? 0;
-      entry?.seasonRuntimes.set(request.season, averageRuntime(fetched.episodes.get(key), expected));
-    }
+    this.store.foldRuntimes(requests, fetched);
 
     this.log.info(`sheet sync: read ${requests.length} season runtime(s) from TVDB`);
     if (fetched.unavailable.length) {

@@ -14,8 +14,8 @@
  */
 
 import { a1, parseGrid, type Grid, type HeaderName } from '../../src/sheet/2-grid.ts';
-import { dateSerial } from '../../src/sheet/1-progress.ts';
-import type { CellEdit, RowInsert, SheetPlan } from '../../src/sheet/3-plan.ts';
+import { dateSerial } from '../../src/sheet/values.ts';
+import type { CellEdit, RowInsert, SheetPlan } from '../../src/sheet/4-plan.ts';
 import type { ExtendedValue } from '../../src/api/google/types.ts';
 import { seasonRow, SHEET_HEADERS, sheetSnapshot, showRow, type CellSpec } from '../helpers.ts';
 

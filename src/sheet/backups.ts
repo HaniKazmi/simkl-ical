@@ -18,7 +18,7 @@ import { isoOf } from '../shared/dates.ts';
 import { errorMessage } from '../shared/errors.ts';
 import type { Logger } from '../shared/logger.ts';
 import { applyRequests, listSheets } from './io/spreadsheet.ts';
-import { deleteSheetRequest, renameSheetRequest } from './5-requests.ts';
+import { deleteSheetRequest, renameSheetRequest } from './6-requests.ts';
 
 /**
  * The snapshot namespace, and the one the freeze moves out of it.

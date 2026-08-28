@@ -13,21 +13,12 @@
 
 import { config } from '../shared/config.ts';
 import { isBlank, isFormula, numberOf, sameValue, type Grid, type HeaderName, type ShowBlock } from './2-grid.ts';
-import { plainDateFrom, plainDateIn } from '../shared/dates.ts';
-import { dateSerial } from './1-progress.ts';
-import type { CellEdit, SheetPlan } from './3-plan.ts';
+import { maxSerial, MIN_SERIAL, plausibleRuntimeDays } from './values.ts';
+import type { CellEdit, SheetPlan } from './4-plan.ts';
 import type { ExtendedValue } from '../api/google/types.ts';
 
 /** What the sync may write to a row that already exists. */
 const EDIT_FIELDS = new Set<HeaderName>(['Status', 'Episode', 'End', 'Episodes']);
-
-/**
- * The bounds of a per-episode runtime, as the day fraction the column holds.
- * One whole minute to just under a day: at or above 1 the value is minutes
- * written where `runtimeDays`' output belongs, which multiplies every `Length`
- * in the block by 1440.
- */
-const MIN_RUNTIME_DAYS = 1 / 1440;
 
 /**
  * What it may write into a row it is creating. A *separate* whitelist on
@@ -35,8 +26,6 @@ const MIN_RUNTIME_DAYS = 1 / 1440;
  * either forbid the insert or widen what an ordinary edit may touch.
  */
 const INSERT_FIELDS = new Set<HeaderName>(['Season', 'Episode', 'Start', 'End', 'Episodes', 'Length']);
-
-const MIN_SERIAL = dateSerial(plainDateFrom('2000-01-01'));
 
 export class UnsafePlanError extends Error {
   constructor(message: string) {
@@ -73,8 +62,11 @@ const checkRuntimeScope = (where: string, block: ShowBlock): void => {
 };
 
 const checkRuntimeDays = (where: string, value: ExtendedValue): void => {
-  const days = value.numberValue;
-  if (days === undefined || !(days >= MIN_RUNTIME_DAYS) || days >= 1) {
+  // The bounds live in `values.ts` beside `runtimeDays`, the conversion that
+  // produces every value this checks — at or above 1 the number is minutes
+  // written where a day fraction belongs, which multiplies every `Length` in
+  // the block by 1440.
+  if (!plausibleRuntimeDays(value.numberValue)) {
     refuse(`${where}: ${describeValue(value)} is not a plausible per-episode day fraction.`);
   }
 };
@@ -96,10 +88,7 @@ export const assertPlanSafe = (
   grid: Grid,
   { maxEdits = config.sheetMaxEdits, maxRows = config.sheetMaxRows, now = Temporal.Now.instant(), timezone = config.timezone }: SafetyLimits = {},
 ): void => {
-  // Tomorrow, in the viewer's zone. The slice would be a UTC date, which is a
-  // day out for a fifth of the clock — and the +1 day here would absorb it,
-  // making the bound quietly two days wide instead of one.
-  const maxSerial = dateSerial(plainDateIn(now, timezone).add({ days: 1 }));
+  const serialCeiling = maxSerial(now, timezone);
   const showRows = new Set(grid.blocks.map((b) => b.row));
   // The block comes along because the runtime rule below is about the block the
   // row sits in, not about the row: whether the season number means anything to
@@ -134,7 +123,7 @@ export const assertPlanSafe = (
     if (value.numberValue !== undefined && !Number.isFinite(value.numberValue)) refuse(`${where}: not a finite number.`);
     if (cell.field === 'End' || cell.field === 'Start') {
       const serial = value.numberValue;
-      if (serial === undefined || serial < MIN_SERIAL || serial > maxSerial) {
+      if (serial === undefined || serial < MIN_SERIAL || serial > serialCeiling) {
         refuse(`${where}: ${describeValue(value)} is not a plausible date serial.`);
       }
     }

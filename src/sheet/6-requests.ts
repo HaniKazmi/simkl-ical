@@ -12,7 +12,7 @@
  */
 
 import type { Grid } from './2-grid.ts';
-import type { SheetPlan } from './3-plan.ts';
+import type { SheetPlan } from './4-plan.ts';
 import type { ExtendedValue, GridRange, SheetRequest } from '../api/google/types.ts';
 
 const oneCell = (sheetId: number, row: number, column: number): GridRange => ({

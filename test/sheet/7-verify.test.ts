@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { a1, parseGrid, type HeaderName } from '../../src/sheet/2-grid.ts';
-import { shiftRow, verify } from '../../src/sheet/6-verify.ts';
-import type { CellEdit, SheetPlan } from '../../src/sheet/3-plan.ts';
+import { shiftRow, verify } from '../../src/sheet/7-verify.ts';
+import type { CellEdit, SheetPlan } from '../../src/sheet/4-plan.ts';
 import { cellOf, sheetSnapshot, type CellSpec } from '../helpers.ts';
 import { fx, H, planOf } from './fixture.ts';
 

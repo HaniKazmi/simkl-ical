@@ -17,7 +17,7 @@
 
 import { errorMessage } from '../shared/errors.ts';
 import { a1, HEADERS, isFormulaValue, parseGrid, sameValue, type Grid, type HeaderName } from './2-grid.ts';
-import type { CellEdit, RowInsert, SheetPlan } from './3-plan.ts';
+import type { CellEdit, RowInsert, SheetPlan } from './4-plan.ts';
 import type { CellData, ExtendedValue } from '../api/google/types.ts';
 import type { SheetSnapshot } from './io/spreadsheet.ts';
 

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { deleteRowRequests, toRequests } from '../../src/sheet/5-requests.ts';
+import { deleteRowRequests, toRequests } from '../../src/sheet/6-requests.ts';
 import { fx, planOf, TODAY } from './fixture.ts';
 
 /** The batch as a readable shape: what each request is, and which row it hits. */

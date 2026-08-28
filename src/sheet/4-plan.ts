@@ -13,53 +13,12 @@
 
 import { config } from '../shared/config.ts';
 import { a1, columnLetter, duplicateIds, idsFor, isBlank, numberOf, type ColumnMap, type Grid, type HeaderName, type SeasonRow, type ShowBlock } from './2-grid.ts';
-import { courComplete, runtimeDays, seasonAired, seasonComplete, watchSerial, type SeasonProgress, type SeasonShape, type TitleProgress } from './1-progress.ts';
+import { courComplete, type SeasonProgress, type TitleProgress } from './1-index.ts';
+import { runtimeDays, watchSerial } from './values.ts';
+import { needsLookup, seasonAired, seasonComplete, type CatalogueStamp, type CatalogueView, type SeasonShape } from './3-catalogue.ts';
 import type { RuntimeRequest } from './io/runtimes.ts';
 import type { CatalogueRequest } from './io/catalogue.ts';
 import type { CellData, ExtendedValue } from '../api/google/types.ts';
-
-/**
- * What one title's catalogue lookups reduce to. Everything the planner reads,
- * and nothing else: the raw `/tv/episodes/{id}` array is only ever fed to
- * `seasonShapes`, and the `extended=full` detail object is only ever asked for
- * `status` and `runtime`. Deriving at fold-in time computes the shapes once per
- * title instead of once per season row, and keeps per-episode descriptions and
- * images out of a map that lives for the life of the process.
- */
-export interface TitleCatalogue {
-  shapes: Map<number, SeasonShape>;
-  status?: string;
-  runtime?: number | null;
-  /**
-   * The join key to per-episode runtimes. Null where there is no path to one at
-   * all — SIMKL carries no TVDB id, or there is no credential to ask with. The
-   * planner needs no second switch for the feature, because a row it cannot look
-   * up and a row there is no point looking up are the same row to every rule
-   * here.
-   */
-  tvdbId?: number | null;
-  /**
-   * Season number to its average episode runtime in whole minutes, or null for
-   * *asked, and there is no usable answer*.
-   *
-   * The null matters as much as the number. A key that is present says the
-   * question is settled and the row may be closed; a key that is **absent** says
-   * the lookup has not answered, and closing the row on that would forfeit the
-   * cell forever — a dated row is never revisited. Two collections would let
-   * those two states be confused; one map with a nullable value cannot.
-   *
-   * No age ceiling, unlike the catalogue's stamps: a finished season's runtimes
-   * are terminal, where `/tv/{id}`'s `status` flips on a renewal.
-   */
-  seasonRuntimes: Map<number, number | null>;
-}
-
-export interface CatalogueView {
-  titles: Map<number, TitleCatalogue>;
-  /** Ids whose lookup errored in a way worth retrying. */
-  failed: number[];
-  unavailable: number[];
-}
 
 export interface CellEdit {
   /** Zero-based, in the snapshot the plan was built from. */
@@ -307,50 +266,6 @@ const latestSeasonAiring = (shapes: Map<number, SeasonShape>): boolean => {
 };
 
 // --- Lookups ---------------------------------------------------------------
-
-/**
- * What we already hold for one title's catalogue, and how current it is.
- *
- * `watchedAt` is the value `lastWatchedAt` had when the lookup was made, not
- * when it was stored — comparing it against the library's current value is the
- * whole gate.
- */
-export interface CatalogueStamp {
-  watchedAt: Temporal.Instant | null;
-  /** When the lookup was made. */
-  at: Temporal.Instant;
-}
-
-/**
- * Whether a title's catalogue needs re-reading.
- *
- * Watch activity is the trigger, because it is the trigger for everything this
- * sync writes. A season cannot become complete without being watched, and
- * watching moves `lastWatchedAt` — so the case that matters always fires.
- *
- * The age ceiling is the backstop for the case that does not: `/tv/{id}` status
- * flipping on a renewal, which produces no library activity at all. Same
- * reasoning as `movieRefresh`, and the same daily cadence — a studio moving a
- * release, or a network renewing a show, changes nothing you could gate on.
- */
-export const needsLookup = (
-  stamp: CatalogueStamp | undefined,
-  progress: TitleProgress | undefined,
-  now: Temporal.Instant,
-  maxAge: Temporal.Duration | null,
-): boolean => {
-  if (!stamp) return true;
-  // Same shape as `filmDue`'s floor, and now the same spelling: a stamp is stale
-  // once `now` has passed it by the ceiling. Null means no ceiling at all, which
-  // is what a caller that gates purely on watch activity wants.
-  if (maxAge && Temporal.Instant.compare(now, stamp.at.add(maxAge)) > 0) return true;
-  // By value. Two `Instant`s for the same moment are different objects, so `!==`
-  // here would be true forever and every title would be re-read every poll.
-  return !sameInstant(stamp.watchedAt, progress?.lastWatchedAt ?? null);
-};
-
-const sameInstant = (a: Temporal.Instant | null, b: Temporal.Instant | null): boolean =>
-  a === null || b === null ? a === b : a.equals(b);
 
 export interface LookupOptions extends PlanOptions {
   /** What is already held, keyed by SIMKL id. Empty on a cold process. */

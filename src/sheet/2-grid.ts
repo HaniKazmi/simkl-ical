@@ -1,7 +1,7 @@
 /**
  * PARSE — snapshot → blocks. Pure: no config, no clock, no network.
  *
- * The spreadsheet half of PARSE, after `1-progress.ts` has indexed the library
+ * The spreadsheet half of PARSE, after `1-index.ts` has indexed the library
  * and found something worth reading the grid for.
  *
  * The sheet's structure is implicit — a row with the `Show` column filled
@@ -322,3 +322,26 @@ export const duplicateIds = (blocks: ShowBlock[]): Set<number> => {
   }
   return duplicates;
 };
+
+/**
+ * Whether a block's status and lookups run on the cour model: no id on the show
+ * row, so each season row carries its own SIMKL entry and that entry's counters
+ * describe the whole season. This is how anime is laid out — one SIMKL record
+ * per cour — and it is a fact about where the ids sit, never about `Type`.
+ */
+export const usesCourModel = (block: ShowBlock): boolean => block.ids.length === 0;
+
+/**
+ * Whether a block's season numbers can address TVDB seasons at all — the scope
+ * of the runtime write, and the one claim a row cannot take back once its cell
+ * is filled and dated in the same batch.
+ *
+ * A stricter test than `!usesCourModel`, and the difference is deliberate: a
+ * hand-maintained sheet can give an anime block a show-row id, which the cour
+ * test would read as live-action. It is not — a SIMKL anime record numbers
+ * every cour `season: 1` and all cours of a franchise share one TVDB id, so
+ * the row's number addresses no TVDB season. Attack on Titan's six records all
+ * point at tvdb 267440, whose season 1 holds 25 episodes against their
+ * 25/12/12/16/12/2.
+ */
+export const runtimeScopeOk = (block: ShowBlock): boolean => block.type === 'show' && block.ids.length > 0;
