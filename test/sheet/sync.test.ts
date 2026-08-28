@@ -43,10 +43,10 @@ const run = async (mode: 'report' | 'apply', options: FakeSheetsOptions, asserti
 // The whole point of the default mode: it can be pointed at the real sheet
 // before the service account is ever given Editor access.
 test('report mode plans in full and makes no mutating request', async () => {
-  await run('report', {}, (result, calls) => {
+  await run('report', {}, (result, calls, _sheet, _sync, log) => {
     assert.equal(result.status, 'reported');
-    assert.equal(result.plan.edits.length, 1);
-    assert.ok(result.lines.some((l) => /Fargo S2: 3 -> 5 episodes/.test(l)));
+    assert.equal(result.record.edits.length, 1);
+    assert.ok(log.lines.some((l) => /Fargo S2: 3 -> 5 episodes/.test(l)), 'the report itself is logged');
     assert.deepEqual(calls.filter((c) => c.includes(':batchUpdate')), []);
   });
 });
@@ -75,8 +75,8 @@ test('a write that does not verify is rolled back exactly once', async () => {
     assert.match(result.error ?? '', /changed without being planned/);
     // The run that had to be undone is the one whose detail matters most, so it
     // reports what it planned rather than reporting nothing.
-    assert.equal(result.plan.edits.length, 1);
-    assert.match(result.plan.edits[0]?.note ?? '', /Fargo S2: 3 -> 5 episodes/);
+    assert.equal(result.record.edits.length, 1);
+    assert.match(result.record.edits[0]?.note ?? '', /Fargo S2: 3 -> 5 episodes/);
     // One wholesale paste from the snapshot, not a cell-by-cell repair.
     assert.deepEqual(sheet.batches, [['duplicateSheet', 'updateCells'], ['copyPaste'], ['deleteSheet']]);
     // The meddled cell is back, and so is the planned edit — a restore from the
@@ -90,13 +90,13 @@ test('a failed rollback freezes the process rather than writing again', async ()
   await run('apply', { meddle: (state) => void (state[2]![3] = cellOf(99)), failRollback: true }, async (result, _calls, sheet, sync) => {
     assert.equal(result.status, 'frozen');
     assert.match(result.error ?? '', /^FROZEN:/);
-    assert.equal(result.plan.edits.length, 1, 'the freeze reports the plan it froze on');
+    assert.equal(result.record.edits.length, 1, 'the freeze reports the plan it froze on');
 
     const writesBefore = sheet.writes();
     const again = await sync.run(LIBRARY);
     assert.equal(again.status, 'frozen');
     // A run that stops at the freeze check planned nothing, and says so.
-    assert.deepEqual(again.plan, { edits: [], inserts: [] });
+    assert.deepEqual(again.record, { edits: [], inserts: [] });
     assert.equal(sheet.writes(), writesBefore, 'a frozen sync writes nothing further');
   });
 });
@@ -107,7 +107,7 @@ test('a 500 on the write is never retried, and the re-read settles what happened
   await run('apply', { failWrite: 1 }, (result, calls, sheet) => {
     assert.equal(result.status, 'failed');
     assert.equal(result.retry, true, 'the next poll tries again');
-    assert.equal(result.plan.edits.length, 1, 'a batch that never landed still had a plan');
+    assert.equal(result.record.edits.length, 1, 'a batch that never landed still had a plan');
     assert.equal(calls.filter((c) => c.includes(':batchUpdate')).length, 1);
     assert.equal(sheet.state[3]?.[3]?.userEnteredValue?.numberValue, 3, 'unchanged');
   });
@@ -239,7 +239,7 @@ test('a second run with nothing moved makes no catalogue requests at all', async
       // And the plan is unchanged, because the retained catalogue still feeds
       // it in full — the gate is on the network, not on what the planner sees.
       assert.equal(again.status, 'reported');
-      assert.equal(again.plan.edits.length, 1);
+      assert.equal(again.record.edits.length, 1);
     }),
   );
 });
@@ -449,7 +449,7 @@ test('a run that deferred a row asks for another poll', async () => {
     withFetch(sheet.handler, async () => {
       const result = await new SheetSync({ logger: quiet }).run(library);
       assert.equal(result.status, 'applied');
-      assert.equal(result.plan.inserts.length, 1, 'one row per run');
+      assert.equal(result.record.inserts.length, 1, 'one row per run');
       assert.equal(result.retry, true, 'and the next poll is asked for');
     }),
   );

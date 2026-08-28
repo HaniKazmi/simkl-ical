@@ -129,12 +129,12 @@ export const gridFixture = (...named: NamedRow[]): GridFixture => {
   return { grid, rows, at, below, end: rows.length, cell, insertAt };
 };
 
-export const planOf = (edits: CellEdit[] = [], inserts: RowInsert[] = []): SheetPlan => ({
+export const planOf = (edits: CellEdit[] = [], insert: RowInsert | null = null): SheetPlan => ({
   edits,
-  inserts,
-  skipped: [],
+  insert,
+  skips: [],
   notes: [],
-  deferred: 0,
+  deferredInserts: 0,
 });
 
 /**

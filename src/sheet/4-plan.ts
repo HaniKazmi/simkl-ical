@@ -1,10 +1,15 @@
 /**
- * PLAN — grid + library + catalogue → a plan.
+ * PLAN — grid + library + catalogue → a plan, plus what it still needs. Pure,
+ * and **never throws**: an unresolvable row becomes a skip with a reason, not
+ * an exception. The sync calls this from inside a path that must degrade rather
+ * than fail.
  *
- * Third of READ → PARSE → **PLAN** → GUARD → BUILD → APPLY → VERIFY. Pure, and
- * **never throws**: an
- * unresolvable row becomes a skip with a reason, not an exception. The sync
- * calls this from inside a path that must degrade rather than fail.
+ * The one planner, run to a fixpoint. Where a decision needs data the
+ * catalogue does not hold — a title's episode list, a closing season's
+ * runtimes — the planner emits a *demand* and plans the row conservatively for
+ * this pass; the sync fetches, folds the answers into the store, and re-plans.
+ * What to fetch and what to write are one computation, so they cannot disagree
+ * — the failure that used to need two planning passes kept in step by hand.
  *
  * The write surface is three fields — a season's `Episode`, a season's `End`,
  * and a show's `Status` — plus inserting a season row. Everything else on the
@@ -12,13 +17,29 @@
  */
 
 import { config } from '../shared/config.ts';
-import { a1, columnLetter, duplicateIds, idsFor, isBlank, numberOf, type ColumnMap, type Grid, type HeaderName, type SeasonRow, type ShowBlock } from './2-grid.ts';
+import {
+  a1,
+  columnLetter,
+  duplicateIds,
+  idsFor,
+  isBlank,
+  numberOf,
+  runtimeScopeOk,
+  usesCourModel,
+  type ColumnMap,
+  type Grid,
+  type HeaderName,
+  type SeasonRow,
+  type ShowBlock,
+} from './2-grid.ts';
 import { courComplete, type SeasonProgress, type TitleProgress } from './1-index.ts';
 import { runtimeDays, watchSerial } from './values.ts';
-import { needsLookup, seasonAired, seasonComplete, type CatalogueStamp, type CatalogueView, type SeasonShape } from './3-catalogue.ts';
+import { seasonAired, seasonComplete, type SeasonShape, type TitleCatalogue } from './3-catalogue.ts';
 import type { RuntimeRequest } from './io/runtimes.ts';
 import type { CatalogueRequest } from './io/catalogue.ts';
 import type { CellData, ExtendedValue } from '../api/google/types.ts';
+
+// --- The plan's shapes ------------------------------------------------------
 
 export interface CellEdit {
   /** Zero-based, in the snapshot the plan was built from. */
@@ -43,19 +64,58 @@ export interface RowInsert {
   note: string;
 }
 
+/**
+ * Why a row was deliberately left alone. `code` is what a test or a grouping
+ * asserts on; `message` names the row for a human.
+ */
+export type SkipCode =
+  | 'duplicate-id'
+  | 'unknown-id'
+  | 'ambiguous-cour'
+  | 'duplicate-season'
+  | 'non-numeric-count'
+  | 'unusable-timestamp'
+  | 'awaiting-runtimes'
+  | 'no-episode-list'
+  | 'no-format-row';
+
+export interface Skip {
+  code: SkipCode;
+  message: string;
+}
+
 export interface SheetPlan {
   edits: CellEdit[];
-  inserts: RowInsert[];
+  /**
+   * At most one row per run, carried by the type rather than checked: every
+   * request index in a plan is pre-write, but `insertDimension` applies
+   * cumulatively, so a second insert would land a row above where it was
+   * planned — and `verify` makes the same unshifted assumption.
+   */
+  insert: RowInsert | null;
   /** Rows deliberately left alone, with the reason. Reported, never acted on. */
-  skipped: string[];
+  skips: Skip[];
   /** Everything else worth a human's attention — new shows, new cours. */
   notes: string[];
   /**
-   * Rows that were ready to add but did not fit under the per-run cap. Work
-   * known to be waiting, so the sync asks for another poll rather than letting
-   * it sit until something else happens to wake one.
+   * Rows that were ready to add but did not fit under the one-per-run rule.
+   * Work known to be waiting, so the sync asks for another poll rather than
+   * letting it sit until something else happens to wake one.
    */
-  deferred: number;
+  deferredInserts: number;
+}
+
+export const emptyPlan = (): SheetPlan => ({ edits: [], insert: null, skips: [], notes: [], deferredInserts: 0 });
+
+/** What the planner could not decide without: fetch these and re-plan. */
+export interface PlanDemands {
+  catalogue: CatalogueRequest[];
+  runtimes: RuntimeRequest[];
+}
+
+export interface PlanResult {
+  plan: SheetPlan;
+  demands: PlanDemands;
 }
 
 export interface PlanOptions {
@@ -69,13 +129,7 @@ const cellAt = (grid: Grid, row: number, column: number): CellData | undefined =
 const num = (numberValue: number): ExtendedValue => ({ numberValue });
 const str = (stringValue: string): ExtendedValue => ({ stringValue });
 
-const edit = (
-  grid: Grid,
-  row: number,
-  field: HeaderName,
-  value: ExtendedValue,
-  note: string,
-): CellEdit => {
+const edit = (grid: Grid, row: number, field: HeaderName, value: ExtendedValue, note: string): CellEdit => {
   const column = grid.columns[field];
   return { row, column, field, previous: cellAt(grid, row, column)?.userEnteredValue, value, address: a1(row, column), note };
 };
@@ -101,22 +155,16 @@ const within = (at: Temporal.Instant | null, cutoff: Temporal.Instant): boolean 
 /**
  * The instant before which a block is out of scope.
  *
- * One copy because `planLookups` and `planSync` must agree about which blocks
- * are in scope, and three hand-written copies of the same arithmetic is how
- * they would stop agreeing.
+ * Hours rather than `{ days }`, which an `Instant` refuses outright: a day is
+ * a calendar unit and an instant has no calendar. That is also the behaviour
+ * wanted — an exact span, so the window does not move by an hour twice a year.
  */
-const cutoffFrom = (now: Temporal.Instant, sinceDays: number): Temporal.Instant =>
-  // Hours rather than `{ days }`, which an `Instant` refuses outright: a day is
-  // a calendar unit and an instant has no calendar. That is also the behaviour
-  // wanted — an exact span, so the window does not move by an hour twice a year.
-  now.subtract({ hours: sinceDays * 24 });
+const cutoffFrom = (now: Temporal.Instant, sinceDays: number): Temporal.Instant => now.subtract({ hours: sinceDays * 24 });
 
 /**
- * Has anything in this block been watched recently enough to touch?
- *
- * One definition on purpose: the cut-off is what stops any run retro-editing
- * years of history, and `planLookups` and `planSync` must never disagree about
- * which blocks are in scope.
+ * Has anything in this block been watched recently enough to touch? The
+ * cut-off applies uniformly, with no exemptions: a dormant sheet produces zero
+ * edits, and no run can retro-edit years of history.
  */
 const isRecent = (ids: number[], index: Map<number, TitleProgress>, cutoff: Temporal.Instant): boolean =>
   within(latestOf(ids.map((id) => index.get(id)).filter((p): p is TitleProgress => p !== undefined)), cutoff);
@@ -130,35 +178,33 @@ const isRecent = (ids: number[], index: Map<number, TitleProgress>, cutoff: Temp
  * describe the whole season, while a row inheriting the show row's id is
  * selected out of a multi-season entry by season number.
  */
-interface ResolvedRow {
-  watched: number;
-  complete: boolean;
-  lastWatchedAt: Temporal.Instant | null;
-}
+type RowResolution =
+  | { kind: 'nothing' }
+  | { kind: 'skip'; skip: Skip }
+  | { kind: 'resolved'; watched: number; complete: boolean; lastWatchedAt: Temporal.Instant | null };
+
+const nothing: RowResolution = { kind: 'nothing' };
+const skipped = (code: SkipCode, message: string): RowResolution => ({ kind: 'skip', skip: { code, message } });
 
 const numberedSeasons = (progress: TitleProgress): number[] => [...progress.seasons.keys()];
 
 const watchedIn = (progress: TitleProgress): number =>
   [...progress.seasons.values()].reduce((total, season) => total + season.watched, 0);
 
-/**
- * Resolve one season row, or explain why not. The string is a skip reason; a
- * `null` return means there is simply nothing here to do.
- */
 const resolveRow = (
   block: ShowBlock,
   season: SeasonRow,
   index: Map<number, TitleProgress>,
-  catalogue: CatalogueView,
+  titles: Map<number, TitleCatalogue>,
   duplicates: Set<number>,
-): ResolvedRow | string | null => {
+): RowResolution => {
   const ids = idsFor(block, season);
-  if (!ids.length) return null;
+  if (!ids.length) return nothing;
 
   const label = `${block.title} S${season.season ?? '?'} (row ${season.row + 1})`;
 
   const claimed = ids.filter((id) => duplicates.has(id));
-  if (claimed.length) return `${label}: id ${claimed.join(', ')} is claimed by more than one row`;
+  if (claimed.length) return skipped('duplicate-id', `${label}: id ${claimed.join(', ')} is claimed by more than one row`);
 
   const progresses = ids.map((id) => index.get(id));
   const missing = ids.filter((_, i) => !progresses[i]);
@@ -167,7 +213,7 @@ const resolveRow = (
   // decreases — so a sheet value below that half would be quietly overwritten
   // with a wrong-but-larger number. It is the one multi-id failure the guards
   // would not otherwise catch.
-  if (missing.length) return `${label}: SIMKL id ${missing.join(', ')} is in no list`;
+  if (missing.length) return skipped('unknown-id', `${label}: SIMKL id ${missing.join(', ')} is in no list`);
   const resolved = progresses as TitleProgress[];
 
   if (season.ids.length) {
@@ -176,9 +222,13 @@ const resolveRow = (
     // which of its seasons this row means.
     const multi = resolved.filter((p) => numberedSeasons(p).length > 1);
     if (multi.length) {
-      return `${label}: SIMKL entry ${multi.map((p) => p.id).join(', ')} covers ${multi.map((p) => numberedSeasons(p).length).join(', ')} seasons, so the row is ambiguous`;
+      return skipped(
+        'ambiguous-cour',
+        `${label}: SIMKL entry ${multi.map((p) => p.id).join(', ')} covers ${multi.map((p) => numberedSeasons(p).length).join(', ')} seasons, so the row is ambiguous`,
+      );
     }
     return {
+      kind: 'resolved',
       // Summed across all ids: a split cour is one row.
       watched: resolved.reduce((total, p) => total + watchedIn(p), 0),
       // Only once *every* id is complete.
@@ -194,14 +244,15 @@ const resolveRow = (
     };
   }
 
-  if (season.season === null || !Number.isInteger(season.season)) return null;
+  if (season.season === null || !Number.isInteger(season.season)) return nothing;
   const progress = resolved[0] as TitleProgress;
   const watched = progress.seasons.get(season.season);
-  if (!watched || watched.watched === 0) return null;
+  if (!watched || watched.watched === 0) return nothing;
 
   return {
+    kind: 'resolved',
     watched: watched.watched,
-    complete: seasonComplete(catalogue.titles.get(progress.id)?.shapes.get(season.season), watched.watched),
+    complete: seasonComplete(titles.get(progress.id)?.shapes.get(season.season), watched.watched),
     lastWatchedAt: watched.lastWatchedAt,
   };
 };
@@ -265,53 +316,10 @@ const latestSeasonAiring = (shapes: Map<number, SeasonShape>): boolean => {
   return latest !== undefined && latest.aired > 0 && latest.aired < latest.total;
 };
 
-// --- Lookups ---------------------------------------------------------------
-
-export interface LookupOptions extends PlanOptions {
-  /** What is already held, keyed by SIMKL id. Empty on a cold process. */
-  stamps?: Map<number, CatalogueStamp>;
-  maxAge?: Temporal.Duration | null;
-}
-
-/**
- * Which catalogue lookups to actually make, decided before any are made.
- *
- * Two filters, and both matter. The cut-off drops 289 of 307 blocks, which is
- * what keeps a cold run at roughly 28 calls rather than 600. The per-title
- * stamp then drops everything that has not moved since it was last read, which
- * is what keeps a *warm* run at roughly 2 — without it, watching one episode
- * re-reads the catalogue of every eligible show, since `/sync/activities`
- * resolves only to the list and never to the title.
- */
-export const planLookups = (
-  grid: Grid,
-  index: Map<number, TitleProgress>,
-  { now = Temporal.Now.instant(), sinceDays = config.sheetSinceDays, stamps = new Map<number, CatalogueStamp>(), maxAge = null }: LookupOptions = {},
-): CatalogueRequest[] => {
-  const cutoff = cutoffFrom(now, sinceDays);
-  const requests: CatalogueRequest[] = [];
-  const due = (id: number): boolean => needsLookup(stamps.get(id), index.get(id), now, maxAge);
-
-  for (const block of grid.blocks) {
-    if (!isRecent(blockIds(block), index, cutoff)) continue;
-
-    const anime = block.ids.length === 0;
-    // The episode list cannot be gated on "a season ended" — it is what
-    // discovers that. Anime needs none of it: one entry is one cour, so its own
-    // counters already describe the season.
-    if (!anime) {
-      for (const id of block.ids) if (due(id)) requests.push({ id, episodes: true, detail: true });
-    }
-    const source = statusSource(block);
-    if (source !== null && due(source)) requests.push({ id: source, anime, detail: true });
-  }
-  return requests;
-};
-
 // --- The row a block does not have yet -------------------------------------
 
 /** The season a block would gain a row for, and whether it is already over. */
-export interface InsertCandidate {
+interface InsertCandidate {
   /** The entry whose progress drives the row. `statusSource`, not `idsFor`. */
   source: TitleProgress;
   season: SeasonProgress;
@@ -327,30 +335,25 @@ export interface InsertCandidate {
 /**
  * Which season a block would gain a row for.
  *
- * **Called by both passes**, and that is the point rather than a convenience.
- * `planRuntimeLookups` asks TVDB about a row that does not exist yet, and
- * `planInsert` builds that row. A season inserted complete is dated by the same
- * fill that creates it, so its runtime has exactly one chance to be asked for —
- * before the row exists. Two copies of this rule that drifted would send the
- * answer for a season nothing inserts.
- *
- * Disagreement is survivable here in a way it is not for `runtimeTarget`, and
- * the difference is worth knowing: a lookup nothing uses costs one cached call,
- * and a row whose number never arrived is inserted *open* and closed by the
- * ordinary per-row path a poll later. The insert must therefore never require
- * the runtime to have arrived — that is what keeps a bug here costing a poll
- * rather than a cell.
+ * A season inserted complete is dated by the same fill that creates it, so its
+ * runtime has exactly one chance to be asked for — before the row exists. That
+ * is why the insert path emits a runtime demand of its own. The insert must
+ * never *require* the runtime to have arrived, though: a row whose number never
+ * comes back is inserted open and closed by the ordinary per-row path a poll
+ * later, which keeps a bug there costing a poll rather than a cell.
  */
 const insertTarget = (
   block: ShowBlock,
   index: Map<number, TitleProgress>,
-  catalogue: CatalogueView,
+  titles: Map<number, TitleCatalogue>,
   duplicates: Set<number>,
   cutoff: Temporal.Instant,
 ): InsertCandidate | null => {
   // Anime is never inserted into: one SIMKL record is one cour, so its season
-  // numbers do not address rows in a block the user numbers by broadcast season.
-  if (block.type !== 'show' || block.ids.length === 0) return null;
+  // numbers do not address rows in a block the user numbers by broadcast
+  // season. The same pair of tests as the runtime write, because both put
+  // something into a row it cannot take back.
+  if (!runtimeScopeOk(block)) return null;
 
   // Declined when another row claims the same id, the rule `resolveRow` applies
   // to a season row: one title's progress cannot plan rows in two blocks.
@@ -370,7 +373,7 @@ const insertTarget = (
     .sort((a, b) => a.number - b.number)[0];
   if (!season) return null;
 
-  const shape = catalogue.titles.get(source.id)?.shapes.get(season.number);
+  const shape = titles.get(source.id)?.shapes.get(season.number);
   return { source, season, aired: seasonAired(shape), complete: seasonComplete(shape, season.watched) };
 };
 
@@ -383,59 +386,46 @@ const insertTarget = (
  * block's. Scope is already settled by `insertTarget`. What is left is a whole
  * season number and a key to join on.
  */
-const insertRuntimeTarget = (candidate: InsertCandidate, catalogue: CatalogueView): RuntimeRequest | null => {
+const insertRuntimeTarget = (candidate: InsertCandidate, titles: Map<number, TitleCatalogue>): RuntimeRequest | null => {
   const { source, season } = candidate;
   // No whole-season test to make: `seasonsOf` is the only producer of a
   // `SeasonProgress` and drops everything fractional or below 1, where a grid
   // row's number is whatever someone typed into the cell.
-  const tvdbId = catalogue.titles.get(source.id)?.tvdbId;
+  const tvdbId = titles.get(source.id)?.tvdbId;
   if (typeof tvdbId !== 'number') return null;
   return { id: source.id, tvdbId, season: season.number };
 };
 
-// --- Runtime lookups -------------------------------------------------------
+// --- The runtime a closing row can still take ------------------------------
 
 /**
  * Whether a season row is one a TVDB season number can describe at all, and the
  * lookup it would need.
  *
- * **Called by both passes**, and that is the point rather than a convenience.
- * `planRuntimeLookups` uses it to decide what to ask for and `planSync` uses it
- * to tell *settled — no runtime is obtainable here* from *asked, and waiting*.
- * If the two ever disagreed, a row would defer for ever: never requested, and
- * never closed either.
+ * All the clauses are load-bearing:
  *
- * All five clauses are load-bearing:
- *
- * - `type === 'show'` **and** ids on the show row. These are not redundant.
- *   `planSync` and `planLookups` read anime as "no block ids" alone, and that
- *   test disagrees with this one for an anime block someone gave a show-row id —
- *   a hand-maintained file, so nothing prevents one. Testing only the ids would
- *   class it live-action and ask TVDB for a season number that means something
- *   else there. `planInsert` guards itself with the same pair, for the same
- *   reason: both write something a row cannot take back.
+ * - `runtimeScopeOk`: the block's numbers must mean something to TVDB, which
+ *   anime's never do — every SIMKL anime record numbers its own episodes
+ *   season 1, and all cours of a franchise share one TVDB id. The episode
+ *   count cannot disambiguate either: Demon Slayer's TVDB seasons 3 and 4 both
+ *   hold 11 episodes at different lengths.
  * - the row **inherits** the block's id. A row carrying its own id is one whose
- *   season number is explicitly not the entry's — a split cour, Parasyte, Doctor
- *   Who's 2024 renumbering — which is exactly the case where the number cannot
- *   be handed to TVDB.
+ *   season number is explicitly not the entry's — a split cour, Parasyte,
+ *   Doctor Who's 2024 renumbering — which is exactly the case where the number
+ *   cannot be handed to TVDB.
  * - a whole season number, since `13.5` encodes a judgement no rule reproduces.
  * - a TVDB id to join on.
- *
- * Anime is excluded outright rather than guarded, because there is nothing to
- * guard with: every SIMKL anime record numbers its own episodes season 1
- * whatever cour it is, and all cours of a franchise share one TVDB id. Asking
- * for "season 1" returns the whole multi-cour season, and the episode count
- * cannot disambiguate either — Demon Slayer's TVDB seasons 3 and 4 both hold 11
- * episodes at different lengths.
+ * - only a blank cell is ever a target: a typed number is a deliberate
+ *   correction, and nothing here can tell a better one from a worse one.
  */
-export const runtimeTarget = (
+const runtimeTarget = (
   grid: Grid,
   block: ShowBlock,
   season: SeasonRow,
   index: Map<number, TitleProgress>,
-  catalogue: CatalogueView,
+  titles: Map<number, TitleCatalogue>,
 ): RuntimeRequest | null => {
-  if (block.type !== 'show' || block.ids.length === 0) return null;
+  if (!runtimeScopeOk(block)) return null;
   if (season.ids.length) return null;
   if (season.season === null || !Number.isInteger(season.season)) return null;
 
@@ -444,95 +434,34 @@ export const runtimeTarget = (
   const id = idsFor(block, season)[0];
   if (id === undefined || !index.has(id)) return null;
 
-  const tvdbId = catalogue.titles.get(id)?.tvdbId;
+  const tvdbId = titles.get(id)?.tvdbId;
   if (typeof tvdbId !== 'number') return null;
 
-  // Only a blank cell is ever a target. Folded in here rather than tested at
-  // each call site for the same reason as everything above it: a rule the two
-  // passes have to agree on, kept in one place so they cannot stop agreeing.
   if (!isBlank(cellAt(grid, season.row, grid.columns.Episodes))) return null;
 
   return { id, tvdbId, season: season.season };
 };
 
-/**
- * Which season runtimes to look up, decided after the catalogue read and before
- * the plan.
- *
- * A second pass is needed because the question — which seasons are *completing*
- * — cannot be answered until `seasonShapes` has come back, and the blank-cell
- * test needs the grid. Fetching every season of every in-scope title instead
- * would be roughly 110 calls on a cold run against the 0–2 this makes, and would
- * re-read seasons the sheet closed long ago.
- *
- * Deliberately *not* a copy of every rule `planSync` applies before it writes:
- * the multi-row claim check and the non-numeric `Episode` check are both skipped
- * here, because a false positive costs one cached call and a false negative
- * costs nothing at all. Only `runtimeTarget` has to agree exactly.
- */
-export const planRuntimeLookups = (
-  grid: Grid,
-  index: Map<number, TitleProgress>,
-  catalogue: CatalogueView,
-  { now = Temporal.Now.instant(), sinceDays = config.sheetSinceDays }: PlanOptions = {},
-): RuntimeRequest[] => {
-  const cutoff = cutoffFrom(now, sinceDays);
-  const duplicates = duplicateIds(grid.blocks);
-  const requests: RuntimeRequest[] = [];
-
-  for (const block of grid.blocks) {
-    if (!isRecent(blockIds(block), index, cutoff)) continue;
-
-    for (const season of block.seasons) {
-      // A dated row is finished by the user's decision and never revisited, so
-      // there is no cell here left to fill.
-      if (season.closed) continue;
-      const key = runtimeTarget(grid, block, season, index, catalogue);
-      if (!key) continue;
-
-      const entry = catalogue.titles.get(key.id);
-      // Terminal once answered — including a null answer, which is settled.
-      if (entry?.seasonRuntimes.has(key.season)) continue;
-
-      const resolved = resolveRow(block, season, index, catalogue, duplicates);
-      if (resolved === null || typeof resolved === 'string') continue;
-      if (!resolved.complete) continue;
-      if (!within(resolved.lastWatchedAt, cutoff)) continue;
-
-      requests.push(key);
-    }
-
-    // The row that is not there yet. The walk above is over rows the grid has,
-    // so a season about to be inserted is never reached by it — and an insert
-    // that arrives complete is dated by the same fill that creates it, so there
-    // is no later batch to carry the cell.
-    const candidate = insertTarget(block, index, catalogue, duplicates, cutoff);
-    // Gated on *airing*, not on watching. A season that has finished airing has
-    // settled runtimes however little of it has been seen, and a row added one
-    // episode into a finished season is exactly the case that wants them.
-    //
-    // That it is gated at all is a hard rule rather than an optimisation:
-    // `averageRuntime` checks TVDB's episode count against SIMKL's, and while a
-    // season is still airing SIMKL's has not settled — so the answer would be a
-    // null recorded as *settled*, and `seasonRuntimes` has no age ceiling. That
-    // forfeits the cell before the season has even ended.
-    if (candidate?.aired) {
-      const key = insertRuntimeTarget(candidate, catalogue);
-      if (key && !catalogue.titles.get(key.id)?.seasonRuntimes.has(key.season)) requests.push(key);
-    }
-  }
-  return requests;
-};
-
 // --- The plan --------------------------------------------------------------
 
+/**
+ * Plan the whole sheet against what the catalogue currently holds, and say what
+ * more is needed.
+ *
+ * `demands.catalogue` names every lookup the in-scope blocks run on, with no
+ * memory of what was already fetched — deciding what is actually *stale* is the
+ * store's job, not the planner's. `demands.runtimes` names only the seasons
+ * whose close or insert is waiting on an answer, so it is empty once the store
+ * has them (or has settled that none is coming).
+ */
 export const planSync = (
   grid: Grid,
   index: Map<number, TitleProgress>,
-  catalogue: CatalogueView,
+  titles: Map<number, TitleCatalogue>,
   { now = Temporal.Now.instant(), timezone = config.timezone, sinceDays = config.sheetSinceDays }: PlanOptions = {},
-): SheetPlan => {
-  const plan: SheetPlan = { edits: [], inserts: [], skipped: [], notes: [], deferred: 0 };
+): PlanResult => {
+  const plan = emptyPlan();
+  const demands: PlanDemands = { catalogue: [], runtimes: [] };
   const cutoff = cutoffFrom(now, sinceDays);
   const duplicates = duplicateIds(grid.blocks);
   const seen = new Set<number>();
@@ -541,10 +470,17 @@ export const planSync = (
     const ids = blockIds(block);
     for (const id of ids) seen.add(id);
 
-    // The cut-off applies uniformly, with no exemptions. A dormant sheet
-    // produces zero edits, and no run can retro-edit years of history.
     if (!isRecent(ids, index, cutoff)) continue;
-    const anime = block.ids.length === 0;
+    const anime = usesCourModel(block);
+
+    // The block's catalogue lookups. The episode list cannot be gated on "a
+    // season ended" — it is what discovers that. Anime needs none of it: one
+    // entry is one cour, so its own counters already describe the season.
+    if (!anime) {
+      for (const id of block.ids) demands.catalogue.push({ id, episodes: true, detail: true });
+    }
+    const sourceId = statusSource(block);
+    if (sourceId !== null) demands.catalogue.push({ id: sourceId, anime, detail: true });
 
     // Two rows describing the same season of the same title. One title's
     // progress cannot say which to advance, so both would be planned the same
@@ -562,12 +498,13 @@ export const planSync = (
     }
 
     for (const season of block.seasons) {
-      const resolved = resolveRow(block, season, index, catalogue, duplicates);
-      if (resolved === null) continue;
-      if (typeof resolved === 'string') {
-        plan.skipped.push(resolved);
+      const resolution = resolveRow(block, season, index, titles, duplicates);
+      if (resolution.kind === 'nothing') continue;
+      if (resolution.kind === 'skip') {
+        plan.skips.push(resolution.skip);
         continue;
       }
+      const resolved = resolution;
 
       // A season row with an end date is finished, by the user's decision. It
       // is never revisited — which is also why a wrongly-stamped end date could
@@ -577,7 +514,7 @@ export const planSync = (
 
       const label = `${block.title} S${season.season ?? '?'}`;
       if (season.season !== null && idsFor(block, season).some((id) => (claims.get(`${id}:${season.season}`) ?? 0) > 1)) {
-        plan.skipped.push(`${label}: more than one row describes this season, so neither is written`);
+        plan.skips.push({ code: 'duplicate-season', message: `${label}: more than one row describes this season, so neither is written` });
         continue;
       }
       // A hand-typed count — "12 (rewatch)", "~8" — parses to null, so the
@@ -588,7 +525,7 @@ export const planSync = (
       // than the gate, and the reason names the row instead of the planner.
       const existing = cellAt(grid, season.row, grid.columns.Episode);
       if (!isBlank(existing) && numberOf(existing) === null) {
-        plan.skipped.push(`${label}: the Episode cell holds something that is not a number, so the row is left alone`);
+        plan.skips.push({ code: 'non-numeric-count', message: `${label}: the Episode cell holds something that is not a number, so the row is left alone` });
         continue;
       }
       if (resolved.watched > (season.episode ?? 0)) {
@@ -599,7 +536,7 @@ export const planSync = (
 
       const serial = watchSerial(resolved.lastWatchedAt, timezone);
       if (serial === null) {
-        plan.skipped.push(`${label}: complete, but its last watch timestamp is unusable`);
+        plan.skips.push({ code: 'unusable-timestamp', message: `${label}: complete, but its last watch timestamp is unusable` });
         continue;
       }
 
@@ -609,13 +546,14 @@ export const planSync = (
       // *asked for and not answered* must wait rather than close blind. The date
       // is not lost by waiting: it comes from the watch timestamp, so a row
       // deferred three polls gets the identical serial three polls later.
-      const target = runtimeTarget(grid, block, season, index, catalogue);
+      const target = runtimeTarget(grid, block, season, index, titles);
       // The map is the whole state machine, so one read answers it: `undefined`
-      // is asked and unanswered, `null` is settled with nothing usable, and a
-      // number is the answer. A row with no target has nothing to wait for.
-      const minutes = target === null ? null : catalogue.titles.get(target.id)?.seasonRuntimes.get(target.season);
-      if (minutes === undefined) {
-        plan.skipped.push(`${label}: complete, but its episode runtimes have not come back — left open for the next poll`);
+      // is unanswered, `null` is settled with nothing usable, and a number is
+      // the answer. A row with no target has nothing to wait for.
+      const minutes = target === null ? null : titles.get(target.id)?.seasonRuntimes.get(target.season);
+      if (minutes === undefined && target !== null) {
+        demands.runtimes.push(target);
+        plan.skips.push({ code: 'awaiting-runtimes', message: `${label}: complete, but its episode runtimes have not come back — left open for the next poll` });
         continue;
       }
 
@@ -628,7 +566,7 @@ export const planSync = (
         // ever fill again — and it must not depend on which run first saw the
         // season, or two identical-looking rows differ for a reason no reader of
         // the sheet could see.
-        const days = runtimeDays(minutes) ?? runtimeDays(catalogue.titles.get(target.id)?.runtime);
+        const days = runtimeDays(minutes) ?? runtimeDays(titles.get(target.id)?.runtime);
         if (days === null) {
           plan.notes.push(`${label}: ended with no usable episode runtimes, so its Episodes cell is left blank`);
         } else {
@@ -646,21 +584,19 @@ export const planSync = (
     // that id is claimed by another row as well — the same rule `resolveRow`
     // applies to a season row. Without it one title's progress writes Status on
     // two unrelated blocks and plans a new row in each.
-    const sourceId = statusSource(block);
     const source = (sourceId === null ? null : index.get(sourceId)) ?? null;
     if (sourceId !== null && duplicates.has(sourceId)) {
-      plan.skipped.push(`${block.title}: id ${sourceId} is claimed by more than one row, so Status and new rows are left alone`);
+      plan.skips.push({ code: 'duplicate-id', message: `${block.title}: id ${sourceId} is claimed by more than one row, so Status and new rows are left alone` });
     } else if (source) {
-      const entry = catalogue.titles.get(source.id);
-      // Which model applies is decided by where the ids sit — the same rule
-      // `planLookups` uses — and never by whether data happened to arrive.
-      // Anime asks its own not-aired counter because one entry is one cour. A
-      // live-action block with no shapes is a *failed lookup*, not a cour, and
-      // reading it as one would answer with a count that spans the whole show
-      // rather than the latest season. So it declines to write; `retry` is
-      // already set, and the next poll has the answer.
+      const entry = titles.get(source.id);
+      // Which model applies is decided by where the ids sit, never by whether
+      // data happened to arrive. Anime asks its own not-aired counter because
+      // one entry is one cour. A live-action block with no shapes is a *failed
+      // lookup*, not a cour, and reading it as one would answer with a count
+      // that spans the whole show rather than the latest season. So it declines
+      // to write; the lookup failure already asks for another poll.
       if (!anime && !entry?.shapes.size) {
-        plan.skipped.push(`${block.title}: no episode list came back, so Status is left alone`);
+        plan.skips.push({ code: 'no-episode-list', message: `${block.title}: no episode list came back, so Status is left alone` });
       } else {
         const status = deriveStatus(source, {
           detailStatus: entry?.status,
@@ -671,28 +607,37 @@ export const planSync = (
         }
       }
 
-      // Re-derived rather than threaded through from the branch above: this is
-      // the same question `planRuntimeLookups` asked before the fetch, and one
-      // answer to it is the only thing keeping the two passes in step.
-      const candidate = insertTarget(block, index, catalogue, duplicates, cutoff);
-      const insert = candidate && planInsert(grid, block, candidate, catalogue, { timezone });
-      if (typeof insert === 'string') plan.skipped.push(insert);
-      else if (insert) {
-        // One row per run, and not a setting: every request index in a plan is
-        // pre-write, but `insertDimension` applies cumulatively, so a second
-        // insert would land a row above where it was planned. `assertPlanSafe`
-        // refuses more than one for that reason, so this is an invariant of how
-        // the requests are built rather than a number anyone may choose.
+      const candidate = insertTarget(block, index, titles, duplicates, cutoff);
+      if (candidate) {
+        // The row this walk cannot reach: the season about to be inserted has
+        // no row yet, and one that arrives complete is dated by the same fill
+        // that creates it — so its runtime is demanded before the row exists.
         //
-        // Starting two seasons between polls therefore defers the second. It is
-        // not lost — the job re-plans the whole sheet every run and the next one
-        // takes it — but it has to say so: a silent deferral reads exactly like
-        // a season the sync never noticed, which is the failure a report exists
-        // to rule out.
-        if (!plan.inserts.length) plan.inserts.push(insert);
-        else {
-          plan.deferred += 1;
-          plan.notes.push(`${insert.title} S${insert.season} is ready to add — deferred, one row is added per run`);
+        // Gated on *airing*, not on watching: a season that has finished airing
+        // has settled runtimes however little of it has been seen. The gate is
+        // a hard rule rather than an optimisation — `averageRuntime` checks
+        // TVDB's count against SIMKL's, and while a season is still airing
+        // SIMKL's has not settled, so the answer would be a null recorded as
+        // *settled* in a map with no age ceiling. That forfeits the cell before
+        // the season has even ended.
+        if (candidate.aired) {
+          const key = insertRuntimeTarget(candidate, titles);
+          if (key && titles.get(key.id)?.seasonRuntimes.get(key.season) === undefined) demands.runtimes.push(key);
+        }
+
+        const insert = planInsert(grid, block, candidate, titles, { timezone });
+        if (insert && 'code' in insert) plan.skips.push(insert);
+        else if (insert) {
+          // One row per run: starting two seasons between polls defers the
+          // second. It is not lost — the job re-plans the whole sheet every run
+          // and the next one takes it — but it has to say so: a silent deferral
+          // reads exactly like a season the sync never noticed, which is the
+          // failure a report exists to rule out.
+          if (plan.insert === null) plan.insert = insert;
+          else {
+            plan.deferredInserts += 1;
+            plan.notes.push(`${insert.title} S${insert.season} is ready to add — deferred, one row is added per run`);
+          }
         }
       }
     }
@@ -707,7 +652,7 @@ export const planSync = (
     plan.notes.push(`${progress.title} (simkl ${progress.id}) has recent activity and no row — add it by hand if you want it tracked`);
   }
 
-  return plan;
+  return { plan, demands };
 };
 
 /**
@@ -721,14 +666,14 @@ const planInsert = (
   grid: Grid,
   block: ShowBlock,
   { source, season: candidate, aired, complete }: InsertCandidate,
-  catalogue: CatalogueView,
+  titles: Map<number, TitleCatalogue>,
   { timezone }: { timezone: string },
-): RowInsert | string | null => {
+): RowInsert | Skip | null => {
   const label = `${block.title} S${candidate.number}`;
-  const entry = catalogue.titles.get(source.id);
+  const entry = titles.get(source.id);
 
   const start = watchSerial(candidate.firstWatchedAt, timezone);
-  if (start === null) return `${label}: would be added, but its first watch timestamp is unusable`;
+  if (start === null) return { code: 'unusable-timestamp', message: `${label}: would be added, but its first watch timestamp is unusable` };
 
   // Keep Season ascending within the block: before the first existing row with
   // a higher number, or after the last one.
@@ -740,18 +685,18 @@ const planInsert = (
   // row there, it inherits the *show* row's, and a correct date serial renders
   // as `46265`.
   if (!block.seasons.some((s) => s.row < row)) {
-    return `${label}: would be added, but there is no season row above the insertion point to inherit formats from`;
+    return { code: 'no-format-row', message: `${label}: would be added, but there is no season row above the insertion point to inherit formats from` };
   }
 
   // What this row's runtime cell can hold, and whether this same fill may date
   // the row. A row created and dated in one batch is never revisited, so its
   // `Episodes` cell has exactly one chance to be right.
-  const target = insertRuntimeTarget({ source, season: candidate, aired, complete }, catalogue);
+  const target = insertRuntimeTarget({ source, season: candidate, aired, complete }, titles);
   const minutes = target === null ? undefined : entry?.seasonRuntimes.get(target.season);
-  // Whether `/tv/{id}` has answered for this title at all. `catalogueFor` writes
-  // `tvdbId` as a number or an explicit null the moment the detail lands, so its
-  // absence is the one reliable signal that it has not — `runtime` and `status`
-  // are both legitimately absent on a detail that did arrive.
+  // Whether `/tv/{id}` has answered for this title at all. The store writes
+  // `tvdbId` as a number or an explicit null the moment the detail lands, so
+  // its absence is the one reliable signal that it has not — `runtime` and
+  // `status` are both legitimately absent on a detail that did arrive.
   const detailed = entry?.tvdbId !== undefined;
 
   // The runtime follows *airing*; the date below follows watching. A season one
@@ -829,6 +774,8 @@ const planInsert = (
   };
 };
 
+// --- What survives the run --------------------------------------------------
+
 /**
  * What one planned edit looks like once the plan itself is gone: where it
  * landed, which column, and the planner's own wording for what changed.
@@ -853,7 +800,8 @@ export interface PlanRecord {
 }
 
 /**
- * A plan reduced to what survives the run, for the status page's history.
+ * A plan reduced to what survives the run, for the journal and the status
+ * page's history.
  *
  * Structured rather than `describePlan`'s strings because the page renders the
  * cell, the column and the wording as three columns, and a joined line cannot
@@ -865,18 +813,18 @@ export interface PlanRecord {
  */
 export const planRecord = (plan: SheetPlan): PlanRecord => ({
   edits: plan.edits.map(({ address, field, note }) => ({ address, field, note })),
-  inserts: plan.inserts.map(({ row, title, season, note }) => ({ address: `row ${row + 1}`, title, season, note })),
+  inserts: plan.insert === null ? [] : [{ address: `row ${plan.insert.row + 1}`, title: plan.insert.title, season: plan.insert.season, note: plan.insert.note }],
 });
 
 /** A human-readable rendering of a plan, for the log and for `report` mode. */
 export const describePlan = (plan: SheetPlan, columns: ColumnMap): string[] => {
   const lines: string[] = [];
   for (const e of plan.edits) lines.push(`  edit   ${e.address.padEnd(7)} ${e.note}`);
-  for (const insert of plan.inserts) {
-    lines.push(`  insert row ${insert.row + 1}  ${insert.note}`);
-    for (const f of insert.fill) lines.push(`           ${columnLetter(columns[f.field])} ${f.field}`);
+  if (plan.insert) {
+    lines.push(`  insert row ${plan.insert.row + 1}  ${plan.insert.note}`);
+    for (const f of plan.insert.fill) lines.push(`           ${columnLetter(columns[f.field])} ${f.field}`);
   }
-  for (const s of plan.skipped) lines.push(`  skip   ${s}`);
+  for (const s of plan.skips) lines.push(`  skip   ${s.message}`);
   for (const n of plan.notes) lines.push(`  note   ${n}`);
   return lines;
 };

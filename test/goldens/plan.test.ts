@@ -8,10 +8,11 @@
  * realistic plan stays guard-clean.
  */
 import { test } from 'node:test';
+import assert from 'node:assert/strict';
 import { parseGrid } from '../../src/sheet/2-grid.ts';
 import { indexLibrary } from '../../src/sheet/1-index.ts';
 import { planRecord, planSync } from '../../src/sheet/4-plan.ts';
-import type { CatalogueView } from '../../src/sheet/3-catalogue.ts';
+import type { TitleCatalogue } from '../../src/sheet/3-catalogue.ts';
 import { assertPlanSafe } from '../../src/sheet/5-guard.ts';
 import { libraryOf, seasonRow, sheetSnapshot, SHEET_HEADERS, showRow } from '../helpers.ts';
 import { expectGolden } from './golden.ts';
@@ -59,8 +60,7 @@ test('the reference grid plans the committed write set', async () => {
     },
   );
 
-  const catalogue: CatalogueView = {
-    titles: new Map([
+  const catalogue = new Map<number, TitleCatalogue>([
       [
         1,
         {
@@ -88,13 +88,11 @@ test('the reference grid plans the committed write set', async () => {
           seasonRuntimes: new Map(),
         },
       ],
-    ]),
-    failed: [],
-    unavailable: [],
-  };
+    ]);
 
-  const plan = planSync(grid, indexLibrary(library), catalogue, { now: NOW, timezone: TZ, sinceDays: 90 });
+  const { plan, demands } = planSync(grid, indexLibrary(library), catalogue, { now: NOW, timezone: TZ, sinceDays: 90 });
   assertPlanSafe(plan, grid, { now: NOW, timezone: TZ });
+  assert.deepEqual(demands.runtimes, [], 'the catalogue already holds every runtime the plan needs');
 
   await expectGolden('plan.json', JSON.stringify(planRecord(plan), null, 2) + '\n');
 });

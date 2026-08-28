@@ -1,8 +1,7 @@
 /**
  * VERIFY — did the write do exactly what the plan said, and nothing else? Pure.
  *
- * Last of READ → PARSE → PLAN → GUARD → BUILD → APPLY → **VERIFY**, and what
- * decides whether the rollback in `sync.ts` runs.
+ * What decides whether the rollback in `sync.ts` runs.
  *
  * The comparison is on `userEnteredValue`, never `effectiveValue`. Writing a
  * season's `Episode` recalculates five formulas on the show row above it, so
@@ -115,7 +114,8 @@ export interface Verification {
 
 export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Verification => {
   const problems: string[] = [];
-  const insertRows = plan.inserts.map((i) => i.row);
+  const inserts = plan.insert ? [plan.insert] : [];
+  const insertRows = inserts.map((i) => i.row);
   const inserted = new Set(insertRows);
 
   // The header must still mean what it meant. Everything below is indexed by
@@ -136,7 +136,7 @@ export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Ver
   // Both answered before the row-by-row diff, because the `grew` mismatch below
   // returns early and needs them: whether anything landed decides if there is a
   // rollback to do at all, and `created` is the only row a rollback may delete.
-  const created = plan.inserts.filter((insert) => insertLanded(after, insert)).map((insert) => insert.row);
+  const created = inserts.filter((insert) => insertLanded(after, insert)).map((insert) => insert.row);
   const landed = created.length > 0 || plan.edits.some((edit) => editLanded(after, edit, insertRows));
 
   const grew = after.rows.length - before.snapshot.rows.length;
@@ -147,7 +147,7 @@ export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Ver
 
   const expected = new Map<string, ExtendedValue>();
   for (const edit of plan.edits) expected.set(`${shiftRow(edit.row, insertRows)}:${edit.column}`, edit.value);
-  for (const insert of plan.inserts) {
+  for (const insert of inserts) {
     for (const fill of insert.fill) expected.set(`${insert.row}:${fill.column}`, fill.value);
   }
 

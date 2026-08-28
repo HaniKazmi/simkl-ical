@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { assertPlanSafe } from '../../src/sheet/5-guard.ts';
 import { parseGrid } from '../../src/sheet/2-grid.ts';
-import { deriveStatus, planLookups, planRecord, planRuntimeLookups, planSync, statusSource, type SheetPlan } from '../../src/sheet/4-plan.ts';
-import { needsLookup, seasonShapes, type CatalogueView, type TitleCatalogue } from '../../src/sheet/3-catalogue.ts';
+import { deriveStatus, planRecord, planSync, statusSource, type SheetPlan } from '../../src/sheet/4-plan.ts';
+import { seasonShapes, type TitleCatalogue } from '../../src/sheet/3-catalogue.ts';
 import { indexLibrary } from '../../src/sheet/1-index.ts';
 import { dateSerial } from '../../src/sheet/values.ts';
 import { plainDateIn } from '../../src/shared/dates.ts';
@@ -13,7 +13,6 @@ import { daysAgo, libraryOf, sheetSnapshot, SHEET_HEADERS, type CellSpec, type I
 
 const H = SHEET_HEADERS;
 const TZ = 'Europe/London';
-const DAY = Temporal.Duration.from({ hours: 24 });
 
 const show = showRow;
 const season = (n: number, episodes: number | null, end: number | null, id: number | string | null = null): CellSpec[] =>
@@ -30,37 +29,40 @@ interface Scenario {
   items: ItemSpec[];
   episodes?: Record<number, EpisodeDetail[]>;
   details?: Record<number, ShowDetail>;
-  failed?: number[];
   /** SIMKL id -> TVDB id, as the detail lookup would have folded it in. */
   tvdbIds?: Record<number, number>;
   /** SIMKL id -> season -> average minutes, or null for "asked, nothing usable". */
   runtimes?: Record<number, Record<number, number | null>>;
 }
 
-const scenario = ({ rows, items, episodes = {}, details = {}, failed = [], tvdbIds = {}, runtimes = {} }: Scenario) => {
+/**
+ * A grid, a library, and a catalogue in some state of answeredness. A title
+ * with no `details` entry is one whose `/tv/{id}` has not answered — the store
+ * writes `tvdbId` as a number or an explicit null the moment it lands, so its
+ * absence is the state the planner reads as *pending*.
+ */
+const scenario = ({ rows, items, episodes = {}, details = {}, tvdbIds = {}, runtimes = {} }: Scenario) => {
   const grid = parseGrid(sheetSnapshot([H, ...rows]));
   const index = indexLibrary(libraryOf(...items));
   const titles = new Map<number, TitleCatalogue>();
   const entry = (id: number) => titles.get(id) ?? titles.set(id, { shapes: new Map(), seasonRuntimes: new Map() }).get(id)!;
   for (const [id, list] of Object.entries(episodes)) entry(Number(id)).shapes = seasonShapes(list);
-  // `catalogueFor` writes `tvdbId` as a number or an explicit null the moment
-  // `/tv/{id}` lands, so a fixture carrying a detail must too. Leaving it absent
-  // is how a title whose detail has *not* answered is expressed, and the planner
-  // reads the two differently.
   for (const [id, detail] of Object.entries(details)) Object.assign(entry(Number(id)), detail, { tvdbId: null });
   for (const [id, tvdbId] of Object.entries(tvdbIds)) entry(Number(id)).tvdbId = tvdbId;
   for (const [id, seasons] of Object.entries(runtimes)) {
     for (const [n, minutes] of Object.entries(seasons)) entry(Number(id)).seasonRuntimes.set(Number(n), minutes);
   }
-  const catalogue: CatalogueView = { titles, failed, unavailable: [] };
   return {
     grid,
     index,
-    catalogue,
-    plan: () => planSync(grid, index, catalogue, { timezone: TZ }),
-    lookups: () => planRuntimeLookups(grid, index, catalogue),
+    titles,
+    plan: () => planSync(grid, index, titles, { timezone: TZ }).plan,
+    demands: () => planSync(grid, index, titles, { timezone: TZ }).demands,
+    runtimeDemands: () => planSync(grid, index, titles, { timezone: TZ }).demands.runtimes,
   };
 };
+
+const skipMessages = (plan: SheetPlan): string => plan.skips.map((s) => s.message).join('\n');
 
 // --- the core case ---------------------------------------------------------
 
@@ -75,7 +77,7 @@ test('a part-watched open season advances its count and touches nothing else', (
   });
   const result = plan();
   assert.deepEqual(result.edits.map((e) => [e.address, e.field, e.value.numberValue ?? e.value.stringValue]), [['D4', 'Episode', 7]]);
-  assert.equal(result.inserts.length, 0);
+  assert.equal(result.insert, null);
 });
 
 // The whole sheet is derived from formulas on the show row; the sync must never
@@ -105,7 +107,7 @@ test('a show with no recent activity produces nothing at all, show row included'
   });
   const result = plan();
   assert.deepEqual(result.edits, []);
-  assert.deepEqual(result.inserts, []);
+  assert.equal(result.insert, null);
 });
 
 test('within an eligible show, a dormant season is still left alone', () => {
@@ -181,25 +183,25 @@ const adding = (over: Partial<Scenario> & { aired?: number } = {}) => {
   });
 };
 
-const fields = (insert: RowInsert | undefined): string[] => (insert?.fill ?? []).map((f) => f.field).sort();
-const cellIn = (insert: RowInsert | undefined, field: string) => insert?.fill.find((f) => f.field === field)?.value;
+const fields = (insert: RowInsert | null): string[] => (insert?.fill ?? []).map((f) => f.field).sort();
+const cellIn = (insert: RowInsert | null, field: string) => insert?.fill.find((f) => f.field === field)?.value;
 
 // The headline. A blank cell is what makes the row eligible for the per-season
-// average later; a filled one is refused by `runtimeTarget` for ever.
+// average later; a filled one is refused by the runtime rules for ever.
 test('a season still running is inserted with a blank Episodes cell, for its close to fill', () => {
-  const { plan, lookups } = adding({ aired: 6 });
-  const [insert] = plan().inserts;
+  const { plan, runtimeDemands } = adding({ aired: 6 });
+  const insert = plan().insert;
   assert.equal(insert?.season, 2);
   assert.deepEqual(fields(insert), ['Episode', 'Length', 'Season', 'Start']);
   assert.equal(cellIn(insert, 'Episodes'), undefined, 'left for the season average');
   assert.equal(cellIn(insert, 'End'), undefined, 'and not dated, because it is still running');
   // The gate that stops a settled null being recorded for a season whose SIMKL
   // episode count has not finished moving.
-  assert.deepEqual(lookups(), [], 'and nothing is asked about a season still airing');
+  assert.deepEqual(runtimeDemands(), [], 'and nothing is asked about a season still airing');
 });
 
 test('a season already over is inserted dated, carrying its own average', () => {
-  const [insert] = adding({ runtimes: { 800: { 2: 49 } } }).plan().inserts;
+  const insert = adding({ runtimes: { 800: { 2: 49 } } }).plan().insert;
   assert.deepEqual(fields(insert), ['End', 'Episode', 'Episodes', 'Length', 'Season', 'Start']);
   assert.ok(Math.abs((cellIn(insert, 'Episodes')?.numberValue ?? 0) - 49 / 1440) < 1e-9, 'the TVDB average, not the show-wide 43');
   assert.ok((cellIn(insert, 'End')?.numberValue ?? 0) > 0);
@@ -209,7 +211,7 @@ test('a season already over is inserted dated, carrying its own average', () => 
 // blank cell. The date is not lost: it comes from the watch timestamp.
 test('a season over but whose runtimes have not come back is inserted open', () => {
   const { plan } = adding();
-  const [insert] = plan().inserts;
+  const insert = plan().insert;
   assert.deepEqual(fields(insert), ['Episode', 'Length', 'Season', 'Start']);
   assert.equal(cellIn(insert, 'End'), undefined, 'not dated, so the next poll can still fill the cell');
   assert.match(insert?.note ?? '', /have not come back/);
@@ -218,7 +220,7 @@ test('a season over but whose runtimes have not come back is inserted open', () 
 // Settled means no number is coming. The show-wide guess is worse than the
 // season's own average and better than a cell nothing can ever fill again.
 test('a settled null closes the new row on SIMKL’s show-wide runtime', () => {
-  const [insert] = adding({ runtimes: { 800: { 2: null } } }).plan().inserts;
+  const insert = adding({ runtimes: { 800: { 2: null } } }).plan().insert;
   assert.deepEqual(fields(insert), ['End', 'Episode', 'Episodes', 'Length', 'Season', 'Start']);
   assert.ok(Math.abs((cellIn(insert, 'Episodes')?.numberValue ?? 0) - 43 / 1440) < 1e-9);
 });
@@ -226,17 +228,17 @@ test('a settled null closes the new row on SIMKL’s show-wide runtime', () => {
 // An average no episode could have. Treated as the settled null above, never as
 // a refusal: one title's bad upstream data must not cost the row.
 test('an implausible average falls back rather than writing 1440 times the truth', () => {
-  const [insert] = adding({ runtimes: { 800: { 2: 5000 } } }).plan().inserts;
+  const insert = adding({ runtimes: { 800: { 2: 5000 } } }).plan().insert;
   assert.ok(Math.abs((cellIn(insert, 'Episodes')?.numberValue ?? 0) - 43 / 1440) < 1e-9);
 });
 
 // The inert path. Without a join key a blank cell could never be filled by
 // anything, so the show-wide runtime is the best there will ever be.
 test('with no TVDB id the new row keeps SIMKL’s show-wide runtime', () => {
-  const { plan, lookups } = adding({ tvdbIds: {}, aired: 6 });
-  const [insert] = plan().inserts;
+  const { plan, runtimeDemands } = adding({ tvdbIds: {}, aired: 6 });
+  const insert = plan().insert;
   assert.ok(Math.abs((cellIn(insert, 'Episodes')?.numberValue ?? 0) - 43 / 1440) < 1e-9);
-  assert.deepEqual(lookups(), []);
+  assert.deepEqual(runtimeDemands(), []);
 });
 
 // `ShowDetail.runtime` is show-wide, so one title missing it speaks for every
@@ -245,11 +247,11 @@ test('with no TVDB id the new row keeps SIMKL’s show-wide runtime', () => {
 // cell a reader can fill by hand.
 test('a title SIMKL gives no runtime for is added blank rather than refused', () => {
   const { plan } = adding({ tvdbIds: {}, details: { 800: { status: 'airing' } }, aired: 6 });
-  const { inserts, skipped } = plan();
-  assert.equal(inserts.length, 1, 'the row goes in');
-  assert.equal(cellIn(inserts[0], 'Episodes'), undefined);
-  assert.match(inserts[0]?.note ?? '', /no episode runtime to fill its Episodes cell/);
-  assert.deepEqual(skipped.filter((s) => /episode runtime/.test(s)), [], 'and nothing is refused for it');
+  const result = plan();
+  assert.ok(result.insert, 'the row goes in');
+  assert.equal(cellIn(result.insert, 'Episodes'), undefined);
+  assert.match(result.insert?.note ?? '', /no episode runtime to fill its Episodes cell/);
+  assert.deepEqual(result.skips.filter((s) => /episode runtime/.test(s.message)), [], 'and nothing is refused for it');
 });
 
 /**
@@ -270,19 +272,19 @@ const started = (over: Partial<Scenario> = {}) =>
   });
 
 test('a finished season just started is asked about, and carries its average undated', () => {
-  const { plan, lookups } = started({ runtimes: { 800: { 2: 49 } } });
-  const [insert] = plan().inserts;
+  const { plan, runtimeDemands } = started({ runtimes: { 800: { 2: 49 } } });
+  const insert = plan().insert;
   assert.deepEqual(fields(insert), ['Episode', 'Episodes', 'Length', 'Season', 'Start']);
   assert.ok(Math.abs((cellIn(insert, 'Episodes')?.numberValue ?? 0) - 49 / 1440) < 1e-9, 'the season average, though only one episode is watched');
   assert.equal(cellIn(insert, 'End'), undefined, 'and nowhere near dated');
-  assert.deepEqual(started().lookups(), [{ id: 800, tvdbId: 403245, season: 2 }], 'asked for on the run that adds the row');
-  assert.deepEqual(lookups(), [], 'and not again once answered');
+  assert.deepEqual(started().runtimeDemands(), [{ id: 800, tvdbId: 403245, season: 2 }], 'demanded on the run that adds the row');
+  assert.deepEqual(runtimeDemands(), [], 'and not again once answered');
 });
 
 // The runtime is not there yet, so the cell waits — but the row is undated for
 // its own reason, and it is the close that will fill the cell either way.
 test('a finished season just started, with no answer yet, is added blank and undated', () => {
-  const [insert] = started().plan().inserts;
+  const insert = started().plan().insert;
   assert.deepEqual(fields(insert), ['Episode', 'Length', 'Season', 'Start']);
 });
 
@@ -298,9 +300,8 @@ test('a title whose detail has not answered is added open, not dated blank', () 
     items: [{ id: 800, status: 'watching', seasons: { 1: watched(10, 900), 2: watched(10) }, watched: 20, total: 20 }],
     episodes: { 800: [...eps(1, 10), ...eps(2, 10)] },
     details: {},
-    failed: [800],
   });
-  const [insert] = plan().inserts;
+  const insert = plan().insert;
   assert.equal(insert?.season, 2, 'the row still goes in');
   assert.equal(cellIn(insert, 'End'), undefined, 'undated, because a runtime may yet be obtainable');
   assert.equal(cellIn(insert, 'Episodes'), undefined);
@@ -311,7 +312,7 @@ test('a title whose detail has not answered is added open, not dated blank', () 
 // reads the same to a reader however the planner got there, and the report is
 // the only place they would learn to fill it in.
 test('a row dated with a cell nothing can fill says so, whatever left it blank', () => {
-  const [insert] = adding({ runtimes: { 800: { 2: null } }, details: { 800: { status: 'ended' } } }).plan().inserts;
+  const insert = adding({ runtimes: { 800: { 2: null } }, details: { 800: { status: 'ended' } } }).plan().insert;
   assert.ok(cellIn(insert, 'End'), 'dated');
   assert.equal(cellIn(insert, 'Episodes'), undefined, 'and blank for good');
   assert.match(insert?.note ?? '', /no episode runtime to fill its Episodes cell/);
@@ -326,21 +327,21 @@ test('a row dated with a cell nothing can fill says so, whatever left it blank',
 test('a length the guard would refuse is never planned in the first place', () => {
   const { plan, grid } = adding({ tvdbIds: {}, details: { 800: { status: 'airing', runtime: 0.9 } }, aired: 6 });
   const result = plan();
-  assert.equal(cellIn(result.inserts[0], 'Episodes'), undefined, 'the cell is skipped rather than filled implausibly');
+  assert.equal(cellIn(result.insert, 'Episodes'), undefined, 'the cell is skipped rather than filled implausibly');
   assert.doesNotThrow(() => assertPlanSafe(result, grid), 'and the run is not refused whole over one title');
 });
 
-// The two passes agreeing, asserted directly: the season asked about before the
-// fetch is the season the plan then inserts.
-test('the lookup asks about exactly the season the plan inserts', () => {
-  const { plan, lookups } = adding();
-  assert.deepEqual(lookups(), [{ id: 800, tvdbId: 403245, season: 2 }]);
-  assert.equal(plan().inserts[0]?.season, 2);
+// What to fetch and what to write are one computation, asserted directly: the
+// season demanded is the season the plan then inserts.
+test('the demand names exactly the season the plan inserts', () => {
+  const { plan, runtimeDemands } = adding();
+  assert.deepEqual(runtimeDemands(), [{ id: 800, tvdbId: 403245, season: 2 }]);
+  assert.equal(plan().insert?.season, 2);
 });
 
 // Once answered the question is settled, including when the answer was null.
-test('a season already answered is not asked about again', () => {
-  assert.deepEqual(adding({ runtimes: { 800: { 2: null } } }).lookups(), []);
+test('a season already answered is not demanded again', () => {
+  assert.deepEqual(adding({ runtimes: { 800: { 2: null } } }).runtimeDemands(), []);
 });
 
 // --- status ----------------------------------------------------------------
@@ -392,8 +393,8 @@ test('Abandoned comes from the item status', () => {
   const grid = parseGrid(sheetSnapshot([H, show('Beef', 'Ended', 700), season(1, 10, 44000)]));
   const index = indexLibrary(libraryOf({ id: 700, status: 'watching', seasons: { 1: watched(10) } }));
   // Real shapes, or the fail-closed rule below would make this pass vacuously.
-  const titles = new Map([[700, { shapes: seasonShapes(eps(1, 10)), status: 'ended', seasonRuntimes: new Map() }]]);
-  const plan = planSync(grid, index, { titles, failed: [], unavailable: [] }, { timezone: TZ });
+  const titles = new Map<number, TitleCatalogue>([[700, { shapes: seasonShapes(eps(1, 10)), status: 'ended', seasonRuntimes: new Map() }]]);
+  const { plan } = planSync(grid, index, titles, { timezone: TZ });
   assert.deepEqual(plan.edits, []);
 });
 
@@ -407,7 +408,8 @@ test('a season row with no matching SIMKL entry is reported, never guessed at', 
   });
   const result = plan();
   assert.deepEqual(result.edits.filter((e) => e.field !== 'Status'), []);
-  assert.match(result.skipped.join('\n'), /SIMKL id 12345 is in no list/);
+  const skip = result.skips.find((s) => s.code === 'unknown-id');
+  assert.match(skip?.message ?? '', /SIMKL id 12345 is in no list/);
 });
 
 test('the status source is the show row id, or the latest cour when there is none', () => {
@@ -451,21 +453,21 @@ test('an unresolved half poisons the whole row rather than summing the survivors
   });
   const result = plan();
   assert.deepEqual(result.edits, []);
-  assert.match(result.skipped.join('\n'), /SIMKL id 581835 is in no list/);
+  assert.match(skipMessages(result), /SIMKL id 581835 is in no list/);
 });
 
 // --- anime -----------------------------------------------------------------
 
 test('an anime cour is completed on its own counters, with no episode lookup', () => {
-  const { plan, grid, index } = scenario({
+  const { plan, demands } = scenario({
     rows: [show('Frieren', 'Watching', null, 'anime'), season(1, 2, null, 1500)],
     items: [{ id: 1500, status: 'completed', seasons: { 1: watched(11) }, watched: 11, total: 11 }],
     details: { 1500: { status: 'ended' } },
   });
   const result = plan();
   assert.deepEqual(result.edits.map((e) => e.field).sort(), ['End', 'Episode', 'Status']);
-  // No /tv/episodes lookup is asked for: one anime entry is one cour.
-  assert.deepEqual(planLookups(grid, index).filter((r) => r.episodes), []);
+  // No /tv/episodes lookup is demanded: one anime entry is one cour.
+  assert.deepEqual(demands().catalogue.filter((r) => r.episodes), []);
 });
 
 // A new cour is a separate SIMKL title with its own romaji name; attributing it
@@ -480,7 +482,7 @@ test('a title with no row anywhere is reported, never added', () => {
     details: { 1500: { status: 'ended' } },
   });
   const result = plan();
-  assert.deepEqual(result.inserts, []);
+  assert.equal(result.insert, null);
   assert.match(result.notes.join('\n'), /Sousou no Frieren 2nd Season \(simkl 1600\) has recent activity and no row/);
 });
 
@@ -491,7 +493,8 @@ test('a season row whose own id spans several seasons is refused as ambiguous', 
     rows: [show('Doctor Who', 'Ended', null), season(14, 1, null, 2463827)],
     items: [{ id: 2463827, status: 'watching', seasons: { 1: watched(8), 2: watched(8) }, watched: 16, total: 16 }],
   });
-  assert.match(plan().skipped.join('\n'), /covers 2 seasons, so the row is ambiguous/);
+  const skip = plan().skips.find((s) => s.code === 'ambiguous-cour');
+  assert.match(skip?.message ?? '', /covers 2 seasons, so the row is ambiguous/);
 });
 
 // --- insertion -------------------------------------------------------------
@@ -503,7 +506,7 @@ test('a newly started season is inserted after the last season row, not at the s
     episodes: { 3407: [...eps(9, 13), ...eps(10, 13), ...eps(11, 10, 6)] },
     details: { 3407: { status: 'airing', runtime: 22 } },
   });
-  const [insert] = plan().inserts;
+  const insert = plan().insert;
   assert.equal(insert?.season, 11);
   // Row 5 in the UI is the row after S10 — not the show row, where
   // inheritFromBefore would pick up the wrong formats.
@@ -521,7 +524,7 @@ test('an inserted row lands where it keeps Season ascending', () => {
     episodes: { 3407: [...eps(9, 13), ...eps(10, 13), ...eps(11, 13)] },
     details: { 3407: { status: 'ended', runtime: 22 } },
   });
-  const [insert] = plan().inserts;
+  const insert = plan().insert;
   assert.equal(insert?.season, 10);
   assert.equal(insert?.row, 3, 'between S9 and S11');
 });
@@ -534,8 +537,9 @@ test('a season with no row above it in the block is reported rather than inserte
     details: { 3407: { status: 'airing', runtime: 22 } },
   });
   const result = plan();
-  assert.deepEqual(result.inserts, []);
-  assert.match(result.skipped.join('\n'), /no season row above the insertion point/);
+  assert.equal(result.insert, null);
+  const skip = result.skips.find((s) => s.code === 'no-format-row');
+  assert.match(skip?.message ?? '', /no season row above the insertion point/);
 });
 
 // Anime is refused because a new cour is a separate title; specials because a
@@ -546,7 +550,7 @@ test('anime blocks are never inserted into', () => {
     items: [{ id: 1500, status: 'watching', seasons: { 1: watched(11, 3), 2: watched(4) }, watched: 15, total: 15 }],
     details: { 1500: { status: 'airing', runtime: 24 } },
   });
-  assert.deepEqual(plan().inserts, []);
+  assert.equal(plan().insert, null);
 });
 
 test('SIMKL season 0 is never inserted — specials are maintained by hand', () => {
@@ -556,7 +560,7 @@ test('SIMKL season 0 is never inserted — specials are maintained by hand', () 
     episodes: { 3407: eps(10, 13) },
     details: { 3407: { status: 'ended', runtime: 22 } },
   });
-  assert.deepEqual(plan().inserts, []);
+  assert.equal(plan().insert, null);
 });
 
 // --- idempotence -----------------------------------------------------------
@@ -582,18 +586,36 @@ test('running again over the applied result produces nothing', () => {
   assert.deepEqual(after.plan().edits, []);
 });
 
-// --- lookups ---------------------------------------------------------------
+// --- demands ---------------------------------------------------------------
 
-// The cut-off is what keeps this at roughly 28 calls rather than 600.
-test('only eligible blocks are looked up', () => {
-  const { grid, index } = scenario({
+// The cut-off is what keeps a cold run at roughly 28 calls rather than 600: an
+// out-of-scope block demands nothing, however stale its catalogue.
+test('only eligible blocks demand catalogue lookups', () => {
+  const { demands } = scenario({
     rows: [show('Recent', 'Watching', 1), season(1, 1, null), show('Dormant', 'Ended', 2), season(1, 10, 44000)],
     items: [
       { id: 1, status: 'watching', seasons: { 1: watched(5) } },
       { id: 2, status: 'completed', seasons: { 1: watched(10, 500) } },
     ],
   });
-  assert.deepEqual([...new Set(planLookups(grid, index).map((r) => r.id))], [1]);
+  assert.deepEqual([...new Set(demands().catalogue.map((r) => r.id))], [1]);
+});
+
+// The planner demands with no memory: what was already fetched, and what is
+// merely stale, is the store's question. The demand set only has to be right
+// about *which titles the plan runs on*.
+test('an eligible block demands its episode list and detail every pass', () => {
+  const { demands } = scenario({
+    rows: [show('Fargo', 'Watching', 1), season(1, 1, null)],
+    items: [{ id: 1, status: 'watching', seasons: { 1: watched(5) } }],
+    episodes: { 1: eps(1, 10) },
+    details: { 1: { status: 'airing' } },
+  });
+  // Already answered, and still demanded — the store filters, not the planner.
+  assert.deepEqual(demands().catalogue, [
+    { id: 1, episodes: true, detail: true },
+    { id: 1, anime: false, detail: true },
+  ]);
 });
 
 // A row the planner declined to read is still a row. Inserting a second one for
@@ -608,69 +630,8 @@ test('a season row that failed to resolve still blocks an insert for that season
     details: { 3407: { status: 'airing', runtime: 22 } },
   });
   const result = plan();
-  assert.deepEqual(result.inserts, []);
-  assert.match(result.skipped.join('\n'), /SIMKL id 999999 is in no list/);
-});
-
-// --- lookup gating ---------------------------------------------------------
-
-// /sync/activities resolves to the list and never to the title, so without a
-// per-title gate watching one episode re-reads the catalogue of every eligible
-// show. This is what keeps a warm run at ~2 calls rather than ~28.
-test('a title whose watch time has not moved is not looked up again', () => {
-  const { grid, index } = scenario({
-    rows: [show('Fargo', 'Watching', 1), season(1, 1, null), show('Silo', 'Watching', 2), season(1, 1, null)],
-    items: [
-      { id: 1, status: 'watching', seasons: { 1: watched(5) } },
-      { id: 2, status: 'watching', seasons: { 1: watched(5) } },
-    ],
-  });
-
-  const cold = planLookups(grid, index);
-  assert.deepEqual([...new Set(cold.map((r) => r.id))], [1, 2], 'a cold process reads everything eligible');
-
-  const at = Temporal.Now.instant();
-  const stamps = new Map(cold.map((r) => [r.id, { watchedAt: index.get(r.id)?.lastWatchedAt ?? null, at }]));
-  assert.deepEqual(planLookups(grid, index, { stamps, maxAge: DAY }), [], 'nothing moved, nothing re-read');
-
-  // Only the title that moved.
-  stamps.set(1, { watchedAt: Temporal.Instant.from('1999-01-01T00:00:00Z'), at });
-  assert.deepEqual([...new Set(planLookups(grid, index, { stamps, maxAge: DAY }).map((r) => r.id))], [1]);
-});
-
-// The backstop for the case watch activity cannot catch: /tv/{id} status
-// flipping on a renewal, which produces nothing in the library to gate on.
-test('a stamp past its age ceiling is re-read even with no activity', () => {
-  const { grid, index } = scenario({
-    rows: [show('Fargo', 'Watching', 1), season(1, 1, null)],
-    items: [{ id: 1, status: 'watching', seasons: { 1: watched(5) } }],
-  });
-  const unchanged = { watchedAt: index.get(1)?.lastWatchedAt ?? null };
-
-  const fresh = new Map([[1, { ...unchanged, at: Temporal.Now.instant().subtract({ hours: 12 }) }]]);
-  assert.deepEqual(planLookups(grid, index, { stamps: fresh, maxAge: DAY }), []);
-
-  const old = new Map([[1, { ...unchanged, at: Temporal.Now.instant().subtract({ hours: 48 }) }]]);
-  assert.equal(planLookups(grid, index, { stamps: old, maxAge: DAY }).length > 0, true);
-});
-
-test('the cut-off still wins over a stamp — an ineligible title is never read', () => {
-  const { grid, index } = scenario({
-    rows: [show('Dormant', 'Ended', 1), season(1, 10, 44000)],
-    items: [{ id: 1, status: 'completed', seasons: { 1: watched(10, 500) } }],
-  });
-  assert.deepEqual(planLookups(grid, index, { stamps: new Map(), maxAge: DAY }), []);
-});
-
-test('needsLookup reads unstamped, moved and aged as due, and nothing else', () => {
-  const progress = indexLibrary(libraryOf({ id: 1, lastWatchedAt: '2026-08-01T00:00:00Z' })).get(1);
-  const now = Temporal.Now.instant();
-  assert.equal(needsLookup(undefined, progress, now, DAY), true, 'never read');
-  assert.equal(needsLookup({ watchedAt: Temporal.Instant.from('2026-08-01T00:00:00Z'), at: now }, progress, now, DAY), false);
-  assert.equal(needsLookup({ watchedAt: Temporal.Instant.from('2026-07-01T00:00:00Z'), at: now }, progress, now, DAY), true, 'moved');
-  assert.equal(needsLookup({ watchedAt: Temporal.Instant.from('2026-08-01T00:00:00Z'), at: now.subtract({ hours: 48 }) }, progress, now, DAY), true, 'aged');
-  // A title that has dropped out of the library entirely still compares.
-  assert.equal(needsLookup({ watchedAt: null, at: now }, undefined, now, DAY), false);
+  assert.equal(result.insert, null);
+  assert.match(skipMessages(result), /SIMKL id 999999 is in no list/);
 });
 
 // A live-action block with no episode shapes is a *failed lookup*, not a cour.
@@ -683,11 +644,11 @@ test('a live-action show whose episode list did not arrive gets no Status', () =
     items: [{ id: 300, status: 'watching', seasons: { 1: watched(10) }, watched: 10, total: 10, notAired: 0 }],
     // No `episodes` entry: the /tv/episodes lookup failed.
     details: { 300: { status: 'ended' } },
-    failed: [300],
   });
   const result = plan();
   assert.deepEqual(result.edits.filter((e) => e.field === 'Status'), []);
-  assert.match(result.skipped.join('\n'), /Silo: no episode list came back, so Status is left alone/);
+  const skip = result.skips.find((s) => s.code === 'no-episode-list');
+  assert.match(skip?.message ?? '', /Silo: no episode list came back, so Status is left alone/);
 
   // With the list present the same inputs do produce it, so the guard above is
   // the missing data and not something else.
@@ -737,9 +698,8 @@ test('two new seasons insert one per run, and the second survives to the next', 
   ];
 
   const first = twoNewSeasons(before).plan();
-  assert.equal(first.inserts.length, 1, 'never more than one per run');
-  assert.equal(first.inserts[0]?.title, 'Futurama');
-  assert.equal(first.inserts[0]?.season, 11);
+  assert.equal(first.insert?.title, 'Futurama', 'never more than one per run');
+  assert.equal(first.insert?.season, 11);
 
   // The sheet as it stands after that insert lands.
   const after: CellSpec[][] = [
@@ -750,13 +710,12 @@ test('two new seasons insert one per run, and the second survives to the next', 
     season(1, 10, 44000),
   ];
   const second = twoNewSeasons(after).plan();
-  assert.equal(second.inserts.length, 1);
-  assert.equal(second.inserts[0]?.title, 'Silo');
-  assert.equal(second.inserts[0]?.season, 2);
+  assert.equal(second.insert?.title, 'Silo');
+  assert.equal(second.insert?.season, 2);
 
   // And a third run has nothing left to insert.
   const settled: CellSpec[][] = [...after, season(2, 4, null)];
-  assert.deepEqual(twoNewSeasons(settled).plan().inserts, []);
+  assert.equal(twoNewSeasons(settled).plan().insert, null);
 });
 
 // Deferring it silently is the part that would bite: the report says "1 insert"
@@ -769,11 +728,11 @@ test('a season deferred past the per-run cap is reported', () => {
     season(1, 10, 44000),
   ];
   const result = twoNewSeasons(before).plan();
-  assert.match(result.notes.concat(result.skipped).join('\n'), /Silo S2/, 'the deferred season is named');
+  assert.match(result.notes.join('\n'), /Silo S2/, 'the deferred season is named');
   // Counted, not just mentioned: this is what makes the sync ask for another
   // poll instead of waiting on unrelated watch activity to wake one.
-  assert.equal(result.deferred, 1);
-  assert.equal(twoNewSeasons([...before.slice(0, 2)]).plan().deferred, 0, 'nothing deferred when it fits');
+  assert.equal(result.deferredInserts, 1);
+  assert.equal(twoNewSeasons([...before.slice(0, 2)]).plan().deferredInserts, 0, 'nothing deferred when it fits');
 });
 
 // The projection the status page's history is built from. It outlives the run,
@@ -783,10 +742,10 @@ test('planRecord keeps where and what changed, and drops the diagnostics', () =>
     edits: [
       { row: 8, column: 3, field: 'Episode', previous: { numberValue: 3 }, value: { numberValue: 5 }, address: 'D9', note: 'Fargo S2: 3 -> 5 episodes' },
     ],
-    inserts: [{ row: 609, title: 'Fargo', season: 3, fill: [], note: 'Fargo: new season row at 610, 4 episodes' }],
-    skipped: ['Severance S1: two rows claim season 1'],
+    insert: { row: 609, title: 'Fargo', season: 3, fill: [], note: 'Fargo: new season row at 610, 4 episodes' },
+    skips: [{ code: 'duplicate-season', message: 'Severance S1: two rows claim season 1' }],
     notes: ['Andor: not on the sheet'],
-    deferred: 2,
+    deferredInserts: 2,
   };
 
   assert.deepEqual(planRecord(plan), {
@@ -796,12 +755,12 @@ test('planRecord keeps where and what changed, and drops the diagnostics', () =>
   });
 });
 
-// `skipped` and `notes` answer "why was this row left alone", which is the
+// `skips` and `notes` answer "why was this row left alone", which is the
 // per-show diagnostic the status page deliberately does not carry. Widening the
 // record to include them turns a change log into a question the page cannot
 // answer well, and does it in a file that survives restarts.
 test('planRecord carries no skip or note lines', () => {
-  const record = planRecord({ edits: [], inserts: [], skipped: ['a skip'], notes: ['a note'], deferred: 1 });
+  const record = planRecord({ edits: [], insert: null, skips: [{ code: 'unknown-id', message: 'a skip' }], notes: ['a note'], deferredInserts: 1 });
   assert.deepEqual(record, { edits: [], inserts: [] });
   assert.ok(!JSON.stringify(record).includes('a skip'));
   assert.ok(!JSON.stringify(record).includes('a note'));
@@ -832,15 +791,13 @@ test('a season whose Episode cell holds text is skipped, not planned', () => {
     [],
     'no Episode edit, so the guard is never asked to refuse the run',
   );
-  assert.ok(
-    result.skipped.some((line) => /not a number/.test(line)),
-    `the row should be skipped with a reason, got ${JSON.stringify(result.skipped)}`,
-  );
+  const skip = result.skips.find((s) => s.code === 'non-numeric-count');
+  assert.match(skip?.message ?? '', /not a number/, `the row should be skipped with a reason, got ${JSON.stringify(result.skips)}`);
 });
 
 // The point of the skip: the rest of the run still happens.
 test('one unusable Episode cell does not stop the other rows', () => {
-  const { grid, index, catalogue } = scenario({
+  const { grid, index, titles } = scenario({
     rows: [
       show('Fargo', 'Watching', 100),
       [null, null, 1, '12 (rewatch)', 44000, null, 0.0153, { formula: '=G3*D3' }, null, null],
@@ -853,13 +810,13 @@ test('one unusable Episode cell does not stop the other rows', () => {
     ],
     episodes: { 100: eps(1, 14), 200: eps(1, 10) },
   });
-  const result = planSync(grid, index, catalogue, { timezone: TZ });
+  const { plan } = planSync(grid, index, titles, { timezone: TZ });
 
-  const episodeEdits = result.edits.filter((e) => e.field === 'Episode');
+  const episodeEdits = plan.edits.filter((e) => e.field === 'Episode');
   assert.equal(episodeEdits.length, 1, 'the healthy row is still planned');
   assert.equal(episodeEdits[0]?.row, 4, 'and it is the healthy one');
   // The whole point: this plan passes the guard rather than being refused.
-  assert.doesNotThrow(() => assertPlanSafe(result, grid));
+  assert.doesNotThrow(() => assertPlanSafe(plan, grid));
 });
 
 // A hand-maintained file can end up with two rows for one season — a paste that
@@ -875,10 +832,8 @@ test('two rows describing one season are both skipped, not both written', () => 
   const result = plan();
 
   assert.deepEqual(result.edits.filter((e) => e.field === 'Episode'), []);
-  assert.ok(
-    result.skipped.some((line) => /more than one row describes this season/.test(line)),
-    `expected a skip naming the clash, got ${JSON.stringify(result.skipped)}`,
-  );
+  const skip = result.skips.find((s) => s.code === 'duplicate-season');
+  assert.match(skip?.message ?? '', /more than one row describes this season/, `expected a skip naming the clash, got ${JSON.stringify(result.skips)}`);
 });
 
 // The same clash written the other way: one row names the block's id outright
@@ -955,7 +910,8 @@ test('a runtime still outstanding holds the End write rather than closing blind'
   const plan = closing().plan();
   assert.equal(has(plan, 'End'), false, 'the row stays open');
   assert.equal(has(plan, 'Episodes'), false);
-  assert.match(plan.skipped.join(' '), /have not come back/);
+  const skip = plan.skips.find((s) => s.code === 'awaiting-runtimes');
+  assert.match(skip?.message ?? '', /have not come back/);
 });
 
 // Settled means no season average is coming. This batch dates the row either
@@ -976,38 +932,38 @@ test('a season with neither an average nor a show-wide length closes blank, and 
 });
 
 // No join key is the one state that means "no runtime is obtainable here",
-// whether SIMKL carries no id or there is no credential to ask with — the shell
+// whether SIMKL carries no id or there is no credential to ask with — the store
 // withholds it in both cases. Read as *pending* instead, every season in the
 // sheet would stop being dated, which is why this asserts the skips are empty
 // rather than only that the End landed.
 test('a row with no tvdb id closes exactly as it did before this existed', () => {
   const bare = closing({ tvdbIds: {} });
   closedBare(bare.plan());
-  assert.deepEqual(bare.plan().skipped, []);
-  assert.deepEqual(bare.lookups(), []);
+  assert.deepEqual(bare.plan().skips, []);
+  assert.deepEqual(bare.runtimeDemands(), []);
 });
 
-// --- which seasons are asked about -----------------------------------------
+// --- which seasons are demanded --------------------------------------------
 
-test('the lookup asks for the completing season, with SIMKL’s own count to check against', () => {
-  assert.deepEqual(closing().lookups(), [{ id: 800, tvdbId: 403245, season: 1 }]);
+test('the demand names the completing season, with SIMKL’s own count to check against', () => {
+  assert.deepEqual(closing().runtimeDemands(), [{ id: 800, tvdbId: 403245, season: 1 }]);
 });
 
-test('an answer already held is never asked for again, including a null one', () => {
-  assert.deepEqual(closing({ runtimes: { 800: { 1: 49 } } }).lookups(), []);
-  assert.deepEqual(closing({ runtimes: { 800: { 1: null } } }).lookups(), []);
+test('an answer already held is never demanded again, including a null one', () => {
+  assert.deepEqual(closing({ runtimes: { 800: { 1: 49 } } }).runtimeDemands(), []);
+  assert.deepEqual(closing({ runtimes: { 800: { 1: null } } }).runtimeDemands(), []);
 });
 
 test('a part-watched season, a filled cell and a dated row are all left alone', () => {
   const open = closing({ items: [{ id: 800, status: 'watching', seasons: { 1: watched(4) }, watched: 4, total: 10 }] });
-  assert.deepEqual(open.lookups(), [], 'not complete');
-  assert.deepEqual(closing({ rows: [show('Silo', 'Watching', 800), seasonRow(1, 9, null, { episodes: 0.03 })] }).lookups(), [], 'cell filled');
-  assert.deepEqual(closing({ rows: [show('Silo', 'Watching', 800), seasonRow(1, 10, 44000, { episodes: null })] }).lookups(), [], 'already dated');
+  assert.deepEqual(open.runtimeDemands(), [], 'not complete');
+  assert.deepEqual(closing({ rows: [show('Silo', 'Watching', 800), seasonRow(1, 9, null, { episodes: 0.03 })] }).runtimeDemands(), [], 'cell filled');
+  assert.deepEqual(closing({ rows: [show('Silo', 'Watching', 800), seasonRow(1, 10, 44000, { episodes: null })] }).runtimeDemands(), [], 'already dated');
 });
 
 // A SIMKL anime record numbers every cour "season 1" and all cours of a
 // franchise share one TVDB id, so the row's season number means nothing there.
-test('an anime block is never asked about, however its ids are arranged', () => {
+test('an anime block is never demanded, however its ids are arranged', () => {
   const anime = (type: string, showId: number | null, rowId: number | null) =>
     scenario({
       rows: [showRow('Frieren', 'Watching', showId, type), seasonRow(1, 27, null, { id: rowId, episodes: null })],
@@ -1016,13 +972,13 @@ test('an anime block is never asked about, however its ids are arranged', () => 
       details: { 900: { status: 'ended', runtime: 30 } },
       tvdbIds: { 900: 424536 },
     });
-  assert.deepEqual(anime('anime', null, 900).lookups(), [], 'ids on the cour row, as anime is kept');
+  assert.deepEqual(anime('anime', null, 900).runtimeDemands(), [], 'ids on the cour row, as anime is kept');
   // The hole an id-location test alone leaves: Type says anime, but someone put
   // an id on the show row, so "no block ids" reads it as live-action.
-  assert.deepEqual(anime('anime', 900, null).lookups(), [], 'Type is what settles it');
+  assert.deepEqual(anime('anime', 900, null).runtimeDemands(), [], 'Type is what settles it');
 });
 
-test('a row carrying its own id is never asked about — its number is not the entry’s', () => {
+test('a row carrying its own id is never demanded — its number is not the entry’s', () => {
   const own = scenario({
     rows: [show('Doctor Who', 'Watching', 810), seasonRow(14, 8, null, { id: 811, episodes: null })],
     items: [
@@ -1036,19 +992,20 @@ test('a row carrying its own id is never asked about — its number is not the e
     details: { 810: { status: 'ended' }, 811: { status: 'ended' } },
     tvdbIds: { 810: 449991, 811: 449991 },
   });
-  assert.deepEqual(own.lookups(), []);
+  assert.deepEqual(own.runtimeDemands(), []);
 });
 
-test('a fractional season is never asked about', () => {
+test('a fractional season is never demanded', () => {
   // Season 1 has a row of its own, closed, so the only thing the block could ask
   // about is the fractional row — and the only reason it does not is the rule.
   const half = closing({ rows: [show('Silo', 'Watching', 800), seasonRow(1, 9, 44000), seasonRow(1.5, 9, null, { episodes: null })] });
-  assert.deepEqual(half.lookups(), []);
+  assert.deepEqual(half.runtimeDemands(), []);
 });
 
-// The invariant that stops the two predicates drifting apart. A row the planner
-// treats as *pending* but the lookup never requests would defer for ever.
-test('every row the plan waits on is a row the lookup asked about', () => {
+// The old failure mode this design deletes: a row the planner treats as
+// *waiting* whose lookup was never requested would defer for ever. Both now
+// come out of one pass, so the invariant is asserted over every closing shape.
+test('every row the plan waits on is a season the same pass demanded', () => {
   const cases = [
     closing(),
     closing({ rows: [show('Silo', 'Watching', 800), seasonRow(1, 9, null, { episodes: null }), seasonRow(2, 3, null, { episodes: null })] }),
@@ -1058,15 +1015,13 @@ test('every row the plan waits on is a row the lookup asked about', () => {
     closing({ rows: [show('Silo', 'Watching', 800), seasonRow(1, 9, null, { episodes: null })], runtimes: { 800: { 2: 40 } } }),
   ];
   for (const [i, c] of cases.entries()) {
-    const asked = new Set(c.lookups().map((r) => r.season));
-    for (const line of c.plan().skipped) {
-      if (!line.includes('have not come back')) continue;
+    const { plan, demands } = planSync(c.grid, c.index, c.titles, { timezone: TZ });
+    const asked = new Set(demands.runtimes.map((r) => r.season));
+    for (const skip of plan.skips) {
+      if (skip.code !== 'awaiting-runtimes') continue;
       // "Silo S1: complete, but …" — the season the planner is waiting on.
-      const season = Number(/ S(\d+):/.exec(line)?.[1]);
-      assert.ok(
-        asked.has(season),
-        `case ${i}: waiting on S${season} that the lookup never requested — it would defer for ever\n  ${line}`,
-      );
+      const season = Number(/ S(\d+):/.exec(skip.message)?.[1]);
+      assert.ok(asked.has(season), `case ${i}: waiting on S${season} that was never demanded — it would defer for ever\n  ${skip.message}`);
     }
   }
 });

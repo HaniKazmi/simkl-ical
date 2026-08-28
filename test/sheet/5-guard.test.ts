@@ -103,24 +103,24 @@ test('over budget refuses everything rather than trimming', () => {
 // --- inserts ---------------------------------------------------------------
 
 test('a well-formed insert below an existing season row is allowed', () => {
-  assert.doesNotThrow(() => assertPlanSafe(planOf([], [fx.insertAt(fx.end, 3)]), fx.grid));
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], fx.insertAt(fx.end, 3)), fx.grid));
 });
 
 // inheritFromBefore takes its formats from the row above. Without a season row
 // there it inherits the show row's, and a correct date serial renders as 46265.
 test('an insert with no season row above it is refused', () => {
-  refuses(planOf([], [fx.insertAt(fx.at.fargoS1!, 1)]), /no season row above the insertion point/);
+  refuses(planOf([], fx.insertAt(fx.at.fargoS1!, 1)), /no season row above the insertion point/);
 });
 
 test('an insert outside its own block is refused', () => {
   const two = gridFixture(show('fargo', 'Fargo'), season('fargoS1', 1, 6, 44000), show('silo', 'Silo', { status: 'Watching' }), season('siloS1', 1, 3, null));
   const insert = { ...two.insertAt(two.end, 2), title: 'Fargo' };
-  refuses(planOf([], [insert]), /not inside Fargo's block/, two.grid);
+  refuses(planOf([], insert), /not inside Fargo's block/, two.grid);
 });
 
 test('a fractional or season-zero row is never inserted', () => {
-  refuses(planOf([], [fx.insertAt(fx.end, 4.5)]), /only whole numbered seasons/);
-  refuses(planOf([], [fx.insertAt(fx.end, 0)]), /only whole numbered seasons/);
+  refuses(planOf([], fx.insertAt(fx.end, 4.5)), /only whole numbered seasons/);
+  refuses(planOf([], fx.insertAt(fx.end, 0)), /only whole numbered seasons/);
 });
 
 // A separate whitelist from the edits one: an insert fills six columns, and
@@ -128,13 +128,13 @@ test('a fractional or season-zero row is never inserted', () => {
 test('an insert may only fill its own whitelist, and only its own row', () => {
   const insert = fx.insertAt(fx.end, 3);
   const strayField = { ...insert, fill: [...insert.fill, { ...insert.fill[0]!, field: 'Status' as HeaderName, column: fx.grid.columns.Status, address: a1(fx.end, fx.grid.columns.Status) }] };
-  refuses(planOf([], [strayField]), /not a field this sync may write/);
+  refuses(planOf([], strayField), /not a field this sync may write/);
 
   const strayRow = { ...insert, fill: insert.fill.map((f, i) => (i === 0 ? { ...f, row: fx.at.fargoS2!, address: a1(fx.at.fargoS2!, f.column) } : f)) };
-  refuses(planOf([], [strayRow]), /may only fill the row it creates/);
+  refuses(planOf([], strayRow), /may only fill the row it creates/);
 
   const hasPrevious = { ...insert, fill: insert.fill.map((f, i) => (i === 0 ? { ...f, previous: { numberValue: 1 } } : f)) };
-  refuses(planOf([], [hasPrevious]), /cannot have a previous value/);
+  refuses(planOf([], hasPrevious), /cannot have a previous value/);
 });
 
 // Past the end of the snapshot both sides read as undefined, so the value
@@ -143,22 +143,12 @@ test('a target beyond the end of the snapshot is refused', () => {
   refuses(planOf([{ ...fx.cell('fargoS2', 'Episode', { numberValue: 8 }), row: 99, address: a1(99, fx.grid.columns.Episode), previous: undefined }]), /outside the snapshot/);
 });
 
-// The one-row-per-run rule is an invariant, not a budget, and the guard is its
-// only enforcement: plan indices are pre-write while `insertDimension` requests
-// apply cumulatively, so a second insert lands a row above where it was planned
-// and `verify` — which makes the same unshifted assumption — disagrees with the
-// sheet in a different way again. The planner emits one; nothing proved the
-// guard is the backstop if it ever emitted two.
-test('two inserts in one batch are refused however well-formed each is', () => {
-  refuses(planOf([], [fx.insertAt(fx.end, 2), fx.insertAt(9, 3, { title: 'Veep' })]), /2 inserts in one batch/);
-});
-
-test('two inserts are refused even for the same show', () => {
-  refuses(planOf([], [fx.insertAt(fx.end, 2), fx.insertAt(fx.end + 1, 3)]), /inserts in one batch/);
-});
-
+// The one-row-per-run rule is carried by the plan's type — `insert` is a
+// single value, so a second insert in one batch is unrepresentable rather than
+// refused. Plan indices are pre-write while `insertDimension` requests apply
+// cumulatively, so a second insert would land a row above where it was planned.
 test('one insert alongside edits is still allowed', () => {
-  assert.doesNotThrow(() => assertPlanSafe(planOf([fx.cell('fargoS2', 'Episode', { numberValue: 9 })], [fx.insertAt(fx.end, 2)]), fx.grid));
+  assert.doesNotThrow(() => assertPlanSafe(planOf([fx.cell('fargoS2', 'Episode', { numberValue: 9 })], fx.insertAt(fx.end, 2)), fx.grid));
 });
 
 /**
@@ -321,18 +311,18 @@ test('a runtime is refused on a season row that carries its own id', () => {
  * asserted from the same baseline the edits tests use.
  */
 test('an insert carrying a runtime and an End is allowed', () => {
-  assert.doesNotThrow(() => assertPlanSafe(planOf([], [fx.insertAt(fx.end, 3, { end: TODAY })]), fx.grid));
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], fx.insertAt(fx.end, 3, { end: TODAY })), fx.grid));
 });
 
 // The state a row left for its close to fill goes in as. Pins that the insert
 // whitelist is a whitelist and not a requirement.
 test('an insert with no runtime cell at all is allowed', () => {
-  assert.doesNotThrow(() => assertPlanSafe(planOf([], [fx.insertAt(fx.end, 3, { episodes: null })]), fx.grid));
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], fx.insertAt(fx.end, 3, { episodes: null })), fx.grid));
 });
 
 test('an insert’s runtime is bounded exactly as an edit’s is', () => {
   for (const bad of [49, 1, 0, -1 / 1440, 0.4 / 1440]) {
-    refuses(planOf([], [fx.insertAt(fx.end, 3, { episodes: bad })]), /not a plausible per-episode day fraction/);
+    refuses(planOf([], fx.insertAt(fx.end, 3, { episodes: bad })), /not a plausible per-episode day fraction/);
   }
 });
 
@@ -341,23 +331,23 @@ test('an insert’s runtime is bounded exactly as an edit’s is', () => {
 // the one insert value a wrong bound writes silently: it renders as a plausible
 // date whatever number it holds.
 test('an insert’s End is bounded exactly as an edit’s is', () => {
-  refuses(planOf([], [fx.insertAt(fx.end, 3, { end: TODAY + 5 })]), /not a plausible date serial/);
-  refuses(planOf([], [fx.insertAt(fx.end, 3, { end: 1000 })]), /not a plausible date serial/);
+  refuses(planOf([], fx.insertAt(fx.end, 3, { end: TODAY + 5 })), /not a plausible date serial/);
+  refuses(planOf([], fx.insertAt(fx.end, 3, { end: 1000 })), /not a plausible date serial/);
 });
 
 // The claim the row cannot take back, re-derived on the insert path too: the
 // same fill dates the row, so nothing protects the cell a second time.
 test('an insert carrying a runtime into a block TVDB cannot describe is refused', () => {
   const anime = gridFixture(show('bleach', 'Bleach', { status: 'Watching', type: 'anime' }), season('bleachS1', 1, 6, 44000), season('bleachS2', 2, 3, null));
-  refuses(planOf([], [anime.insertAt(anime.end, 3, { title: 'Bleach' })]), /live-action block/, anime.grid);
+  refuses(planOf([], anime.insertAt(anime.end, 3, { title: 'Bleach' })), /live-action block/, anime.grid);
 
   const idless = gridFixture(show('fargo', 'Fargo', { id: null }), season('fargoS1', 1, 6, 44000), season('fargoS2', 2, 3, null));
-  refuses(planOf([], [idless.insertAt(idless.end, 3)]), /live-action block/, idless.grid);
+  refuses(planOf([], idless.insertAt(idless.end, 3)), /live-action block/, idless.grid);
 
   // The same two blocks accept a row that carries no runtime, so the refusals
   // above are the runtime rule rather than anything else about the block.
-  assert.doesNotThrow(() => assertPlanSafe(planOf([], [anime.insertAt(anime.end, 3, { title: 'Bleach', episodes: null })]), anime.grid));
-  assert.doesNotThrow(() => assertPlanSafe(planOf([], [idless.insertAt(idless.end, 3, { episodes: null })]), idless.grid));
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], anime.insertAt(anime.end, 3, { title: 'Bleach', episodes: null })), anime.grid));
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], idless.insertAt(idless.end, 3, { episodes: null })), idless.grid));
 });
 
 // The write requests go out in fill order and the last one wins, so a bound that
@@ -366,7 +356,7 @@ test('every runtime cell an insert carries is bounded, not just the first', () =
   const insert = fx.insertAt(fx.end, 3);
   const first = insert.fill.find((c) => c.field === 'Episodes')!;
   refuses(
-    planOf([], [{ ...insert, fill: [...insert.fill, { ...first, value: { numberValue: 49 } }] }]),
+    planOf([], { ...insert, fill: [...insert.fill, { ...first, value: { numberValue: 49 } }] }),
     /not a plausible per-episode day fraction/,
   );
 });

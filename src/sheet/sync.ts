@@ -1,15 +1,15 @@
 /**
  * The write protocol. The only thing in the project that writes to the sheet.
  *
- * It runs the numbered modules beside it, in their number order, with the whole
- * cycle inside one poll so that what was planned and what was written describe
- * the same grid:
+ * It runs the numbered modules beside it, with the whole cycle inside one poll
+ * so that what was planned and what was written describe the same grid:
  *
  *   INDEX     1-index.ts        — the library, and the early-out
- *   READ      io/spreadsheet.ts, io/catalogue.ts, io/runtimes.ts
+ *   READ      io/spreadsheet.ts
  *   PARSE     2-grid.ts
- *   FOLD      3-catalogue.ts    — what the reads mean, retained across polls
- *   PLAN      4-plan.ts
+ *   PLAN ⇄ FETCH                — 4-plan.ts asks, io/catalogue.ts and
+ *             io/runtimes.ts answer, 3-catalogue.ts holds the answers; the
+ *             loop runs until the planner demands nothing new
  *   GUARD     5-guard.ts        — nothing is built until this passes
  *   FRESH     a snapshot older than 120s restarts the cycle from the READ
  *   BUILD     6-requests.ts
@@ -23,20 +23,19 @@
  * `errors.sheet` and `/healthz`.
  */
 
-import { config, tvdbConfigured } from '../shared/config.ts';
+import { config } from '../shared/config.ts';
 import { errorMessage } from '../shared/errors.ts';
 import type { Logger } from '../shared/logger.ts';
 import { SheetsAccessError } from '../api/google/client.ts';
 import type { Library } from '../library.ts';
-// The steps, in the order this file runs them.
 import { applyRequests, readSnapshot, type SheetSnapshot } from './io/spreadsheet.ts';
-import { fetchCatalogue } from './io/catalogue.ts';
-import { fetchSeasonRuntimes } from './io/runtimes.ts';
+import { fetchCatalogue, type CatalogueRequest } from './io/catalogue.ts';
+import { fetchSeasonRuntimes, runtimeKeyOf, type RuntimeRequest } from './io/runtimes.ts';
 import { classify } from '../api/tvdb/client.ts';
 import { parseGrid, type Grid } from './2-grid.ts';
 import { indexLibrary, type TitleProgress } from './1-index.ts';
-import { CatalogueStore, type CatalogueView } from './3-catalogue.ts';
-import { describePlan, planLookups, planRecord, planRuntimeLookups, planSync, type PlanRecord, type SheetPlan } from './4-plan.ts';
+import { CatalogueStore, needsLookup } from './3-catalogue.ts';
+import { describePlan, emptyPlan, planRecord, planSync, type PlanRecord, type SheetPlan } from './4-plan.ts';
 import { assertPlanSafe, UnsafePlanError } from './5-guard.ts';
 import { backupRequest, deleteRowRequests, restoreRequest, toRequests } from './6-requests.ts';
 import { backupName, discardBackup, findBackup, isBackupTab, markForRepair, sweepBackups } from './backups.ts';
@@ -66,34 +65,28 @@ export type SheetSyncStatus = 'idle' | 'reported' | 'applied' | 'refused' | 'fai
 
 export interface SheetSyncResult {
   status: SheetSyncStatus;
-  /**
-   * What the run planned, kept as records rather than two counts.
-   *
-   * The counts it replaces were passed by hand at each return site, and three
-   * of the six — `failed`, `frozen`, `rolled-back` — did not pass them, so the
-   * runs whose detail matters most reported having planned nothing. A `.length`
-   * cannot be forgotten.
-   */
-  plan: PlanRecord;
-  /** The report: every proposed edit, skip and note, one per line. */
-  lines: string[];
+  /** What the run planned — the projection the journal and the status page keep. */
+  record: PlanRecord;
   /** For `errors.sheet`; null when the run was clean. */
   error: string | null;
   /** Whether the next poll should try again even if no list moved. */
   retry: boolean;
 }
 
-const idle = (overrides: Partial<SheetSyncResult> = {}): SheetSyncResult => ({
-  status: 'idle',
+/** Which lookups this run has already made, and how many failed retryably. */
+interface RunLookups {
+  catalogue: Set<number>;
+  runtimes: Set<string>;
+  failures: number;
+}
+
+const outcome = (
+  status: SheetSyncStatus,
   // Fresh arrays per result rather than one shared empty: a single mutation
   // anywhere would otherwise reach every past result and every journal record
   // built from one.
-  plan: { edits: [], inserts: [] },
-  lines: [],
-  error: null,
-  retry: false,
-  ...overrides,
-});
+  { record = { edits: [], inserts: [] }, error = null, retry = false }: Partial<Omit<SheetSyncResult, 'status'>> = {},
+): SheetSyncResult => ({ status, record, error, retry });
 
 export class SheetSync {
   log: Logger;
@@ -123,10 +116,10 @@ export class SheetSync {
   }
 
   async run(library: Library | null, { signal }: { signal?: AbortSignal } = {}): Promise<SheetSyncResult> {
-    if (config.sheetSyncMode === 'off') return idle();
+    if (config.sheetSyncMode === 'off') return outcome('idle');
     if (this.frozen) {
       this.log.error(this.frozen);
-      return await this.record(idle({ status: 'frozen', error: this.frozen }));
+      return await this.record(outcome('frozen', { error: this.frozen }));
     }
 
     try {
@@ -144,13 +137,13 @@ export class SheetSync {
       // and recovers on its own. Without the retry it would not get one until
       // some list happened to move.
       const permanent = err instanceof SheetsAccessError && err.status !== 401;
-      return await this.record(idle({ status: 'failed', error: message, retry: !permanent }));
+      return await this.record(outcome('failed', { error: message, retry: !permanent }));
     }
   }
 
   /**
    * The one choke point every terminal path funnels through, which is why the
-   * journal append lives here rather than at six call sites. Awaited rather
+   * journal append lives here rather than at each return site. Awaited rather
    * than fired and forgotten: the append cannot throw, and awaiting keeps a
    * test's assertion about the file deterministic.
    *
@@ -165,8 +158,8 @@ export class SheetSync {
         at: this.lastRunAt,
         status: result.status,
         mode: config.sheetSyncMode,
-        edits: result.plan.edits,
-        inserts: result.plan.inserts,
+        edits: result.record.edits,
+        inserts: result.record.inserts,
         error: result.error,
       },
       { log: this.log },
@@ -176,82 +169,57 @@ export class SheetSync {
 
   private async cycle(library: Library | null, signal: AbortSignal | undefined): Promise<SheetSyncResult> {
     const index = indexLibrary(library);
-    if (index.size === 0) return idle();
+    if (index.size === 0) return outcome('idle');
+
+    // Lookups already made this run. A FRESH re-plan, or a later planning pass,
+    // must not re-issue them — the failed ones included, which stay unstamped
+    // in the store so the *next poll* retries them, but would otherwise stall
+    // this run on exactly the fetches that aged its snapshot.
+    const made: RunLookups = { catalogue: new Set(), runtimes: new Set(), failures: 0 };
 
     // Held across attempts so the exhausted path below can report the plan it
     // built rather than an empty one — the run whose detail matters most.
     let record: PlanRecord | undefined;
-    let lines: string[] = [];
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
       const snapshot = await readSnapshot({ signal });
       const grid = parseGrid(snapshot);
-
-      // One instant for both, threaded rather than defaulted. `planLookups`
-      // and `planSync` must agree about which blocks are in scope, and they are
-      // separated here by the entire catalogue fetch — letting each default its
-      // own `Temporal.Now.instant()` would put that fetch's duration between the
-      // two answers, so a block sitting on the activity cut-off could be looked
-      // up and then planned as out of scope, or the reverse.
-      const now = Temporal.Now.instant();
-      const catalogue = await this.catalogueFor(grid, index, signal, now);
-      // Second, and it cannot be folded into the first: which seasons need a
-      // runtime is a question about which are *completing*, which the episode
-      // list above is what answers.
-      //
-      // First attempt only. A failed lookup is deliberately not recorded, so a
-      // re-plan would re-issue exactly the lookups that aged the snapshot past
-      // FRESH_MS — and a throttled season can spend a minute apiece obeying
-      // `Retry-After`. Three attempts of that ends the run `failed`, losing the
-      // `Episode`, `Status` and insert writes the poll had already earned to an
-      // optional column. Skipping leaves those seasons pending, which is the
-      // outcome they already had this poll.
-      const runtimesFailed = attempt === 1 ? await this.runtimesFor(grid, index, catalogue, signal, now) : 0;
-      const plan = planSync(grid, index, catalogue, { now });
-      lines = describePlan(plan, grid.columns);
-      // Once per scope: five separate calls read as five projections a reader
-      // has to confirm are the same one.
+      const plan = await this.planToFixpoint(grid, index, made, signal);
       record = planRecord(plan);
-      // An incomplete catalogue means some season's shape is unknown, and an
-      // unknown shape is exactly what makes an end date premature. A deferred
-      // row is simpler: the work exists and the cap is the only thing holding
-      // it, so ask for another poll rather than waiting on unrelated activity.
-      //
-      // Only when the deferral can actually drain, which needs a write. Report
-      // mode never takes the first row either, so asking for another poll would
-      // re-read and re-plan the whole grid forever — in the default mode.
-      // A season whose runtimes did not come back is one whose row was left open
-      // rather than dated, so this poll has work it could not finish.
-      const catalogueRetry = catalogue.failed.length > 0 || runtimesFailed > 0;
-      const retry = catalogueRetry || (config.sheetSyncMode === 'apply' && plan.deferred > 0);
-      if (plan.deferred) this.log.info(`${plan.deferred} more row(s) to add; the next poll will take the next one`);
-      if (catalogue.failed.length) {
-        this.log.warn(`${catalogue.failed.length} SIMKL lookups failed; the sheet sync will retry on the next poll`);
-      }
-      if (runtimesFailed) {
-        this.log.warn(`${runtimesFailed} season runtime lookups failed; those rows stay open until the next poll`);
-      }
 
-      if (!plan.edits.length && !plan.inserts.length) {
+      // A failed lookup means some season's shape or runtime is unknown, and an
+      // unknown one is exactly what leaves a row open this run. A deferred row
+      // is simpler: the work exists and the one-per-run rule is the only thing
+      // holding it, so ask for another poll rather than waiting on unrelated
+      // activity — but only when the deferral can actually drain, which needs a
+      // write. Report mode never takes the first row either, so asking for
+      // another poll would re-read and re-plan the whole grid forever, in the
+      // default mode.
+      const lookupRetry = made.failures > 0;
+      const retry = lookupRetry || (config.sheetSyncMode === 'apply' && plan.deferredInserts > 0);
+      if (plan.deferredInserts) this.log.info(`${plan.deferredInserts} more row(s) to add; the next poll will take the next one`);
+      if (made.failures) this.log.warn(`${made.failures} lookup(s) failed; the sheet sync will retry on the next poll`);
+
+      if (!plan.edits.length && !plan.insert) {
+        const lines = describePlan(plan, grid.columns);
         if (lines.length) this.report('sheet sync: nothing to write', lines);
-        return idle({ lines, retry });
+        return outcome('idle', { retry });
       }
 
       try {
         assertPlanSafe(plan, grid);
       } catch (err) {
         // The refusal itself is not a reason to retry: the same inputs would
-        // refuse again. A failed catalogue lookup is, and it is independent of
-        // why the plan was refused — the log line above has already promised
-        // the next poll will try it.
+        // refuse again. A failed lookup is, and it is independent of why the
+        // plan was refused.
         if (!(err instanceof UnsafePlanError)) throw err;
-        this.report(`sheet sync REFUSED the plan: ${err.message}`, lines, 'error');
-        return idle({ status: 'refused', plan: record, lines, error: err.message, retry: catalogueRetry });
+        this.report(`sheet sync REFUSED the plan: ${err.message}`, describePlan(plan, grid.columns), 'error');
+        return outcome('refused', { record, error: err.message, retry: lookupRetry });
       }
 
       if (config.sheetSyncMode === 'report') {
-        this.report(`sheet sync (report mode): ${plan.edits.length} edits, ${plan.inserts.length} inserts — nothing written`, lines);
-        return idle({ status: 'reported', plan: record, lines, retry });
+        this.report(`sheet sync (report mode): ${record.edits.length} edits, ${record.inserts.length} inserts — nothing written`, describePlan(plan, grid.columns));
+        return outcome('reported', { record, retry });
       }
 
       // FRESH. Back to the read, not on to the write: re-planning is the point.
@@ -260,65 +228,78 @@ export class SheetSync {
         continue;
       }
 
-      return await this.apply(grid, plan, lines, retry, signal);
+      return await this.apply(grid, plan, record, retry, signal);
     }
 
     const message = `could not plan against a fresh snapshot in ${MAX_ATTEMPTS} attempts`;
     this.log.warn(`sheet sync: ${message}`);
-    return idle({ status: 'failed', plan: record, lines, error: message, retry: true });
+    return outcome('failed', { record, error: message, retry: true });
   }
 
   /**
-   * Re-read the catalogue of every title that moved, and fold the results into
-   * what is already held.
+   * Plan, fetch what the plan says it is missing, and re-plan, until a pass
+   * demands nothing new.
    *
-   * Stamping happens here rather than at the end of the run, so the FRESH
-   * retry loop's second pass asks for nothing: it has already been read.
+   * Terminates because every key fetched — or found to have failed — enters
+   * `made` and is never asked for again this run, and the demand set is a
+   * function of grid, library and store, which only gains answers. In practice
+   * it is three passes: catalogues, then the runtimes the catalogues revealed,
+   * then a final plan with everything in hand.
    */
-  private async catalogueFor(grid: Grid, index: Map<number, TitleProgress>, signal: AbortSignal | undefined, now: Temporal.Instant): Promise<CatalogueView> {
-    const requests = planLookups(grid, index, { now, stamps: this.store.stamps, maxAge: CATALOGUE_MAX_AGE });
+  private async planToFixpoint(
+    grid: Grid,
+    index: Map<number, TitleProgress>,
+    made: RunLookups,
+    signal: AbortSignal | undefined,
+  ): Promise<SheetPlan> {
+    // One instant for every pass, threaded rather than re-read: two passes
+    // disagreeing about which blocks sit inside the activity cut-off would
+    // fetch a block and then plan it as out of scope, or the reverse.
+    const now = Temporal.Now.instant();
+
+    for (;;) {
+      const { plan, demands } = planSync(grid, index, this.store.titles, { now });
+
+      // The planner demands with no memory; what is actually stale is the
+      // store's question — the per-title stamp is what keeps a warm run at
+      // roughly 2 calls instead of re-reading every eligible show each poll,
+      // since `/sync/activities` resolves only to the list and never the title.
+      const catalogue = demands.catalogue.filter(
+        (request) => !made.catalogue.has(request.id) && needsLookup(this.store.stamps.get(request.id), index.get(request.id), now, CATALOGUE_MAX_AGE),
+      );
+      const runtimes = demands.runtimes.filter((request) => !made.runtimes.has(runtimeKeyOf(request.tvdbId, request.season)));
+      if (!catalogue.length && !runtimes.length) return plan;
+
+      if (catalogue.length) await this.readCatalogue(catalogue, index, made, signal);
+      if (runtimes.length) await this.readRuntimes(runtimes, made, signal);
+    }
+  }
+
+  /** Fetch and fold one round of catalogue lookups, and mark them made. */
+  private async readCatalogue(
+    requests: CatalogueRequest[],
+    index: Map<number, TitleProgress>,
+    made: RunLookups,
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
     const fetched = await fetchCatalogue(requests, { signal });
     this.store.foldCatalogue(requests, fetched, index);
+    for (const { id } of requests) made.catalogue.add(id);
+    made.failures += fetched.failed.length;
 
-    if (requests.length) {
-      // Titles, not requests: a live-action block emits two request records for
-      // one id — the episode list and the status lookup — which fetchCatalogue
-      // merges. Counting the records reads as twice as many shows as there are.
-      const titles = new Set(requests.map((r) => r.id)).size;
-      this.log.info(`sheet sync: re-read ${titles} title catalogues in ${fetched.episodes.size + fetched.details.size} calls`);
-    }
+    // Titles, not requests: a live-action block emits two request records for
+    // one id — the episode list and the status lookup — which fetchCatalogue
+    // merges. Counting the records reads as twice as many shows as there are.
+    const titles = new Set(requests.map((r) => r.id)).size;
+    this.log.info(`sheet sync: re-read ${titles} title catalogues in ${fetched.episodes.size + fetched.details.size} calls`);
     if (fetched.unavailable.length) {
       this.log.warn(`${fetched.unavailable.length} SIMKL titles are gone upstream: ${fetched.unavailable.join(', ')}`);
     }
-
-    return { titles: this.store.titles, failed: fetched.failed, unavailable: fetched.unavailable };
   }
 
-  /**
-   * Look up the per-episode runtimes of every season about to be closed, and
-   * fold them into the same retained entries. Returns how many lookups failed.
-   *
-   * Runs after `catalogueFor` and needs to: the TVDB id arrives on the detail
-   * call that phase makes, and which seasons are *completing* is a question only
-   * the episode list it fetches can answer.
-   *
-   * Folds by reference into `this.retained`, so `catalogue.titles` is current
-   * without a second view to keep in step.
-   */
-  private async runtimesFor(
-    grid: Grid,
-    index: Map<number, TitleProgress>,
-    catalogue: CatalogueView,
-    signal: AbortSignal | undefined,
-    now: Temporal.Instant,
-  ): Promise<number> {
-    // Where the feature costs nothing when it is switched off. Not the switch
-    // itself — `catalogueFor` withholds the join key, so the planner already
-    // reads every row as settled — just the grid walk this would otherwise do.
-    if (!tvdbConfigured()) return 0;
-
-    const requests = planRuntimeLookups(grid, index, catalogue, { now });
-    if (!requests.length) return 0;
+  /** Fetch and fold one round of runtime lookups, and mark them made. */
+  private async readRuntimes(requests: RuntimeRequest[], made: RunLookups, signal: AbortSignal | undefined): Promise<void> {
+    for (const request of requests) made.runtimes.add(runtimeKeyOf(request.tvdbId, request.season));
 
     let fetched;
     try {
@@ -329,35 +310,31 @@ export class SheetSync {
       // read and every SIMKL call this poll already made would be thrown away,
       // and the sheet would go a poll without a write, over an optional column.
       //
-      // What it does to the rows depends on which kind it is, and the difference
-      // matters more than it looks. A rejected key is **settled** — no number of
-      // polls will make a typo answer — so those seasons record `null` and close
-      // with the cell blank. Left pending instead, every completing season stays
-      // open for ever and the sheet quietly stops being dated at all, which is
-      // strictly worse than never setting the key. A restart re-reads them, so a
-      // corrected key is one restart away rather than lost.
+      // Which kind it is decides what happens to the rows. A rejected key is
+      // **settled** — no number of polls will make a typo answer — so those
+      // seasons record null and close with the cell blank; the store explains
+      // why. An outage is a wait: the rows stay open and the next poll retries.
       const settled = classify(err) === 'account';
       this.log.warn(
         settled
           ? `sheet sync: TVDB rejected the credential (${errorMessage(err)}); ${requests.length} season(s) close without a runtime`
           : `sheet sync: TVDB is not answering (${errorMessage(err)}); ${requests.length} season(s) stay open`,
       );
-      if (!settled) return requests.length;
-      this.store.settleSeasonsUnusable(requests);
-      return 0;
+      if (settled) this.store.settleSeasonsUnusable(requests);
+      else made.failures += requests.length;
+      return;
     }
 
     this.store.foldRuntimes(requests, fetched);
+    made.failures += fetched.failed.length;
 
     this.log.info(`sheet sync: read ${requests.length} season runtime(s) from TVDB`);
     if (fetched.unavailable.length) {
       this.log.warn(`TVDB has no record for ${fetched.unavailable.length} season(s): ${fetched.unavailable.join(', ')}`);
     }
-    return fetched.failed.length;
   }
 
-  private async apply(grid: Grid, plan: SheetPlan, lines: string[], retry: boolean, signal: AbortSignal | undefined): Promise<SheetSyncResult> {
-    const record = planRecord(plan);
+  private async apply(grid: Grid, plan: SheetPlan, record: PlanRecord, retry: boolean, signal: AbortSignal | undefined): Promise<SheetSyncResult> {
     const name = backupName(Temporal.Now.instant());
     // The snapshot rides at the head of the write batch, so it is taken and the
     // write applied in one atomic request — there is no state in which the
@@ -393,24 +370,24 @@ export class SheetSync {
     // no line in the journal pointing at it.
     //
     // There is no safe recovery from here inside this cycle. A rollback needs a
-    // read to reason about, and this is the read. So the plan and the lines are
-    // reported, the snapshot is deliberately *not* discarded, and the next poll
-    // re-reads and re-plans against whatever actually landed.
+    // read to reason about, and this is the read. So the snapshot is
+    // deliberately *not* discarded, and the next poll re-reads and re-plans
+    // against whatever actually landed.
     let after: SheetSnapshot;
     try {
       after = await readSnapshot({ signal });
     } catch (err) {
       const message = `the sheet could not be read back after the write: ${errorMessage(err)}`;
-      this.report(`sheet sync ${message}`, lines, 'error');
-      return idle({ status: 'failed', plan: record, lines, error: message, retry: true });
+      this.report(`sheet sync ${message}`, describePlan(plan, grid.columns), 'error');
+      return outcome('failed', { record, error: message, retry: true });
     }
     const verification = verify(grid, after, plan);
 
     if (verification.ok) {
       if (writeError) this.log.warn(`the sheet write reported "${writeError}" but landed exactly as planned`);
       await sweepBackups(this.log, signal);
-      this.report(`sheet sync applied ${plan.edits.length} edits and ${plan.inserts.length} inserts`, lines);
-      return idle({ status: 'applied', plan: record, lines, retry });
+      this.report(`sheet sync applied ${record.edits.length} edits and ${record.inserts.length} inserts`, describePlan(plan, grid.columns));
+      return outcome('applied', { record, retry });
     }
 
     // The write errored and none of it is in the sheet: the batch never landed.
@@ -426,19 +403,16 @@ export class SheetSync {
       // and the row count is the only independent witness to that. A leftover
       // tab is swept by the next clean run; a discarded snapshot is gone.
       if (after.rows.length === grid.snapshot.rows.length) await discardBackup(backupId, this.log, signal);
-      return idle({ status: 'failed', plan: record, lines, error: writeError, retry: true });
+      return outcome('failed', { record, error: writeError, retry: true });
     }
 
-    // Stamped here rather than passed in: rollback reports what was planned and
-    // never reasons about it, so it has no business taking it as an argument.
-    return { ...(await this.rollback(grid, after, verification, lines, backupId, name, retry, signal)), plan: record };
+    return { ...(await this.rollback(grid, after, verification, backupId, name, retry, signal)), record };
   }
 
   private async rollback(
     grid: Grid,
     after: SheetSnapshot,
     verification: Verification,
-    lines: string[],
     backupId: number | undefined,
     name: string,
     retry: boolean,
@@ -484,7 +458,7 @@ export class SheetSync {
       await applyRequests([restoreRequest(backupId, restored.sheetId, grid.snapshot.rowCount, grid.snapshot.columnCount)], { signal });
       restored = await readSnapshot({ signal });
 
-      const confirmation = verify(grid, restored, { edits: [], inserts: [], skipped: [], notes: [], deferred: 0 });
+      const confirmation = verify(grid, restored, emptyPlan());
       if (!confirmation.ok) {
         throw new Error(`${confirmation.problems.length} cells did not go back (${confirmation.problems.slice(0, 5).join('; ')})`);
       }
@@ -511,7 +485,7 @@ export class SheetSync {
         `${grid.snapshot.title}, delete it, then restart. ${urgency}If it is not there, restore from Sheets version history instead. ` +
         `Verify problems: ${detail}. Rows to delete: ${verification.deleteRows.map((r) => r + 1).join(', ') || 'none'}.`;
       this.log.error(this.frozen);
-      return idle({ status: 'frozen', lines, error: this.frozen });
+      return outcome('frozen', { error: this.frozen });
     }
 
     const message = `the write did not verify and was rolled back: ${detail}`;
@@ -519,7 +493,7 @@ export class SheetSync {
     // The rolled-back work is not guaranteed to refuse again — the concurrent
     // edit that triggered this was itself reverted by the restore — so whatever
     // the run wanted another poll for still stands.
-    return idle({ status: 'rolled-back', lines, error: message, retry });
+    return outcome('rolled-back', { error: message, retry });
   }
 
   private report(headline: string, lines: string[], level: 'info' | 'error' = 'info'): void {

@@ -105,7 +105,7 @@ const insertFixture = () => {
     address: a1(fx.end, before.columns[field]),
     note: 'new',
   }));
-  return { after, newRow, plan: planOf([], [{ row: fx.end, title: 'Fargo', season: 3, fill, note: 'new row' }]) };
+  return { after, newRow, plan: planOf([], { row: fx.end, title: 'Fargo', season: 3, fill, note: 'new row' }) };
 };
 
 test('an insert with exactly its planned fill verifies', () => {
@@ -193,26 +193,24 @@ const afterInsertAt3 = (): CellSpec[][] => {
 
 const insertPlan = (before: ReturnType<typeof parseGrid>): SheetPlan => ({
   edits: [],
-  inserts: [
-    {
+  insert: {
+    row: 3,
+    title: 'Fargo',
+    season: 2,
+    fill: (['Season', 'Episode', 'Start', 'Episodes', 'Length'] as HeaderName[]).map((field) => ({
       row: 3,
-      title: 'Fargo',
-      season: 2,
-      fill: (['Season', 'Episode', 'Start', 'Episodes', 'Length'] as HeaderName[]).map((field) => ({
-        row: 3,
-        column: before.columns[field],
-        field,
-        previous: undefined,
-        value: cellOf(afterInsertAt3()[3]![before.columns[field]]!).userEnteredValue!,
-        address: a1(3, before.columns[field]),
-        note: 'new',
-      })),
-      note: 'new row',
-    },
-  ],
-  skipped: [],
+      column: before.columns[field],
+      field,
+      previous: undefined,
+      value: cellOf(afterInsertAt3()[3]![before.columns[field]]!).userEnteredValue!,
+      address: a1(3, before.columns[field]),
+      note: 'new',
+    })),
+    note: 'new row',
+  },
+  skips: [],
   notes: [],
-  deferred: 0,
+  deferredInserts: 0,
 });
 
 test("a formula Sheets rewrote because the row moved is not an unplanned change", () => {
@@ -247,7 +245,7 @@ test('without an insert a changed formula is still a change', () => {
   const grid = parseGrid(sheetSnapshot(rowsWithFormulas()));
   const tampered = rowsWithFormulas();
   tampered[3]![grid.columns.Length] = { formula: '=G99*D99' };
-  const result = verify(grid, sheetSnapshot(tampered), { edits: [], inserts: [], skipped: [], notes: [], deferred: 0 });
+  const result = verify(grid, sheetSnapshot(tampered), { edits: [], insert: null, skips: [], notes: [], deferredInserts: 0 });
   assert.equal(result.ok, false);
   assert.match(result.problems.join('; '), /H4: changed without being planned/);
 });
