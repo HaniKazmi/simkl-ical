@@ -32,9 +32,19 @@ export class SheetsError extends HttpError {
  * say so once rather than retry an access problem for a week.
  */
 export class SheetsAccessError extends SheetsError {
-  constructor(message: string, status?: number, body?: string) {
+  /**
+   * Whether retrying can never help. Decided here, beside the status mapping,
+   * because which code means what is this spec's one job: a 401 is almost
+   * always an expired assertion that the cleared token cache heals on the next
+   * poll, where a 403/404 stays wrong until a person re-shares the sheet or
+   * fixes SHEET_ID.
+   */
+  readonly needsHuman: boolean;
+
+  constructor(message: string, status?: number, body?: string, { needsHuman = true }: { needsHuman?: boolean } = {}) {
     super(message, status, body);
     this.name = 'SheetsAccessError';
+    this.needsHuman = needsHuman;
   }
 }
 
@@ -62,7 +72,7 @@ const SPEC: HttpSpec = {
       // Almost always an expired assertion rather than a revoked key. Dropping
       // the cache means the next poll signs a fresh one and recovers by itself.
       clearTokenCache();
-      return new SheetsAccessError(`Google rejected the credential (${describe(status, body)})`, status, body);
+      return new SheetsAccessError(`Google rejected the credential (${describe(status, body)})`, status, body, { needsHuman: false });
     }
     if (status === 403 || status === 404) {
       return new SheetsAccessError(
@@ -115,8 +125,8 @@ export const sheetsRequest = async <T>(
     signal,
     // Re-signed per attempt, inside the engine's retry: a transient failure
     // obtaining the token is exactly as retryable as one using it.
-    headers: async (attemptSignal) => ({
-      Authorization: `Bearer ${await getAccessToken({ signal: attemptSignal })}`,
+    headers: async () => ({
+      Authorization: `Bearer ${await getAccessToken()}`,
       Accept: 'application/json',
       'User-Agent': `${config.appName}/${config.appVersion}`,
     }),

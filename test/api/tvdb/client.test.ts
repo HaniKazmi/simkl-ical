@@ -135,21 +135,42 @@ test('a rejected login is an account failure, not a fact about any season', asyn
 // The lifetime in auth.ts is assumed rather than read from the response, so a
 // token can in principle outlive its welcome. Dropping the cache is what makes
 // a wrong guess cost one poll instead of every poll after it.
-test('a 401 on a read drops the cached token so the next call logs in again', async () => {
+// The token lifetime in auth.ts is assumed, not read, so TVDB can invalidate
+// a cached bearer early. That must cost one re-login, never the seasons: an
+// 'account' classification settles every pending season's cell for good.
+test('a stale bearer re-logs in and succeeds within the same call', async () => {
   clearTokenCache();
-  let reject = true;
+  let logins = 0;
   await withKey(() =>
     withFetch(
-      (url) => {
-        if (url.endsWith('/login')) return jsonResponse({ data: { token: 'tok' } });
-        if (reject) return new Response('nope', { status: 401 });
-        return jsonResponse({ data: { episodes: [] } });
+      (url, init) => {
+        if (url.endsWith('/login')) return jsonResponse({ data: { token: `tok${++logins}` } });
+        // The first bearer is stale; the re-login's works.
+        return new Headers(init?.headers).get('authorization') === 'Bearer tok1'
+          ? new Response('nope', { status: 401 })
+          : jsonResponse({ data: { episodes: [] } });
       },
       async (calls) => {
-        await assert.rejects(() => apiGet('/series/1/episodes/official', { component: 'runtimes' }), TvdbError);
-        reject = false;
         await apiGet('/series/1/episodes/official', { component: 'runtimes' });
-        assert.equal(calls.filter((c) => c.endsWith('/login')).length, 2);
+        assert.equal(calls.filter((c) => c.endsWith('/login')).length, 2, 'the 401 buys a fresh login, not a failure');
+      },
+    ),
+  );
+});
+
+// Only a rejection that survives the fresh login proves the credential is bad
+// — and that one must classify 'account', or a typo in the key would retry
+// forever.
+test('a 401 that survives a fresh login settles as account', async () => {
+  clearTokenCache();
+  await withKey(() =>
+    withFetch(
+      (url) => (url.endsWith('/login') ? jsonResponse({ data: { token: 'tok' } }) : new Response('nope', { status: 401 })),
+      async (calls) => {
+        const err = await apiGet('/series/1/episodes/official', { component: 'runtimes' }).catch((e: unknown) => e);
+        assert.ok(err instanceof TvdbError);
+        assert.equal(classify(err), 'account');
+        assert.equal(calls.filter((c) => c.endsWith('/login')).length, 2, 'one login per attempt — the second was fresh');
       },
     ),
   );

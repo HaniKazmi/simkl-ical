@@ -11,21 +11,24 @@
  */
 
 export interface TokenCache {
-  get(opts?: { signal?: AbortSignal }): Promise<string>;
+  get(): Promise<string>;
   /** Drops both the token and any in-flight exchange — a failed one must not be handed to the next caller. */
   clear(): void;
 }
 
-export const tokenCache = (
-  exchange: (opts: { signal?: AbortSignal }) => Promise<{ token: string; expiresAtMs: number }>,
-): TokenCache => {
+/**
+ * `exchange` runs with no caller's abort signal on purpose: the in-flight
+ * promise is shared by everyone waiting, so one caller cancelling must not
+ * reject the others. The exchange bounds itself with its own timeout.
+ */
+export const tokenCache = (exchange: () => Promise<{ token: string; expiresAtMs: number }>): TokenCache => {
   let cached: { token: string; expiresAtMs: number } | null = null;
   let pending: Promise<string> | null = null;
 
   return {
-    get({ signal }: { signal?: AbortSignal } = {}): Promise<string> {
+    get(): Promise<string> {
       if (cached && cached.expiresAtMs > Date.now()) return Promise.resolve(cached.token);
-      pending ??= exchange({ signal })
+      pending ??= exchange()
         .then((result) => {
           cached = result;
           return result.token;

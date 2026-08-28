@@ -192,6 +192,13 @@ export interface TitleCatalogue {
 }
 
 /**
+ * How long a title's catalogue is trusted without any watch activity to
+ * prompt a re-read. Daily, for the reason `movieRefresh` is daily: a network
+ * renewing a show produces nothing in your library to gate on.
+ */
+export const CATALOGUE_MAX_AGE = Temporal.Duration.from({ hours: 24 });
+
+/**
  * What we already hold for one title's catalogue, and how current it is.
  *
  * `watchedAt` is the value `lastWatchedAt` had when the lookup was made, not
@@ -250,20 +257,12 @@ const sameInstant = (a: Temporal.Instant | null, b: Temporal.Instant | null): bo
  * re-requested on every poll forever.**
  */
 export class CatalogueStore {
-  private retained = new Map<number, TitleCatalogue>();
-  private stampsHeld = new Map<number, CatalogueStamp>();
-
-  get titles(): Map<number, TitleCatalogue> {
-    return this.retained;
-  }
-
-  get stamps(): Map<number, CatalogueStamp> {
-    return this.stampsHeld;
-  }
+  readonly titles = new Map<number, TitleCatalogue>();
+  readonly stamps = new Map<number, CatalogueStamp>();
 
   private entry(id: number): TitleCatalogue {
-    const existing = this.retained.get(id) ?? { shapes: new Map(), seasonRuntimes: new Map() };
-    this.retained.set(id, existing);
+    const existing = this.titles.get(id) ?? { shapes: new Map(), seasonRuntimes: new Map() };
+    this.titles.set(id, existing);
     return existing;
   }
 
@@ -294,7 +293,7 @@ export class CatalogueStore {
     const stalled = new Set(fetched.failed);
     for (const { id } of requests) {
       if (stalled.has(id)) continue;
-      this.stampsHeld.set(id, { watchedAt: index.get(id)?.lastWatchedAt ?? null, at });
+      this.stamps.set(id, { watchedAt: index.get(id)?.lastWatchedAt ?? null, at });
     }
   }
 
@@ -309,7 +308,7 @@ export class CatalogueStore {
     for (const request of requests) {
       const key = runtimeKeyOf(request.tvdbId, request.season);
       if (stalled.has(key)) continue;
-      const entry = this.retained.get(request.id);
+      const entry = this.titles.get(request.id);
       const expected = entry?.shapes.get(request.season)?.total ?? 0;
       entry?.seasonRuntimes.set(request.season, averageRuntime(fetched.episodes.get(key), expected));
     }
@@ -328,6 +327,6 @@ export class CatalogueStore {
    * answer.
    */
   settleSeasonsUnusable(requests: RuntimeRequest[]): void {
-    for (const request of requests) this.retained.get(request.id)?.seasonRuntimes.set(request.season, null);
+    for (const request of requests) this.titles.get(request.id)?.seasonRuntimes.set(request.season, null);
   }
 }

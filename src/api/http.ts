@@ -116,6 +116,15 @@ export const requestJson = async <T>(
   let failure: string | null = null;
 
   let lastError: unknown;
+  // The one tail every retryable outcome funnels through, so a fix to the
+  // retry path cannot land on one kind of failure and miss the others.
+  const retryWith = async (err: unknown, message: string, delay: number): Promise<void> => {
+    lastError = err;
+    failure = message;
+    // Guarded: sleeping after the final attempt is dead wait.
+    if (attempts < maxAttempts) await sleep(delay);
+  };
+
   try {
     while (attempts < maxAttempts) {
       attempts += 1;
@@ -135,10 +144,7 @@ export const requestJson = async <T>(
         });
       } catch (err) {
         if (signal?.aborted) throw err;
-        lastError = err;
-        failure = errorMessage(err);
-        // Guarded: sleeping after the final attempt is dead wait.
-        if (attempts < maxAttempts) await sleep(backoffMs(attempts));
+        await retryWith(err, errorMessage(err), backoffMs(attempts));
         continue;
       }
 
@@ -150,9 +156,7 @@ export const requestJson = async <T>(
         if (read.failure) {
           // The download died mid-body. Retryable, and named as itself rather
           // than left to reach the parser as a truncation.
-          lastError = spec.errorFor(`${spec.label} ${path}: ${read.failure}`, res.status);
-          failure = read.failure;
-          if (attempts < maxAttempts) await sleep(backoffMs(attempts));
+          await retryWith(spec.errorFor(`${spec.label} ${path}: ${read.failure}`, res.status), read.failure, backoffMs(attempts));
           continue;
         }
         try {
@@ -160,9 +164,8 @@ export const requestJson = async <T>(
         } catch (err) {
           // A 200 carrying an HTML interstitial. Transient, so it belongs in
           // the retry loop rather than escaping as a bare SyntaxError.
-          lastError = spec.errorFor(`${spec.label} returned unparseable JSON for ${path}: ${errorMessage(err)}`, res.status);
-          failure = errorMessage(lastError);
-          if (attempts < maxAttempts) await sleep(backoffMs(attempts));
+          const wrapped = spec.errorFor(`${spec.label} returned unparseable JSON for ${path}: ${errorMessage(err)}`, res.status);
+          await retryWith(wrapped, errorMessage(wrapped), backoffMs(attempts));
           continue;
         }
       }
@@ -177,9 +180,8 @@ export const requestJson = async <T>(
         throw outcome;
       }
 
-      lastError = spec.errorFor(`${spec.label} ${res.status} for ${path}`, res.status, read.text);
-      failure = read.failure ?? (read.text || (lastError as HttpError).message);
-      if (attempts < maxAttempts) await sleep(retryDelayMs(res, attempts));
+      const err = spec.errorFor(`${spec.label} ${res.status} for ${path}`, res.status, read.text);
+      await retryWith(err, read.failure ?? (read.text || err.message), retryDelayMs(res, attempts));
     }
 
     throw lastError;

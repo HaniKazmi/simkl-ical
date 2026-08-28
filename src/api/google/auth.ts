@@ -133,8 +133,8 @@ const exchangeToken = async (key: ServiceAccountKey, { signal }: { signal?: Abor
 
 // The refresh margin is folded into the stored expiry, so a token at or under
 // five minutes from expiring is treated as already gone and re-signed.
-const cache = tokenCache(async ({ signal }) => {
-  const { token, expiresIn } = await exchangeToken(readServiceAccountKey(), { signal });
+const cache = tokenCache(async () => {
+  const { token, expiresIn } = await exchangeToken(readServiceAccountKey());
   return { token, expiresAtMs: Date.now() + expiresIn * 1000 - REFRESH_MARGIN_MS };
 });
 
@@ -144,4 +144,4 @@ export const clearTokenCache = (): void => {
 };
 
 /** A bearer token, reused until it is close enough to expiry to be worth replacing. */
-export const getAccessToken = ({ signal }: { signal?: AbortSignal } = {}): Promise<string> => cache.get({ signal });
+export const getAccessToken = (): Promise<string> => cache.get();

@@ -143,7 +143,7 @@ export const input = (over: InputOver = {}): StatusInput => {
         syncedAt: null,
         error: over.libraryError ?? null,
         counts: over.counts ?? cold.library.counts,
-        poll: over.gate === undefined || over.gate === null ? (over.gate ?? null) : pollOf(over.gate),
+        poll: over.gate == null ? null : pollOf(over.gate),
         movement: over.movement ?? null,
       },
       feed: {

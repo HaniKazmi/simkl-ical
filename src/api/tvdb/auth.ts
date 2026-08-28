@@ -81,8 +81,8 @@ export const exchangeToken = async (c = config, { signal }: { signal?: AbortSign
   return token;
 };
 
-const cache = tokenCache(async ({ signal }) => ({
-  token: await exchangeToken(config, { signal }),
+const cache = tokenCache(async () => ({
+  token: await exchangeToken(config),
   expiresAtMs: Date.now() + ASSUMED_TTL_MS,
 }));
 
@@ -94,4 +94,4 @@ export const clearTokenCache = (): void => {
   cache.clear();
 };
 
-export const getTvdbToken = ({ signal }: { signal?: AbortSignal } = {}): Promise<string> => cache.get({ signal });
+export const getTvdbToken = (): Promise<string> => cache.get();

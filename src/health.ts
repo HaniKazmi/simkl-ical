@@ -59,8 +59,13 @@ export const assess = (snapshot: Snapshot): Assessment => {
   };
 };
 
-/** The status page's stricter question: anything in `problems` makes it not-healthy. */
-export const pageHealthy = ({ ok, problems }: Assessment): boolean => ok && problems.length === 0;
+/**
+ * The status page's stricter question: anything in `problems` makes it
+ * not-healthy. Keyed on `problems` alone — every conjunct of `ok` implies a
+ * problem line when false — so the page can never claim unhealthy without a
+ * line saying why.
+ */
+export const pageHealthy = ({ problems }: Assessment): boolean => problems.length === 0;
 
 /**
  * What `/healthz` serialises: state and shape, no free text.

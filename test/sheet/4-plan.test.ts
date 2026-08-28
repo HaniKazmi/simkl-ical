@@ -943,6 +943,25 @@ test('a row with no tvdb id closes exactly as it did before this existed', () =>
   assert.deepEqual(bare.runtimeDemands(), []);
 });
 
+/**
+ * Absent is not null: a title whose episode list arrived but whose `/tv/{id}`
+ * detail did not has an unanswered runtime question, not a settled one. The
+ * one merged catalogue task fetches episodes before the detail, so a transient
+ * failure leaves exactly this state — and dating the row on it would forfeit
+ * its Episodes cell on a 503, since a dated row is never revisited.
+ */
+test('a row whose detail has not answered holds its close open', () => {
+  const undetailed = closing({ details: {}, tvdbIds: {} });
+  const plan = undetailed.plan();
+  assert.equal(has(plan, 'End'), false, 'the row stays open');
+  const skip = plan.skips.find((s) => s.code === 'awaiting-runtimes');
+  assert.match(skip?.message ?? '', /detail has not come back/);
+  // No runtime demand — there is no key to ask TVDB with; the catalogue demand
+  // is what brings the answer.
+  assert.deepEqual(undetailed.runtimeDemands(), []);
+  assert.equal(plan.edits.some((e) => e.field === 'Episode'), true, 'the count still advances');
+});
+
 // --- which seasons are demanded --------------------------------------------
 
 test('the demand names the completing season, with SIMKL’s own count to check against', () => {

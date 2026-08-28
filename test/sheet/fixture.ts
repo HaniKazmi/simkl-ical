@@ -13,9 +13,9 @@
  * `test/**` glob only collects `*.test.ts`, so this file is never run as a suite.
  */
 
-import { a1, parseGrid, type Grid, type HeaderName } from '../../src/sheet/2-grid.ts';
+import { a1, columnLetter, parseGrid, type Grid, type HeaderName } from '../../src/sheet/2-grid.ts';
 import { dateSerial } from '../../src/sheet/values.ts';
-import type { CellEdit, RowInsert, SheetPlan } from '../../src/sheet/4-plan.ts';
+import { emptyPlan, type CellEdit, type RowInsert, type SheetPlan } from '../../src/sheet/4-plan.ts';
 import type { ExtendedValue } from '../../src/api/google/types.ts';
 import { seasonRow, SHEET_HEADERS, sheetSnapshot, showRow, type CellSpec } from '../helpers.ts';
 
@@ -118,7 +118,9 @@ export const gridFixture = (...named: NamedRow[]): GridFixture => {
           ['Episode', { numberValue: 4 }],
           ['Start', { numberValue: TODAY - 10 }],
           ...(episodes === null ? [] : [['Episodes', { numberValue: episodes }] as [HeaderName, ExtendedValue]]),
-          ['Length', { formulaValue: `=G${index + 1}*D${index + 1}` }],
+          // Derived the way the planner derives it, so a reordered header list
+          // cannot leave the fixture asserting a formula production never emits.
+          ['Length', { formulaValue: `=${columnLetter(grid.columns.Episodes)}${index + 1}*${columnLetter(grid.columns.Episode)}${index + 1}` }],
           ...(end === null ? [] : [['End', { numberValue: end }] as [HeaderName, ExtendedValue]]),
         ] as Array<[HeaderName, ExtendedValue]>
       ).map(([field, value]) => ({ row: index, column: grid.columns[field], field, previous: undefined, value, address: a1(index, grid.columns[field]), note: 'new' })),
@@ -129,13 +131,7 @@ export const gridFixture = (...named: NamedRow[]): GridFixture => {
   return { grid, rows, at, below, end: rows.length, cell, insertAt };
 };
 
-export const planOf = (edits: CellEdit[] = [], insert: RowInsert | null = null): SheetPlan => ({
-  edits,
-  insert,
-  skips: [],
-  notes: [],
-  deferredInserts: 0,
-});
+export const planOf = (edits: CellEdit[] = [], insert: RowInsert | null = null): SheetPlan => ({ ...emptyPlan(), edits, insert });
 
 /**
  * The one fixture most suites plan against: one show, a closed season and an

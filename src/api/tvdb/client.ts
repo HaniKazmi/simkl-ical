@@ -64,11 +64,15 @@ const SPEC: HttpSpec = {
   errorFor: (message, status, body) => new TvdbError(message, status, body),
   onStatus: (status, body, path) => {
     if (status === 401 || status === 403) {
-      // The lifetime in `auth.ts` is assumed rather than read, so a token can
-      // in principle outlive its welcome. Dropping the cache here is what
-      // makes that cost one poll: the next run logs in again.
+      // Retried, not thrown, and the distinction is what a season's runtime
+      // cell rides on. The lifetime in `auth.ts` is assumed rather than read,
+      // so this can be a cached bearer TVDB invalidated early — dropping the
+      // cache makes the next attempt log in fresh. Only a rejection *after*
+      // that, which exhausts the two attempts, reaches `classify` as
+      // `account` — and `account` is what settles every pending season's cell
+      // as permanently unobtainable, which a stale bearer must never do.
       clearTokenCache();
-      return new TvdbError(`TVDB rejected the token (${status})`, status, body);
+      return 'retry';
     }
     if (RETRYABLE.has(status)) return 'retry';
     return new TvdbError(`TVDB ${status} for ${path}`, status, body);
@@ -87,10 +91,14 @@ export const apiGet = async <T>(path: string, { component, params = {}, signal }
     if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
   }
 
-  // Outside the engine's request record: a failed login is its own row, under
-  // `auth`, and filing it as a failed season read would point a reader at the
-  // wrong fix.
-  const token = await getTvdbToken({ signal });
-
-  return requestJson<T>(SPEC, url, { component, headers: () => ({ Authorization: `Bearer ${token}` }), path, signal });
+  return requestJson<T>(SPEC, url, {
+    component,
+    path,
+    signal,
+    // Per attempt, so the retry a 401 earns picks up a freshly logged-in token
+    // rather than re-sending the one just rejected. The login call still logs
+    // its own row under `auth`, so its failure stays tellable from a failed
+    // season read.
+    headers: async () => ({ Authorization: `Bearer ${await getTvdbToken()}` }),
+  });
 };

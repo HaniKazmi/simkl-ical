@@ -159,7 +159,7 @@ export const buildConfig = (env: NodeJS.ProcessEnv): Config => ({
   // moving a release changes nothing in your library, so nothing else would ever
   // trigger the re-read; but the poll runs far more often than dates change, so
   // this bounds it per film. Which films are due past that floor is a separate
-  // question, and the rule that answers it is `filmDue` in feed/io/movies.ts.
+  // question, and the rule that answers it is `filmDue` in feed/1-films.ts.
   movieRefresh: ms(env.MOVIE_REFRESH_MS, 24 * 60 * 60 * 1000, { min: 60_000 }),
   // First step of the API retry backoff, doubling each attempt: 1s, 2s, 4s, 8s.
   // Configurable mainly for tests; lowering it in production only makes a

@@ -34,7 +34,7 @@ import { fetchSeasonRuntimes, runtimeKeyOf, type RuntimeRequest } from './io/run
 import { classify } from '../api/tvdb/client.ts';
 import { parseGrid, type Grid } from './2-grid.ts';
 import { indexLibrary, type TitleProgress } from './1-index.ts';
-import { CatalogueStore, needsLookup } from './3-catalogue.ts';
+import { CATALOGUE_MAX_AGE, CatalogueStore, needsLookup } from './3-catalogue.ts';
 import { describePlan, planRecord, planSync, type PlanRecord, type SheetPlan } from './4-plan.ts';
 import { assertPlanSafe, UnsafePlanError } from './5-guard.ts';
 import { applyPlan } from './io/apply.ts';
@@ -53,11 +53,12 @@ const FRESH_MS = 120_000;
 const MAX_ATTEMPTS = 3;
 
 /**
- * How long a title's catalogue is trusted without any watch activity to
- * prompt a re-read. Daily, for the reason `movieRefresh` is daily: a network
- * renewing a show produces nothing in your library to gate on.
+ * Planning passes per attempt. Three suffice — catalogues, then the runtimes
+ * they reveal, then the final plan — so hitting this means a demand is
+ * escaping the `made` bookkeeping, which is worth a degraded run and a log
+ * line rather than a poll that never returns.
  */
-const CATALOGUE_MAX_AGE = Temporal.Duration.from({ hours: 24 });
+const MAX_PASSES = 4;
 
 export type SheetSyncStatus = 'idle' | 'reported' | 'applied' | 'refused' | 'failed' | 'rolled-back' | 'frozen';
 
@@ -125,16 +126,11 @@ export class SheetSync {
     } catch (err) {
       const message = errorMessage(err);
       this.log.error(`sheet sync failed: ${message}`);
-      // A wrong SHEET_ID or an unshared spreadsheet needs a human, so asking
-      // for another poll only re-arms the retry every poll indefinitely. It
-      // still lands in `errors.sheet` and `/healthz` on every run — "say it
-      // once" here means stop the retry loop, not stop reporting.
-      //
-      // A 401 is not that, despite sharing the class: the transport clears the
-      // token cache on its way out, so the next poll signs a fresh assertion
-      // and recovers on its own. Without the retry it would not get one until
-      // some list happened to move.
-      const permanent = err instanceof SheetsAccessError && err.status !== 401;
+      // A failure that needs a human — a wrong SHEET_ID, an unshared
+      // spreadsheet — is said on every run through `errors.sheet`, but asking
+      // for another poll would only re-arm the retry indefinitely. The client
+      // spec decides which failures those are; see `SheetsAccessError`.
+      const permanent = err instanceof SheetsAccessError && err.needsHuman;
       return await this.record(outcome('failed', { error: message, retry: !permanent }));
     }
   }
@@ -182,7 +178,7 @@ export class SheetSync {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
       const snapshot = await readSnapshot({ signal });
       const grid = parseGrid(snapshot);
-      const plan = await this.planToFixpoint(grid, index, made, signal);
+      const plan = await this.planToFixpoint(grid, index, made, attempt, signal);
       record = planRecord(plan);
 
       // A failed lookup means some season's shape or runtime is unknown, and an
@@ -242,12 +238,17 @@ export class SheetSync {
    * `made` and is never asked for again this run, and the demand set is a
    * function of grid, library and store, which only gains answers. In practice
    * it is three passes: catalogues, then the runtimes the catalogues revealed,
-   * then a final plan with everything in hand.
+   * then a final plan with everything in hand. The pass ceiling is a backstop
+   * on that argument, not part of it: a demand kind whose keys ever escaped
+   * `made` would otherwise spin here inside the poll, and the timer that
+   * skips ticks while a job runs would wedge the whole service over an
+   * optional spreadsheet column.
    */
   private async planToFixpoint(
     grid: Grid,
     index: Map<number, TitleProgress>,
     made: RunLookups,
+    attempt: number,
     signal: AbortSignal | undefined,
   ): Promise<SheetPlan> {
     // One instant for every pass, threaded rather than re-read: two passes
@@ -255,8 +256,12 @@ export class SheetSync {
     // fetch a block and then plan it as out of scope, or the reverse.
     const now = Temporal.Now.instant();
 
-    for (;;) {
+    for (let pass = 1; ; pass += 1) {
       const { plan, demands } = planSync(grid, index, this.store.titles, { now });
+      if (pass > MAX_PASSES) {
+        this.log.warn(`sheet sync: still demanding lookups after ${MAX_PASSES} planning passes; continuing with what is in hand`);
+        return plan;
+      }
 
       // The planner demands with no memory; what is actually stale is the
       // store's question — the per-title stamp is what keeps a warm run at
@@ -265,11 +270,21 @@ export class SheetSync {
       const catalogue = demands.catalogue.filter(
         (request) => !made.catalogue.has(request.id) && needsLookup(this.store.stamps.get(request.id), index.get(request.id), now, CATALOGUE_MAX_AGE),
       );
-      const runtimes = demands.runtimes.filter((request) => !made.runtimes.has(runtimeKeyOf(request.tvdbId, request.season)));
+      // First planning attempt only. A throttled TVDB season can spend a
+      // minute obeying `Retry-After` against the 120s snapshot budget, so a
+      // FRESH re-read must not pick up fresh runtime demands from a grid that
+      // changed underneath it — the rows stay open, and the next poll takes
+      // them. `made` already blocks re-fetching what this run has asked.
+      const runtimes =
+        attempt === 1 ? demands.runtimes.filter((request) => !made.runtimes.has(runtimeKeyOf(request.tvdbId, request.season))) : [];
       if (!catalogue.length && !runtimes.length) return plan;
 
-      if (catalogue.length) await this.readCatalogue(catalogue, index, made, signal);
-      if (runtimes.length) await this.readRuntimes(runtimes, made, signal);
+      // Different upstreams with no data dependency inside one pass, so their
+      // latencies overlap rather than stack against the snapshot budget.
+      await Promise.all([
+        catalogue.length ? this.readCatalogue(catalogue, index, made, signal) : null,
+        runtimes.length ? this.readRuntimes(runtimes, made, signal) : null,
+      ]);
     }
   }
 
