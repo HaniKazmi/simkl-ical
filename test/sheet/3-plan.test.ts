@@ -313,6 +313,19 @@ test('a row dated with a cell nothing can fill says so, whatever left it blank',
   assert.match(insert?.note ?? '', /no episode runtime to fill its Episodes cell/);
 });
 
+/**
+ * The planner and the guard bounding a runtime differently is not a disagreement
+ * that stays local: `assertPlanSafe` refuses whole-plan, so one title with a
+ * sub-minute length upstream would drop every unrelated Episode, End and Status
+ * edit in the run, every poll, for as long as its block stayed in scope.
+ */
+test('a length the guard would refuse is never planned in the first place', () => {
+  const { plan, grid } = adding({ tvdbIds: {}, details: { 800: { status: 'airing', runtime: 0.9 } }, aired: 6 });
+  const result = plan();
+  assert.equal(cellIn(result.inserts[0], 'Episodes'), undefined, 'the cell is skipped rather than filled implausibly');
+  assert.doesNotThrow(() => assertPlanSafe(result, grid), 'and the run is not refused whole over one title');
+});
+
 // The two passes agreeing, asserted directly: the season asked about before the
 // fetch is the season the plan then inserts.
 test('the lookup asks about exactly the season the plan inserts', () => {

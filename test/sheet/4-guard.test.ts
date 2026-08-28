@@ -387,3 +387,14 @@ test('an insert carrying a runtime into a block TVDB cannot describe is refused'
   assert.doesNotThrow(() => assertPlanSafe(planOf([], [insertAt(4, 3, { title: 'Bleach', episodes: null })]), anime));
   assert.doesNotThrow(() => assertPlanSafe(planOf([], [insertAt(4, 3, { episodes: null })]), idless));
 });
+
+// The write requests go out in fill order and the last one wins, so a bound that
+// inspects the first runtime cell and waves a second through is no bound at all.
+test('every runtime cell an insert carries is bounded, not just the first', () => {
+  const insert = insertAt(4, 3);
+  const first = insert.fill.find((c) => c.field === 'Episodes')!;
+  refuses(
+    planOf([], [{ ...insert, fill: [...insert.fill, { ...first, value: { numberValue: 49 } }] }]),
+    /not a plausible per-episode day fraction/,
+  );
+});

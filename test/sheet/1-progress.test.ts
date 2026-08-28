@@ -151,6 +151,11 @@ test('a count that disagrees with SIMKL refuses, in either direction', () => {
 // run. Bounded here, it costs that one cell.
 test('a length no episode has yields no cell rather than a refused plan', () => {
   assert.equal(runtimeDays(1440), null, 'a full day is not a runtime');
+  // The guard refuses anything under a whole minute, and refusal is whole-plan.
+  // A value this accepts and the guard then rejects stops every unrelated edit
+  // in the run, so the two bounds have to be the same number.
+  assert.equal(runtimeDays(0.9), null, 'and under a minute is not one either');
+  assert.ok(runtimeDays(1), 'a whole minute is the smallest that is');
   assert.equal(runtimeDays(5000), null);
   assert.equal(runtimeDays(1439), 1439 / 1440);
 });
