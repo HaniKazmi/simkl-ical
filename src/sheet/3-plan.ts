@@ -470,7 +470,9 @@ const insertTarget = (
  */
 const insertRuntimeTarget = (candidate: InsertCandidate, catalogue: CatalogueView): RuntimeRequest | null => {
   const { source, season } = candidate;
-  if (!Number.isInteger(season.number)) return null;
+  // No whole-season test to make: `seasonsOf` is the only producer of a
+  // `SeasonProgress` and drops everything fractional or below 1, where a grid
+  // row's number is whatever someone typed into the cell.
   const tvdbId = catalogue.titles.get(source.id)?.tvdbId;
   if (typeof tvdbId !== 'number') return null;
   return { id: source.id, tvdbId, season: season.number };
@@ -705,11 +707,20 @@ export const planSync = (
       plan.edits.push(edit(grid, season.row, 'End', num(serial), `${label}: ended`));
 
       if (target !== null) {
-        const days = runtimeDays(minutes);
+        // Settled with nothing usable falls back to the show-wide runtime, the
+        // same as a row being created does. This batch dates the row either way,
+        // so the choice is between an approximate number and a cell nothing can
+        // ever fill again — and it must not depend on which run first saw the
+        // season, or two identical-looking rows differ for a reason no reader of
+        // the sheet could see.
+        const days = runtimeDays(minutes) ?? runtimeDays(catalogue.titles.get(target.id)?.runtime);
         if (days === null) {
           plan.notes.push(`${label}: ended with no usable episode runtimes, so its Episodes cell is left blank`);
         } else {
-          plan.edits.push(edit(grid, season.row, 'Episodes', num(days), `${label}: ${minutes} min average episode runtime`));
+          // Named for what it is: the season's own average where TVDB answered,
+          // the show's usual episode length where it did not.
+          const measured = minutes === null ? "SIMKL's show-wide episode runtime" : `${minutes} min average episode runtime`;
+          plan.edits.push(edit(grid, season.row, 'Episodes', num(days), `${label}: ${measured}`));
         }
       }
     }
@@ -822,6 +833,11 @@ const planInsert = (
   // `Episodes` cell has exactly one chance to be right.
   const target = insertRuntimeTarget({ source, season: candidate, aired, complete }, catalogue);
   const minutes = target === null ? undefined : entry?.seasonRuntimes.get(target.season);
+  // Whether `/tv/{id}` has answered for this title at all. `catalogueFor` writes
+  // `tvdbId` as a number or an explicit null the moment the detail lands, so its
+  // absence is the one reliable signal that it has not — `runtime` and `status`
+  // are both legitimately absent on a detail that did arrive.
+  const detailed = entry?.tvdbId !== undefined;
 
   // The runtime follows *airing*; the date below follows watching. A season one
   // episode into a finished run has settled episode lengths and no business
@@ -840,12 +856,19 @@ const planInsert = (
     : minutes !== undefined ? (runtimeDays(minutes) ?? runtimeDays(entry?.runtime))
     : null;
 
-  // Asked for and not answered, on a row this fill would otherwise date. Dating
-  // it now would freeze a blank cell, and the date is not lost by waiting: it
-  // comes from the watch timestamp, so the next poll's ordinary close path
-  // writes the identical serial *and* the runtime beside it.
-  const pending = target !== null && complete && minutes === undefined;
-  const end = complete && !pending ? watchSerial(candidate.lastWatchedAt, timezone) : null;
+  // Whether anything can still reach this cell — a fact about the runtime alone,
+  // which is why it is not bundled with the watching below. Dating the row while
+  // that is open would freeze a blank cell, and the date is not lost by waiting:
+  // it comes from the watch timestamp, so the next poll writes the identical
+  // serial with the runtime beside it.
+  //
+  // Two ways to be waiting, and the first is the one a null join key hides: an
+  // absent `tvdbId` is the detail call not having answered, where null is it
+  // answering that there is no key. Reading a failed lookup as a settled "no
+  // key" dates the row on a 503 — the same absent-versus-settled distinction
+  // `seasonRuntimes` draws, and the same cost for getting it wrong.
+  const waiting = !detailed || (target !== null && minutes === undefined);
+  const end = complete && !waiting ? watchSerial(candidate.lastWatchedAt, timezone) : null;
 
   const cells: Array<{ field: HeaderName; value: ExtendedValue }> = [
     { field: 'Season', value: num(candidate.number) },
@@ -881,9 +904,12 @@ const planInsert = (
     // reader has to finish by hand, so it says so rather than leaving an empty
     // cell to be noticed.
     note: `${label}: new season row at ${row + 1}, ${candidate.watched} episodes${end === null ? '' : ', ended'}${
-      pending ? ', added open — its episode runtimes have not come back'
-      : runtime !== null || target !== null ? ''
-      : ', with no episode runtime from SIMKL to fill its Episodes cell'
+      complete && end === null ? ', added open — its episode runtimes have not come back'
+      // Blank with nothing left outstanding is blank for good, dated or not:
+      // there is no join key, or the key's answer is in and unusable. A row
+      // still waiting on an answer is not this, and says nothing.
+      : runtime === null && !waiting ? ', with no episode runtime to fill its Episodes cell'
+      : ''
     }`,
   };
 };

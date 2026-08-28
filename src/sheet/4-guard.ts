@@ -253,8 +253,10 @@ export const assertPlanSafe = (
     // Scope and bounds are all the guard can re-derive here, so it derives both.
     // The own-id rule needs no check: `id` is not in `INSERT_FIELDS`, so the row
     // this creates necessarily inherits the block's.
-    const runtime = insert.fill.find((cell) => cell.field === 'Episodes');
-    if (runtime) {
+    // Every such cell, not the first: the requests are written in order and the
+    // last one wins, so checking one while writing two is a bound that does not
+    // bind.
+    for (const runtime of insert.fill.filter((cell) => cell.field === 'Episodes')) {
       checkRuntimeScope(`${runtime.address} (Episodes)`, block);
       checkRuntimeDays(`${runtime.address} (Episodes)`, runtime.value);
     }

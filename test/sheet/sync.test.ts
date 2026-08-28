@@ -762,7 +762,7 @@ const loginFails = (status: number) => (over: Parameters<typeof server>[0] = {})
 
 // A typo in the key will never start answering, so leaving the rows pending
 // would stop the sheet being dated at all — silently, and for ever.
-test('a rejected TVDB key settles: the season closes with the cell blank', async () => {
+test('a rejected TVDB key settles: the season closes on the show-wide runtime', async () => {
   clearTokenCache();
   clearTvdbTokenCache();
   const { sheet, handler } = loginFails(401)();
@@ -773,7 +773,7 @@ test('a rejected TVDB key settles: the season closes with the cell blank', async
       assert.equal(result.retry, false, 'and does not re-ask for a poll that cannot help');
       const row = sheet.tabs.get(1)![3]!;
       assert.ok(row[H.indexOf('End')]?.userEnteredValue?.numberValue, 'the season is dated');
-      assert.equal(row[H.indexOf('Episodes')]?.userEnteredValue, undefined, 'with no runtime');
+      assert.equal(row[H.indexOf('Episodes')]?.userEnteredValue?.numberValue, 48 / 1440, 'on the show-wide length, since no average is coming');
     }),
   );
 });

@@ -56,9 +56,15 @@ export const watchSerial = (at: Temporal.Instant | null | undefined, timezone: s
  * whole-plan — so a single title with bad upstream data would stop every
  * unrelated edit in the run, every poll, for as long as its row sat inside the
  * activity window. Returning null here makes it one skipped cell instead.
+ *
+ * The lower bound is a whole minute rather than anything above zero, and it is
+ * the guard's bound exactly. Any gap between the two is a value the planner
+ * emits and the guard then refuses, which is the whole-plan refusal this
+ * function exists to avoid — reachable because an insert writes SIMKL's
+ * show-wide runtime through here unrounded, where an average arrives whole.
  */
 export const runtimeDays = (minutes: number | null | undefined): number | null =>
-  typeof minutes === 'number' && Number.isFinite(minutes) && minutes > 0 && minutes < 1440 ? minutes / 1440 : null;
+  typeof minutes === 'number' && Number.isFinite(minutes) && minutes >= 1 && minutes < 1440 ? minutes / 1440 : null;
 
 // --- Library ---------------------------------------------------------------
 

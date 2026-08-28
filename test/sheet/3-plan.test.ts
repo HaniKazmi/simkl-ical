@@ -41,7 +41,11 @@ const scenario = ({ rows, items, episodes = {}, details = {}, failed = [], tvdbI
   const titles = new Map<number, TitleCatalogue>();
   const entry = (id: number) => titles.get(id) ?? titles.set(id, { shapes: new Map(), seasonRuntimes: new Map() }).get(id)!;
   for (const [id, list] of Object.entries(episodes)) entry(Number(id)).shapes = seasonShapes(list);
-  for (const [id, detail] of Object.entries(details)) Object.assign(entry(Number(id)), detail);
+  // `catalogueFor` writes `tvdbId` as a number or an explicit null the moment
+  // `/tv/{id}` lands, so a fixture carrying a detail must too. Leaving it absent
+  // is how a title whose detail has *not* answered is expressed, and the planner
+  // reads the two differently.
+  for (const [id, detail] of Object.entries(details)) Object.assign(entry(Number(id)), detail, { tvdbId: null });
   for (const [id, tvdbId] of Object.entries(tvdbIds)) entry(Number(id)).tvdbId = tvdbId;
   for (const [id, seasons] of Object.entries(runtimes)) {
     for (const [n, minutes] of Object.entries(seasons)) entry(Number(id)).seasonRuntimes.set(Number(n), minutes);
@@ -240,7 +244,7 @@ test('a title SIMKL gives no runtime for is added blank rather than refused', ()
   const { inserts, skipped } = plan();
   assert.equal(inserts.length, 1, 'the row goes in');
   assert.equal(cellIn(inserts[0], 'Episodes'), undefined);
-  assert.match(inserts[0]?.note ?? '', /no episode runtime from SIMKL/);
+  assert.match(inserts[0]?.note ?? '', /no episode runtime to fill its Episodes cell/);
   assert.deepEqual(skipped.filter((s) => /episode runtime/.test(s)), [], 'and nothing is refused for it');
 });
 
@@ -276,6 +280,37 @@ test('a finished season just started is asked about, and carries its average und
 test('a finished season just started, with no answer yet, is added blank and undated', () => {
   const [insert] = started().plan().inserts;
   assert.deepEqual(fields(insert), ['Episode', 'Length', 'Season', 'Start']);
+});
+
+/**
+ * A title whose `/tv/{id}` never answered: the episode list landed, so the shape
+ * says the season is over, but no `tvdbId` and no show-wide runtime came with
+ * it. Absent is not null here — null is the detail answering that there is no
+ * key, which settles the question, where absent leaves it open.
+ */
+test('a title whose detail has not answered is added open, not dated blank', () => {
+  const { plan } = scenario({
+    rows: [show('Silo', 'Watching', 800), season(1, 10, 44000)],
+    items: [{ id: 800, status: 'watching', seasons: { 1: watched(10, 900), 2: watched(10) }, watched: 20, total: 20 }],
+    episodes: { 800: [...eps(1, 10), ...eps(2, 10)] },
+    details: {},
+    failed: [800],
+  });
+  const [insert] = plan().inserts;
+  assert.equal(insert?.season, 2, 'the row still goes in');
+  assert.equal(cellIn(insert, 'End'), undefined, 'undated, because a runtime may yet be obtainable');
+  assert.equal(cellIn(insert, 'Episodes'), undefined);
+  assert.match(insert?.note ?? '', /have not come back/);
+});
+
+// A dated row is never revisited, so a blank cell on one is blank for good. It
+// reads the same to a reader however the planner got there, and the report is
+// the only place they would learn to fill it in.
+test('a row dated with a cell nothing can fill says so, whatever left it blank', () => {
+  const [insert] = adding({ runtimes: { 800: { 2: null } }, details: { 800: { status: 'ended' } } }).plan().inserts;
+  assert.ok(cellIn(insert, 'End'), 'dated');
+  assert.equal(cellIn(insert, 'Episodes'), undefined, 'and blank for good');
+  assert.match(insert?.note ?? '', /no episode runtime to fill its Episodes cell/);
 });
 
 // The two passes agreeing, asserted directly: the season asked about before the
@@ -906,8 +941,19 @@ test('a runtime still outstanding holds the End write rather than closing blind'
   assert.match(plan.skipped.join(' '), /have not come back/);
 });
 
-test('a settled null closes the season and leaves the cell blank', () => {
+// Settled means no season average is coming. This batch dates the row either
+// way, so the choice is between an approximate number and a cell nothing can
+// ever fill again — and it cannot turn on whether the row was created by this
+// run or an earlier one, or two identical rows differ invisibly.
+test('a settled null closes the season on the show-wide runtime', () => {
   const plan = closing({ runtimes: { 800: { 1: null } } }).plan();
+  assert.ok(has(plan, 'End'), 'the season is dated');
+  const cell = plan.edits.find((e) => e.field === 'Episodes');
+  assert.ok(Math.abs((cell?.value.numberValue ?? 0) - 43 / 1440) < 1e-9, 'and carries the show-wide length');
+});
+
+test('a season with neither an average nor a show-wide length closes blank, and says so', () => {
+  const plan = closing({ runtimes: { 800: { 1: null } }, details: { 800: { status: 'ended' } } }).plan();
   closedBare(plan);
   assert.match(plan.notes.join(' '), /no usable episode runtimes/);
 });
