@@ -13,12 +13,12 @@
  * fixes; failing the run over one would turn it into a real one.
  */
 
-import { backoffMs, sleep } from '../api/http.ts';
-import { isoOf } from '../shared/dates.ts';
-import { errorMessage } from '../shared/errors.ts';
-import type { Logger } from '../shared/logger.ts';
-import { applyRequests, listSheets } from './io/spreadsheet.ts';
-import { deleteSheetRequest, renameSheetRequest } from './6-requests.ts';
+import { backoffMs, sleep } from '../../api/http.ts';
+import { isoOf } from '../../shared/dates.ts';
+import { errorMessage } from '../../shared/errors.ts';
+import type { Logger } from '../../shared/logger.ts';
+import { applyRequests, listSheets } from './spreadsheet.ts';
+import { deleteSheetRequest, renameSheetRequest } from '../6-requests.ts';
 
 /**
  * The snapshot namespace, and the one the freeze moves out of it.
@@ -99,7 +99,9 @@ export const sweepBackups = async (log: Logger, signal: AbortSignal | undefined)
 
 /**
  * Move a frozen run's snapshot out of the swept namespace, and report what it
- * ended up called — the original name if it could not be moved.
+ * ended up called. `renamed: false` means it is still under the swept name —
+ * the caller's freeze message has to tell the user to hurry, because a later
+ * clean run's sweep will take it.
  *
  * The id is looked up again when the caller has none, because leaving the tab
  * under the swept name hands the user a repair target the next clean run
@@ -115,19 +117,19 @@ export const markForRepair = async (
   name: string,
   log: Logger,
   signal: AbortSignal | undefined,
-): Promise<string> => {
+): Promise<{ title: string; renamed: boolean }> => {
   const id = backupId ?? (await findByName(name, log, signal));
-  if (id === undefined) return name;
+  if (id === undefined) return { title: name, renamed: false };
 
   const title = repairName(name);
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {
       await applyRequests([renameSheetRequest(id, title)], { signal });
-      return title;
+      return { title, renamed: true };
     } catch (err) {
       if (attempt < 2) await sleep(backoffMs(attempt));
       else log.warn(`could not rename the snapshot tab to "${title}": ${errorMessage(err)}`);
     }
   }
-  return name;
+  return { title: name, renamed: false };
 };
