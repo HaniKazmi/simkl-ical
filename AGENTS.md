@@ -133,12 +133,16 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   row is the sharper case of the same thing — one fill creates it *and* dates it, so there is no
   blank cell to find and no `End` edit to ride, and scope plus bounds are the whole of what the
   guard can re-derive there.
-- **A row the sync inserts leaves its runtime cell blank while the season is still running.**
-  Filling it would be permanent: `runtimeTarget` only ever writes into a blank cell, so the
-  show-wide guess an insert used to write is what stopped the season's own average from ever
-  reaching the row. `Length` reads zero for that row until the season closes, which is the price.
-  Blank is only ever chosen where something can still fill it — with no TVDB id, or no
-  `TVDB_API_KEY`, there is nothing to wait for and the show-wide runtime is written as before.
+  Live-action needs none of that care — 35 of 35 seasons measured agree, Doctor Who's 2024
+  renumbering included, because SIMKL keeps that as a separate record.
+- **A row the sync inserts leaves its runtime cell blank while the season is still airing.**
+  `runtimeTarget` writes only into a blank cell, so any number in there is the last one that cell
+  will ever hold: filling it on insert is what puts the season's own average permanently out of
+  reach. `Length` reads zero for that row until the season closes, which is the price.
+  Blank is only ever chosen where something can still fill it. With no TVDB id and no
+  `TVDB_API_KEY` there is nothing to wait for, so the show-wide runtime goes in; and an absent
+  `tvdbId` is the detail call not having *answered*, where null is it answering that there is no
+  key — reading the first as the second dates a row on a 503 and forfeits its cell.
   **The runtime follows airing and the `End` date follows watching**, which is why `seasonAired` is
   split out of `seasonComplete`: episode lengths settle when the last one airs and stay settled
   however little of the season anyone has seen, so a row added one episode into a finished season
@@ -152,8 +156,6 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   the lookup was made costs one cached call, and a row whose number never arrived falls back to the
   ordinary per-row close path a poll later. **The insert must never require the runtime to have
   arrived** — that is what keeps a bug there costing a poll rather than a cell.
-  Live-action needs none of that care — 35 of 35 seasons measured agree, Doctor Who's 2024
-  renumbering included, because SIMKL keeps that as a separate record.
 - **Never write a formula cell, and never write a show row except `Status`.** Every derived cell on
   a show row rolls up from the season rows beneath it. Writing one replaces a live roll-up with a
   frozen number, and nothing would ever notice.

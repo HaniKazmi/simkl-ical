@@ -60,10 +60,10 @@ export const planOf = (edits: CellEdit[] = [], inserts: RowInsert[] = []): Sheet
 });
 
 /**
- * A well-formed insert. The two options are the states `planInsert` actually
- * produces and the fixed shape could not: `episodes: null` omits the cell, which
- * is what a row left for its close to fill looks like, and `end` dates the row in
- * the same fill, which is what a season already over gets. An options bag rather
+ * A well-formed insert. The two options are the states `planInsert` produces:
+ * `episodes: null` omits the cell, which is what a row left for its close to
+ * fill looks like, and `end` dates the row in the same fill, which is what a
+ * season already over gets. An options bag rather
  * than more positionals, for the reason `seasonRow` gives — the fill is keyed to
  * `SHEET_HEADERS` and a position is what silently drifts.
  */

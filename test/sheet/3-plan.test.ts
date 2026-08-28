@@ -237,8 +237,10 @@ test('with no TVDB id the new row keeps SIMKL’s show-wide runtime', () => {
   assert.deepEqual(lookups(), []);
 });
 
-// The refusal this replaced named no action and repeated every poll for ever.
-// A row with a cell to fill by hand is worth more than no row at all.
+// `ShowDetail.runtime` is show-wide, so one title missing it speaks for every
+// season of that title. Refusing the row over it withholds the count, the start
+// date and the season number too — all of which are known — to avoid one blank
+// cell a reader can fill by hand.
 test('a title SIMKL gives no runtime for is added blank rather than refused', () => {
   const { plan } = adding({ tvdbIds: {}, details: { 800: { status: 'airing' } }, aired: 6 });
   const { inserts, skipped } = plan();

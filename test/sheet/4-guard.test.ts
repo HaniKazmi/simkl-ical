@@ -365,9 +365,10 @@ test('an insert’s runtime is bounded exactly as an edit’s is', () => {
   }
 });
 
-// An insert's End reaches `checkCell` above the `existing` early-return, so it
-// was already bounded — but nothing asserted it while the fixture never carried
-// one, so the rule stood untested.
+// An insert's End is bounded by `checkCell`, which runs above the `existing`
+// early-return and so reaches a row that does not exist yet. A date serial is
+// the one insert value a wrong bound writes silently: it renders as a plausible
+// date whatever number it holds.
 test('an insert’s End is bounded exactly as an edit’s is', () => {
   refuses(planOf([], [insertAt(4, 3, { end: TODAY + 5 })]), /not a plausible date serial/);
   refuses(planOf([], [insertAt(4, 3, { end: 1000 })]), /not a plausible date serial/);
