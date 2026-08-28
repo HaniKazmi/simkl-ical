@@ -4,16 +4,18 @@ import { a1, parseGrid, type HeaderName } from '../../src/sheet/2-grid.ts';
 import { shiftRow, verify } from '../../src/sheet/6-verify.ts';
 import type { CellEdit, SheetPlan } from '../../src/sheet/3-plan.ts';
 import { cellOf, sheetSnapshot, type CellSpec } from '../helpers.ts';
-import { cell, grid as before, grid, H, planOf, ROWS } from './fixtures.ts';
+import { fx, H, planOf } from './fixture.ts';
 
-/** `cell` with the bare value this suite finds easier to write. */
-const editOf = (row: number, field: HeaderName, value: number | string): CellEdit =>
-  cell(row, field, typeof value === 'number' ? { numberValue: value } : { stringValue: value });
+const before = fx.grid;
+
+/** `fx.cell` with the bare value this suite finds easier to write. */
+const editOf = (row: string, field: HeaderName, value: number | string): CellEdit =>
+  fx.cell(row, field, typeof value === 'number' ? { numberValue: value } : { stringValue: value });
 
 /** Apply a change to a copy of the fixture, the way a real write would. */
-const withChange = (row: number, field: HeaderName, spec: CellSpec) => {
-  const rows = ROWS.map((r) => [...r]);
-  rows[row]![before.columns[field]] = spec;
+const withChange = (row: string, field: HeaderName, spec: CellSpec) => {
+  const rows = fx.rows.map((r) => [...r]);
+  rows[fx.at[row]!]![before.columns[field]] = spec;
   return sheetSnapshot(rows);
 };
 
@@ -25,7 +27,7 @@ test('a shift maps a pre-existing row to where the inserts leave it', () => {
 });
 
 test('the planned write, and only the planned write, verifies', () => {
-  const result = verify(before, withChange(3, 'Episode', 8), planOf([editOf(3, 'Episode', 8)]));
+  const result = verify(before, withChange('fargoS2', 'Episode', 8), planOf([editOf('fargoS2', 'Episode', 8)]));
   assert.equal(result.ok, true, result.problems.join('; '));
   assert.equal(result.landed, true);
 });
@@ -33,11 +35,11 @@ test('the planned write, and only the planned write, verifies', () => {
 // This is why the diff is on userEnteredValue and never effectiveValue: writing
 // a season's Episode recalculates five formulas on the show row above it.
 test('a formula recalculating is not a change', () => {
-  const rows = ROWS.map((r) => [...r]);
-  rows[3]![before.columns.Episode] = 8;
+  const rows = fx.rows.map((r) => [...r]);
+  rows[fx.at.fargoS2!]![before.columns.Episode] = 8;
   // The show row's roll-up now reads 14 instead of 6, with the formula intact.
-  rows[1]![before.columns.Episodes] = { formula: '=LET(…)', value: 14 };
-  const result = verify(before, sheetSnapshot(rows), planOf([editOf(3, 'Episode', 8)]));
+  rows[fx.at.fargo!]![before.columns.Episodes] = { formula: '=LET(…)', value: 14 };
+  const result = verify(before, sheetSnapshot(rows), planOf([editOf('fargoS2', 'Episode', 8)]));
   assert.equal(result.ok, true, result.problems.join('; '));
 });
 
@@ -45,18 +47,18 @@ test('a formula recalculating is not a change', () => {
 test('an unplanned change fails', () => {
   // The planned write landed *and* something else moved — the real shape of a
   // concurrent edit, and what separates it from a batch that never went out.
-  const rows = ROWS.map((r) => [...r]);
-  rows[3]![before.columns.Episode] = 8;
-  rows[2]![before.columns.Episode] = 99;
+  const rows = fx.rows.map((r) => [...r]);
+  rows[fx.at.fargoS2!]![before.columns.Episode] = 8;
+  rows[fx.at.fargoS1!]![before.columns.Episode] = 99;
 
-  const result = verify(before, sheetSnapshot(rows), planOf([editOf(3, 'Episode', 8)]));
+  const result = verify(before, sheetSnapshot(rows), planOf([editOf('fargoS2', 'Episode', 8)]));
   assert.equal(result.ok, false);
   assert.match(result.problems.join('; '), /D3: changed without being planned/);
   assert.equal(result.landed, true);
 });
 
 test('a planned write that did not land fails', () => {
-  const result = verify(before, sheetSnapshot(ROWS), planOf([editOf(3, 'Episode', 8)]));
+  const result = verify(before, sheetSnapshot(fx.rows), planOf([editOf('fargoS2', 'Episode', 8)]));
   assert.equal(result.ok, false);
   assert.match(result.problems.join('; '), /did not land/);
 });
@@ -64,18 +66,18 @@ test('a planned write that did not land fails', () => {
 // The join key is never written by design, so a change to it means the rows are
 // not the rows we think they are.
 test('an id that moved fails even though id is outside the inspected columns', () => {
-  const result = verify(before, withChange(1, 'id', 999), planOf([editOf(3, 'Episode', 8)]));
+  const result = verify(before, withChange('fargo', 'id', 999), planOf([editOf('fargoS2', 'Episode', 8)]));
   assert.equal(result.ok, false);
   assert.match(result.problems.join('; '), /the id changed/);
 });
 
 // Free, because the read already carries it: a formula the write broke.
 test('a new error value fails', () => {
-  const rows = ROWS.map((r) => [...r]);
-  rows[3]![before.columns.Episode] = 8;
+  const rows = fx.rows.map((r) => [...r]);
+  rows[fx.at.fargoS2!]![before.columns.Episode] = 8;
   const after = sheetSnapshot(rows);
-  after.rows[1]![before.columns.Episodes] = { userEnteredValue: { formulaValue: '=LET(…)' }, effectiveValue: { errorValue: { type: 'REF' } } };
-  const result = verify(before, after, planOf([editOf(3, 'Episode', 8)]));
+  after.rows[fx.at.fargo!]![before.columns.Episodes] = { userEnteredValue: { formulaValue: '=LET(…)' }, effectiveValue: { errorValue: { type: 'REF' } } };
+  const result = verify(before, after, planOf([editOf('fargoS2', 'Episode', 8)]));
   assert.equal(result.ok, false);
   assert.match(result.problems.join('; '), /now holds an error value/);
 });
@@ -83,8 +85,8 @@ test('a new error value fails', () => {
 test('a header that moved during the write fails before anything else is inspected', () => {
   const shuffled = [...H];
   [shuffled[3], shuffled[5]] = [shuffled[5]!, shuffled[3]!];
-  const after = sheetSnapshot([shuffled, ...ROWS.slice(1)]);
-  const result = verify(before, after, planOf([editOf(3, 'Episode', 8)]));
+  const after = sheetSnapshot([shuffled, ...fx.rows.slice(1)]);
+  const result = verify(before, after, planOf([editOf('fargoS2', 'Episode', 8)]));
   assert.equal(result.ok, false);
   assert.match(result.problems.join('; '), /column moved during the write/);
 });
@@ -93,17 +95,17 @@ test('a header that moved during the write fails before anything else is inspect
 
 const insertFixture = () => {
   const newRow: CellSpec[] = [null, null, 3, 4, 45500, null, 0.0153, { formula: '=G5*D5' }, null, null];
-  const after = sheetSnapshot([...ROWS, newRow]);
+  const after = sheetSnapshot([...fx.rows, newRow]);
   const fill = (['Season', 'Episode', 'Start', 'Episodes', 'Length'] as HeaderName[]).map((field) => ({
-    row: 4,
+    row: fx.end,
     column: before.columns[field],
     field,
     previous: undefined,
     value: cellOf(newRow[before.columns[field]]!).userEnteredValue!,
-    address: a1(4, before.columns[field]),
+    address: a1(fx.end, before.columns[field]),
     note: 'new',
   }));
-  return { after, newRow, plan: planOf([], [{ row: 4, title: 'Fargo', season: 3, fill, note: 'new row' }]) };
+  return { after, newRow, plan: planOf([], [{ row: fx.end, title: 'Fargo', season: 3, fill, note: 'new row' }]) };
 };
 
 test('an insert with exactly its planned fill verifies', () => {
@@ -118,7 +120,7 @@ test('an insert with exactly its planned fill verifies', () => {
 // same failed batch, and freeze over a sheet nothing ever touched.
 test('a row the sheet did not grow by fails, and nothing landed', () => {
   const { plan } = insertFixture();
-  const result = verify(before, sheetSnapshot(ROWS), plan);
+  const result = verify(before, sheetSnapshot(fx.rows), plan);
   assert.equal(result.ok, false);
   assert.match(result.problems.join('; '), /grew by 0 rows, not 1/);
   assert.equal(result.landed, false);
@@ -134,8 +136,8 @@ test('a row the sheet did not grow by fails, and nothing landed', () => {
 // grid this confused restores wholesale or freezes.
 test('a one-row misalignment is caught, and no row is offered for deletion', () => {
   const { plan } = insertFixture();
-  // The insert landed a row too high, so the real season 2 row is now at 5.
-  const misaligned = sheetSnapshot([...ROWS.slice(0, 3), [null, null, 3, 4, 45500, null, 0.0153, { formula: '=G4*D4' }, null, null], ROWS[3]!]);
+  // The insert landed a row too high, so the real season 2 row is now below it.
+  const misaligned = sheetSnapshot([...fx.rows.slice(0, fx.at.fargoS2!), [null, null, 3, 4, 45500, null, 0.0153, { formula: '=G4*D4' }, null, null], fx.rows[fx.at.fargoS2!]!]);
   const result = verify(before, misaligned, plan);
   assert.equal(result.ok, false);
   assert.deepEqual(result.deleteRows, []);
@@ -145,17 +147,17 @@ test('a one-row misalignment is caught, and no row is offered for deletion', () 
 // went exactly where it was planned, and something *else* failed verification.
 test('an insert that landed where it was planned is offered for deletion', () => {
   const { newRow, plan } = insertFixture();
-  const rows = [...ROWS.map((r) => [...r]), newRow];
+  const rows = [...fx.rows.map((r) => [...r]), newRow];
   // A concurrent human, on a row the plan never mentioned.
-  rows[2]![before.columns.Episode] = 99;
+  rows[fx.at.fargoS1!]![before.columns.Episode] = 99;
   const result = verify(before, sheetSnapshot(rows), plan);
   assert.equal(result.ok, false);
   assert.equal(result.landed, true);
-  assert.deepEqual(result.deleteRows, [4]);
+  assert.deepEqual(result.deleteRows, [fx.end]);
 });
 
 test('a show row that lost its title fails, because it silently merges two blocks', () => {
-  const result = verify(before, withChange(1, 'Show', null), planOf([editOf(3, 'Episode', 8)]));
+  const result = verify(before, withChange('fargo', 'Show', null), planOf([editOf('fargoS2', 'Episode', 8)]));
   assert.equal(result.ok, false);
 });
 
@@ -253,7 +255,7 @@ test('without an insert a changed formula is still a change', () => {
 // The guard that decides whether to roll back reads this, so it has to be false
 // only when the sheet really is untouched.
 test('a write that never went out reads as not landed', () => {
-  const result = verify(before, sheetSnapshot(ROWS), planOf([editOf(3, 'Episode', 8)]));
+  const result = verify(before, sheetSnapshot(fx.rows), planOf([editOf('fargoS2', 'Episode', 8)]));
   assert.equal(result.landed, false);
 });
 
@@ -261,11 +263,11 @@ test('a write that never went out reads as not landed', () => {
 // roll-up, so nothing *unplanned* moved, yet skipping the rollback here would
 // also discard the only snapshot of the pre-write state.
 test('a landed write that broke a formula still reads as landed', () => {
-  const rows = ROWS.map((r) => [...r]);
-  rows[3]![before.columns.Episode] = 8;
+  const rows = fx.rows.map((r) => [...r]);
+  rows[fx.at.fargoS2!]![before.columns.Episode] = 8;
   const after = sheetSnapshot(rows);
-  after.rows[1]![before.columns.Episodes] = { userEnteredValue: { formulaValue: '=LET(…)' }, effectiveValue: { errorValue: { type: 'REF' } } };
-  const result = verify(before, after, planOf([editOf(3, 'Episode', 8)]));
+  after.rows[fx.at.fargo!]![before.columns.Episodes] = { userEnteredValue: { formulaValue: '=LET(…)' }, effectiveValue: { errorValue: { type: 'REF' } } };
+  const result = verify(before, after, planOf([editOf('fargoS2', 'Episode', 8)]));
   assert.equal(result.ok, false);
   assert.equal(result.landed, true);
 });
@@ -274,17 +276,15 @@ test('a landed write that broke a formula still reads as landed', () => {
 // newly written column verified without anyone remembering to add it. These two
 // are that claim, asserted rather than trusted.
 test('a runtime write verifies like any other edit', () => {
-  const plan = planOf([cell(3, 'Episodes', { numberValue: 49 / 1440 })]);
-  const after = sheetSnapshot(ROWS.map((row, i) => (i === 3 ? row.map((c, j) => (j === grid.columns.Episodes ? 49 / 1440 : c)) : row)));
-  const result = verify(grid, after, plan);
+  const plan = planOf([fx.cell('fargoS2', 'Episodes', { numberValue: 49 / 1440 })]);
+  const result = verify(before, withChange('fargoS2', 'Episodes', 49 / 1440), plan);
   assert.deepEqual(result.problems, []);
   assert.equal(result.ok, true);
   assert.equal(result.landed, true);
 });
 
 test('an unplanned change to a runtime cell is caught', () => {
-  const after = sheetSnapshot(ROWS.map((row, i) => (i === 3 ? row.map((c, j) => (j === grid.columns.Episodes ? 0.99 : c)) : row)));
-  const result = verify(grid, after, planOf([cell(3, 'Episode', { numberValue: 8 })]));
+  const result = verify(before, withChange('fargoS2', 'Episodes', 0.99), planOf([fx.cell('fargoS2', 'Episode', { numberValue: 8 })]));
   assert.equal(result.ok, false);
   assert.match(result.problems.join(' '), /changed without being planned/);
 });
