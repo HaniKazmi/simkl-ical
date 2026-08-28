@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { escapeHtml, html, raw, renderPage, toHtml } from '../../src/status/2-html.ts';
-import { buildModel, type StatusInput } from '../../src/status/1-model.ts';
-import { COLD, MINUTE, before, countsWith, input, moved, request } from './fixtures.ts';
+import { buildModel } from '../../src/status/1-model.ts';
+import { MINUTE, before, countsWith, input, moved, request, type InputOver } from './fixtures.ts';
 
 test('escapeHtml covers every character that can break out of markup', () => {
   assert.equal(escapeHtml(`<script>"x" & 'y'</script>`), '&lt;script&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/script&gt;');
@@ -68,7 +68,7 @@ test('numbers and booleans render as themselves', () => {
 
 // --- The page --------------------------------------------------------------
 
-const page = (over: Partial<StatusInput> = {}): string => renderPage(buildModel({ ...COLD, ...over }));
+const page = (over: InputOver = {}): string => renderPage(buildModel(input(over)));
 
 // The fresh-container page, which is also what the CI smoke test fetches.
 test('the cold page is a complete document with nothing missing rendered as text', () => {

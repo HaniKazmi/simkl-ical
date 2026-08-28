@@ -2,57 +2,32 @@
  * MODEL — the running service, reduced to what a page shows. Pure: the clock
  * arrives as `now`, and nothing here reads `config` or touches io.
  *
- * `StatusInput` is plain data rather than an `Orchestrator`, which is what keeps
- * this module from importing upward into root. It restates field names the
- * shell already has; in exchange a test builds one as a literal instead of
- * assembling a live service.
+ * The state arrives as the one `Snapshot` every reader shares; the rest of
+ * `StatusInput` is what only this page wants — config labels, the request
+ * ring, the run journal. Plain data rather than an `Orchestrator`, so a test
+ * builds one as a literal instead of assembling a live service.
  */
 
 import { instantFrom } from '../shared/dates.ts';
 import type { SheetSyncMode } from '../shared/config.ts';
-import { totalCount, totalsByType, type CountDelta, type LibraryCounts } from '../library-counts.ts';
+import { totalCount, totalsByType, type LibraryCounts } from '../library-counts.ts';
+import { pageHealthy, type Assessment } from '../health.ts';
+import type { LibraryMovement, Snapshot } from '../orchestrator.ts';
 import type { RequestRecord } from '../api/requests.ts';
 import type { SheetRunRecord } from '../sheet/io/journal.ts';
 import type { SheetSyncStatus } from '../sheet/sync.ts';
 
 export interface StatusInput {
   now: Temporal.Instant;
+  snapshot: Snapshot;
+  assessment: Assessment;
   appName: string;
   version: string;
   timezone: string;
-  startedAt: string | null;
-  ok: boolean;
-  problems: string[];
-
-  polledAt: string | null;
-  libraryError: string | null;
-  /** Every type and status, including the empty ones — see `libraryCounts`. */
-  counts: LibraryCounts;
-  gate: { pull: 'none' | 'delta' | 'full'; updated: number; removed: number } | null;
-  /**
-   * How the counts moved on the last poll that moved them, and when. Null until
-   * a poll has pulled — and deliberately *not* cleared by a quiet poll, so the
-   * line keeps reporting the last thing that happened rather than blanking
-   * every half hour.
-   */
-  movement: { at: string; deltas: CountDelta[]; updated: number; removed: number } | null;
-  requests: RequestRecord[];
   activitiesPoll: Temporal.Duration;
-
-  events: number;
-  renderedAt: string | null;
-  servingCached: boolean;
-  renderError: string | null;
-  calendarsAt: string | null;
-  calendarsChangedAt: string | null;
-  calendarError: string | null;
   calendarRefresh: Temporal.Duration;
-  films: number;
-  /** The last round that completed — not a countdown; films have no timer. */
-  filmsResolvedAt: string | null;
+  /** Asked of `Feed`, which owns the rule — per-film, so no instant answers it. */
   filmsDue: boolean;
-
-  sheetConfigured: boolean;
   /**
    * Whether per-episode runtimes can be looked up. Its own line because an
    * unconfigured one makes *zero* requests, so nothing else on this page would
@@ -62,11 +37,7 @@ export interface StatusInput {
   runtimesConfigured: boolean;
   sheetMode: SheetSyncMode;
   sheetTab: string;
-  sheetStatus: SheetSyncStatus;
-  sheetLastRunAt: string | null;
-  /** The whole repair message, which `/healthz` reduces to a boolean. */
-  sheetFrozen: string | null;
-  sheetError: string | null;
+  requests: RequestRecord[];
   runs: SheetRunRecord[];
 }
 
@@ -206,16 +177,16 @@ const due = (last: string | null, every: Temporal.Duration, now: Temporal.Instan
  * `Feed.refreshCalendars` assigns `calendarsChangedAt` the very value it just
  * put in `calendarsAt`.
  */
-const calendarDetail = (input: StatusInput, now: Temporal.Instant): string => {
+const calendarDetail = (calendars: Snapshot['feed']['calendars'], now: Temporal.Instant): string => {
   const prefix = 'airdate calendars';
-  // `calendarsAt` is stamped only after a fetch returns, so a failure with none
+  // `attemptedAt` is stamped only after a fetch returns, so a failure with none
   // means the CDN has never answered this process and there is nothing cached
   // to fall back on. Saying "serving cache" there asserts a copy that does not
   // exist, on exactly the boot where the page is being read to find that out.
-  if (input.calendarError) return input.calendarsAt === null ? `${prefix} — none yet, the CDN has not answered` : `${prefix} — serving cache`;
-  if (input.calendarsChangedAt === null) return prefix;
-  if (input.calendarsChangedAt === input.calendarsAt) return `${prefix} — new airdates`;
-  return `${prefix} — unchanged since ${stamp(input.calendarsChangedAt, now).label}`;
+  if (calendars.error) return calendars.attemptedAt === null ? `${prefix} — none yet, the CDN has not answered` : `${prefix} — serving cache`;
+  if (calendars.changedAt === null) return prefix;
+  if (calendars.changedAt === calendars.attemptedAt) return `${prefix} — new airdates`;
+  return `${prefix} — unchanged since ${stamp(calendars.changedAt, now).label}`;
 };
 
 /**
@@ -225,7 +196,7 @@ const calendarDetail = (input: StatusInput, now: Temporal.Instant): string => {
  * successful poll, nothing is known, and on a cold page that is the honest
  * thing to say.
  */
-const gateDetail = (gate: StatusInput['gate']): string => {
+const gateDetail = (gate: Snapshot['library']['poll']): string => {
   if (gate === null) return 'not polled yet';
   if (gate.pull === 'full') return 'full resync';
   const parts: string[] = [];
@@ -259,7 +230,7 @@ const signed = (n: number): string => (n > 0 ? `+${n}` : `\u2212${Math.abs(n)}`)
  * they are `reshaped` versus `updated` made legible, and that distinction is
  * what the feed's own render gate keys on.
  */
-const movementView = (movement: StatusInput['movement'], now: Temporal.Instant): MovementView | null => {
+const movementView = (movement: LibraryMovement | null, now: Temporal.Instant): MovementView | null => {
   if (movement === null) return null;
   const deltas = movement.deltas.map((d) => `${d.status === null ? d.type : `${d.type}/${d.status}`} ${signed(d.delta)}`);
   const parts = [`${movement.updated} ${movement.updated === 1 ? 'record' : 'records'} updated`];
@@ -278,49 +249,50 @@ const size = (bytes: number | null): string => {
 
 export const buildModel = (input: StatusInput): StatusModel => {
   const { now } = input;
-  const startedAt = instantFrom(input.startedAt);
+  const { library, feed, sheet } = input.snapshot;
+  const startedAt = instantFrom(input.snapshot.startedAt);
   // One instant, three places: the join, the render and the section heading all
   // describe the same moment.
-  const rendered = stamp(input.renderedAt, now);
+  const rendered = stamp(feed.renderedAt, now);
 
   return {
     appName: input.appName,
     version: input.version,
     timezone: input.timezone,
-    // `ok` from `/healthz` answers "should this container be restarted", which
-    // is deliberately narrower — a revoked token and a quiet CDN are both real
+    // `assessment.ok` answers "should this container be restarted", which is
+    // deliberately narrower — a revoked token and a quiet CDN are both real
     // problems that restarting cannot fix. The page reports what a reader sees,
     // so anything in `problems` makes it not-healthy here.
-    ok: input.ok && input.problems.length === 0,
-    problems: input.problems,
+    ok: pageHealthy(input.assessment),
+    problems: input.assessment.problems,
     uptime: startedAt === null ? null : duration(startedAt.until(now)),
 
     library: {
-      polled: stamp(input.polledAt, now),
-      error: input.libraryError,
-      total: totalCount(input.counts),
-      counts: countRows(input.counts),
-      gate: gateDetail(input.gate),
-      movement: movementView(input.movement, now),
-      due: due(input.polledAt, input.activitiesPoll, now),
+      polled: stamp(library.polledAt, now),
+      error: library.error,
+      total: totalCount(library.counts),
+      counts: countRows(library.counts),
+      gate: gateDetail(library.poll),
+      movement: movementView(library.movement, now),
+      due: due(library.polledAt, input.activitiesPoll, now),
     },
 
     feed: {
-      events: input.events,
+      events: feed.events,
       rendered,
-      error: input.renderError,
+      error: feed.error,
       steps: [
-        { name: 'fetch', detail: calendarDetail(input, now), at: stamp(input.calendarsAt, now), ok: input.calendarError === null },
-        { name: 'fetch', detail: `film releases — ${input.films} resolved`, at: stamp(input.filmsResolvedAt, now), ok: true },
-        { name: 'join', detail: `${input.events} events`, at: rendered, ok: input.renderError === null },
+        { name: 'fetch', detail: calendarDetail(feed.calendars, now), at: stamp(feed.calendars.attemptedAt, now), ok: feed.calendars.error === null },
+        { name: 'fetch', detail: `film releases — ${feed.films.resolved} resolved`, at: stamp(feed.films.resolvedAt, now), ok: true },
+        { name: 'join', detail: `${feed.events} events`, at: rendered, ok: feed.error === null },
         {
           name: 'render',
-          detail: input.servingCached ? 'serving the last saved feed' : 'serving live',
+          detail: feed.servingCached ? 'serving the last saved feed' : 'serving live',
           at: rendered,
-          ok: input.renderError === null,
+          ok: feed.error === null,
         },
       ],
-      calendarsDue: due(input.calendarsAt, input.calendarRefresh, now),
+      calendarsDue: due(feed.calendars.attemptedAt, input.calendarRefresh, now),
       // A boolean, not a countdown: whether a film is due is per-film — a new or
       // undated one is due now, a date most of a year out is not — so no single
       // instant says when the next one falls due.
@@ -338,14 +310,14 @@ export const buildModel = (input: StatusInput): StatusModel => {
       .map((request) => `${request.path} — ${request.error}`),
 
     sheet: {
-      configured: input.sheetConfigured,
+      configured: sheet.configured,
       runtimes: input.runtimesConfigured,
       mode: input.sheetMode,
       tab: input.sheetTab,
-      status: input.sheetStatus,
-      lastRun: stamp(input.sheetLastRunAt, now),
-      frozen: input.sheetFrozen,
-      error: input.sheetError,
+      status: sheet.status,
+      lastRun: stamp(sheet.lastRunAt, now),
+      frozen: sheet.frozen,
+      error: sheet.error,
       // Newest first for reading; the journal stores oldest first for appending.
       runs: input.runs.map((run) => ({ ...run, at: stamp(run.at, now) })).reverse(),
     },

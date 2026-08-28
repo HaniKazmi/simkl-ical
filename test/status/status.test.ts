@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Orchestrator } from '../../src/orchestrator.ts';
 import { renderStatus } from '../../src/status/status.ts';
+import { assess } from '../../src/health.ts';
 import { ago, calendarOf, libraryOf, quiet, withConfig } from '../helpers.ts';
 import { plainDateFrom } from '../../src/shared/dates.ts';
 
@@ -59,12 +60,12 @@ test('what the last gate did reaches the page', async () => {
 test('a library error makes the page say so rather than showing a healthy pill', async () => {
   await withConfig({ timezone: 'Europe/London' }, () => {
     const healthy = wired();
-    assert.equal(healthy.health.ok, true, 'precondition: nothing else is making it degraded');
+    assert.equal(assess(healthy.snapshot()).ok, true, 'precondition: nothing else is making it degraded');
     assert.match(renderStatus(healthy, { now: Temporal.Now.instant() }), /class="pill ok">healthy/);
 
     const state = wired();
     state.errors.library = 'AUTH: SIMKL rejected the token';
-    assert.equal(state.health.ok, true, 'precondition: `ok` is the restart signal and stays narrow');
+    assert.equal(assess(state.snapshot()).ok, true, 'precondition: `ok` is the restart signal and stays narrow');
 
     const page = renderStatus(state, { now: Temporal.Now.instant() });
     assert.match(page, /SIMKL rejected the token/, 'the problem is listed');

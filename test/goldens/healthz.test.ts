@@ -5,7 +5,9 @@
  * machine reads.
  */
 import { test } from 'node:test';
-import { buildHealth, healthResponse } from '../../src/health.ts';
+import { assess, healthResponse } from '../../src/health.ts';
+import type { Snapshot } from '../../src/orchestrator.ts';
+import { libraryCounts } from '../../src/library-counts.ts';
 import { expectGolden } from './golden.ts';
 
 const keyPaths = (value: unknown, prefix = ''): string[] => {
@@ -16,25 +18,27 @@ const keyPaths = (value: unknown, prefix = ''): string[] => {
 };
 
 test('the /healthz body keeps its key set', async () => {
-  const response = healthResponse(
-    buildHealth({
+  const snapshot: Snapshot = {
+    startedAt: '2026-08-20T11:00:00.000Z',
+    library: {
       polledAt: '2026-08-20T12:00:00.000Z',
-      libraryAt: '2026-08-20T11:00:00.000Z',
-      libraryError: null,
+      syncedAt: '2026-08-20T11:00:00.000Z',
+      error: null,
+      counts: libraryCounts(null),
+      poll: null,
+      movement: null,
+    },
+    feed: {
       events: 42,
       renderedAt: '2026-08-20T12:00:00.000Z',
       servingCached: false,
-      renderError: null,
-      calendarsAt: '2026-08-20T09:00:00.000Z',
-      calendarsFreshAt: '2026-08-20T09:00:00.000Z',
-      calendarError: null,
-      sheetConfigured: true,
-      sheetStatus: 'applied',
-      sheetLastRunAt: '2026-08-20T12:00:00.000Z',
-      sheetFrozen: false,
-      sheetError: null,
-    }),
-  );
+      error: null,
+      calendars: { attemptedAt: '2026-08-20T09:00:00.000Z', freshAt: '2026-08-20T09:00:00.000Z', changedAt: null, error: null },
+      films: { resolved: 3, resolvedAt: '2026-08-20T09:00:00.000Z' },
+    },
+    sheet: { configured: true, status: 'applied', lastRunAt: '2026-08-20T12:00:00.000Z', frozen: null, error: null },
+  };
 
+  const response = healthResponse(snapshot, assess(snapshot));
   await expectGolden('healthz-keys.json', JSON.stringify(keyPaths(response), null, 2) + '\n');
 });

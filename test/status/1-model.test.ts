@@ -17,7 +17,8 @@ test('duration reads at a glance rather than to the second', () => {
 test('the cold state models without throwing', () => {
   const model = buildModel(COLD);
 
-  assert.equal(model.uptime, null);
+  // A process always has a start time, so even the cold page has an uptime.
+  assert.equal(model.uptime, '1m');
   assert.equal(model.library.polled.label, 'never');
   assert.equal(model.library.total, 0);
   // The three type rows are a fixed shape, so a cold page has the same

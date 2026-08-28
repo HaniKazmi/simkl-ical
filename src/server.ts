@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { timingSafeEqual } from 'node:crypto';
 import { config } from './shared/config.ts';
 import type { Orchestrator } from './orchestrator.ts';
-import { healthResponse } from './health.ts';
+import { assess, healthResponse } from './health.ts';
 import { renderStatus } from './status/status.ts';
 
 /** Constant-time compare so the token cannot be recovered by timing the 404s. */
@@ -47,8 +47,9 @@ export const buildServer = (state: Orchestrator, { logger = true, logStream }: S
   app.setNotFoundHandler((_req, reply) => reply.code(404).send(NOT_FOUND));
 
   app.get('/healthz', async (_req, reply) => {
-    const health = state.health;
-    return reply.code(health.ok ? 200 : 503).send(healthResponse(health));
+    const snapshot = state.snapshot();
+    const assessment = assess(snapshot);
+    return reply.code(assessment.ok ? 200 : 503).send(healthResponse(snapshot, assessment));
   });
 
   app.get<{ Params: { token: string } }>('/:token/feed.ics', async (req, reply) => {

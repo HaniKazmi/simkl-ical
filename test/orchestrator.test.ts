@@ -4,6 +4,7 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { config } from '../src/shared/config.ts';
 import { Orchestrator } from '../src/orchestrator.ts';
+import { assess } from '../src/health.ts';
 import { emptyCalendars, jsonResponse, libraryOf, paramsOf, quiet, recorder, withConfig, withFetch, withTempDataDir } from './helpers.ts';
 import { nowIso, plainDateIn } from '../src/shared/dates.ts';
 
@@ -596,8 +597,8 @@ test('a sheet failure is never filed as a library error, and the feed still rend
     assert.equal(state.sheetRetryPending, true);
     assert.ok(state.feed.renderedAt, 'the feed was rendered before the sheet was touched');
     // A frozen or failing sheet must not restart the container or fail a deploy.
-    assert.equal(state.health.ok, true);
-    assert.equal(state.health.sheet.configured, true);
+    assert.equal(assess(state.snapshot()).ok, true);
+    assert.equal(state.snapshot().sheet.configured, true);
   });
 });
 

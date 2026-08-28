@@ -12,19 +12,68 @@
  */
 
 import { config, sheetSyncConfigured } from './shared/config.ts';
-import { buildHealth, type Health } from './health.ts';
 import { errorMessage, errorStack } from './shared/errors.ts';
 import type { Logger } from './shared/logger.ts';
 import { fetchAllItems, fetchMembership, getActivities } from './api/simkl/lists.ts';
 import { deltaFrom, evaluateGate, membershipIds, mergeDelta, retainOnly, toLibrary, watermarkOf, type GateDecision } from './library.ts';
-import { countDeltas, libraryCounts, type CountDelta } from './library-counts.ts';
+import { countDeltas, libraryCounts, type CountDelta, type LibraryCounts } from './library-counts.ts';
 import { readToken } from './api/simkl/auth.ts';
 import { SimklAuthError } from './api/simkl/client.ts';
 import type { Library } from './library.ts';
 import type { Activities, SyncType } from './api/simkl/types.ts';
 import { Feed } from './feed/feed.ts';
-import { SheetSync } from './sheet/sync.ts';
+import { SheetSync, type SheetSyncStatus } from './sheet/sync.ts';
 import { nowIso } from './shared/dates.ts';
+
+/**
+ * The service's state, as one plain value: what `/healthz` assesses and the
+ * status page renders. Produced by `Orchestrator.snapshot()` — the one export
+ * of state, so neither reader has to know which of three objects holds a
+ * field, and a new field is added in exactly one place.
+ */
+export interface Snapshot {
+  startedAt: string;
+  library: {
+    /** The last `/sync/activities` call — what stops when a token is revoked. */
+    polledAt: string | null;
+    /** The last time the library actually moved. Days old on a correct, quiet system. */
+    syncedAt: string | null;
+    error: string | null;
+    counts: LibraryCounts;
+    poll: PollOutcome | null;
+    movement: LibraryMovement | null;
+  };
+  feed: {
+    events: number;
+    renderedAt: string | null;
+    /** True while the feed came off disk and no fresh render has replaced it. */
+    servingCached: boolean;
+    /** A render failure. Not the calendars' — that is one level down. */
+    error: string | null;
+    calendars: {
+      /** Every refresh, including ones served from cache after a failure. */
+      attemptedAt: string | null;
+      /** Only when the CDN actually answered. The two diverge while serving cache. */
+      freshAt: string | null;
+      /** When the CDN last sent new bytes, as opposed to answering 304. */
+      changedAt: string | null;
+      error: string | null;
+    };
+    films: {
+      resolved: number;
+      /** The last round that completed — not a countdown; films have no timer. */
+      resolvedAt: string | null;
+    };
+  };
+  sheet: {
+    configured: boolean;
+    status: SheetSyncStatus;
+    lastRunAt: string | null;
+    /** The whole repair message; `/healthz` reduces it to a boolean. */
+    frozen: string | null;
+    error: string | null;
+  };
+}
 
 /**
  * How the library's shape changed on a poll that changed it.
@@ -176,31 +225,43 @@ export class Orchestrator {
   }
 
   /**
-   * The state both readers project from. Assembled here because this is the
-   * only object that can see all three subsystems; what it *means* is
-   * `buildHealth`'s business.
+   * The state both readers project from, assembled here because this is the
+   * only object that can see all three subsystems. What it *means* — healthy,
+   * restart-worthy — is `health.ts`'s business.
    */
-  get health(): Health {
+  snapshot(): Snapshot {
     const { feed } = this;
-    return buildHealth({
-      polledAt: this.polledAt,
-      libraryAt: this.libraryAt,
-      libraryError: this.errors.library,
-
-      events: feed.events.length,
-      renderedAt: feed.renderedAt,
-      servingCached: feed.servingCached,
-      renderError: feed.errors.render,
-      calendarsAt: feed.calendarsAt,
-      calendarsFreshAt: feed.calendarsFreshAt,
-      calendarError: feed.errors.calendar,
-
-      sheetConfigured: this.sheetSync !== null,
-      sheetStatus: this.sheetSync?.lastStatus ?? 'idle',
-      sheetLastRunAt: this.sheetSync?.lastRunAt ?? null,
-      sheetFrozen: Boolean(this.sheetSync?.frozen),
-      sheetError: this.errors.sheet,
-    });
+    return {
+      startedAt: this.startedAt,
+      library: {
+        polledAt: this.polledAt,
+        syncedAt: this.libraryAt,
+        error: this.errors.library,
+        counts: libraryCounts(this.library),
+        poll: this.lastPoll,
+        movement: this.lastMovement,
+      },
+      feed: {
+        events: feed.events.length,
+        renderedAt: feed.renderedAt,
+        servingCached: feed.servingCached,
+        error: feed.errors.render,
+        calendars: {
+          attemptedAt: feed.calendarsAt,
+          freshAt: feed.calendarsFreshAt,
+          changedAt: feed.calendarsChangedAt,
+          error: feed.errors.calendar,
+        },
+        films: { resolved: feed.movieReleases.size, resolvedAt: feed.filmsResolvedAt },
+      },
+      sheet: {
+        configured: this.sheetSync !== null,
+        status: this.sheetSync?.lastStatus ?? 'idle',
+        lastRunAt: this.sheetSync?.lastRunAt ?? null,
+        frozen: this.sheetSync?.frozen ?? null,
+        error: this.errors.sheet,
+      },
+    };
   }
 
   /**
