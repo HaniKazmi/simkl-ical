@@ -56,9 +56,15 @@ export const watchSerial = (at: Temporal.Instant | null | undefined, timezone: s
  * whole-plan — so a single title with bad upstream data would stop every
  * unrelated edit in the run, every poll, for as long as its row sat inside the
  * activity window. Returning null here makes it one skipped cell instead.
+ *
+ * The lower bound is a whole minute rather than anything above zero, and it is
+ * the guard's bound exactly. Any gap between the two is a value the planner
+ * emits and the guard then refuses, which is the whole-plan refusal this
+ * function exists to avoid — reachable because an insert writes SIMKL's
+ * show-wide runtime through here unrounded, where an average arrives whole.
  */
 export const runtimeDays = (minutes: number | null | undefined): number | null =>
-  typeof minutes === 'number' && Number.isFinite(minutes) && minutes > 0 && minutes < 1440 ? minutes / 1440 : null;
+  typeof minutes === 'number' && Number.isFinite(minutes) && minutes >= 1 && minutes < 1440 ? minutes / 1440 : null;
 
 // --- Library ---------------------------------------------------------------
 
@@ -171,6 +177,23 @@ export const seasonShapes = (episodes: EpisodeDetail[] | null | undefined): Map<
 };
 
 /**
+ * Whether a season has finished *airing* — nothing about who has watched it.
+ *
+ * Split out because the two halves of `seasonComplete` answer questions that are
+ * not the same question. How long the episodes are is settled the moment the
+ * last one airs, and stays settled however little of it anyone has seen; when
+ * the row may be dated depends on the watching. Asking the airing question with
+ * the watching one attached is what leaves a finished season's runtime unasked
+ * for as long as it sits part-watched.
+ *
+ * It is also the exact gate the runtime average needs: `averageRuntime` checks
+ * TVDB's episode count against SIMKL's, and SIMKL's is only settled once the
+ * season has stopped gaining episodes.
+ */
+export const seasonAired = (shape: SeasonShape | undefined): shape is SeasonShape =>
+  shape !== undefined && shape.total > 0 && shape.aired === shape.total;
+
+/**
  * Whether a season is finished and finished being watched.
  *
  * `aired === total` is not optional. "Every aired episode watched" is the
@@ -179,7 +202,7 @@ export const seasonShapes = (episodes: EpisodeDetail[] | null | undefined): Map<
  * still to come. Permanent, because a dated season is never touched again.
  */
 export const seasonComplete = (shape: SeasonShape | undefined, watched: number): boolean =>
-  shape !== undefined && shape.total > 0 && shape.aired === shape.total && watched >= shape.total;
+  seasonAired(shape) && watched >= shape.total;
 
 /**
  * The same question for anime, where the catalogue lookup does not apply: one

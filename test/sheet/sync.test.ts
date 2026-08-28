@@ -762,7 +762,7 @@ const loginFails = (status: number) => (over: Parameters<typeof server>[0] = {})
 
 // A typo in the key will never start answering, so leaving the rows pending
 // would stop the sheet being dated at all — silently, and for ever.
-test('a rejected TVDB key settles: the season closes with the cell blank', async () => {
+test('a rejected TVDB key settles: the season closes on the show-wide runtime', async () => {
   clearTokenCache();
   clearTvdbTokenCache();
   const { sheet, handler } = loginFails(401)();
@@ -773,7 +773,7 @@ test('a rejected TVDB key settles: the season closes with the cell blank', async
       assert.equal(result.retry, false, 'and does not re-ask for a poll that cannot help');
       const row = sheet.tabs.get(1)![3]!;
       assert.ok(row[H.indexOf('End')]?.userEnteredValue?.numberValue, 'the season is dated');
-      assert.equal(row[H.indexOf('Episodes')]?.userEnteredValue, undefined, 'with no runtime');
+      assert.equal(row[H.indexOf('Episodes')]?.userEnteredValue?.numberValue, 48 / 1440, 'on the show-wide length, since no average is coming');
     }),
   );
 });
@@ -855,5 +855,96 @@ test('a re-plan does not re-issue the runtime lookups that aged the snapshot', (
         );
       }),
     ),
+  );
+});
+
+// --- a new row, and the runtime it carries ---------------------------------
+
+/** The same block with no row for season 2 at all, so the run must add one. */
+const ADDING_GRID: CellSpec[][] = [H, show('Fargo', 'Watching', 3381), season(1, 6, 44000)];
+
+const addingRun = (over: Parameters<typeof server>[0] = {}) =>
+  server({ grid: ADDING_GRID, detail: { status: 'ended', runtime: 48, ids: { tvdb: '269613' } }, ...over });
+
+/** The row the insert created, which lands directly below season 1. */
+const addedRow = (sheet: ReturnType<typeof server>) => sheet.tabs.get(1)![3]!;
+
+// The headline. A filled cell is refused by `runtimeTarget` for ever, so a row
+// added mid-season has to go in blank or it can never carry its own average.
+test('a season still running is added with a blank runtime cell, and nothing is asked of TVDB', async () => {
+  clearTokenCache();
+  clearTvdbTokenCache();
+  const sheet = addingRun();
+  await withKey(() =>
+    withFetch(sheet.handler, async (calls) => {
+      assert.equal((await new SheetSync({ logger: quiet }).run(LIBRARY)).status, 'applied');
+      const row = addedRow(sheet);
+      assert.equal(row[H.indexOf('Season')]?.userEnteredValue?.numberValue, 2, 'the row went in');
+      assert.equal(row[H.indexOf('Episodes')]?.userEnteredValue, undefined, 'left for the close to fill');
+      assert.equal(row[H.indexOf('End')]?.userEnteredValue, undefined, 'and not dated, because it is still running');
+      assert.deepEqual(calls.filter((c) => c.includes('/episodes/official')), []);
+    }),
+  );
+});
+
+test('a season already over when its row is added is dated and averaged in the same batch', async () => {
+  clearTokenCache();
+  clearTvdbTokenCache();
+  const sheet = addingRun({ episodes: CLOSING_EPISODES, tvdb: tvdbSeason(54) });
+  await withKey(() =>
+    withFetch(sheet.handler, async (calls) => {
+      assert.equal((await new SheetSync({ logger: quiet }).run(CLOSING_LIBRARY)).status, 'applied');
+      const row = addedRow(sheet);
+      assert.ok(row[H.indexOf('End')]?.userEnteredValue?.numberValue, 'dated');
+      assert.equal(row[H.indexOf('Episodes')]?.userEnteredValue?.numberValue, 54 / 1440, 'and carries its own average, not the show-wide 48');
+      assert.equal(calls.filter((c) => c.includes('/episodes/official')).length, 1, 'asked about the row it was about to create');
+    }),
+  );
+});
+
+/**
+ * The convergence proof, and the reason a complete season is inserted *open*
+ * when its runtime has not come back. Dating it on the first poll would freeze a
+ * blank cell; leaving it open costs the end date one poll and nothing else,
+ * because the date comes from the watch timestamp rather than from now.
+ */
+test('a TVDB outage adds the row open, and the next poll dates it and fills the cell', async () => {
+  clearTokenCache();
+  clearTvdbTokenCache();
+  let answering = false;
+  const sheet = addingRun({
+    episodes: CLOSING_EPISODES,
+    tvdb: () => (answering ? tvdbSeason(54)() : new Response('boom', { status: 500 })),
+  });
+  await withKey(() =>
+    withFetch(sheet.handler, async () => {
+      const sync = new SheetSync({ logger: quiet });
+      assert.equal((await sync.run(CLOSING_LIBRARY)).status, 'applied');
+      const open = addedRow(sheet);
+      assert.equal(open[H.indexOf('Season')]?.userEnteredValue?.numberValue, 2, 'the row still went in');
+      assert.equal(open[H.indexOf('End')]?.userEnteredValue, undefined, 'undated, so the cell is still fillable');
+      assert.equal(open[H.indexOf('Episodes')]?.userEnteredValue, undefined);
+
+      answering = true;
+      clearTvdbTokenCache();
+      assert.equal((await sync.run(CLOSING_LIBRARY)).status, 'applied');
+      const closed = addedRow(sheet);
+      assert.ok(closed[H.indexOf('End')]?.userEnteredValue?.numberValue, 'dated on the second poll');
+      assert.equal(closed[H.indexOf('Episodes')]?.userEnteredValue?.numberValue, 54 / 1440, 'with the average beside it');
+    }),
+  );
+});
+
+// The inert path for the insert, matching the one the close already holds.
+test('with no TVDB key a new row keeps SIMKL’s show-wide runtime', async () => {
+  clearTokenCache();
+  clearTvdbTokenCache();
+  const sheet = addingRun();
+  await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL, tvdbApiKey: undefined }, () =>
+    withFetch(sheet.handler, async (calls) => {
+      assert.equal((await new SheetSync({ logger: quiet }).run(LIBRARY)).status, 'applied');
+      assert.equal(addedRow(sheet)[H.indexOf('Episodes')]?.userEnteredValue?.numberValue, 48 / 1440);
+      assert.equal(calls.filter((c) => c.includes('thetvdb.com')).length, 0);
+    }),
   );
 });

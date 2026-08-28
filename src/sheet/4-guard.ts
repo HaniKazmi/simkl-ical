@@ -12,7 +12,7 @@
  */
 
 import { config } from '../shared/config.ts';
-import { isBlank, isFormula, numberOf, sameValue, type Grid, type HeaderName } from './2-grid.ts';
+import { isBlank, isFormula, numberOf, sameValue, type Grid, type HeaderName, type ShowBlock } from './2-grid.ts';
 import { plainDateFrom, plainDateIn } from '../shared/dates.ts';
 import { dateSerial } from './1-progress.ts';
 import type { CellEdit, SheetPlan } from './3-plan.ts';
@@ -54,6 +54,30 @@ const refuse: (message: string) => never = (message) => {
 
 const describeValue = (value: ExtendedValue): string =>
   value.formulaValue ?? value.stringValue ?? (value.numberValue !== undefined ? String(value.numberValue) : JSON.stringify(value));
+
+/**
+ * The two runtime rules an insert and an edit must both satisfy, in one copy so
+ * they cannot drift. The rules an insert *cannot* reuse are as telling: there is
+ * no cell to find blank and no `End` edit to ride, because the row is created
+ * and dated by a single fill. Scope and bounds are the whole of what the guard
+ * can re-derive there, which is why they are extracted rather than repeated.
+ */
+const checkRuntimeScope = (where: string, block: ShowBlock): void => {
+  // An anime block is refused because a SIMKL anime record numbers every cour
+  // `season: 1` and all cours of a franchise share one TVDB id, so the row's
+  // number addresses no TVDB season — Attack on Titan's six records all point at
+  // tvdb 267440, whose season 1 holds 25 episodes against their 25/12/12/16/12/2.
+  if (block.type !== 'show' || block.ids.length === 0) {
+    refuse(`${where}: a runtime may only be written in a live-action block that carries ids on its show row.`);
+  }
+};
+
+const checkRuntimeDays = (where: string, value: ExtendedValue): void => {
+  const days = value.numberValue;
+  if (days === undefined || !(days >= MIN_RUNTIME_DAYS) || days >= 1) {
+    refuse(`${where}: ${describeValue(value)} is not a plausible per-episode day fraction.`);
+  }
+};
 
 export interface SafetyLimits {
   maxEdits?: number;
@@ -164,17 +188,12 @@ export const assertPlanSafe = (
       // 25/12/12/16/12/2. A row carrying its *own* id is refused on the same
       // ground from the other direction: its season number is explicitly not the
       // entry's, which is what a split cour or a renumbering is.
-      if (block.type !== 'show' || block.ids.length === 0) {
-        refuse(`${where}: a runtime may only be written in a live-action block that carries ids on its show row.`);
-      }
+      checkRuntimeScope(where, block);
       if (season.ids.length) {
         refuse(`${where}: the row carries its own id, so its season number is not the entry's to look up.`);
       }
 
-      const days = cell.value.numberValue;
-      if (days === undefined || !(days >= MIN_RUNTIME_DAYS) || days >= 1) {
-        refuse(`${where}: ${describeValue(cell.value)} is not a plausible per-episode day fraction.`);
-      }
+      checkRuntimeDays(where, cell.value);
       // Blank only, and unconditional. A runtime typed by hand is a deliberate
       // correction and this has no way to tell a better number from a worse one.
       // `isBlank` rather than a `previous === undefined` test, so a
@@ -225,6 +244,21 @@ export const assertPlanSafe = (
     if (!block || block.title !== insert.title) refuse(`${where}: the insertion point is not inside ${insert.title}'s block.`);
     if (!block.seasons.some((s) => s.row < insert.row)) {
       refuse(`${where}: no season row above the insertion point to inherit formats from.`);
+    }
+
+    // A runtime carried by an insert needs *more* care than one carried by an
+    // edit, not less. The same fill creates the row and dates it, so neither the
+    // blank-cell rule nor the closed-row rule ever stands between this number
+    // and the sheet — and there is no `previous` to compare it against either.
+    // Scope and bounds are all the guard can re-derive here, so it derives both.
+    // The own-id rule needs no check: `id` is not in `INSERT_FIELDS`, so the row
+    // this creates necessarily inherits the block's.
+    // Every such cell, not the first: the requests are written in order and the
+    // last one wins, so checking one while writing two is a bound that does not
+    // bind.
+    for (const runtime of insert.fill.filter((cell) => cell.field === 'Episodes')) {
+      checkRuntimeScope(`${runtime.address} (Episodes)`, block);
+      checkRuntimeDays(`${runtime.address} (Episodes)`, runtime.value);
     }
     for (const cell of insert.fill) {
       if (cell.row !== insert.row) refuse(`${cell.address}: an insert may only fill the row it creates.`);
