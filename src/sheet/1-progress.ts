@@ -171,6 +171,23 @@ export const seasonShapes = (episodes: EpisodeDetail[] | null | undefined): Map<
 };
 
 /**
+ * Whether a season has finished *airing* — nothing about who has watched it.
+ *
+ * Split out because the two halves of `seasonComplete` answer questions that are
+ * not the same question. How long the episodes are is settled the moment the
+ * last one airs, and stays settled however little of it anyone has seen; when
+ * the row may be dated depends on the watching. Asking the airing question with
+ * the watching one attached is what leaves a finished season's runtime unasked
+ * for as long as it sits part-watched.
+ *
+ * It is also the exact gate the runtime average needs: `averageRuntime` checks
+ * TVDB's episode count against SIMKL's, and SIMKL's is only settled once the
+ * season has stopped gaining episodes.
+ */
+export const seasonAired = (shape: SeasonShape | undefined): shape is SeasonShape =>
+  shape !== undefined && shape.total > 0 && shape.aired === shape.total;
+
+/**
  * Whether a season is finished and finished being watched.
  *
  * `aired === total` is not optional. "Every aired episode watched" is the
@@ -179,7 +196,7 @@ export const seasonShapes = (episodes: EpisodeDetail[] | null | undefined): Map<
  * still to come. Permanent, because a dated season is never touched again.
  */
 export const seasonComplete = (shape: SeasonShape | undefined, watched: number): boolean =>
-  shape !== undefined && shape.total > 0 && shape.aired === shape.total && watched >= shape.total;
+  seasonAired(shape) && watched >= shape.total;
 
 /**
  * The same question for anime, where the catalogue lookup does not apply: one

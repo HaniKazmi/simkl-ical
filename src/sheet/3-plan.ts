@@ -13,7 +13,7 @@
 
 import { config } from '../shared/config.ts';
 import { a1, columnLetter, duplicateIds, idsFor, isBlank, numberOf, type ColumnMap, type Grid, type HeaderName, type SeasonRow, type ShowBlock } from './2-grid.ts';
-import { courComplete, runtimeDays, seasonComplete, watchSerial, type SeasonProgress, type SeasonShape, type TitleProgress } from './1-progress.ts';
+import { courComplete, runtimeDays, seasonAired, seasonComplete, watchSerial, type SeasonProgress, type SeasonShape, type TitleProgress } from './1-progress.ts';
 import type { RuntimeRequest } from './io/runtimes.ts';
 import type { CatalogueRequest } from './io/catalogue.ts';
 import type { CellData, ExtendedValue } from '../api/google/types.ts';
@@ -400,7 +400,12 @@ export interface InsertCandidate {
   /** The entry whose progress drives the row. `statusSource`, not `idsFor`. */
   source: TitleProgress;
   season: SeasonProgress;
-  /** Decided once here, so the two passes cannot answer it differently. */
+  /**
+   * Finished airing. What decides the *runtime*, because episode lengths settle
+   * when the last one airs and not when anyone finishes watching.
+   */
+  aired: boolean;
+  /** Finished airing *and* finished being watched. What decides the `End` date. */
   complete: boolean;
 }
 
@@ -450,8 +455,8 @@ const insertTarget = (
     .sort((a, b) => a.number - b.number)[0];
   if (!season) return null;
 
-  const complete = seasonComplete(catalogue.titles.get(source.id)?.shapes.get(season.number), season.watched);
-  return { source, season, complete };
+  const shape = catalogue.titles.get(source.id)?.shapes.get(season.number);
+  return { source, season, aired: seasonAired(shape), complete: seasonComplete(shape, season.watched) };
 };
 
 /**
@@ -585,12 +590,16 @@ export const planRuntimeLookups = (
     // that arrives complete is dated by the same fill that creates it, so there
     // is no later batch to carry the cell.
     const candidate = insertTarget(block, index, catalogue, duplicates, cutoff);
-    // Completeness is a hard gate, not an optimisation. `averageRuntime` checks
-    // TVDB's episode count against SIMKL's, and mid-season SIMKL's has not
-    // settled — so the answer would be a null recorded as *settled*, and
-    // `seasonRuntimes` has no age ceiling. That forfeits the cell before the
-    // season has even ended.
-    if (candidate?.complete) {
+    // Gated on *airing*, not on watching. A season that has finished airing has
+    // settled runtimes however little of it has been seen, and a row added one
+    // episode into a finished season is exactly the case that wants them.
+    //
+    // That it is gated at all is a hard rule rather than an optimisation:
+    // `averageRuntime` checks TVDB's episode count against SIMKL's, and while a
+    // season is still airing SIMKL's has not settled — so the answer would be a
+    // null recorded as *settled*, and `seasonRuntimes` has no age ceiling. That
+    // forfeits the cell before the season has even ended.
+    if (candidate?.aired) {
       const key = insertRuntimeTarget(candidate, catalogue);
       if (key && !catalogue.titles.get(key.id)?.seasonRuntimes.has(key.season)) requests.push(key);
     }
@@ -785,7 +794,7 @@ export const planSync = (
 const planInsert = (
   grid: Grid,
   block: ShowBlock,
-  { source, season: candidate, complete }: InsertCandidate,
+  { source, season: candidate, aired, complete }: InsertCandidate,
   catalogue: CatalogueView,
   { timezone }: { timezone: string },
 ): RowInsert | string | null => {
@@ -811,27 +820,30 @@ const planInsert = (
   // What this row's runtime cell can hold, and whether this same fill may date
   // the row. A row created and dated in one batch is never revisited, so its
   // `Episodes` cell has exactly one chance to be right.
-  const target = insertRuntimeTarget({ source, season: candidate, complete }, catalogue);
+  const target = insertRuntimeTarget({ source, season: candidate, aired, complete }, catalogue);
   const minutes = target === null ? undefined : entry?.seasonRuntimes.get(target.season);
 
-  // Left blank on purpose whenever the season's own average can still reach it,
-  // which is the whole point of the cell: the batch that closes this row later
-  // fills it with that season's number rather than the show-wide guess. Blank is
-  // only ever chosen where something can still fill it — with no join key there
-  // is nothing to wait for, so the show-wide runtime is the best there will be.
+  // The runtime follows *airing*; the date below follows watching. A season one
+  // episode into a finished run has settled episode lengths and no business
+  // being dated, and those are two different answers about the same row.
+  //
+  // Left blank only while something can still fill it: a season still airing
+  // waits for the batch that closes the row, because a filled cell is one the
+  // close can never correct. With no join key there is nothing to wait for, so
+  // the show-wide runtime is the best there will ever be.
   const runtime =
     target === null ? runtimeDays(entry?.runtime)
-    : !complete ? null
+    : !aired ? null
     // Settled, either way. `runtimeDays` also rejects an average that is not a
     // length an episode has, and the show-wide number is better than a cell
     // nothing will ever be able to fill again.
     : minutes !== undefined ? (runtimeDays(minutes) ?? runtimeDays(entry?.runtime))
     : null;
 
-  // Asked for and not answered. Dating the row now would freeze a blank cell,
-  // and the date is not lost by waiting: it comes from the watch timestamp, so
-  // the next poll's ordinary close path writes the identical serial *and* the
-  // runtime beside it.
+  // Asked for and not answered, on a row this fill would otherwise date. Dating
+  // it now would freeze a blank cell, and the date is not lost by waiting: it
+  // comes from the watch timestamp, so the next poll's ordinary close path
+  // writes the identical serial *and* the runtime beside it.
   const pending = target !== null && complete && minutes === undefined;
   const end = complete && !pending ? watchSerial(candidate.lastWatchedAt, timezone) : null;
 

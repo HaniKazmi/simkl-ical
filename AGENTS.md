@@ -138,10 +138,15 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   show-wide guess an insert used to write is what stopped the season's own average from ever
   reaching the row. `Length` reads zero for that row until the season closes, which is the price.
   Blank is only ever chosen where something can still fill it — with no TVDB id, or no
-  `TVDB_API_KEY`, there is nothing to wait for and the show-wide runtime is written as before. A
-  season that is *already over* when its row is added is dated and averaged in the one fill; a
-  season over but whose runtimes have not come back is inserted **open**, because dating it would
-  freeze a blank cell and the date is not lost by waiting. So the same season must be picked by
+  `TVDB_API_KEY`, there is nothing to wait for and the show-wide runtime is written as before.
+  **The runtime follows airing and the `End` date follows watching**, which is why `seasonAired` is
+  split out of `seasonComplete`: episode lengths settle when the last one airs and stay settled
+  however little of the season anyone has seen, so a row added one episode into a finished season
+  carries its average straight away and is nowhere near dated. Gating the runtime on watching
+  instead leaves a binge-started season blank, and its `Length` zero, for as long as it takes to get
+  through it. A season over *and* watched out is dated and averaged in the one fill; one whose
+  runtimes have not come back is inserted **open**, because dating it would freeze a blank cell and
+  the date is not lost by waiting. So the same season must be picked by
   `planRuntimeLookups` before the fetch and by `planInsert` after it — one `insertTarget` answers
   both. They can disagree in only one safe direction: an insert refused for its own reasons after
   the lookup was made costs one cached call, and a row whose number never arrived falls back to the

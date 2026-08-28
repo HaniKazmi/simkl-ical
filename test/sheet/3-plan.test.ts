@@ -244,6 +244,40 @@ test('a title SIMKL gives no runtime for is added blank rather than refused', ()
   assert.deepEqual(skipped.filter((s) => /episode runtime/.test(s)), [], 'and nothing is refused for it');
 });
 
+/**
+ * A season that finished airing long ago, one episode in. Its episode lengths
+ * are settled and its end date is nowhere near due, which is the case that shows
+ * the two questions apart: gate the runtime on watching and a binge-started
+ * season carries a blank cell and a Length of zero for as long as it takes to
+ * get through it.
+ */
+const started = (over: Partial<Scenario> = {}) =>
+  scenario({
+    rows: [show('Silo', 'Watching', 800), season(1, 10, 44000)],
+    items: [{ id: 800, status: 'watching', seasons: { 1: watched(10, 900), 2: watched(1) }, watched: 11, total: 20 }],
+    episodes: { 800: [...eps(1, 10), ...eps(2, 10)] },
+    details: { 800: { status: 'ended', runtime: 43 } },
+    tvdbIds: { 800: 403245 },
+    ...over,
+  });
+
+test('a finished season just started is asked about, and carries its average undated', () => {
+  const { plan, lookups } = started({ runtimes: { 800: { 2: 49 } } });
+  const [insert] = plan().inserts;
+  assert.deepEqual(fields(insert), ['Episode', 'Episodes', 'Length', 'Season', 'Start']);
+  assert.ok(Math.abs((cellIn(insert, 'Episodes')?.numberValue ?? 0) - 49 / 1440) < 1e-9, 'the season average, though only one episode is watched');
+  assert.equal(cellIn(insert, 'End'), undefined, 'and nowhere near dated');
+  assert.deepEqual(started().lookups(), [{ id: 800, tvdbId: 403245, season: 2 }], 'asked for on the run that adds the row');
+  assert.deepEqual(lookups(), [], 'and not again once answered');
+});
+
+// The runtime is not there yet, so the cell waits — but the row is undated for
+// its own reason, and it is the close that will fill the cell either way.
+test('a finished season just started, with no answer yet, is added blank and undated', () => {
+  const [insert] = started().plan().inserts;
+  assert.deepEqual(fields(insert), ['Episode', 'Length', 'Season', 'Start']);
+});
+
 // The two passes agreeing, asserted directly: the season asked about before the
 // fetch is the season the plan then inserts.
 test('the lookup asks about exactly the season the plan inserts', () => {
