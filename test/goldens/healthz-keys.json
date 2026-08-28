@@ -1,0 +1,16 @@
+[
+  "feed.calendars.attemptedAt",
+  "feed.calendars.freshAt",
+  "feed.events",
+  "feed.renderedAt",
+  "feed.servingCached",
+  "library.polledAt",
+  "library.syncedAt",
+  "ok",
+  "sheet.configured",
+  "sheet.frozen",
+  "sheet.lastRunAt",
+  "sheet.mode",
+  "sheet.status",
+  "timezone"
+]

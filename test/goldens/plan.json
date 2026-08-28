@@ -1,0 +1,37 @@
+{
+  "edits": [
+    {
+      "address": "D4",
+      "field": "Episode",
+      "note": "Fargo S2: 3 -> 8 episodes"
+    },
+    {
+      "address": "F4",
+      "field": "End",
+      "note": "Fargo S2: ended"
+    },
+    {
+      "address": "G4",
+      "field": "Episodes",
+      "note": "Fargo S2: 43 min average episode runtime"
+    },
+    {
+      "address": "B2",
+      "field": "Status",
+      "note": "Fargo: Watching -> Ended"
+    },
+    {
+      "address": "D6",
+      "field": "Episode",
+      "note": "Alien S1: 2 -> 5 episodes"
+    }
+  ],
+  "inserts": [
+    {
+      "address": "row 7",
+      "title": "Alien",
+      "season": 2,
+      "note": "Alien S2: new season row at 7, 4 episodes"
+    }
+  ]
+}
