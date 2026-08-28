@@ -13,7 +13,7 @@
 
 import { config } from '../shared/config.ts';
 import { a1, columnLetter, duplicateIds, idsFor, isBlank, numberOf, type ColumnMap, type Grid, type HeaderName, type SeasonRow, type ShowBlock } from './2-grid.ts';
-import { courComplete, runtimeDays, seasonComplete, watchSerial, type SeasonShape, type TitleProgress } from './1-progress.ts';
+import { courComplete, runtimeDays, seasonComplete, watchSerial, type SeasonProgress, type SeasonShape, type TitleProgress } from './1-progress.ts';
 import type { RuntimeRequest } from './io/runtimes.ts';
 import type { CatalogueRequest } from './io/catalogue.ts';
 import type { CellData, ExtendedValue } from '../api/google/types.ts';
@@ -393,6 +393,84 @@ export const planLookups = (
   return requests;
 };
 
+// --- The row a block does not have yet -------------------------------------
+
+/** The season a block would gain a row for, and whether it is already over. */
+export interface InsertCandidate {
+  /** The entry whose progress drives the row. `statusSource`, not `idsFor`. */
+  source: TitleProgress;
+  season: SeasonProgress;
+  /** Decided once here, so the two passes cannot answer it differently. */
+  complete: boolean;
+}
+
+/**
+ * Which season a block would gain a row for.
+ *
+ * **Called by both passes**, and that is the point rather than a convenience.
+ * `planRuntimeLookups` asks TVDB about a row that does not exist yet, and
+ * `planInsert` builds that row. A season inserted complete is dated by the same
+ * fill that creates it, so its runtime has exactly one chance to be asked for —
+ * before the row exists. Two copies of this rule that drifted would send the
+ * answer for a season nothing inserts.
+ *
+ * Disagreement is survivable here in a way it is not for `runtimeTarget`, and
+ * the difference is worth knowing: a lookup nothing uses costs one cached call,
+ * and a row whose number never arrived is inserted *open* and closed by the
+ * ordinary per-row path a poll later. The insert must therefore never require
+ * the runtime to have arrived — that is what keeps a bug here costing a poll
+ * rather than a cell.
+ */
+const insertTarget = (
+  block: ShowBlock,
+  index: Map<number, TitleProgress>,
+  catalogue: CatalogueView,
+  duplicates: Set<number>,
+  cutoff: Temporal.Instant,
+): InsertCandidate | null => {
+  // Anime is never inserted into: one SIMKL record is one cour, so its season
+  // numbers do not address rows in a block the user numbers by broadcast season.
+  if (block.type !== 'show' || block.ids.length === 0) return null;
+
+  // Declined when another row claims the same id, the rule `resolveRow` applies
+  // to a season row: one title's progress cannot plan rows in two blocks.
+  const sourceId = statusSource(block);
+  if (sourceId === null || duplicates.has(sourceId)) return null;
+  const source = index.get(sourceId);
+  if (!source) return null;
+
+  // Every whole season the block already has a row for, computed independently
+  // of whether that row resolved. A row the planner declined to read is still a
+  // row, and inserting a second one for the same season is the one insert
+  // mistake nothing downstream could detect.
+  const covered = new Set(block.seasons.map((s) => s.season).filter((n): n is number => n !== null && Number.isInteger(n)));
+
+  const season = [...source.seasons.values()]
+    .filter((s) => s.watched > 0 && !covered.has(s.number) && within(s.lastWatchedAt, cutoff))
+    .sort((a, b) => a.number - b.number)[0];
+  if (!season) return null;
+
+  const complete = seasonComplete(catalogue.titles.get(source.id)?.shapes.get(season.number), season.watched);
+  return { source, season, complete };
+};
+
+/**
+ * The TVDB lookup a prospective row would need, or null where none is possible.
+ *
+ * Two of `runtimeTarget`'s clauses are missing because a new row satisfies them
+ * by construction: it has no cell yet, so the blank-cell test cannot fail, and
+ * `id` is not in the insert's whitelist, so the row necessarily inherits the
+ * block's. Scope is already settled by `insertTarget`. What is left is a whole
+ * season number and a key to join on.
+ */
+const insertRuntimeTarget = (candidate: InsertCandidate, catalogue: CatalogueView): RuntimeRequest | null => {
+  const { source, season } = candidate;
+  if (!Number.isInteger(season.number)) return null;
+  const tvdbId = catalogue.titles.get(source.id)?.tvdbId;
+  if (typeof tvdbId !== 'number') return null;
+  return { id: source.id, tvdbId, season: season.number };
+};
+
 // --- Runtime lookups -------------------------------------------------------
 
 /**
@@ -501,6 +579,21 @@ export const planRuntimeLookups = (
 
       requests.push(key);
     }
+
+    // The row that is not there yet. The walk above is over rows the grid has,
+    // so a season about to be inserted is never reached by it — and an insert
+    // that arrives complete is dated by the same fill that creates it, so there
+    // is no later batch to carry the cell.
+    const candidate = insertTarget(block, index, catalogue, duplicates, cutoff);
+    // Completeness is a hard gate, not an optimisation. `averageRuntime` checks
+    // TVDB's episode count against SIMKL's, and mid-season SIMKL's has not
+    // settled — so the answer would be a null recorded as *settled*, and
+    // `seasonRuntimes` has no age ceiling. That forfeits the cell before the
+    // season has even ended.
+    if (candidate?.complete) {
+      const key = insertRuntimeTarget(candidate, catalogue);
+      if (key && !catalogue.titles.get(key.id)?.seasonRuntimes.has(key.season)) requests.push(key);
+    }
   }
   return requests;
 };
@@ -526,12 +619,6 @@ export const planSync = (
     // produces zero edits, and no run can retro-edit years of history.
     if (!isRecent(ids, index, cutoff)) continue;
     const anime = block.ids.length === 0;
-
-    // Every whole season the block already has a row for, computed up front and
-    // independently of whether that row resolved. A row the planner declined to
-    // read is still a row, and inserting a second one for the same season is
-    // the one insert mistake nothing downstream could detect.
-    const covered = new Set(block.seasons.map((s) => s.season).filter((n): n is number => n !== null && Number.isInteger(n)));
 
     // Two rows describing the same season of the same title. One title's
     // progress cannot say which to advance, so both would be planned the same
@@ -649,7 +736,11 @@ export const planSync = (
         }
       }
 
-      const insert = planInsert(grid, block, source, covered, catalogue, { cutoff, timezone });
+      // Re-derived rather than threaded through from the branch above: this is
+      // the same question `planRuntimeLookups` asked before the fetch, and one
+      // answer to it is the only thing keeping the two passes in step.
+      const candidate = insertTarget(block, index, catalogue, duplicates, cutoff);
+      const insert = candidate && planInsert(grid, block, candidate, catalogue, { timezone });
       if (typeof insert === 'string') plan.skipped.push(insert);
       else if (insert) {
         // One row per run, and not a setting: every request index in a plan is
@@ -694,23 +785,12 @@ export const planSync = (
 const planInsert = (
   grid: Grid,
   block: ShowBlock,
-  source: TitleProgress | null,
-  covered: Set<number>,
+  { source, season: candidate, complete }: InsertCandidate,
   catalogue: CatalogueView,
-  { cutoff, timezone }: { cutoff: Temporal.Instant; timezone: string },
+  { timezone }: { timezone: string },
 ): RowInsert | string | null => {
-  if (block.type !== 'show' || !source || !block.ids.length) return null;
-
-  const candidates = [...source.seasons.values()]
-    .filter((s) => s.watched > 0 && !covered.has(s.number) && within(s.lastWatchedAt, cutoff))
-    .sort((a, b) => a.number - b.number);
-  const candidate = candidates[0];
-  if (!candidate) return null;
-
   const label = `${block.title} S${candidate.number}`;
   const entry = catalogue.titles.get(source.id);
-  const runtime = runtimeDays(entry?.runtime);
-  if (runtime === null) return `${label}: would be added, but SIMKL gives no episode runtime for the Episodes column`;
 
   const start = watchSerial(candidate.firstWatchedAt, timezone);
   if (start === null) return `${label}: would be added, but its first watch timestamp is unusable`;
@@ -728,14 +808,38 @@ const planInsert = (
     return `${label}: would be added, but there is no season row above the insertion point to inherit formats from`;
   }
 
-  const complete = seasonComplete(entry?.shapes.get(candidate.number), candidate.watched);
-  const end = complete ? watchSerial(candidate.lastWatchedAt, timezone) : null;
+  // What this row's runtime cell can hold, and whether this same fill may date
+  // the row. A row created and dated in one batch is never revisited, so its
+  // `Episodes` cell has exactly one chance to be right.
+  const target = insertRuntimeTarget({ source, season: candidate, complete }, catalogue);
+  const minutes = target === null ? undefined : entry?.seasonRuntimes.get(target.season);
+
+  // Left blank on purpose whenever the season's own average can still reach it,
+  // which is the whole point of the cell: the batch that closes this row later
+  // fills it with that season's number rather than the show-wide guess. Blank is
+  // only ever chosen where something can still fill it — with no join key there
+  // is nothing to wait for, so the show-wide runtime is the best there will be.
+  const runtime =
+    target === null ? runtimeDays(entry?.runtime)
+    : !complete ? null
+    // Settled, either way. `runtimeDays` also rejects an average that is not a
+    // length an episode has, and the show-wide number is better than a cell
+    // nothing will ever be able to fill again.
+    : minutes !== undefined ? (runtimeDays(minutes) ?? runtimeDays(entry?.runtime))
+    : null;
+
+  // Asked for and not answered. Dating the row now would freeze a blank cell,
+  // and the date is not lost by waiting: it comes from the watch timestamp, so
+  // the next poll's ordinary close path writes the identical serial *and* the
+  // runtime beside it.
+  const pending = target !== null && complete && minutes === undefined;
+  const end = complete && !pending ? watchSerial(candidate.lastWatchedAt, timezone) : null;
 
   const cells: Array<{ field: HeaderName; value: ExtendedValue }> = [
     { field: 'Season', value: num(candidate.number) },
     { field: 'Episode', value: num(candidate.watched) },
     { field: 'Start', value: num(start) },
-    { field: 'Episodes', value: num(runtime) },
+    ...(runtime === null ? [] : [{ field: 'Episodes' as const, value: num(runtime) }]),
     {
       field: 'Length',
       // The sheet's own convention: runtime x episodes watched. Written as a
@@ -760,7 +864,15 @@ const planInsert = (
     title: block.title,
     season: candidate.number,
     fill,
-    note: `${label}: new season row at ${row + 1}, ${candidate.watched} episodes${complete ? ', ended' : ''}`,
+    // Why the cell went in blank, where that is not simply "the season is still
+    // running". A row added without a runtime nothing can supply is the one a
+    // reader has to finish by hand, so it says so rather than leaving an empty
+    // cell to be noticed.
+    note: `${label}: new season row at ${row + 1}, ${candidate.watched} episodes${end === null ? '' : ', ended'}${
+      pending ? ', added open — its episode runtimes have not come back'
+      : runtime !== null || target !== null ? ''
+      : ', with no episode runtime from SIMKL to fill its Episodes cell'
+    }`,
   };
 };
 
