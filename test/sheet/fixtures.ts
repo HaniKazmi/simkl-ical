@@ -59,8 +59,19 @@ export const planOf = (edits: CellEdit[] = [], inserts: RowInsert[] = []): Sheet
   deferred: 0,
 });
 
-/** A well-formed insert: every column the whitelist allows, and nothing else. */
-export const insertAt = (row: number, season: number, title = 'Fargo'): RowInsert => ({
+/**
+ * A well-formed insert. The two options are the states `planInsert` actually
+ * produces and the fixed shape could not: `episodes: null` omits the cell, which
+ * is what a row left for its close to fill looks like, and `end` dates the row in
+ * the same fill, which is what a season already over gets. An options bag rather
+ * than more positionals, for the reason `seasonRow` gives — the fill is keyed to
+ * `SHEET_HEADERS` and a position is what silently drifts.
+ */
+export const insertAt = (
+  row: number,
+  season: number,
+  { title = 'Fargo', episodes = 0.0153, end = null }: { title?: string; episodes?: number | null; end?: number | null } = {},
+): RowInsert => ({
   row,
   title,
   season,
@@ -69,8 +80,9 @@ export const insertAt = (row: number, season: number, title = 'Fargo'): RowInser
       ['Season', { numberValue: season }],
       ['Episode', { numberValue: 4 }],
       ['Start', { numberValue: TODAY - 10 }],
-      ['Episodes', { numberValue: 0.0153 }],
+      ...(episodes === null ? [] : [['Episodes', { numberValue: episodes }] as [HeaderName, ExtendedValue]]),
       ['Length', { formulaValue: `=G${row + 1}*D${row + 1}` }],
+      ...(end === null ? [] : [['End', { numberValue: end }] as [HeaderName, ExtendedValue]]),
     ] as Array<[HeaderName, ExtendedValue]>
   ).map(([field, value]) => ({ row, column: grid.columns[field], field, previous: undefined, value, address: a1(row, grid.columns[field]), note: 'new' })),
   note: 'new row',

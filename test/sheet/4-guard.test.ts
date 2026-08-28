@@ -157,7 +157,7 @@ test('a target beyond the end of the snapshot is refused', () => {
 // sheet in a different way again. The planner emits one; nothing proved the
 // guard is the backstop if it ever emitted two.
 test('two inserts in one batch are refused however well-formed each is', () => {
-  refuses(planOf([], [insertAt(4, 2), insertAt(9, 3, 'Veep')]), /2 inserts in one batch/);
+  refuses(planOf([], [insertAt(4, 2), insertAt(9, 3, { title: 'Veep' })]), /2 inserts in one batch/);
 });
 
 test('two inserts are refused even for the same show', () => {
@@ -339,4 +339,51 @@ test('a runtime is refused on a season row that carries its own id', () => {
   );
   assert.doesNotThrow(() => assertPlanSafe(planOf([endCell(3), runtimeCell(49 / 1440, 3)]), owned));
   refuses(planOf([endCell(4), runtimeCell(49 / 1440, 4)]), /carries its own id/, owned);
+});
+
+// --- a runtime carried by an insert ----------------------------------------
+
+/**
+ * The insert path has neither of the two rules that protect an edit: there is no
+ * cell to find blank and no `End` edit to ride, because one fill creates the row
+ * and dates it. Scope and bounds are the whole of the guard here, so both are
+ * asserted from the same baseline the edits tests use.
+ */
+test('an insert carrying a runtime and an End is allowed', () => {
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], [insertAt(4, 3, { end: TODAY })]), grid));
+});
+
+// The state a row left for its close to fill goes in as. Pins that the insert
+// whitelist is a whitelist and not a requirement.
+test('an insert with no runtime cell at all is allowed', () => {
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], [insertAt(4, 3, { episodes: null })]), grid));
+});
+
+test('an insert’s runtime is bounded exactly as an edit’s is', () => {
+  for (const bad of [49, 1, 0, -1 / 1440, 0.4 / 1440]) {
+    refuses(planOf([], [insertAt(4, 3, { episodes: bad })]), /not a plausible per-episode day fraction/);
+  }
+});
+
+// An insert's End reaches `checkCell` above the `existing` early-return, so it
+// was already bounded — but nothing asserted it while the fixture never carried
+// one, so the rule stood untested.
+test('an insert’s End is bounded exactly as an edit’s is', () => {
+  refuses(planOf([], [insertAt(4, 3, { end: TODAY + 5 })]), /not a plausible date serial/);
+  refuses(planOf([], [insertAt(4, 3, { end: 1000 })]), /not a plausible date serial/);
+});
+
+// The claim the row cannot take back, re-derived on the insert path too: the
+// same fill dates the row, so nothing protects the cell a second time.
+test('an insert carrying a runtime into a block TVDB cannot describe is refused', () => {
+  const anime = parseGrid(sheetSnapshot([H, showRow('Bleach', 'Watching', 1, 'anime'), season(1, 6, 44000), season(2, 3, null)]));
+  refuses(planOf([], [insertAt(4, 3, { title: 'Bleach' })]), /live-action block/, anime);
+
+  const idless = parseGrid(sheetSnapshot([H, showRow('Fargo', 'Ended', null), season(1, 6, 44000), season(2, 3, null)]));
+  refuses(planOf([], [insertAt(4, 3)]), /live-action block/, idless);
+
+  // The same two blocks accept a row that carries no runtime, so the refusals
+  // above are the runtime rule rather than anything else about the block.
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], [insertAt(4, 3, { title: 'Bleach', episodes: null })]), anime));
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], [insertAt(4, 3, { episodes: null })]), idless));
 });
