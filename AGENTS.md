@@ -129,7 +129,24 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   count check is a live-action backstop only. `4-guard.ts` re-derives that scope rather than
   trusting it, which it does for no other planner claim about *which* row may be written: this is
   the one the row cannot take back, since the same batch dates the row and fills the cell, so
-  neither the blank-cell rule nor the closed-row rule protects it a second time.
+  neither the blank-cell rule nor the closed-row rule protects it a second time. An **inserted**
+  row is the sharper case of the same thing — one fill creates it *and* dates it, so there is no
+  blank cell to find and no `End` edit to ride, and scope plus bounds are the whole of what the
+  guard can re-derive there.
+- **A row the sync inserts leaves its runtime cell blank while the season is still running.**
+  Filling it would be permanent: `runtimeTarget` only ever writes into a blank cell, so the
+  show-wide guess an insert used to write is what stopped the season's own average from ever
+  reaching the row. `Length` reads zero for that row until the season closes, which is the price.
+  Blank is only ever chosen where something can still fill it — with no TVDB id, or no
+  `TVDB_API_KEY`, there is nothing to wait for and the show-wide runtime is written as before. A
+  season that is *already over* when its row is added is dated and averaged in the one fill; a
+  season over but whose runtimes have not come back is inserted **open**, because dating it would
+  freeze a blank cell and the date is not lost by waiting. So the same season must be picked by
+  `planRuntimeLookups` before the fetch and by `planInsert` after it — one `insertTarget` answers
+  both. They can disagree in only one safe direction: an insert refused for its own reasons after
+  the lookup was made costs one cached call, and a row whose number never arrived falls back to the
+  ordinary per-row close path a poll later. **The insert must never require the runtime to have
+  arrived** — that is what keeps a bug there costing a poll rather than a cell.
   Live-action needs none of that care — 35 of 35 seasons measured agree, Doctor Who's 2024
   renumbering included, because SIMKL keeps that as a separate record.
 - **Never write a formula cell, and never write a show row except `Status`.** Every derived cell on

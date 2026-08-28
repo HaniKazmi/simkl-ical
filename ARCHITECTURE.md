@@ -50,7 +50,9 @@ separate SIMKL type rather than a genre, and carries no season number.
 Inert unless `SHEET_ID` **and** a Google credential are both set. It writes exactly four things —
 a season row's `Episode` count, a season row's `End` date, a season row's `Episodes` runtime *into a
 blank cell only*, and a show row's `Status` — and inserts a season row when a new season is started.
-Nothing else, ever. The runtime additionally needs `TVDB_API_KEY`; without it the other three behave
+Nothing else, ever. A row it inserts leaves that runtime cell **blank** while the season is still
+running, because a filled cell is one the close can never correct: the blank is what lets the season's
+own average reach it later, and `Length` reading zero until then is the price of that. The runtime additionally needs `TVDB_API_KEY`; without it the other three behave
 exactly as they do with it.
 
 | Step | What happens | Upstream calls |
@@ -88,7 +90,7 @@ expensive or the thing it fetches rarely changes.
 | Film release date | a film is new, undated, or dated inside **30 days**; at most once per **24h** each | `GET /movies/{id}` — 4 at a time |
 | A title's episode list | that title's `lastWatchedAt` moved, else after **24h** | `GET /tv/episodes/{id}` |
 | A title's status | same trigger as its episode list | `GET /tv/{id}`, or `/anime/{id}` for a cour |
-| A season's episode lengths | that season is completing with a blank runtime cell — then never again, since a finished season's lengths cannot change | `GET api4.thetvdb.com/v4/series/{id}/episodes/official?season={n}` — one call is one whole season |
+| A season's episode lengths | that season is completing with a blank runtime cell, or is already over on the run that adds its row — then never again, since a finished season's lengths cannot change | `GET api4.thetvdb.com/v4/series/{id}/episodes/official?season={n}` — one call is one whole season |
 | TVDB access token | first runtime lookup, then every **20 days**, or after any `401` | `POST api4.thetvdb.com/v4/login` |
 | Read the spreadsheet | start of every sheet-sync run, and again to verify a write | `GET sheets.googleapis.com/v4/spreadsheets/{id}?ranges='Sheet1'&fields=…` |
 | Write the spreadsheet | a plan passed the guard, in `apply` mode only | `POST …/spreadsheets/{id}:batchUpdate` |
