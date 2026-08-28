@@ -1,16 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { assertPlanSafe, UnsafePlanError } from '../../src/sheet/4-guard.ts';
-import { a1, parseGrid } from '../../src/sheet/2-grid.ts';
+import { a1, parseGrid, type Grid } from '../../src/sheet/2-grid.ts';
 import type { CellEdit, SheetPlan } from '../../src/sheet/3-plan.ts';
 import type { HeaderName } from '../../src/sheet/2-grid.ts';
-import { sheetSnapshot } from '../helpers.ts';
+import { seasonRow, SHEET_HEADERS, sheetSnapshot, showRow } from '../helpers.ts';
 import { cell, grid, H, insertAt, planOf, season, show, TODAY } from './fixtures.ts';
 import { dateSerial } from '../../src/sheet/1-progress.ts';
 import { plainDateIn } from '../../src/shared/dates.ts';
 
-const refuses = (plan: SheetPlan, pattern: RegExp): void =>
-  assert.throws(() => assertPlanSafe(plan, grid), (err: Error) => err instanceof UnsafePlanError && pattern.test(err.message));
+const refuses = (plan: SheetPlan, pattern: RegExp, against: Grid = grid): void =>
+  assert.throws(() => assertPlanSafe(plan, against), (err: Error) => err instanceof UnsafePlanError && pattern.test(err.message));
 
 // The baseline the rest of the file varies from: this must pass, or every
 // assertion below is vacuous.
@@ -46,8 +46,8 @@ test('a field outside the whitelist is refused however plausible', () => {
 });
 
 test('a closed season is never touched, whatever the field', () => {
-  refuses(planOf([cell(2, 'Episode', { numberValue: 9 })]), /already has an end date/);
-  refuses(planOf([cell(2, 'End', { numberValue: TODAY })]), /already has an end date/);
+  refuses(planOf([cell(2, 'Episode', { numberValue: 9 })]), /already has an end date/, blankRuntime);
+  refuses(planOf([cell(2, 'End', { numberValue: TODAY })]), /already has an end date/, blankRuntime);
 });
 
 // The user's rule, and the reason a wrong-but-*larger* number is the dangerous
@@ -189,4 +189,154 @@ test('the plausibility ceiling is tomorrow in the viewer zone, not in UTC', () =
     () => assertPlanSafe(planOf([cell(3, 'End', { numberValue: dayAfterLocalTomorrow })]), grid, { now, timezone: 'UTC' }),
     'the same serial is inside the ceiling for a viewer already on that date',
   );
+});
+
+// --- the runtime cell ------------------------------------------------------
+
+/**
+ * The fixture grid's season rows carry a runtime already, which is the state
+ * this write must refuse. A blank one is the state it is for.
+ *
+ * Row 2 is the closed season, row 3 the open one — the same indices every other
+ * assertion in this file uses.
+ */
+const blankRuntime = parseGrid(
+  sheetSnapshot([
+    H,
+    show('Fargo', 'Ended'),
+    season(1, 6, 44000),
+    seasonRow(2, 3, null, { episodes: null }),
+    // A second open row, so "an End somewhere in the plan" can be told from "an
+    // End on this row".
+    seasonRow(3, 2, null, { episodes: null }),
+  ]),
+);
+
+const runtimeCell = (value: number, row = 3): CellEdit => ({
+  row,
+  column: blankRuntime.columns.Episodes,
+  field: 'Episodes',
+  previous: blankRuntime.snapshot.rows[row]?.[blankRuntime.columns.Episodes]?.userEnteredValue,
+  value: { numberValue: value },
+  address: a1(row, blankRuntime.columns.Episodes),
+  note: 'test',
+});
+
+/** The End edit a runtime always rides beside, on the same row. */
+const endCell = (row = 3): CellEdit => ({
+  row,
+  column: blankRuntime.columns.End,
+  field: 'End',
+  previous: blankRuntime.snapshot.rows[row]?.[blankRuntime.columns.End]?.userEnteredValue,
+  value: { numberValue: TODAY },
+  address: a1(row, blankRuntime.columns.End),
+  note: 'test',
+});
+
+// The baseline: without this the refusals below could all be passing for the
+// wrong reason.
+test('a runtime into a blank cell on the row being closed is allowed', () => {
+  assert.doesNotThrow(() => assertPlanSafe(planOf([endCell(), runtimeCell(49 / 1440)]), blankRuntime));
+});
+
+// The planner writes the two together or not at all, and the row freezes on the
+// End. A runtime on a row left open would fill a cell with nothing to close it,
+// and the next poll would find it non-blank and never revisit it.
+test('a runtime on a row nothing is closing is refused', () => {
+  refuses(planOf([runtimeCell(49 / 1440)]), /only be written on the row that is being closed/, blankRuntime);
+  // An End elsewhere in the plan is not this row's.
+  refuses(planOf([endCell(4), runtimeCell(49 / 1440, 3)]), /only be written on the row that is being closed/, blankRuntime);
+});
+
+// The rule the whole feature rests on: a hand-typed runtime is a correction, and
+// the row closes in the same batch, so an overwrite could never be undone.
+test('a runtime over a cell that already holds one is refused', () => {
+  // Row 3 of the shared fixture carries 0.0153.
+  refuses(planOf([cell(3, 'End', { numberValue: TODAY }), cell(3, 'Episodes', { numberValue: 49 / 1440 })]), /already holds a value/);
+});
+
+// At or above 1 the number is minutes where a day fraction belongs, which
+// multiplies every Length in the block by 1440.
+test('minutes written where a day fraction belongs are refused', () => {
+  refuses(planOf([endCell(), runtimeCell(49)]), /not a plausible per-episode day fraction/, blankRuntime);
+  refuses(planOf([endCell(), runtimeCell(1)]), /not a plausible per-episode day fraction/, blankRuntime);
+  refuses(planOf([endCell(), runtimeCell(0)]), /not a plausible per-episode day fraction/, blankRuntime);
+  refuses(planOf([endCell(), runtimeCell(-1 / 1440)]), /not a plausible per-episode day fraction/, blankRuntime);
+  // Under half a minute rounds to nothing the sheet can show.
+  refuses(planOf([endCell(), runtimeCell(0.4 / 1440)]), /not a plausible per-episode day fraction/, blankRuntime);
+});
+
+// Two rules, and which one fires depends on the cell. On the real sheet a show
+// row's Episodes cell is a roll-up formula, so the unconditional formula rule
+// gets there first; strip the formula and the season-row rule catches it. Both
+// paths are asserted, because relying on the formula alone would leave a show
+// row with an empty runtime cell writable.
+test('a runtime is refused on a show row, by whichever rule reaches it first', () => {
+  refuses(planOf([cell(1, 'Episodes', { numberValue: 49 / 1440 })]), /is a formula/);
+
+  const bareShow = [...show('Fargo', 'Ended')];
+  bareShow[SHEET_HEADERS.indexOf('Episodes')] = null;
+  const stripped = parseGrid(sheetSnapshot([H, bareShow, season(1, 6, 44000), seasonRow(2, 3, null, { episodes: null })]));
+  refuses(planOf([{ ...runtimeCell(49 / 1440, 1), previous: undefined }]), /may only be written on a season row/, stripped);
+});
+
+// A dated row is frozen for good, and this is that invariant asserted from the
+// new direction: the runtime rides the batch that closes the row, never a later one.
+test('a runtime is refused on a row that already has an end date', () => {
+  refuses(planOf([runtimeCell(49 / 1440, 2)]), /already has an end date/, blankRuntime);
+});
+
+/**
+ * The same grid under an `anime` type, and under a show row with no id — the two
+ * shapes whose season number means nothing to TVDB. Identical in every other
+ * respect to `blankRuntime`, so a refusal here can only be the scope rule.
+ */
+const scoped = (type: string, id: number | null): Grid =>
+  parseGrid(
+    sheetSnapshot([
+      H,
+      showRow('Fargo', 'Ended', id, type),
+      season(1, 6, 44000),
+      seasonRow(2, 3, null, { episodes: null }),
+      seasonRow(3, 2, null, { episodes: null }),
+    ]),
+  );
+
+/**
+ * The scope the planner decided, re-derived here because it is the one claim in
+ * this file that cannot be taken back: the row is dated by the same batch, so
+ * the blank-cell rule stops protecting it the instant this write lands.
+ *
+ * An anime block's season number addresses no TVDB season — every cour of a
+ * SIMKL anime record is `season: 1` and a franchise shares one TVDB id — so a
+ * number fetched for it describes some other season at some other length.
+ */
+test('a runtime is refused in an anime block, and in a block whose show row has no id', () => {
+  // The type is what decides the first one, not a missing id: this block *has*
+  // an id, and is still refused. Nothing stops an anime block carrying a
+  // show-row id on a hand-maintained sheet, and it is the case a bare "no ids"
+  // test — which is how `planSync` and `planLookups` read anime — gets backwards.
+  refuses(planOf([endCell(), runtimeCell(49 / 1440)]), /live-action block/, scoped('anime', 1));
+  refuses(planOf([endCell(), runtimeCell(49 / 1440)]), /live-action block/, scoped('show', null));
+});
+
+/**
+ * A row with its own id is one whose season number is explicitly *not* the
+ * entry's — a split cour, or Doctor Who's 2024 renumbering. Handing that number
+ * to TVDB asks about a season the row does not mean.
+ */
+test('a runtime is refused on a season row that carries its own id', () => {
+  const owned = parseGrid(
+    sheetSnapshot([
+      H,
+      show('Fargo', 'Ended'),
+      season(1, 6, 44000),
+      seasonRow(2, 3, null, { episodes: null }),
+      // Row 4, and the id is the only thing separating it from row 3 above —
+      // so the refusal below can only be the id rule.
+      seasonRow(3, 2, null, { episodes: null, id: 99 }),
+    ]),
+  );
+  assert.doesNotThrow(() => assertPlanSafe(planOf([endCell(3), runtimeCell(49 / 1440, 3)]), owned));
+  refuses(planOf([endCell(4), runtimeCell(49 / 1440, 4)]), /carries its own id/, owned);
 });

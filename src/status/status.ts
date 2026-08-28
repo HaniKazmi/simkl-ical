@@ -12,7 +12,7 @@
  * else — the same reason requests never trigger a fetch.
  */
 
-import { config } from '../shared/config.ts';
+import { config, tvdbConfigured } from '../shared/config.ts';
 import { recentRequests } from '../api/requests.ts';
 import { libraryCounts } from '../library.ts';
 import { sheetRuns } from '../sheet/io/journal.ts';
@@ -57,6 +57,7 @@ export const renderStatus = (state: Orchestrator, { now = Temporal.Now.instant()
       filmsDue: feed.filmsDue(state.library),
 
       sheetConfigured: sheetSync !== null,
+      runtimesConfigured: tvdbConfigured(),
       sheetMode: config.sheetSyncMode,
       // The tab name rather than the id, because the name is what a reader can
       // act on: it is the label on the tab in front of them, and the id names

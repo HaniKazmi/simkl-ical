@@ -4,7 +4,7 @@ import { a1, parseGrid, type HeaderName } from '../../src/sheet/2-grid.ts';
 import { shiftRow, verify } from '../../src/sheet/6-verify.ts';
 import type { CellEdit, SheetPlan } from '../../src/sheet/3-plan.ts';
 import { cellOf, sheetSnapshot, type CellSpec } from '../helpers.ts';
-import { cell, grid as before, H, planOf, ROWS } from './fixtures.ts';
+import { cell, grid as before, grid, H, planOf, ROWS } from './fixtures.ts';
 
 /** `cell` with the bare value this suite finds easier to write. */
 const editOf = (row: number, field: HeaderName, value: number | string): CellEdit =>
@@ -268,4 +268,23 @@ test('a landed write that broke a formula still reads as landed', () => {
   const result = verify(before, after, planOf([editOf(3, 'Episode', 8)]));
   assert.equal(result.ok, false);
   assert.equal(result.landed, true);
+});
+
+// `INSPECTED` is derived from HEADERS rather than listed, which is what makes a
+// newly written column verified without anyone remembering to add it. These two
+// are that claim, asserted rather than trusted.
+test('a runtime write verifies like any other edit', () => {
+  const plan = planOf([cell(3, 'Episodes', { numberValue: 49 / 1440 })]);
+  const after = sheetSnapshot(ROWS.map((row, i) => (i === 3 ? row.map((c, j) => (j === grid.columns.Episodes ? 49 / 1440 : c)) : row)));
+  const result = verify(grid, after, plan);
+  assert.deepEqual(result.problems, []);
+  assert.equal(result.ok, true);
+  assert.equal(result.landed, true);
+});
+
+test('an unplanned change to a runtime cell is caught', () => {
+  const after = sheetSnapshot(ROWS.map((row, i) => (i === 3 ? row.map((c, j) => (j === grid.columns.Episodes ? 0.99 : c)) : row)));
+  const result = verify(grid, after, planOf([cell(3, 'Episode', { numberValue: 8 })]));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(' '), /changed without being planned/);
 });

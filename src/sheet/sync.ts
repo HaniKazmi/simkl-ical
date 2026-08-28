@@ -22,7 +22,7 @@
  * `errors.sheet` and `/healthz`.
  */
 
-import { config } from '../shared/config.ts';
+import { config, tvdbConfigured } from '../shared/config.ts';
 import { errorMessage } from '../shared/errors.ts';
 import type { Logger } from '../shared/logger.ts';
 import { SheetsAccessError } from '../api/google/client.ts';
@@ -30,9 +30,11 @@ import type { Library } from '../library.ts';
 // The steps, in the order this file runs them.
 import { applyRequests, readSnapshot, type SheetSnapshot } from './io/spreadsheet.ts';
 import { fetchCatalogue } from './io/catalogue.ts';
+import { fetchSeasonRuntimes, runtimeKeyOf } from './io/runtimes.ts';
+import { classify } from '../api/tvdb/client.ts';
 import { parseGrid, type Grid } from './2-grid.ts';
-import { indexLibrary, seasonShapes, type TitleProgress } from './1-progress.ts';
-import { describePlan, planLookups, planRecord, planSync, type CatalogueStamp, type CatalogueView, type PlanRecord, type SheetPlan, type TitleCatalogue } from './3-plan.ts';
+import { averageRuntime, indexLibrary, seasonShapes, tvdbIdOf, type TitleProgress } from './1-progress.ts';
+import { describePlan, planLookups, planRecord, planRuntimeLookups, planSync, type CatalogueStamp, type CatalogueView, type PlanRecord, type SheetPlan, type TitleCatalogue } from './3-plan.ts';
 import { assertPlanSafe, UnsafePlanError } from './4-guard.ts';
 import { backupRequest, deleteRowRequests, restoreRequest, toRequests } from './5-requests.ts';
 import { backupName, discardBackup, findBackup, isBackupTab, markForRepair, sweepBackups } from './backups.ts';
@@ -204,6 +206,18 @@ export class SheetSync {
       // up and then planned as out of scope, or the reverse.
       const now = Temporal.Now.instant();
       const catalogue = await this.catalogueFor(grid, index, signal, now);
+      // Second, and it cannot be folded into the first: which seasons need a
+      // runtime is a question about which are *completing*, which the episode
+      // list above is what answers.
+      //
+      // First attempt only. A failed lookup is deliberately not recorded, so a
+      // re-plan would re-issue exactly the lookups that aged the snapshot past
+      // FRESH_MS — and a throttled season can spend a minute apiece obeying
+      // `Retry-After`. Three attempts of that ends the run `failed`, losing the
+      // `Episode`, `Status` and insert writes the poll had already earned to an
+      // optional column. Skipping leaves those seasons pending, which is the
+      // outcome they already had this poll.
+      const runtimesFailed = attempt === 1 ? await this.runtimesFor(grid, index, catalogue, signal, now) : 0;
       const plan = planSync(grid, index, catalogue, { now });
       lines = describePlan(plan, grid.columns);
       // Once per scope: five separate calls read as five projections a reader
@@ -217,11 +231,16 @@ export class SheetSync {
       // Only when the deferral can actually drain, which needs a write. Report
       // mode never takes the first row either, so asking for another poll would
       // re-read and re-plan the whole grid forever — in the default mode.
-      const catalogueRetry = catalogue.failed.length > 0;
+      // A season whose runtimes did not come back is one whose row was left open
+      // rather than dated, so this poll has work it could not finish.
+      const catalogueRetry = catalogue.failed.length > 0 || runtimesFailed > 0;
       const retry = catalogueRetry || (config.sheetSyncMode === 'apply' && plan.deferred > 0);
       if (plan.deferred) this.log.info(`${plan.deferred} more row(s) to add; the next poll will take the next one`);
       if (catalogue.failed.length) {
         this.log.warn(`${catalogue.failed.length} SIMKL lookups failed; the sheet sync will retry on the next poll`);
+      }
+      if (runtimesFailed) {
+        this.log.warn(`${runtimesFailed} season runtime lookups failed; those rows stay open until the next poll`);
       }
 
       if (!plan.edits.length && !plan.inserts.length) {
@@ -274,12 +293,20 @@ export class SheetSync {
     // Derive on the way in: the shapes are computed once per title here rather
     // than once per season row inside the planner.
     const entry = (id: number): TitleCatalogue => {
-      const existing = this.retained.get(id) ?? { shapes: new Map() };
+      const existing = this.retained.get(id) ?? { shapes: new Map(), seasonRuntimes: new Map() };
       this.retained.set(id, existing);
       return existing;
     };
     for (const [id, episodes] of fetched.episodes) entry(id).shapes = seasonShapes(episodes);
-    for (const [id, detail] of fetched.details) Object.assign(entry(id), { status: detail.status, runtime: detail.runtime });
+    for (const [id, detail] of fetched.details) Object.assign(entry(id), {
+      status: detail.status,
+      runtime: detail.runtime,
+      // Withheld without a credential, rather than stored and then ignored: an
+      // absent join key is already "no runtime is obtainable for this row" to
+      // every rule in the planner, so the planner needs no second switch — and
+      // a switch it did have could be set the wrong way and strand every row.
+      tvdbId: tvdbConfigured() ? tvdbIdOf(detail) : null,
+    });
 
     // A retryable failure is deliberately not stamped, so the next poll asks
     // again — the same reason the film path withholds its list signature. A
@@ -304,6 +331,84 @@ export class SheetSync {
     }
 
     return { titles: this.retained, failed: fetched.failed, unavailable: fetched.unavailable };
+  }
+
+  /**
+   * Look up the per-episode runtimes of every season about to be closed, and
+   * fold them into the same retained entries. Returns how many lookups failed.
+   *
+   * Runs after `catalogueFor` and needs to: the TVDB id arrives on the detail
+   * call that phase makes, and which seasons are *completing* is a question only
+   * the episode list it fetches can answer.
+   *
+   * Folds by reference into `this.retained`, so `catalogue.titles` is current
+   * without a second view to keep in step.
+   */
+  private async runtimesFor(
+    grid: Grid,
+    index: Map<number, TitleProgress>,
+    catalogue: CatalogueView,
+    signal: AbortSignal | undefined,
+    now: Temporal.Instant,
+  ): Promise<number> {
+    // Where the feature costs nothing when it is switched off. Not the switch
+    // itself — `catalogueFor` withholds the join key, so the planner already
+    // reads every row as settled — just the grid walk this would otherwise do.
+    if (!tvdbConfigured()) return 0;
+
+    const requests = planRuntimeLookups(grid, index, catalogue, { now });
+    if (!requests.length) return 0;
+
+    let fetched;
+    try {
+      fetched = await fetchSeasonRuntimes(requests, { signal });
+    } catch (err) {
+      // An account-level failure escapes the pool by design, because it is not a
+      // fact about any one season. It must not escape the *run* either: the grid
+      // read and every SIMKL call this poll already made would be thrown away,
+      // and the sheet would go a poll without a write, over an optional column.
+      //
+      // What it does to the rows depends on which kind it is, and the difference
+      // matters more than it looks. A rejected key is **settled** — no number of
+      // polls will make a typo answer — so those seasons record `null` and close
+      // with the cell blank. Left pending instead, every completing season stays
+      // open for ever and the sheet quietly stops being dated at all, which is
+      // strictly worse than never setting the key. A restart re-reads them, so a
+      // corrected key is one restart away rather than lost.
+      const settled = classify(err) === 'account';
+      this.log.warn(
+        settled
+          ? `sheet sync: TVDB rejected the credential (${errorMessage(err)}); ${requests.length} season(s) close without a runtime`
+          : `sheet sync: TVDB is not answering (${errorMessage(err)}); ${requests.length} season(s) stay open`,
+      );
+      if (!settled) return requests.length;
+      for (const request of requests) catalogue.titles.get(request.id)?.seasonRuntimes.set(request.season, null);
+      return 0;
+    }
+
+    // Same discipline as the catalogue's stamps. A retryable failure is
+    // deliberately left unrecorded, so the next poll asks again and the row
+    // stays open in the meantime; anything else — an answer, or an id TVDB says
+    // is gone — is recorded, including as null, because a season left unrecorded
+    // would be re-requested every poll forever.
+    //
+    // Reduced here rather than in the source, the way `seasonShapes` is above:
+    // the count it checks against is SIMKL's, and one upstream's answer having
+    // to agree with another's is a rule about the sheet, not about the call.
+    const stalled = new Set(fetched.failed);
+    for (const request of requests) {
+      const key = runtimeKeyOf(request.tvdbId, request.season);
+      if (stalled.has(key)) continue;
+      const entry = catalogue.titles.get(request.id);
+      const expected = entry?.shapes.get(request.season)?.total ?? 0;
+      entry?.seasonRuntimes.set(request.season, averageRuntime(fetched.episodes.get(key), expected));
+    }
+
+    this.log.info(`sheet sync: read ${requests.length} season runtime(s) from TVDB`);
+    if (fetched.unavailable.length) {
+      this.log.warn(`TVDB has no record for ${fetched.unavailable.length} season(s): ${fetched.unavailable.join(', ')}`);
+    }
+    return fetched.failed.length;
   }
 
   private async apply(grid: Grid, plan: SheetPlan, lines: string[], retry: boolean, signal: AbortSignal | undefined): Promise<SheetSyncResult> {

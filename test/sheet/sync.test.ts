@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { SheetSync } from '../../src/sheet/sync.ts';
 import { clearTokenCache } from '../../src/api/google/auth.ts';
+import { clearTokenCache as clearTvdbTokenCache } from '../../src/api/tvdb/auth.ts';
 import type { CellData, SheetRequest } from '../../src/api/google/types.ts';
 import { cellOf, daysAgo, jsonResponse, libraryOf, quiet, recorder, SHEET_HEADERS, withConfig, withFetch, withFreshJournal, type CellSpec, seasonRow, showRow } from '../helpers.ts';
 import { sheetRuns } from '../../src/sheet/io/journal.ts';
@@ -58,7 +59,8 @@ interface ServerOptions {
  * target into a new one first. Modelling only Sheet1 would let a duplicateSheet
  * or copyPaste silently no-op and every rollback assertion below pass vacuously.
  */
-const server = ({ meddle, failWrite, failRollback, hideReplies, failTabLists, episodes = EPISODES, grid = GRID }: ServerOptions & { episodes?: unknown; grid?: CellSpec[][] } = {}) => {
+const server = ({ meddle, failWrite, failRollback, hideReplies, failTabLists, episodes = EPISODES, grid = GRID, tvdb, detail }:
+  ServerOptions & { episodes?: unknown; grid?: CellSpec[][]; tvdb?: (url: string) => Response; detail?: unknown } = {}) => {
   const tabs = new Map<number, CellData[][]>([[1, grid.map((row) => row.map(cellOf))]]);
   const titles = new Map<number, string>([[1, 'Sheet1']]);
   const state = tabs.get(1)!;
@@ -151,8 +153,18 @@ const server = ({ meddle, failWrite, failRollback, hideReplies, failTabLists, ep
       });
     }
 
-    if (url.includes('/tv/episodes/')) return jsonResponse(episodes);
-    if (url.includes('/tv/')) return jsonResponse({ status: 'airing', runtime: 45 });
+    // Host-qualified, so a call to another upstream falls through to the throw
+    // rather than being answered with a SIMKL body. `/tv/` alone also matches
+    // TVDB's season path, which would hand it `{status, runtime}` and make a
+    // test asserting nothing look green.
+    if (url.startsWith('https://api.simkl.com/tv/episodes/')) return jsonResponse(episodes);
+    if (url.startsWith('https://api.simkl.com/tv/')) return jsonResponse(detail ?? { status: 'airing', runtime: 45 });
+
+    if (url.startsWith('https://api4.thetvdb.com/v4/login')) return jsonResponse({ data: { token: 'tvdb-token' } });
+    if (url.startsWith('https://api4.thetvdb.com/')) {
+      if (!tvdb) throw new Error(`unexpected TVDB request: ${url}`);
+      return tvdb(url);
+    }
     throw new Error(`unexpected request: ${url}`);
   };
 
@@ -671,5 +683,177 @@ test('a snapshot that ages past the freshness window is re-read, never written a
       assert.equal(result.status, 'failed');
       assert.match(log.lines.join('\n'), /aged past/);
     }),
+  );
+});
+
+// --- season runtimes -------------------------------------------------------
+
+/** Fargo season 2 fully aired and fully watched, with a blank runtime cell. */
+const CLOSING_GRID: CellSpec[][] = [H, show('Fargo', 'Watching', 3381), season(1, 6, 44000), seasonRow(2, 3, null, { episodes: null })];
+
+const CLOSING_LIBRARY = libraryOf({
+  id: 3381,
+  title: 'Fargo',
+  status: 'watching',
+  seasons: { 1: Array.from({ length: 6 }, (_, i) => daysAgo(400 + i)), 2: Array.from({ length: 10 }, (_, i) => daysAgo(10 - i)) },
+  watched: 16,
+  total: 16,
+  notAired: 0,
+});
+
+const tvdbSeason = (minutes: number, count = 10) => () =>
+  jsonResponse({ data: { episodes: Array.from({ length: count }, (_, i) => ({ number: i + 1, runtime: minutes })) } });
+
+/** Season 2 fully aired, so the row is due its end date this run. */
+const CLOSING_EPISODES = [
+  ...Array.from({ length: 6 }, (_, i) => ({ season: 1, episode: i + 1, type: 'episode', aired: true })),
+  ...Array.from({ length: 10 }, (_, i) => ({ season: 2, episode: i + 1, type: 'episode', aired: true })),
+];
+
+const closingRun = (over: Parameters<typeof server>[0] = {}) =>
+  server({ grid: CLOSING_GRID, episodes: CLOSING_EPISODES, detail: { status: 'ended', runtime: 48, ids: { tvdb: '269613' } }, ...over });
+
+const withKey = (fn: () => Promise<void>) =>
+  withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL, tvdbApiKey: 'k' }, fn);
+
+test('a season closing writes its end date and its runtime in one verified batch', async () => {
+  clearTokenCache();
+  clearTvdbTokenCache();
+  const sheet = closingRun({ tvdb: tvdbSeason(54) });
+  await withKey(() =>
+    withFetch(sheet.handler, async () => {
+      assert.equal((await new SheetSync({ logger: quiet }).run(CLOSING_LIBRARY)).status, 'applied');
+      const row = sheet.tabs.get(1)![3]!;
+      assert.ok(row[H.indexOf('End')]?.userEnteredValue?.numberValue, 'dated');
+      assert.equal(row[H.indexOf('Episodes')]?.userEnteredValue?.numberValue, 54 / 1440, 'and carries the average');
+    }),
+  );
+});
+
+// The whole point of the deferral: End is a one-way door, so a poll that cannot
+// reach TVDB must leave the row open rather than close it blank for ever.
+test('a TVDB outage leaves the row open and asks for another poll', async () => {
+  clearTokenCache();
+  clearTvdbTokenCache();
+  const sheet = closingRun({ tvdb: () => new Response('boom', { status: 500 }) });
+  await withKey(() =>
+    withFetch(sheet.handler, async () => {
+      const result = await new SheetSync({ logger: quiet }).run(CLOSING_LIBRARY);
+      assert.equal(result.retry, true, 'the work is known to be waiting');
+      const row = sheet.tabs.get(1)![3]!;
+      assert.equal(row[H.indexOf('End')]?.userEnteredValue?.numberValue, undefined, 'still open');
+      assert.equal(row[H.indexOf('Episodes')]?.userEnteredValue, undefined, 'and still blank');
+    }),
+  );
+});
+
+// An account-level TVDB failure escapes the pool by design — it is not a fact
+// about any one season — but it must not escape the run. Letting it through
+// throws away the grid read and every SIMKL call this poll already made, and
+// costs the sheet a write, over an optional column.
+const loginFails = (status: number) => (over: Parameters<typeof server>[0] = {}) => {
+  const sheet = closingRun(over);
+  return {
+    sheet,
+    handler: (url: string, init?: RequestInit) =>
+      url.startsWith('https://api4.thetvdb.com/v4/login') ? new Response('{"message":"nope"}', { status }) : sheet.handler(url, init),
+  };
+};
+
+// A typo in the key will never start answering, so leaving the rows pending
+// would stop the sheet being dated at all — silently, and for ever.
+test('a rejected TVDB key settles: the season closes with the cell blank', async () => {
+  clearTokenCache();
+  clearTvdbTokenCache();
+  const { sheet, handler } = loginFails(401)();
+  await withKey(() =>
+    withFetch(handler, async () => {
+      const result = await new SheetSync({ logger: quiet }).run(CLOSING_LIBRARY);
+      assert.notEqual(result.status, 'failed', 'the run is not sunk by an optional lookup');
+      assert.equal(result.retry, false, 'and does not re-ask for a poll that cannot help');
+      const row = sheet.tabs.get(1)![3]!;
+      assert.ok(row[H.indexOf('End')]?.userEnteredValue?.numberValue, 'the season is dated');
+      assert.equal(row[H.indexOf('Episodes')]?.userEnteredValue, undefined, 'with no runtime');
+    }),
+  );
+});
+
+// The same error class, and the opposite answer: `exchangeToken` raises an auth
+// error for any non-ok login, so only the status separates an outage from a typo.
+test('a login outage leaves the row open rather than settling it', async () => {
+  clearTokenCache();
+  clearTvdbTokenCache();
+  const { sheet, handler } = loginFails(503)();
+  await withKey(() =>
+    withFetch(handler, async () => {
+      const result = await new SheetSync({ logger: quiet }).run(CLOSING_LIBRARY);
+      assert.equal(result.retry, true, 'worth asking again');
+      const row = sheet.tabs.get(1)![3]!;
+      assert.equal(row[H.indexOf('End')]?.userEnteredValue?.numberValue, undefined, 'that row waits');
+      assert.equal(row[H.indexOf('Episode')]?.userEnteredValue?.numberValue, 10, 'but its count still advanced');
+    }),
+  );
+});
+
+// The inert path, and the one the whole suite has been exercising by default:
+// without a key the run must be indistinguishable from before this existed.
+test('with no TVDB key the season closes and nothing reaches thetvdb.com', async () => {
+  clearTokenCache();
+  clearTvdbTokenCache();
+  const sheet = closingRun();
+  await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL, tvdbApiKey: undefined }, () =>
+    withFetch(sheet.handler, async (calls) => {
+      assert.equal((await new SheetSync({ logger: quiet }).run(CLOSING_LIBRARY)).status, 'applied');
+      assert.equal(calls.filter((c) => c.includes('thetvdb.com')).length, 0);
+      const row = sheet.tabs.get(1)![3]!;
+      assert.ok(row[H.indexOf('End')]?.userEnteredValue?.numberValue, 'dated all the same');
+      assert.equal(row[H.indexOf('Episodes')]?.userEnteredValue, undefined);
+    }),
+  );
+});
+
+// Terminal once answered, so a second poll must not ask again — the season is
+// finished and its runtimes cannot change.
+test('a runtime already read is not looked up a second time', async () => {
+  clearTokenCache();
+  clearTvdbTokenCache();
+  const sheet = closingRun({ tvdb: tvdbSeason(54) });
+  await withKey(() =>
+    withFetch(sheet.handler, async (calls) => {
+      const sync = new SheetSync({ logger: quiet });
+      await sync.run(CLOSING_LIBRARY);
+      const first = calls.filter((c) => c.includes('/episodes/official')).length;
+      await sync.run(CLOSING_LIBRARY);
+      assert.equal(calls.filter((c) => c.includes('/episodes/official')).length, first, 'asked once');
+    }),
+  );
+});
+
+// A failed runtime lookup is deliberately left unrecorded so the next poll asks
+// again — which means a re-plan would re-issue exactly the lookups that aged the
+// snapshot past FRESH_MS in the first place, and a throttled season can spend a
+// minute apiece obeying Retry-After. Three rounds of that ends the run `failed`,
+// losing the Episode and Status writes the poll had already earned.
+test('a re-plan does not re-issue the runtime lookups that aged the snapshot', () => {
+  clearTokenCache();
+  clearTvdbTokenCache();
+  // A *failing* lookup is the case that matters: it is deliberately left
+  // unrecorded so the next poll asks again, so nothing stops a re-plan asking
+  // again inside this same run — where it would stall on exactly what made the
+  // snapshot stale, three times over, and end the run `failed`.
+  const sheet = closingRun({ tvdb: () => new Response('boom', { status: 500 }) });
+  return withRunawayClock(() =>
+    withKey(() =>
+      withFetch(sheet.handler, async (calls) => {
+        await new SheetSync({ logger: quiet }).run(CLOSING_LIBRARY);
+        assert.ok(calls.filter((c) => c.includes('ranges=')).length > 1, 'the grid was re-read, so a re-plan happened');
+        // Two: the client's own retry cap, spent once on the first attempt.
+        assert.equal(
+          calls.filter((c) => c.includes('/episodes/official')).length,
+          2,
+          'TVDB was asked on the first planning attempt only',
+        );
+      }),
+    ),
   );
 });

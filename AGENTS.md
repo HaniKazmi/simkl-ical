@@ -12,7 +12,8 @@ serves the intersection as a subscribable iCal feed. No database, no build step,
 dependencies (`fastify`, `ical-generator`).
 
 Off the same poll it also keeps a hand-maintained Google Sheet of watch progress current. That
-half is inert unless `SHEET_ID` and a Google credential are both set.
+half is inert unless `SHEET_ID` and a Google credential are both set, and the runtime a closing
+season carries additionally needs `TVDB_API_KEY`.
 
 ## Commands
 
@@ -44,9 +45,9 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   date a `Temporal.PlainDate`, a span or an interval a `Temporal.Duration`. ISO strings survive only
   where they cross a boundary — persisted JSON, HTTP params, `/healthz` — and are parsed at the first
   consumer, and written through `nowIso()` so every stored timestamp keeps one width. `Date` survives
-  in three places only: `Retry-After`, which may be an RFC 7231 HTTP-date Temporal cannot parse, and
-  the Google token cache and SIMKL device-flow deadline, which are process-internal epoch-millisecond
-  countdowns with no zone and no calendar in them.
+  in four places only: `Retry-After`, which may be an RFC 7231 HTTP-date Temporal cannot parse, and
+  the Google and TVDB token caches and the SIMKL device-flow deadline, which are process-internal
+  epoch-millisecond countdowns with no zone and no calendar in them.
 - **Build durations from days and below, never years, months or weeks.** `Duration.compare`, `total`
   and `round` require a `relativeTo` anchor exactly when one of those three is nonzero; below that a
   day is exactly 24 hours and the operations are total. It also keeps the sheet's 90-day recency
@@ -109,6 +110,28 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   and `/tv/episodes/{id}` return byte-identical responses with and without it. On `/sync/all-items`
   it is the gatekeeper: `extended=full` alone turns on `seasons[]`, and `episode_watched_at=yes` and
   `include_all_episodes=yes` are no-ops without it. `ids.simkl` needs none of them.
+- **A dated season row is never revisited, so every cell it will ever carry has to be right in the
+  one batch that closes it.** The runtime write rides the same batch as the `End` beside it, which
+  is why the guard's refusal of a closed row is not a contradiction — the snapshot it checks is from
+  before the write. It is also why a season whose runtimes have not come back holds its `End` rather
+  than closing blank: the date comes from the watch timestamp, not from now, so waiting a poll costs
+  nothing and closing early forfeits the cell permanently. Only a *transient* failure waits; a
+  settled "no answer" closes the row with the cell left blank.
+- **A runtime is only ever written into a blank cell, and only for a live-action row that inherits
+  its block's id.** A typed number is a deliberate correction and nothing here can tell a better one
+  from a worse one. The scope rule is not a preference: a SIMKL anime record numbers every cour
+  `season: 1` and all cours of a franchise share one TVDB id, so the row's number addresses no TVDB
+  season — Attack on Titan's six records all point at tvdb 267440, whose season 1 holds 25 episodes
+  against their 25/12/12/16/12/2. The episode-count cross-check cannot rescue it either: over 36
+  anime records it agrees 12 times in 29 while describing a different season, so `runtimeTarget` tests
+  `Type`, the show-row id *and* the row's own id — the same pair `planInsert` guards itself with, and
+  a stricter test than the bare "no block ids" that `planSync` and `planLookups` call anime. The
+  count check is a live-action backstop only. `4-guard.ts` re-derives that scope rather than
+  trusting it, which it does for no other planner claim about *which* row may be written: this is
+  the one the row cannot take back, since the same batch dates the row and fills the cell, so
+  neither the blank-cell rule nor the closed-row rule protects it a second time.
+  Live-action needs none of that care — 35 of 35 seasons measured agree, Doctor Who's 2024
+  renumbering included, because SIMKL keeps that as a separate record.
 - **Never write a formula cell, and never write a show row except `Status`.** Every derived cell on
   a show row rolls up from the season rows beneath it. Writing one replaces a live roll-up with a
   frozen number, and nothing would ever notice.
@@ -157,7 +180,7 @@ needs it**, and **is it transport or business logic**.
 | `src/shared/` | Used by both halves, and with no feature knowledge at all: config, dates, errors, logger, signals, atomic-write |
 | `src/health.ts` | The state projection both `/healthz` and the status page read. Pure; `buildHealth` takes flat state, `healthResponse` narrows it to the endpoint's contract |
 | `src/library.ts` | How the library is gated, merged and read: the signatures, the delta merge, the removal diff, the counts. Beside the orchestrator, which is the only thing that owns a library |
-| `src/api/` | Every HTTP client, and no domain rules. `backoff.ts`, `cdn.ts`, `requests.ts`, `simkl/`, `google/`. `simkl/types.ts` holds only shapes SIMKL sends; anything this service derives lives with the module that derives it. `requests.ts` is the one exception to "no domain rules": `RequestComponent` names the callers, because which part of the service asked is not a fact any transport holds |
+| `src/api/` | Every HTTP client, and no domain rules. `backoff.ts`, `cdn.ts`, `pool.ts`, `requests.ts`, `simkl/`, `google/`, `tvdb/`. `simkl/types.ts` holds only shapes SIMKL sends; anything this service derives lives with the module that derives it. `requests.ts` is the one exception to "no domain rules": `RequestComponent` names the callers, because which part of the service asked is not a fact any transport holds |
 | `src/feed/` | iCal only |
 | `src/sheet/` | Google Sheet sync only |
 | `src/status/` | The HTML status page. Reads both halves and the request log; `server.ts` is its only reader |
@@ -184,10 +207,10 @@ the process, and the rest carries its pipeline position in the filename, so `ls`
 
 | Step | Module |
 | --- | --- |
-| INDEX | `1-progress.ts` — library → what was watched, and the early-out that decides whether to read the grid at all |
-| READ | `io/spreadsheet.ts` (the tab), `io/catalogue.ts` (SIMKL per-title) |
+| INDEX | `1-progress.ts` — library → what was watched, the early-out that decides whether to read the grid at all, and the reductions of both upstreams' episode lists |
+| READ | `io/spreadsheet.ts` (the tab), `io/catalogue.ts` (SIMKL per-title), `io/runtimes.ts` (TVDB per-season) |
 | PARSE | `2-grid.ts` — snapshot → blocks |
-| PLAN | `3-plan.ts` — grid + library + catalogue → a plan |
+| PLAN | `3-plan.ts` — grid + library + catalogue → a plan, plus the two "what to fetch" passes that must agree with it |
 | GUARD | `4-guard.ts` — refuse a plan that does not re-derive |
 | BUILD | `5-requests.ts` — a plan → one ordered batch |
 | APPLY | `io/spreadsheet.ts` again |
@@ -234,15 +257,19 @@ Where a sheet run stopped is `SheetSyncStatus`, which `/healthz` reports as `she
 - `withTempDataDir(fn)` — `config.dataDir` defaults to `./data`, which on a real checkout holds a
   live OAuth token.
 - On import it sets `config.retryBaseMs = 1`, so a retry path takes microseconds rather than 15
-  seconds, and blanks the sheet credentials as described above.
+  seconds, and blanks the sheet and TVDB credentials as described above.
 - `sheetSnapshot(rows)`, `cellOf(spec)`, `showRow`/`seasonRow` and `libraryOf(...items)` build sheet
   and library fixtures. A cell spec of `{ formula }` is the one that matters: only
   `userEnteredValue.formulaValue` distinguishes a formula, and a formula target must be refused
-  unconditionally.
+  unconditionally. `seasonRow`'s `episodes` option is the other: `null` is a blank runtime cell,
+  which is the only state the runtime write may touch.
+- A fetch handler must be **host-qualified**. `url.includes('/tv/')` matches TVDB's season path as
+  well as SIMKL's, and answering one upstream with the other's body makes a test assert nothing.
 
 `api/cdn.ts` keeps a module-level cache; call its `clearCache()` in tests that touch a calendar,
 and
-`clearTokenCache()` from `api/google/auth.ts` in tests that reach Google. `sheet/io/catalogue.ts`
+`clearTokenCache()` from `api/google/auth.ts` in tests that reach Google — and the one from
+`api/tvdb/auth.ts` in tests that reach TVDB, which caches its own bearer the same way. `sheet/io/catalogue.ts`
 has no cache of its own — `SheetSync` retains catalogue results and decides when to re-read.
 
 `api/cdn.ts` has no test of its own: every path through it is exercised by
@@ -282,6 +309,21 @@ every upstream this project touches — PIN device flow, `/sync/activities`, `/s
 calendar files, per-title lookups — along with the rate limits. Read it before changing anything in
 `src/api/simkl/` or the `io/` modules; `src/api/simkl/types.ts` still wins on payload *shape*, because it is
 written from live responses and the docs disagree in places.
+
+TVDB v4 is at <https://thetvdb.github.io/v4-api/>, and supplies the one thing SIMKL holds but does
+not serve: per-episode runtime. `/tv/episodes/{id}` returns the same nine fields under every
+`extended` value (`full`, `runtime`, `full,runtime`, `episodes`, `metadata`, `discover`), there is
+no episode-level endpoint — `/tv/episodes/{episode_simkl_id}` answers `[]` and `/episodes/{id}`
+404s — and simkl.com renders the number server-side but answers a non-browser User-Agent with a
+Cloudflare 403. TVDB is also what simkl.com *shows*: its numbers match episode for episode where
+TMDb's differ by up to five minutes, in both directions, with no rule behind it.
+
+`GET /series/{id}/episodes/official?season={n}` returns one season, and one call is one season —
+`links.page_size` is 500 and `next` is null on every season measured, up to a 28-episode cour. Three
+behaviours checked rather than assumed: a season the series does not have answers **200 with an
+empty list**, not a 404, so it never reaches the failure split; `page` is documented as required and
+is optional; and login accepts a *wrong* pin rather than rejecting it, so the pin proves nothing and
+only an invalid key fails, with `401 InvalidAPIKey`.
 
 Google's Sheets API is at <https://developers.google.com/workspace/sheets/api/reference/rest>.
 Two things it does not offer, checked rather than assumed: there is no revision surface at all, and

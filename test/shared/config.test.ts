@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
-import { buildConfig, config, requireClientId, requireTemporal, requireValidTimezone, sheetSyncConfigured } from '../../src/shared/config.ts';
+import { buildConfig, config, requireClientId, requireTemporal, requireValidTimezone, sheetSyncConfigured, tvdbConfigured } from '../../src/shared/config.ts';
 import { withTimeout } from '../../src/shared/signals.ts';
 import { withConfig } from '../helpers.ts';
 import { spawnSync } from 'node:child_process';
@@ -145,6 +145,24 @@ test('the sync needs a target and a credential that was actually supplied', () =
   assert.equal(on({ GOOGLE_APPLICATION_CREDENTIALS: '/tmp/sa.json' }), true);
   assert.equal(on({ GOOGLE_SA_KEY_B64: 'x', SHEET_SYNC_MODE: 'off' }), false);
   assert.equal(sheetSyncConfigured(buildConfig({ GOOGLE_SA_KEY_B64: 'x' })), false, 'no SHEET_ID');
+});
+
+// The pin is not part of the test on purpose: a licensed key logs in with the
+// key alone, and TVDB answers a *wrong* pin with a token rather than a 401 — so
+// requiring one would switch the feature off for a key that works.
+test('runtime lookups need the key alone, and nothing else is required', () => {
+  assert.equal(tvdbConfigured(buildConfig({})), false);
+  assert.equal(tvdbConfigured(buildConfig({ TVDB_API_KEY: 'k' })), true);
+  assert.equal(tvdbConfigured(buildConfig({ TVDB_PIN: '1234' })), false, 'a pin without a key is nothing');
+  assert.equal(tvdbConfigured(buildConfig({ TVDB_API_KEY: 'k', TVDB_PIN: '1234' })), true);
+});
+
+// Additive, so there is nothing to clamp and nothing to default to: an unset key
+// has to stay unset rather than becoming an empty string that reads as supplied.
+test('the runtime credential is passed through untouched', () => {
+  assert.equal(buildConfig({}).tvdbApiKey, undefined);
+  assert.equal(buildConfig({}).tvdbPin, undefined);
+  assert.equal(buildConfig({ TVDB_API_KEY: ' k ' }).tvdbApiKey, ' k ');
 });
 
 test('the sheet limits are clamped rather than fatal', () => {

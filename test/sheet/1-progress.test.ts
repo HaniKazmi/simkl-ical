@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  averageRuntime,
   courComplete,
   dateSerial,
   indexLibrary,
@@ -8,6 +9,7 @@ import {
   seasonComplete,
   seasonShapes,
   seasonsOf,
+  tvdbIdOf,
   watchSerial,
 } from '../../src/sheet/1-progress.ts';
 import { libraryItem, libraryOf } from '../helpers.ts';
@@ -108,4 +110,75 @@ test('a cour is complete on its own counters, since one anime entry is one seaso
   assert.equal(courComplete(progress), true);
   assert.equal(courComplete({ ...progress, notAiredCount: 1 }), false);
   assert.equal(courComplete({ ...progress, watchedCount: 11 }), false);
+});
+
+// --- runtimes --------------------------------------------------------------
+
+const eps = (...specs: Array<[number, number | null]>) => specs.map(([number, runtime]) => ({ number, runtime }));
+
+test('a season average is the arithmetic mean, in whole minutes', () => {
+  assert.equal(averageRuntime(eps([1, 24], [2, 24], [3, 25]), 3), 24);
+  // 21 at 22m plus a 44m finale is 506 minutes, and 23 x 22 = 506. A median
+  // would answer 22 and make every Length in that block short by 22 minutes.
+  const long = eps(...Array.from({ length: 21 }, (_, i) => [i + 1, 22] as [number, number]), [22, 44]);
+  assert.equal(averageRuntime(long, 22), 23);
+});
+
+test('a null runtime is unknown, not zero, and refuses the whole season', () => {
+  // Counting the null as 0 would answer 16 — a wrong-but-plausible number
+  // frozen into a cell nothing ever revisits.
+  assert.equal(averageRuntime(eps([1, 24], [2, null], [3, 24]), 3), null);
+  assert.equal(averageRuntime(eps([1, 0], [2, 24]), 2), null);
+  assert.equal(averageRuntime(eps([1, null], [2, null]), 2), null);
+});
+
+// The likelier of the two "no data" paths: TVDB answers a season it does not
+// have with a 200 and an empty list, not a 404, so this never reaches classify.
+test('an empty season is a settled null rather than a throw', () => {
+  assert.equal(averageRuntime([], 6), null);
+  assert.equal(averageRuntime(undefined, 6), null);
+  assert.equal(averageRuntime(null, 6), null);
+});
+
+test('a count that disagrees with SIMKL refuses, in either direction', () => {
+  assert.equal(averageRuntime(eps([1, 24], [2, 24]), 3), null, 'TVDB has fewer');
+  assert.equal(averageRuntime(eps([1, 24], [2, 24], [3, 24]), 2), null, 'TVDB has more');
+  assert.equal(averageRuntime(eps([1, 24]), 0), null, 'no SIMKL count is not a match');
+});
+
+// The guard refuses a day fraction at or above 1 too, but refusal is whole-plan
+// — so one title with bad upstream data would stop every unrelated edit in the
+// run. Bounded here, it costs that one cell.
+test('a length no episode has yields no cell rather than a refused plan', () => {
+  assert.equal(runtimeDays(1440), null, 'a full day is not a runtime');
+  assert.equal(runtimeDays(5000), null);
+  assert.equal(runtimeDays(1439), 1439 / 1440);
+});
+
+// The refusal a null causes is recorded as settled, so preferring the null when
+// a real length sat in the same payload forfeits the cell for good.
+test('a usable duplicate beats an unusable one, whichever came first', () => {
+  assert.equal(averageRuntime([{ number: 1, runtime: null }, { number: 1, runtime: 24 }, { number: 2, runtime: 26 }], 2), 25);
+  assert.equal(averageRuntime([{ number: 1, runtime: 24 }, { number: 1, runtime: null }, { number: 2, runtime: 26 }], 2), 25);
+});
+
+test('a film inside a numbered season is dropped, and a duplicate counted once', () => {
+  // Dropped before the count check, so the season still matches SIMKL's two.
+  assert.equal(averageRuntime([{ number: 1, runtime: 24 }, { number: 2, runtime: 24 }, { number: 3, runtime: 120, isMovie: 1 }], 2), 24);
+  // Weighted twice, the mean would be 24 rather than 26.
+  assert.equal(averageRuntime(eps([1, 24], [1, 24], [2, 28]), 2), 26);
+});
+
+test('a mean under half a minute yields no cell rather than a zero one', () => {
+  assert.equal(runtimeDays(averageRuntime(eps([1, 0.2], [2, 0.2]), 2)), null);
+});
+
+test('the tvdb id is read as a number, and anything else is simply absent', () => {
+  assert.equal(tvdbIdOf({ ids: { tvdb: '371572' } }), 371572);
+  assert.equal(tvdbIdOf({ ids: { tvdb: ' 371572 ' } }), 371572);
+  assert.equal(tvdbIdOf({ ids: {} }), null);
+  assert.equal(tvdbIdOf({}), null);
+  assert.equal(tvdbIdOf(undefined), null);
+  assert.equal(tvdbIdOf({ ids: { tvdb: 'not-a-number' } }), null);
+  assert.equal(tvdbIdOf({ ids: { tvdb: '0' } }), null);
 });

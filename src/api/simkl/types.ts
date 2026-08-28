@@ -63,6 +63,13 @@ export interface LibraryIds {
   simkl?: number;
   simkl_id?: number;
   slug?: string;
+  /**
+   * A string, as SIMKL sends it — `"371572"`, not `371572`. The per-title
+   * endpoints carry several more (`imdb`, `tmdb`, `tvdbslug`, `traktslug`);
+   * only this one is read, and listing the rest would make this file a
+   * transcription of the payload rather than evidence of what is used.
+   */
+  tvdb?: string;
 }
 
 export interface LibraryTitle {
@@ -200,9 +207,13 @@ export interface EpisodeDetail {
 }
 
 /**
- * `/tv/{id}` and `/anime/{id}`. Only `status` is consulted: it is the one
- * signal that separates a show that has ended from one merely between seasons,
- * which the episode list cannot express.
+ * `/tv/{id}` and `/anime/{id}`.
+ *
+ * Three fields are read, for three different reasons. `status` separates a show
+ * that has ended from one merely between seasons, which the episode list cannot
+ * express. `runtime` is the show-wide "most common length", which a newly
+ * inserted season row takes for its `Episodes` cell. And `ids.tvdb` is the join
+ * key to the per-episode runtimes, which SIMKL holds but does not serve.
  */
 export interface ShowDetail {
   title?: string;

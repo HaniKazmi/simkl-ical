@@ -54,6 +54,15 @@ services:
       # SHEET_MAX_EDITS: "30"
       # SHEET_MAX_ROWS: "20"
 
+      # --- Per-episode runtimes (optional) -------------------------------
+      # Fills a season row's Episodes cell with that season's average episode
+      # runtime on the run that closes the row, and only when the cell is
+      # blank. Unset, seasons close exactly as they do without it and no
+      # request is made. Put the key in the secrets file rather than here.
+      #
+      # TVDB_API_KEY: "…"
+      # TVDB_PIN: "…"
+
     volumes:
       - simkl-ical-data:/data
 

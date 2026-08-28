@@ -282,7 +282,9 @@ ${model.problems.length === 0 ? null : html`<div class="problems"><ul>${model.pr
   <div class="head">
     <span class="name">Sheet</span>
     <span class="pill ${pill(model.sheet.status)}">${model.sheet.status}</span>
-    <span class="sum">${model.sheet.configured ? html`${model.sheet.mode} mode · tab “${model.sheet.tab}” · ${time(model.sheet.lastRun)}` : 'off'}</span>
+    <span class="sum">${model.sheet.configured
+      ? html`${model.sheet.mode} mode · tab “${model.sheet.tab}” · ${time(model.sheet.lastRun)}${model.sheet.runtimes ? null : ' · runtimes off'}`
+      : 'off'}</span>
   </div>
   ${sheetBody(model)}
 </section>
