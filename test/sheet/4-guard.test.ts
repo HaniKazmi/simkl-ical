@@ -4,7 +4,7 @@ import { assertPlanSafe, UnsafePlanError } from '../../src/sheet/4-guard.ts';
 import { a1, parseGrid, type Grid } from '../../src/sheet/2-grid.ts';
 import type { CellEdit, SheetPlan } from '../../src/sheet/3-plan.ts';
 import type { HeaderName } from '../../src/sheet/2-grid.ts';
-import { seasonRow, SHEET_HEADERS, sheetSnapshot } from '../helpers.ts';
+import { seasonRow, SHEET_HEADERS, sheetSnapshot, showRow } from '../helpers.ts';
 import { cell, grid, H, insertAt, planOf, season, show, TODAY } from './fixtures.ts';
 import { dateSerial } from '../../src/sheet/1-progress.ts';
 import { plainDateIn } from '../../src/shared/dates.ts';
@@ -284,4 +284,59 @@ test('a runtime is refused on a show row, by whichever rule reaches it first', (
 // new direction: the runtime rides the batch that closes the row, never a later one.
 test('a runtime is refused on a row that already has an end date', () => {
   refuses(planOf([runtimeCell(49 / 1440, 2)]), /already has an end date/, blankRuntime);
+});
+
+/**
+ * The same grid under an `anime` type, and under a show row with no id — the two
+ * shapes whose season number means nothing to TVDB. Identical in every other
+ * respect to `blankRuntime`, so a refusal here can only be the scope rule.
+ */
+const scoped = (type: string, id: number | null): Grid =>
+  parseGrid(
+    sheetSnapshot([
+      H,
+      showRow('Fargo', 'Ended', id, type),
+      season(1, 6, 44000),
+      seasonRow(2, 3, null, { episodes: null }),
+      seasonRow(3, 2, null, { episodes: null }),
+    ]),
+  );
+
+/**
+ * The scope the planner decided, re-derived here because it is the one claim in
+ * this file that cannot be taken back: the row is dated by the same batch, so
+ * the blank-cell rule stops protecting it the instant this write lands.
+ *
+ * An anime block's season number addresses no TVDB season — every cour of a
+ * SIMKL anime record is `season: 1` and a franchise shares one TVDB id — so a
+ * number fetched for it describes some other season at some other length.
+ */
+test('a runtime is refused in an anime block, and in a block whose show row has no id', () => {
+  // The type is what decides the first one, not a missing id: this block *has*
+  // an id, and is still refused. Nothing stops an anime block carrying a
+  // show-row id on a hand-maintained sheet, and it is the case a bare "no ids"
+  // test — which is how `planSync` and `planLookups` read anime — gets backwards.
+  refuses(planOf([endCell(), runtimeCell(49 / 1440)]), /live-action block/, scoped('anime', 1));
+  refuses(planOf([endCell(), runtimeCell(49 / 1440)]), /live-action block/, scoped('show', null));
+});
+
+/**
+ * A row with its own id is one whose season number is explicitly *not* the
+ * entry's — a split cour, or Doctor Who's 2024 renumbering. Handing that number
+ * to TVDB asks about a season the row does not mean.
+ */
+test('a runtime is refused on a season row that carries its own id', () => {
+  const owned = parseGrid(
+    sheetSnapshot([
+      H,
+      show('Fargo', 'Ended'),
+      season(1, 6, 44000),
+      seasonRow(2, 3, null, { episodes: null }),
+      // Row 4, and the id is the only thing separating it from row 3 above —
+      // so the refusal below can only be the id rule.
+      seasonRow(3, 2, null, { episodes: null, id: 99 }),
+    ]),
+  );
+  assert.doesNotThrow(() => assertPlanSafe(planOf([endCell(3), runtimeCell(49 / 1440, 3)]), owned));
+  refuses(planOf([endCell(4), runtimeCell(49 / 1440, 4)]), /carries its own id/, owned);
 });

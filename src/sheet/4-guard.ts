@@ -77,7 +77,10 @@ export const assertPlanSafe = (
   // making the bound quietly two days wide instead of one.
   const maxSerial = dateSerial(plainDateIn(now, timezone).add({ days: 1 }));
   const showRows = new Set(grid.blocks.map((b) => b.row));
-  const seasonRows = new Map(grid.blocks.flatMap((b) => b.seasons.map((s) => [s.row, s] as const)));
+  // The block comes along because the runtime rule below is about the block the
+  // row sits in, not about the row: whether the season number means anything to
+  // TVDB is a property of `type` and of where the id came from.
+  const seasonRows = new Map(grid.blocks.flatMap((b) => b.seasons.map((s) => [s.row, { season: s, block: b }] as const)));
 
   // --- Budget. Over budget refuses the whole plan; it never truncates.
   if (plan.edits.length > maxEdits) {
@@ -140,14 +143,34 @@ export const assertPlanSafe = (
       continue;
     }
 
-    const season = seasonRows.get(cell.row);
-    if (!season) refuse(`${where}: ${cell.field} may only be written on a season row.`);
+    const found = seasonRows.get(cell.row);
+    if (!found) refuse(`${where}: ${cell.field} may only be written on a season row.`);
+    const { season, block } = found;
     // A dated season is closed by the user's decision and never revisited. The
     // runtime write above is not an exception to this: it rides the batch that
     // closes the row, which the check there enforces.
     if (season.closed) refuse(`${where}: the season already has an end date.`);
 
     if (cell.field === 'Episodes') {
+      // The scope `runtimeTarget` planned against, re-derived. Alone among the
+      // claims here it is unrecoverable if the planner is ever wrong about it:
+      // the row is dated by this same batch and the cell is no longer blank, so
+      // both of the rules below stop applying to it for good.
+      //
+      // An anime block is refused because a SIMKL anime record numbers every
+      // cour `season: 1` and all cours of a franchise share one TVDB id, so the
+      // row's number addresses no TVDB season — Attack on Titan's six records
+      // all point at tvdb 267440, whose season 1 holds 25 episodes against their
+      // 25/12/12/16/12/2. A row carrying its *own* id is refused on the same
+      // ground from the other direction: its season number is explicitly not the
+      // entry's, which is what a split cour or a renumbering is.
+      if (block.type !== 'show' || block.ids.length === 0) {
+        refuse(`${where}: a runtime may only be written in a live-action block that carries ids on its show row.`);
+      }
+      if (season.ids.length) {
+        refuse(`${where}: the row carries its own id, so its season number is not the entry's to look up.`);
+      }
+
       const days = cell.value.numberValue;
       if (days === undefined || !(days >= MIN_RUNTIME_DAYS) || days >= 1) {
         refuse(`${where}: ${describeValue(cell.value)} is not a plausible per-episode day fraction.`);

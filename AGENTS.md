@@ -126,7 +126,10 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   anime records it agrees 12 times in 29 while describing a different season, so `runtimeTarget` tests
   `Type`, the show-row id *and* the row's own id — the same pair `planInsert` guards itself with, and
   a stricter test than the bare "no block ids" that `planSync` and `planLookups` call anime. The
-  count check is a live-action backstop only.
+  count check is a live-action backstop only. `4-guard.ts` re-derives that scope rather than
+  trusting it, which it does for no other planner claim about *which* row may be written: this is
+  the one the row cannot take back, since the same batch dates the row and fills the cell, so
+  neither the blank-cell rule nor the closed-row rule protects it a second time.
   Live-action needs none of that care — 35 of 35 seasons measured agree, Doctor Who's 2024
   renumbering included, because SIMKL keeps that as a separate record.
 - **Never write a formula cell, and never write a show row except `Status`.** Every derived cell on
