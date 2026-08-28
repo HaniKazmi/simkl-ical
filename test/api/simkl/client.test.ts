@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { config } from '../../../src/shared/config.ts';
 import { apiGet, SimklAuthError, SimklError } from '../../../src/api/simkl/client.ts';
-import { retryDelayMs } from '../../../src/api/backoff.ts';
+import { retryDelayMs } from '../../../src/api/http.ts';
 import { clearRequests, recentRequests } from '../../../src/api/requests.ts';
 import { jsonResponse, withConfig, withFetch } from '../../helpers.ts';
 

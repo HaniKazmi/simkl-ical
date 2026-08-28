@@ -15,6 +15,7 @@ import { config } from '../../shared/config.ts';
 import { withTimeout } from '../../shared/signals.ts';
 import { errorMessage } from '../../shared/errors.ts';
 import { beginRequest, readBody } from '../requests.ts';
+import { tokenCache } from '../token-cache.ts';
 
 const TIMEOUT_MS = 30_000;
 
@@ -131,17 +132,17 @@ export const exchangeToken = async (key: ServiceAccountKey, { signal }: { signal
   return { token: body.access_token, expiresIn };
 };
 
-let cached: { token: string; expiresAt: number } | null = null;
+// The refresh margin is folded into the stored expiry, so a token at or under
+// five minutes from expiring is treated as already gone and re-signed.
+const cache = tokenCache(async ({ signal }) => {
+  const { token, expiresIn } = await exchangeToken(readServiceAccountKey(), { signal });
+  return { token, expiresAtMs: Date.now() + expiresIn * 1000 - REFRESH_MARGIN_MS };
+});
 
 /** Dropped between tests, and after any 401 — a stale token outlives its usefulness silently. */
 export const clearTokenCache = (): void => {
-  cached = null;
+  cache.clear();
 };
 
 /** A bearer token, reused until it is close enough to expiry to be worth replacing. */
-export const getAccessToken = async ({ signal }: { signal?: AbortSignal } = {}): Promise<string> => {
-  if (cached && cached.expiresAt - REFRESH_MARGIN_MS > Date.now()) return cached.token;
-  const { token, expiresIn } = await exchangeToken(readServiceAccountKey(), { signal });
-  cached = { token, expiresAt: Date.now() + expiresIn * 1000 };
-  return token;
-};
+export const getAccessToken = ({ signal }: { signal?: AbortSignal } = {}): Promise<string> => cache.get({ signal });

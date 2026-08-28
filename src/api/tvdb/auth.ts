@@ -11,6 +11,7 @@
 import { config } from '../../shared/config.ts';
 import { withTimeout } from '../../shared/signals.ts';
 import { beginRequest, readBody } from '../requests.ts';
+import { tokenCache } from '../token-cache.ts';
 import type { TvdbLoginResponse } from './types.ts';
 
 const LOGIN_URL = 'https://api4.thetvdb.com/v4/login';
@@ -80,40 +81,17 @@ export const exchangeToken = async (c = config, { signal }: { signal?: AbortSign
   return token;
 };
 
-let cached: { token: string; expiresAt: number } | null = null;
-
-/**
- * The exchange while it is in flight.
- *
- * Held as well as the token because this is the first authenticated upstream the
- * project calls *in parallel*: `lookupPool` starts four workers at once, and on
- * a cold cache each would miss and log in separately. Google's cache has the
- * same shape and needs no such thing, because every Sheets call is sequential.
- */
-let pending: Promise<string> | null = null;
+const cache = tokenCache(async ({ signal }) => ({
+  token: await exchangeToken(config, { signal }),
+  expiresAtMs: Date.now() + ASSUMED_TTL_MS,
+}));
 
 /**
  * Dropped between tests, and after any 401 — the assumed lifetime above is a
  * guess, and this is what makes a wrong guess cost one poll rather than persist.
  */
 export const clearTokenCache = (): void => {
-  cached = null;
-  pending = null;
+  cache.clear();
 };
 
-export const getTvdbToken = async ({ signal }: { signal?: AbortSignal } = {}): Promise<string> => {
-  // Epoch milliseconds: a countdown with both endpoints inside this process, no
-  // zone and no calendar in it. Same category as the Google token cache.
-  if (cached && cached.expiresAt > Date.now()) return cached.token;
-  pending ??= exchangeToken(config, { signal })
-    .then((token) => {
-      cached = { token, expiresAt: Date.now() + ASSUMED_TTL_MS };
-      return token;
-    })
-    // Cleared either way: a failed exchange must not be handed to the next
-    // caller, which would make one bad login the answer for the whole process.
-    .finally(() => {
-      pending = null;
-    });
-  return pending;
-};
+export const getTvdbToken = ({ signal }: { signal?: AbortSignal } = {}): Promise<string> => cache.get({ signal });

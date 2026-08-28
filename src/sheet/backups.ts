@@ -13,7 +13,7 @@
  * fixes; failing the run over one would turn it into a real one.
  */
 
-import { backoffMs, sleep } from '../api/backoff.ts';
+import { backoffMs, sleep } from '../api/http.ts';
 import { isoOf } from '../shared/dates.ts';
 import { errorMessage } from '../shared/errors.ts';
 import type { Logger } from '../shared/logger.ts';
