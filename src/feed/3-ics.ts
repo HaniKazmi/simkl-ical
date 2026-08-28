@@ -8,7 +8,7 @@
 
 import ical, { ICalCalendarMethod, ICalEventTransparency } from 'ical-generator';
 import { config } from '../shared/config.ts';
-import type { FeedEvent } from './1-join.ts';
+import type { FeedEvent } from './2-join.ts';
 
 /**
  * Episode titles stay out of SUMMARY — a calendar surfaces those without the

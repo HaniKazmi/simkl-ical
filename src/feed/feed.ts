@@ -11,12 +11,13 @@
 import { errorMessage } from '../shared/errors.ts';
 import type { Logger } from '../shared/logger.ts';
 import type { Library } from '../library.ts';
-import type { MovieRelease } from './io/movies.ts';
+import type { MovieRelease } from './1-films.ts';
 // The pipeline, in the order this file runs it.
 import { anyChanged, anyStale, fetchAllCalendars, payloads, type Calendars } from './io/calendar.ts';
-import { fetchMovieReleases, filmDue, reconcileReleases } from './io/movies.ts';
-import { join, plannedFilmIds, type FeedEvent } from './1-join.ts';
-import { renderIcs } from './2-ics.ts';
+import { filmDue, reconcileReleases } from './1-films.ts';
+import { fetchMovieReleases } from './io/movies.ts';
+import { join, plannedFilmIds, type FeedEvent } from './2-join.ts';
+import { renderIcs } from './3-ics.ts';
 import { loadFeed, saveFeed } from './io/store.ts';
 import { isoOf, nowIso } from '../shared/dates.ts';
 
@@ -73,15 +74,16 @@ export class Feed {
 
   /**
    * Serve the last feed on boot and keep serving it until a complete fresh one
-   * is rendered. Nothing else is restored, so no control state outlives the
-   * process.
+   * is rendered, and warm the calendars. Nothing else is restored, so no
+   * control state outlives the process — and nothing renders here, because at
+   * boot there is no library yet and the render gate would decline anyway.
    */
-  async hydrate(library: Library | null, { signal }: { signal: AbortSignal }): Promise<void> {
+  async hydrate({ signal }: { signal: AbortSignal }): Promise<void> {
     // Contained here rather than allowed to unwind. `loadFeed` distinguishes a
     // missing file from an unreadable one so the second is visible, but visible
-    // is the whole point of it — escaping would skip the calendar fetch, the
-    // render and the first library poll below it, leaving the service to wait
-    // out a full timer interval over a file it only ever reads as a fallback.
+    // is the whole point of it — escaping would skip the calendar fetch and the
+    // first library poll after it, leaving the service to wait out a full timer
+    // interval over a file it only ever reads as a fallback.
     const saved = await loadFeed().catch((err: unknown) => {
       this.log.warn(`could not read the saved feed, starting from empty: ${errorMessage(err)}`);
       return null;
@@ -92,9 +94,6 @@ export class Feed {
       this.log.info('serving the last saved feed until a fresh one is ready');
     }
     await this.refreshCalendars({ signal });
-    // Rendering is guarded separately: a bad timezone throws from inside the
-    // join, and that must degrade the feed rather than take the process down.
-    await this.safeRender(library);
   }
 
   /**
@@ -199,7 +198,7 @@ export class Feed {
    * this is *called* rather than when the queued render runs, so a render
    * renders what its caller had.
    */
-  safeRender(library: Library | null): Promise<void> {
+  render(library: Library | null): Promise<void> {
     this.rendering = this.rendering.then(() => this.renderAndSave(library));
     return this.rendering;
   }
@@ -207,7 +206,7 @@ export class Feed {
   private async renderAndSave(library: Library | null): Promise<void> {
     let rendered = false;
     try {
-      rendered = this.render(library);
+      rendered = this.renderNow(library);
     } catch (err) {
       this.errors.render = errorMessage(err);
       this.log.error(`render failed: ${errorMessage(err)}`);
@@ -230,7 +229,7 @@ export class Feed {
    * halves are present, so a partial refresh never overwrites a complete feed
    * loaded from disk.
    */
-  render(library: Library | null): boolean {
+  private renderNow(library: Library | null): boolean {
     if (!this.calendars || !library) return false;
     this.events = join(payloads(this.calendars), library, { movieReleases: this.movieReleases });
     this.ics = renderIcs(this.events, { name: FEED_NAME });

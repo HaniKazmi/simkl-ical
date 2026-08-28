@@ -14,7 +14,7 @@
 
 import { config, tvdbConfigured } from '../shared/config.ts';
 import { recentRequests } from '../api/requests.ts';
-import { libraryCounts } from '../library.ts';
+import { libraryCounts } from '../library-counts.ts';
 import { sheetRuns } from '../sheet/io/journal.ts';
 import type { Orchestrator } from '../orchestrator.ts';
 import { buildModel } from './1-model.ts';
@@ -37,7 +37,7 @@ export const renderStatus = (state: Orchestrator, { now = Temporal.Now.instant()
       polledAt: state.polledAt,
       libraryError: state.errors.library,
       counts: libraryCounts(state.library),
-      gate: state.lastGate,
+      gate: state.lastPoll,
       movement: state.lastMovement,
       activitiesPoll: config.activitiesPoll,
 

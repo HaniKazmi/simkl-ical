@@ -1,12 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { FILM_HORIZON_DAYS, fetchMovieReleases, filmDue, pickReleaseDate, reconcileReleases } from '../../../src/feed/io/movies.ts';
-import { releaseLabel } from '../../../src/feed/1-join.ts';
-import type { MovieDetail } from '../../../src/api/simkl/types.ts';
-import type { MovieRelease } from '../../../src/feed/io/movies.ts';
-import { clearRequests, recentRequests } from '../../../src/api/requests.ts';
-import { jsonResponse, withFetch } from '../../helpers.ts';
-import { plainDateFrom, plainDateIn } from '../../../src/shared/dates.ts';
+import { FILM_HORIZON_DAYS, filmDue, pickReleaseDate, reconcileReleases } from '../../src/feed/1-films.ts';
+import { fetchMovieReleases } from '../../src/feed/io/movies.ts';
+import { releaseLabel } from '../../src/feed/2-join.ts';
+import type { MovieDetail } from '../../src/api/simkl/types.ts';
+import type { MovieRelease } from '../../src/feed/1-films.ts';
+import { clearRequests, recentRequests } from '../../src/api/requests.ts';
+import { jsonResponse, withFetch } from '../helpers.ts';
+import { plainDateFrom, plainDateIn } from '../../src/shared/dates.ts';
 
 // Shape taken from a real /movies/2242503 response. Note `released` is two days
 // earlier than every country's actual theatrical date — this is not a typo in

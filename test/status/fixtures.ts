@@ -15,6 +15,8 @@
 import type { SheetRunRecord } from '../../src/sheet/io/journal.ts';
 import type { RequestRecord } from '../../src/api/requests.ts';
 import type { StatusInput } from '../../src/status/1-model.ts';
+import { libraryCounts, type LibraryCounts } from '../../src/library-counts.ts';
+import type { SyncType } from '../../src/api/simkl/types.ts';
 import { isoOf } from '../../src/shared/dates.ts';
 
 export const MINUTE = 60_000;
@@ -42,7 +44,7 @@ export const COLD: StatusInput = {
   problems: [],
   polledAt: null,
   libraryError: null,
-  counts: {},
+  counts: libraryCounts(null),
   gate: null,
   movement: null,
   requests: [],
@@ -101,8 +103,16 @@ export const request = (over: Partial<RequestRecord> = {}): RequestRecord => ({
 /** How the library last moved. Empty deltas is the common poll, not an edge. */
 export const moved = (over: Partial<NonNullable<StatusInput['movement']>> = {}): NonNullable<StatusInput['movement']> => ({
   at: before(2 * MINUTE),
-  deltas: {},
+  deltas: [],
   updated: 0,
   removed: 0,
   ...over,
 });
+
+/** The all-zero counts with the named buckets raised. `libraryCounts(null)` is fresh per call, so mutating it is safe. */
+export const countsWith = (byType: Partial<Record<SyncType, Record<string, number>>> = {}, other = 0): LibraryCounts => {
+  const counts = libraryCounts(null);
+  for (const [type, statuses] of Object.entries(byType)) Object.assign(counts.byType[type as SyncType], statuses);
+  counts.other = other;
+  return counts;
+};

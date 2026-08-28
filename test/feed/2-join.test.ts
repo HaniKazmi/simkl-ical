@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { airingIds, plannedIds, episodeCode, join } from '../../src/feed/1-join.ts';
+import { airingIds, plannedIds, episodeCode, join } from '../../src/feed/2-join.ts';
 import { itemSimklId } from '../../src/api/simkl/item.ts';
 import { plainDateFrom, releaseDate } from '../../src/shared/dates.ts';
 import type { CalendarEntry, CalendarFile, CalendarType, LibraryItem } from '../../src/api/simkl/types.ts';
 import type { Library, LibraryEntry } from '../../src/library.ts';
-import type { MovieRelease } from '../../src/feed/io/movies.ts';
+import type { MovieRelease } from '../../src/feed/1-films.ts';
 import { calendarOf } from '../helpers.ts';
 
 type Cals = Partial<Record<CalendarType, CalendarFile>>;

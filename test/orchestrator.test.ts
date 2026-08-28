@@ -456,7 +456,7 @@ test('a revoked token keeps the last good feed and says how to fix it', async ()
       },
     );
 
-    assert.match(state.errors.library!, /^AUTH:/);
+    assert.match(state.errors.library!, /rejected the token/);
     assert.equal(state.feed.ics, good, 'the feed must survive a revoked token');
     assert.ok(
       log.lines.some((l) => l.includes('npm run login -- --force')),
@@ -467,7 +467,7 @@ test('a revoked token keeps the last good feed and says how to fix it', async ()
 
 test('a successful poll clears an earlier library failure', async () => {
   await withToken(async (state) => {
-    state.errors.library = 'AUTH: something old';
+    state.errors.library = 'something old';
     await prime(state);
     assert.equal(state.errors.library, null);
   });
@@ -533,7 +533,7 @@ test('a sustained rate limit keeps the films and retries rather than dropping th
 
 // An auth failure during film lookups must surface as one, not be filed
 // against individual films.
-test('a revoked token during film lookups is reported as AUTH', async () => {
+test('a revoked token during film lookups is reported as a library failure', async () => {
   await withToken(async (state) => {
     await withFetch(
       (url) => (url.includes('/movies/') && !url.includes('all-items') ? new Response('nope', { status: 401 }) : api(activities())(url)),
@@ -541,7 +541,7 @@ test('a revoked token during film lookups is reported as AUTH', async () => {
         await state.refreshLibraryIfChanged();
       },
     );
-    assert.match(state.errors.library!, /^AUTH:/);
+    assert.match(state.errors.library!, /rejected the token/);
   });
 });
 
@@ -712,7 +712,7 @@ test('a quiet poll still records a gate, with nothing in it', async () => {
     await withFetch(api(acts), async (calls) => {
       await state.refreshLibraryIfChanged();
       assert.equal(calls.length, 1, 'still exactly one request');
-      assert.deepEqual(state.lastGate, { changed: false, pull: 'none', removals: false, updated: 0, removed: 0 });
+      assert.partialDeepStrictEqual(state.lastPoll, { changed: false, pull: 'none', removalsChecked: false, updated: 0, reshaped: 0, removed: 0 });
     });
   });
 });
@@ -723,9 +723,9 @@ test('a cold start reports a changed gate and a full pull', async () => {
   await withToken(async (state) => {
     await withFetch(api(activities()), async () => {
       await state.refreshLibraryIfChanged();
-      assert.equal(state.lastGate?.changed, true);
-      assert.equal(state.lastGate?.pull, 'full');
-      assert.equal(state.lastGate?.updated, 2);
+      assert.equal(state.lastPoll?.changed, true);
+      assert.equal(state.lastPoll?.pull, 'full');
+      assert.equal(state.lastPoll?.updated, 2);
     });
   });
 });
@@ -738,8 +738,8 @@ test('a forced poll pulls whole while the gate reports nothing moved', async () 
     await prime(state);
     await withFetch(api(activities()), async () => {
       await state.refreshLibraryIfChanged({ force: true });
-      assert.equal(state.lastGate?.changed, false, 'the signature still matches');
-      assert.equal(state.lastGate?.pull, 'full', 'and yet the whole library was pulled');
+      assert.equal(state.lastPoll?.changed, false, 'the signature still matches');
+      assert.equal(state.lastPoll?.pull, 'full', 'and yet the whole library was pulled');
     });
   });
 });
@@ -751,7 +751,7 @@ test('a gate that moved reports what the delta carried', async () => {
     const delta = { shows: [{ show: { title: 'A Show', ids: { simkl: 100 } }, status: 'watching' }] };
     await withFetch(api(moved, { body: delta }), async () => {
       await state.refreshLibraryIfChanged();
-      assert.deepEqual(state.lastGate, { changed: true, pull: 'delta', removals: false, updated: 1, removed: 0 });
+      assert.partialDeepStrictEqual(state.lastPoll, { changed: true, pull: 'delta', removalsChecked: false, updated: 1, reshaped: 0, removed: 0 });
     });
   });
 });
@@ -761,11 +761,11 @@ test('a gate that moved reports what the delta carried', async () => {
 test('a failed poll leaves the previous gate standing', async () => {
   await withToken(async (state) => {
     await prime(state);
-    const before = state.lastGate;
+    const before = state.lastPoll;
     await withFetch(() => new Response('nope', { status: 500 }), async () => {
       await state.refreshLibraryIfChanged();
     });
-    assert.deepEqual(state.lastGate, before);
+    assert.deepEqual(state.lastPoll, before);
     assert.ok(state.errors.library, 'and the failure is reported');
   });
 });
@@ -785,7 +785,7 @@ test('watching an episode reports records updated and no count movement', async 
     };
     await withFetch(api(moved, { body: progressed }), () => state.refreshLibraryIfChanged());
 
-    assert.deepEqual(state.lastMovement?.deltas, {}, 'nothing changed status');
+    assert.deepEqual(state.lastMovement?.deltas, [], 'nothing changed status');
     assert.equal(state.lastMovement?.updated, 1, 'but a record did arrive');
   });
 });
@@ -798,7 +798,10 @@ test('a show moving status reports the pair of counts shifting', async () => {
     const finished = { shows: [{ show: { title: 'A Show', ids: { simkl: 100 } }, status: 'completed' }] };
     await withFetch(api(moved, { body: finished }), () => state.refreshLibraryIfChanged());
 
-    assert.deepEqual(state.lastMovement?.deltas, { 'shows/watching': -1, 'shows/completed': 1 });
+    assert.deepEqual(state.lastMovement?.deltas, [
+      { type: 'shows', status: 'watching', delta: -1 },
+      { type: 'shows', status: 'completed', delta: 1 },
+    ]);
   });
 });
 
@@ -824,7 +827,7 @@ test('a quiet poll leaves the previous movement standing', async () => {
 test('a first load reports its size but not as movement', async () => {
   await withToken(async (state) => {
     await withFetch(api(activities()), () => state.refreshLibraryIfChanged());
-    assert.deepEqual(state.lastMovement?.deltas, {}, 'nothing moved; it arrived');
+    assert.deepEqual(state.lastMovement?.deltas, [], 'nothing moved; it arrived');
     assert.equal(state.lastMovement?.updated, 2, 'and the size is still reported');
   });
 });

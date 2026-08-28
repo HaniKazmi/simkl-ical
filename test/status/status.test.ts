@@ -25,7 +25,7 @@ const wired = (): Orchestrator => {
   state.library = libraryOf({ id: 1, status: 'watching' }, { id: 2, status: 'dropped' });
   state.polledAt = ago(MINUTE);
   state.libraryAt = ago(2 * MINUTE);
-  state.lastGate = { changed: true, pull: 'delta', removals: false, updated: 7, removed: 3 };
+  state.lastPoll = { at: ago(MINUTE), changed: true, pull: 'delta', removalsChecked: true, refusedRemovals: false, updated: 7, reshaped: 0, removed: 3 };
   state.feed.calendars = { tv: { data: calendarOf(), source: 'fresh' }, anime: { data: calendarOf(), source: 'fresh' } };
   state.feed.events = [];
   state.feed.renderedAt = ago(3 * MINUTE);

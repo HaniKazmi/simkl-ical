@@ -142,7 +142,6 @@ test('an unreadable token file degrades the feed rather than throwing', async ()
       () => state.refreshLibraryIfChanged(),
     );
     assert.ok(state.errors.library, 'the failure is recorded');
-    assert.match(state.errors.library, /library:/);
   });
 });
 

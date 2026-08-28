@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { escapeHtml, html, raw, renderPage, toHtml } from '../../src/status/2-html.ts';
 import { buildModel, type StatusInput } from '../../src/status/1-model.ts';
-import { COLD, MINUTE, before, input, moved, request } from './fixtures.ts';
+import { COLD, MINUTE, before, countsWith, input, moved, request } from './fixtures.ts';
 
 test('escapeHtml covers every character that can break out of markup', () => {
   assert.equal(escapeHtml(`<script>"x" & 'y'</script>`), '&lt;script&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/script&gt;');
@@ -87,7 +87,6 @@ test('hostile content from every untrusted source renders inert', () => {
   const rendered = page({
     problems: [payload],
     libraryError: payload,
-    counts: { [payload]: 3 },
     gate: { pull: 'none', updated: 0, removed: 0 },
     sheetConfigured: true,
     sheetFrozen: `FROZEN: copy ${payload} back`,
@@ -134,7 +133,7 @@ test('an unconfigured sheet says so rather than showing an empty section', () =>
 // Requests never trigger a fetch. A control that started work would break the
 // invariant the whole architecture rests on, so there is nothing to submit.
 test('the page is inert: no script, no form, no off-origin request', () => {
-  const rendered = page({ sheetConfigured: true, counts: { 'shows/watching': 4 }, gate: { pull: 'none', updated: 0, removed: 0 } });
+  const rendered = page({ sheetConfigured: true, counts: countsWith({ shows: { watching: 4 } }), gate: { pull: 'none', updated: 0, removed: 0 } });
   for (const forbidden of ['<script', '<form', '<button', 'http://', 'https://', 'src=']) {
     assert.ok(!rendered.includes(forbidden), `the page must contain no ${forbidden}`);
   }
@@ -163,7 +162,7 @@ test('an empty request log renders the section rather than breaking the page', (
 // The change line is the part that says whether anything actually happened.
 test('the library movement reaches the page', () => {
   const rendered = page({
-    movement: moved({ at: before(MINUTE), deltas: { 'shows/watching': -1, 'shows/completed': 1 }, updated: 3 }),
+    movement: moved({ at: before(MINUTE), deltas: [{ type: 'shows', status: 'watching', delta: -1 }, { type: 'shows', status: 'completed', delta: 1 }], updated: 3 }),
   });
   assert.match(rendered, /shows\/watching \u22121/);
   assert.match(rendered, /shows\/completed \+1/);

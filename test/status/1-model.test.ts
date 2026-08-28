@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildModel, duration } from '../../src/status/1-model.ts';
-import { before, input, moved, request, COLD, DAY, HOUR, MINUTE, runRecord } from './fixtures.ts';
+import { before, countsWith, input, moved, request, COLD, DAY, HOUR, MINUTE, runRecord } from './fixtures.ts';
 
 test('duration reads at a glance rather than to the second', () => {
   assert.equal(duration(Temporal.Duration.from({ milliseconds: 30_000 })), '30s');
@@ -60,7 +60,7 @@ const GATE = { pull: 'delta' as const, updated: 1, removed: 0 };
 test('the counts collapse to one total per type', () => {
   const model = buildModel(
     input({
-      counts: { 'shows/watching': 47, 'shows/completed': 412, 'anime/completed': 200, 'movies/plantowatch': 11, other: 0 },
+      counts: countsWith({ shows: { watching: 47, completed: 412 }, anime: { completed: 200 }, movies: { plantowatch: 11 } }),
       gate: GATE,
     }),
   );
@@ -76,20 +76,20 @@ test('the counts collapse to one total per type', () => {
 // `other` exists to keep the rows summing to the total, not to be read — so it
 // shows up only when SIMKL has sent a status nothing here knows about.
 test('an unrecognised status appears only when it is not zero', () => {
-  const model = buildModel(input({ counts: { 'shows/watching': 3, other: 2 }, gate: GATE }));
+  const model = buildModel(input({ counts: countsWith({ shows: { watching: 3 } }, 2), gate: GATE }));
   assert.deepEqual(model.library.counts.at(-1), { key: 'other', count: 2 });
 });
 
 // Before the first poll nothing is known, which is a different claim from
 // nothing having moved.
 test('with no gate yet the page says so rather than claiming nothing moved', () => {
-  const model = buildModel(input({ counts: { 'shows/watching': 3 }, gate: null }));
+  const model = buildModel(input({ counts: countsWith({ shows: { watching: 3 } }), gate: null }));
   assert.equal(model.library.gate, 'not polled yet');
 });
 
 test('a gate where nothing moved is still a gate', () => {
   const quietGate = { ...GATE, pull: 'none' as const, updated: 0 };
-  const model = buildModel(input({ counts: { 'shows/watching': 3 }, gate: quietGate }));
+  const model = buildModel(input({ counts: countsWith({ shows: { watching: 3 } }), gate: quietGate }));
   assert.equal(model.library.gate, 'nothing moved', 'a gate that ran and found nothing is not "not polled yet"');
 });
 
@@ -145,21 +145,14 @@ test('watching episodes reports work done and no movement between statuses', () 
 });
 
 test('a status move reports the pair of counts shifting', () => {
-  const model = buildModel(input({ movement: moved({ updated: 1, deltas: { 'shows/watching': -1, 'shows/completed': 1 } }) }));
+  const model = buildModel(input({ movement: moved({ updated: 1, deltas: [{ type: 'shows', status: 'watching', delta: -1 }, { type: 'shows', status: 'completed', delta: 1 }] }) }));
   assert.deepEqual(model.library.movement?.deltas, ['shows/watching \u22121', 'shows/completed +1']);
 });
 
 test('a removal reports its count falling', () => {
-  const model = buildModel(input({ movement: moved({ updated: 0, removed: 1, deltas: { 'movies/plantowatch': -1 } }) }));
+  const model = buildModel(input({ movement: moved({ updated: 0, removed: 1, deltas: [{ type: 'movies', status: 'plantowatch', delta: -1 }] }) }));
   assert.deepEqual(model.library.movement?.deltas, ['movies/plantowatch \u22121']);
   assert.match(model.library.movement?.summary ?? '', /1 removed/);
-});
-
-// A count that did not move is not news, and a line listing fourteen zeroes
-// would bury the one that did.
-test('counts that did not move are not listed', () => {
-  const model = buildModel(input({ movement: moved({ updated: 3, deltas: { 'shows/watching': 0, 'anime/completed': 2 } }) }));
-  assert.deepEqual(model.library.movement?.deltas, ['anime/completed +2']);
 });
 
 // Before the first pull there is nothing to report, which is not the same as

@@ -10,7 +10,7 @@
 
 import { instantFrom } from '../shared/dates.ts';
 import type { SheetSyncMode } from '../shared/config.ts';
-import { totalsByType } from '../library.ts';
+import { totalCount, totalsByType, type CountDelta, type LibraryCounts } from '../library-counts.ts';
 import type { RequestRecord } from '../api/requests.ts';
 import type { SheetRunRecord } from '../sheet/io/journal.ts';
 import type { SheetSyncStatus } from '../sheet/sync.ts';
@@ -27,7 +27,7 @@ export interface StatusInput {
   polledAt: string | null;
   libraryError: string | null;
   /** Every type and status, including the empty ones — see `libraryCounts`. */
-  counts: Record<string, number>;
+  counts: LibraryCounts;
   gate: { pull: 'none' | 'delta' | 'full'; updated: number; removed: number } | null;
   /**
    * How the counts moved on the last poll that moved them, and when. Null until
@@ -35,7 +35,7 @@ export interface StatusInput {
    * line keeps reporting the last thing that happened rather than blanking
    * every half hour.
    */
-  movement: { at: string; deltas: Record<string, number>; updated: number; removed: number } | null;
+  movement: { at: string; deltas: CountDelta[]; updated: number; removed: number } | null;
   requests: RequestRecord[];
   activitiesPoll: Temporal.Duration;
 
@@ -241,11 +241,10 @@ const gateDetail = (gate: StatusInput['gate']): string => {
  * says "films" where SIMKL says "movies", and that a zero `other` is noise
  * rather than news — it exists to keep the rows summing, not to be read.
  */
-const countRows = (counts: Record<string, number>): CountRow[] => {
-  const { other, ...types } = totalsByType(counts);
-  const rows = Object.entries(types).map(([key, count]) => ({ key: key === 'movies' ? 'films' : key, count }));
-  return other ? [...rows, { key: 'other', count: other }] : rows;
-};
+const countRows = (counts: LibraryCounts): CountRow[] =>
+  totalsByType(counts)
+    .filter((row) => row.type !== 'other' || row.count > 0)
+    .map((row) => ({ key: row.type === 'movies' ? 'films' : row.type, count: row.count }));
 
 /** `+1` / `−1`, with a real minus sign rather than a hyphen. */
 const signed = (n: number): string => (n > 0 ? `+${n}` : `\u2212${Math.abs(n)}`);
@@ -262,9 +261,7 @@ const signed = (n: number): string => (n > 0 ? `+${n}` : `\u2212${Math.abs(n)}`)
  */
 const movementView = (movement: StatusInput['movement'], now: Temporal.Instant): MovementView | null => {
   if (movement === null) return null;
-  const deltas = Object.entries(movement.deltas)
-    .filter(([, delta]) => delta !== 0)
-    .map(([key, delta]) => `${key} ${signed(delta)}`);
+  const deltas = movement.deltas.map((d) => `${d.status === null ? d.type : `${d.type}/${d.status}`} ${signed(d.delta)}`);
   const parts = [`${movement.updated} ${movement.updated === 1 ? 'record' : 'records'} updated`];
   if (movement.removed) parts.push(`${movement.removed} removed`);
   if (!deltas.length) parts.push('nothing moved between statuses');
@@ -301,7 +298,7 @@ export const buildModel = (input: StatusInput): StatusModel => {
     library: {
       polled: stamp(input.polledAt, now),
       error: input.libraryError,
-      total: Object.values(input.counts).reduce((sum, n) => sum + n, 0),
+      total: totalCount(input.counts),
       counts: countRows(input.counts),
       gate: gateDetail(input.gate),
       movement: movementView(input.movement, now),

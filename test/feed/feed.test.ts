@@ -12,13 +12,13 @@ const live = new AbortController().signal;
 /** Enough of a library for the join to run. Passed in — Feed never holds one. */
 const LIBRARY = libraryOf();
 
-// safeRender is the only caller in production, and both timers reach it.
+// render() is the only caller in production, and both timers reach it.
 test('overlapping renders are serialised rather than racing', async () => {
   await withTempDataDir(async () => {
     const feed = new Feed({ logger: quiet });
     feed.calendars = emptyCalendars();
 
-    await Promise.all([feed.safeRender(LIBRARY), feed.safeRender(LIBRARY), feed.safeRender(LIBRARY)]);
+    await Promise.all([feed.render(LIBRARY), feed.render(LIBRARY), feed.render(LIBRARY)]);
 
     assert.ok(feed.renderedAt);
     assert.equal(await loadFeed(), feed.ics);
@@ -37,7 +37,7 @@ test('the saved feed is served on boot', async () => {
     await withFetch(
       () => jsonResponse(calendarFile()),
       async () => {
-        await feed.hydrate(null, { signal: live });
+        await feed.hydrate({ signal: live });
       },
     );
 
@@ -70,7 +70,7 @@ test('hydrating warms the calendars but renders nothing without a library', asyn
     await withFetch(
       () => jsonResponse(calendarFile()),
       async (calls) => {
-        await feed.hydrate(null, { signal: live });
+        await feed.hydrate({ signal: live });
         assert.ok(calls.length > 0, 'hydrate must fetch the calendars');
       },
     );
@@ -101,7 +101,7 @@ test('with nothing saved, boot serves the empty calendar rather than failing', a
     await withFetch(
       () => jsonResponse(calendarFile()),
       async () => {
-        await feed.hydrate(null, { signal: live });
+        await feed.hydrate({ signal: live });
       },
     );
     assert.equal(feed.servingCached, false);
@@ -117,12 +117,12 @@ test('a render with only calendars does not overwrite the served feed', async ()
     feed.servingCached = true;
     feed.calendars = emptyCalendars();
 
-    await feed.safeRender(null); // no library — the join cannot run
+    await feed.render(null); // no library — the join cannot run
 
     assert.equal(feed.ics, ICS, 'the loaded feed must survive');
     assert.equal(feed.renderedAt, null);
     assert.equal(feed.servingCached, true);
-    // safeRender leaves identical state whether render declined or threw; only
+    // render() leaves identical state whether it declined or threw; only
     // this distinguishes the two.
     assert.equal(feed.errors.render, null, 'declining to render is not a failure');
   });
@@ -134,7 +134,7 @@ test('a render with only a library does not overwrite the served feed', async ()
     feed.ics = ICS;
     feed.servingCached = true;
 
-    await feed.safeRender(LIBRARY); // no calendars
+    await feed.render(LIBRARY); // no calendars
 
     assert.equal(feed.ics, ICS);
     assert.equal(feed.servingCached, true);
@@ -149,7 +149,7 @@ test('a complete render replaces the feed and persists it', async () => {
     feed.servingCached = true;
     feed.calendars = emptyCalendars();
 
-    await feed.safeRender(LIBRARY);
+    await feed.render(LIBRARY);
 
     assert.notEqual(feed.ics, ICS, 'a fresh render took over');
     assert.match(feed.ics, /BEGIN:VCALENDAR/);

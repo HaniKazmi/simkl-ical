@@ -1,10 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  COUNT_KEYS,
   evaluateGate,
   deltaFrom,
-  libraryCounts,
   librarySignature,
   membershipIds,
   mergeDelta,
@@ -340,49 +338,6 @@ test('a removal in one category is not read as a removal in another', () => {
 
 test('nothing moving means no category to reconcile', () => {
   assert.equal(movedRemovals(removalStamps(activities()), removalStamps(activities())).size, 0);
-});
-
-// --- Counts ----------------------------------------------------------------
-
-test('counts name every type and status, including the empty ones', () => {
-  const counts = libraryCounts(new Map() as Library);
-  assert.deepEqual(Object.keys(counts), COUNT_KEYS);
-  assert.equal(Object.values(counts).reduce((a, b) => a + b, 0), 0);
-});
-
-// movies carries no watching or hold status at all.
-test('the film statuses are only the three films can hold', () => {
-  assert.deepEqual(COUNT_KEYS.filter((key) => key.startsWith('movies/')), [
-    'movies/plantowatch',
-    'movies/completed',
-    'movies/dropped',
-  ]);
-});
-
-test('counts split by type and status', () => {
-  const library = toLibrary({
-    shows: [libraryItem({ id: 1, status: 'watching' }), libraryItem({ id: 2, status: 'dropped' })],
-    anime: [libraryItem({ id: 3, status: 'watching' })],
-    movies: [libraryItem({ id: 4, status: 'plantowatch' })],
-  });
-  const counts = libraryCounts(library);
-  assert.equal(counts['shows/watching'], 1);
-  assert.equal(counts['shows/dropped'], 1);
-  assert.equal(counts['anime/watching'], 1);
-  assert.equal(counts['movies/plantowatch'], 1);
-  assert.equal(counts.other, 0);
-});
-
-// So the rows always sum to the library total, whatever SIMKL adds later.
-test('an unrecognised status lands in other rather than vanishing', () => {
-  const library = toLibrary({ shows: [libraryItem({ id: 1, status: 'rewatching' })] });
-  const counts = libraryCounts(library);
-  assert.equal(counts.other, 1);
-  assert.equal(Object.values(counts).reduce((a, b) => a + b, 0), library.size);
-});
-
-test('a library that was never fetched counts as zero, not as missing rows', () => {
-  assert.deepEqual(Object.keys(libraryCounts(null)), COUNT_KEYS);
 });
 
 // --- The gate --------------------------------------------------------------

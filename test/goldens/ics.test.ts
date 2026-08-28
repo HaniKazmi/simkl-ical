@@ -5,11 +5,11 @@
  * stamp, so it is normalised out.
  */
 import { test } from 'node:test';
-import { join as joinFeed } from '../../src/feed/1-join.ts';
-import { renderIcs } from '../../src/feed/2-ics.ts';
+import { join as joinFeed } from '../../src/feed/2-join.ts';
+import { renderIcs } from '../../src/feed/3-ics.ts';
 import { calendarOf, libraryOf } from '../helpers.ts';
 import type { CalendarEpisode } from '../../src/api/simkl/types.ts';
-import type { MovieRelease } from '../../src/feed/io/movies.ts';
+import type { MovieRelease } from '../../src/feed/1-films.ts';
 import { expectGolden } from './golden.ts';
 
 const NOW = Temporal.Instant.from('2026-08-20T12:00:00Z');

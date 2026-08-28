@@ -1,5 +1,5 @@
 import { config, requireClientId, requireValidTimezone } from './shared/config.ts';
-import { errorMessage, errorStack } from './shared/errors.ts';
+import { errorMessage } from './shared/errors.ts';
 import { Orchestrator } from './orchestrator.ts';
 import { buildServer } from './server.ts';
 
@@ -40,23 +40,9 @@ for (const [name, path] of [
   app.log.info(`  ${name}  http://localhost:${config.port}${path}`);
 }
 
-void (async () => {
-  try {
-    await service.hydrate();
-    await service.refreshLibraryIfChanged();
-    app.log.info(`ready: serving ${service.feed.events.length} events`);
-  } catch (err) {
-    // Never fatal: the server keeps answering /healthz so the failure is
-    // visible. Filed as a render failure because that is the slot `ok` keys on,
-    // and the next successful render clears it.
-    service.feed.errors.render = `startup: ${errorMessage(err)}`;
-    app.log.error(`warm-up failed: ${errorStack(err)}`);
-  } finally {
-    // In `finally` on purpose: a failed warm-up must still leave something
-    // scheduled to retry, rather than serving a boot-time snapshot forever.
-    service.start();
-  }
-})();
+// Fire-and-forget on purpose: warm-up never throws, files its own failure,
+// and always leaves the timers running.
+void service.warmUp();
 
 // Guarded, so a second signal does not start a second concurrent close, and in
 // a finally, so a close rejection still exits cleanly.

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { renderIcs } from '../../src/feed/2-ics.ts';
-import type { FeedEvent } from '../../src/feed/1-join.ts';
+import { renderIcs } from '../../src/feed/3-ics.ts';
+import type { FeedEvent } from '../../src/feed/2-join.ts';
 import { plainDateFrom } from '../../src/shared/dates.ts';
 
 const event: FeedEvent = {
