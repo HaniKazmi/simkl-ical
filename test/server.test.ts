@@ -80,6 +80,44 @@ test('a token that is a prefix of the real one is rejected', async () => {
   });
 });
 
+// The icons sit behind the token like everything else. A tokenless icon route would be a path
+// that answers differently to a caller without one, which is the whole thing the uniform 404
+// protects — and it would say what this host runs before anyone proves they may ask.
+test('the icons serve under the token and are invisible without it', async () => {
+  await withServer(async (app) => {
+    const expected = [
+      ['favicon.svg', 'image/svg+xml'],
+      ['favicon.ico', 'image/x-icon'],
+      ['apple-touch-icon.png', 'image/png'],
+    ] as const;
+
+    for (const [name, type] of expected) {
+      const ok = await app.inject({ method: 'GET', url: `/${TOKEN}/${name}` });
+      assert.equal(ok.statusCode, 200, name);
+      assert.match(ok.headers['content-type'] as string, new RegExp(type.replace('+', '\\+')), name);
+      assert.ok(ok.rawPayload.length > 0, `${name} has a body`);
+
+      const miss = await app.inject({ method: 'GET', url: `/nope/${name}` });
+      assert.equal(miss.statusCode, 404, name);
+      assert.deepEqual(miss.json(), { error: 'Not found' }, `${name} misses like any other path`);
+    }
+  });
+});
+
+// The page names its icons, so the header that would stop a browser fetching them has to admit
+// them — and admit nothing else. `'self'` is what keeps an injected `<img>` from having anywhere
+// off-host to carry the token in this page's own URL.
+test('the status CSP admits the icons and only same-origin ones', async () => {
+  await withServer(async (app) => {
+    const res = await app.inject({ method: 'GET', url: `/${TOKEN}/status` });
+    const csp = res.headers['content-security-policy'] as string;
+    assert.match(csp, /(^|;\s*)img-src 'self'(;|$)/, 'same-origin images only');
+    assert.match(csp, /default-src 'none'/, 'everything else still denied by default');
+    assert.ok(!csp.includes('script-src'), 'no script source is granted');
+    assert.equal(res.headers['referrer-policy'], 'no-referrer');
+  });
+});
+
 test('with no token configured the feed is unreachable rather than open', async () => {
   await withServer(
     async (app) => {

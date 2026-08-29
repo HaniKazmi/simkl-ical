@@ -113,7 +113,7 @@ test('hostile content from every untrusted source renders inert', () => {
   assert.deepEqual(
     [...elements].filter(
       (e) =>
-        !['html', 'head', 'meta', 'title', 'style', 'body', 'div', 'header', 'h1', 'h2', 'span', 'section', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'time', 'ul', 'li', 'p', 'b', 'br', 'footer', 'a', 'details', 'summary'].includes(e),
+        !['html', 'head', 'meta', 'title', 'style', 'link', 'body', 'div', 'header', 'h1', 'h2', 'span', 'section', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'time', 'ul', 'li', 'p', 'b', 'br', 'footer', 'a', 'details', 'summary'].includes(e),
     ),
     [],
     'every element is one this file wrote',
@@ -138,16 +138,26 @@ test('an unconfigured sheet says so rather than showing an empty section', () =>
 // would carry it to another origin in a `Referer`. A link the reader clicks is
 // not a subresource — `no-referrer` covers it, and the two links are the point
 // of the page — so what is banned is every form of automatic fetching.
-test('the page fetches nothing: no script, no form, no subresource', () => {
+// The icons are the only thing this page asks the browser to fetch, and the point of the rule is
+// not that the count is zero — it is that nothing it fetches can reach another host. The token is
+// in this page's own URL, so a subresource pointed off-origin would hand it over in the request
+// line; a relative one addresses the service that issued it.
+test('the page fetches nothing off this host: no script, no form, no remote subresource', () => {
   const rendered = page({
     sheetConfigured: true,
     sheetUrl: 'https://docs.google.com/spreadsheets/d/SHEET/edit',
     counts: countsWith({ shows: { watching: 4 } }),
     gate: { pull: 'none' },
   });
-  for (const forbidden of ['<script', '<form', '<button', '<link', '<iframe', 'src=', 'srcset', '@import', 'url(', 'http-equiv', 'ping=']) {
+  for (const forbidden of ['<script', '<form', '<button', '<iframe', 'src=', 'srcset', '@import', 'url(', 'http-equiv', 'ping=']) {
     assert.ok(!rendered.includes(forbidden), `the page must contain no ${forbidden}`);
   }
+  // Pinned exactly, so a fourth one cannot arrive unnoticed, and every href stays relative.
+  assert.deepEqual(
+    [...rendered.matchAll(/<link[^>]*href="([^"]*)"/g)].map((m) => m[1]!),
+    ['favicon.svg', 'favicon.ico', 'apple-touch-icon.png'],
+    'the icons are the only subresources, and all of them are same-origin',
+  );
 });
 
 /** Every absolute URL in the document, whatever attribute or text it sits in. */
