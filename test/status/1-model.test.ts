@@ -158,8 +158,21 @@ test('a full resync says so, so its record count is not read as change', () => {
 // `reshaped`, not `updated`, is what the feed can see, and the page names the
 // consequence rather than leaving a reader to infer it from a count.
 test('records that changed membership report the render they caused', () => {
-  const model = buildModel(input({ movement: moved({ updated: 14, reshaped: 2 }) }));
+  const model = buildModel(input({ movement: moved({ updated: 14, reshaped: 2, rendered: true }) }));
   assert.match(model.library.movement?.consequence ?? '', /2 changed membership, so the feed re-rendered/);
+});
+
+// The poll renders on `feedChanged(poll) || filmsDue`, and a film reaching its
+// release date moves no count here. Reading the answer back out of the counts
+// alone reports the opposite of what happened.
+test('a render a film caused is reported, though no count moved', () => {
+  const model = buildModel(input({ movement: moved({ updated: 3, reshaped: 0, rendered: true }) }));
+  assert.match(model.library.movement?.consequence ?? '', /a film came into range, so the feed re-rendered/);
+});
+
+test('a poll that rendered nothing says so', () => {
+  const model = buildModel(input({ movement: moved({ updated: 14, reshaped: 0, rendered: false }) }));
+  assert.match(model.library.movement?.consequence ?? '', /progress only, so the feed was left alone/);
 });
 
 test('a status move reports the pair of counts shifting', () => {
@@ -168,7 +181,7 @@ test('a status move reports the pair of counts shifting', () => {
 });
 
 test('a removal reports its count falling', () => {
-  const model = buildModel(input({ movement: moved({ updated: 0, removed: 1, deltas: [{ type: 'movies', status: 'plantowatch', delta: -1 }] }) }));
+  const model = buildModel(input({ movement: moved({ updated: 0, removed: 1, rendered: true, deltas: [{ type: 'movies', status: 'plantowatch', delta: -1 }] }) }));
   assert.deepEqual(model.library.movement?.deltas, ['movies/plantowatch \u22121']);
   assert.match(model.library.movement?.pulled ?? '', /1 title removed/);
   assert.match(model.library.movement?.consequence ?? '', /1 title left the library, so the feed re-rendered/);
@@ -176,6 +189,13 @@ test('a removal reports its count falling', () => {
 
 // Before the first pull there is nothing to report — not the same as
 // reporting that nothing moved.
+// A poll where the signature had not moved but titles left: the removal diff
+// runs on its own gate, so nothing was asked for and yet the library shrank.
+test('a poll that only checked membership does not claim to have read records', () => {
+  const model = buildModel(input({ movement: moved({ pull: 'none', updated: 0, removed: 2, rendered: true }) }));
+  assert.match(model.library.movement?.pulled ?? '', /^membership check · 2 titles removed$/);
+});
+
 test('a library that has never moved says so rather than showing an empty change', () => {
   assert.equal(buildModel(input({ movement: null })).library.movement, null);
 });
@@ -356,4 +376,13 @@ test('an error the newest run already carries is not repeated above it', () => {
 test('an error no run recorded still reaches the reader', () => {
   const model = buildModel(input({ sheetConfigured: true, sheetError: 'the spreadsheet is not readable', runs: [] }));
   assert.equal(model.sheet.error, 'the spreadsheet is not readable');
+});
+
+// `sheet-runs.json` is read off disk and rendered verbatim, so a timestamp in
+// it may be a string that will not parse. That is not the same as no timestamp,
+// and the page must not print it as if it were a date.
+test('a timestamp that will not parse reads as never, with no absolute time', () => {
+  const model = buildModel(input({ polledAt: 'not a date' }));
+  assert.equal(model.library.polled.label, 'never');
+  assert.equal(model.library.polled.title, null);
 });

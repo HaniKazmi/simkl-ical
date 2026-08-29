@@ -145,7 +145,7 @@ test('the page fetches nothing: no script, no form, no subresource', () => {
     counts: countsWith({ shows: { watching: 4 } }),
     gate: { pull: 'none' },
   });
-  for (const forbidden of ['<script', '<form', '<button', '<link', '<iframe', 'src=', 'srcset', '@import', 'url(']) {
+  for (const forbidden of ['<script', '<form', '<button', '<link', '<iframe', 'src=', 'srcset', '@import', 'url(', 'http-equiv', 'ping=']) {
     assert.ok(!rendered.includes(forbidden), `the page must contain no ${forbidden}`);
   }
 });
@@ -227,4 +227,12 @@ test('the summary says when runtime lookups are off, and nothing when they work'
   assert.match(off, /runtimes off/);
   const on = renderPage(buildModel(input({ sheetConfigured: true, runtimesConfigured: true })));
   assert.doesNotMatch(on, /runtimes off/, 'a page that works says nothing about it');
+});
+
+// A stamp with no usable instant must not become a `<time>`: the attribute
+// would carry the unparseable string and the tooltip would be empty.
+test('an unparseable timestamp renders no time element', () => {
+  const rendered = page({ polledAt: 'not a date' });
+  assert.ok(!rendered.includes('datetime="not a date"'), 'no invalid datetime attribute');
+  assert.ok(!rendered.includes('title=""'), 'and no empty tooltip');
 });

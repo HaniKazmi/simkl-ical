@@ -16,7 +16,7 @@ import { instantFrom, plainDateIn } from '../shared/dates.ts';
 import type { SheetSyncMode } from '../shared/config.ts';
 import { totalCount, totalsByType, type LibraryCounts } from '../library-counts.ts';
 import { pageHealthy, type Assessment } from '../health.ts';
-import { feedChanged, type LibraryMovement, type PollOutcome, type Snapshot } from '../orchestrator.ts';
+import type { LibraryMovement, PollOutcome, Snapshot } from '../orchestrator.ts';
 import type { RequestRecord } from '../api/requests.ts';
 import type { SheetRunRecord } from '../sheet/io/journal.ts';
 import type { SheetSyncStatus } from '../sheet/sync.ts';
@@ -347,8 +347,9 @@ const signed = (n: number): string => (n > 0 ? `+${n}` : `−${Math.abs(n)}`);
  * see. Catching up on a season has a large `updated` and a zero `reshaped`,
  * and the feed is right not to re-render.
  *
- * `feedChanged` is the orchestrator's own predicate, so the consequence named
- * here cannot disagree with the render that actually happened.
+ * Whether it did re-render is read off `rendered`, never re-derived: the poll
+ * also renders when a film comes into range, which moves no count here, so
+ * working the answer back out of the numbers states the opposite.
  */
 const movementView = (movement: LibraryMovement | null, at: Stamped): MovementView | null => {
   if (movement === null) return null;
@@ -367,8 +368,8 @@ const movementView = (movement: LibraryMovement | null, at: Stamped): MovementVi
     at: at(movement.at),
     pulled: pulled.join(' · '),
     deltas: movement.deltas.map((d) => `${d.status === null ? d.type : `${d.type}/${d.status}`} ${signed(d.delta)}`),
-    consequence: feedChanged(movement)
-      ? `${moved.join(', ') || 'the whole library was re-read'}, so the feed re-rendered`
+    consequence: movement.rendered
+      ? `${moved.join(', ') || 'a film came into range'}, so the feed re-rendered`
       : 'progress only, so the feed was left alone',
   };
 };

@@ -197,8 +197,13 @@ table.counts tr{border:0;padding:0;margin:0}
 footer{color:var(--faint);font-size:.8125rem;padding:.25rem .25rem 0}
 `;
 
+/**
+ * `title` is null for every stamp with no usable instant, which includes a
+ * timestamp read off disk that will not parse — a wider condition than a null
+ * `iso`. Branching on it keeps the `datetime` attribute valid.
+ */
 const time = (s: Stamp) =>
-  s.iso === null ? html`<span class="dim">never</span>` : html`<time datetime="${s.iso}" title="${s.title}">${s.label}</time>`;
+  s.title === null ? html`<span class="dim">${s.label}</span>` : html`<time datetime="${s.iso}" title="${s.title}">${s.label}</time>`;
 
 /**
  * The first screen: one card per half of the service, each saying what it
@@ -282,7 +287,7 @@ const runChanges = (run: RunView) => [
   ...run.inserts.map(
     (i) => html`<div class="edit ins"><span class="addr">${i.address}</span><span class="fld">insert</span><span>${i.note}</span></div>`,
   ),
-  run.error === null ? null : html`<div class="msg">${run.error}</div>`,
+  ...(run.error === null ? [] : [html`<div class="msg">${run.error}</div>`]),
 ];
 
 /**
@@ -299,7 +304,7 @@ const runs = (model: StatusModel) =>
       <span class="run-count">${run.count}</span>`;
     return run.open
       ? html`<div class="run">
-          <div class="run-head ${run.edits.length || run.inserts.length || run.error ? '' : 'bare'}">${summary}</div>
+          <div class="run-head ${changes.length ? '' : 'bare'}">${summary}</div>
           ${changes}
         </div>`
       : html`<details class="run"><summary>${summary}</summary>${changes}</details>`;

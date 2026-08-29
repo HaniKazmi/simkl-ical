@@ -93,6 +93,13 @@ export interface PollOutcome {
   reshaped: number;
   /** Records the membership diff dropped. */
   removed: number;
+  /**
+   * Whether this poll re-rendered the feed. Recorded rather than left to be
+   * re-derived: the decision is `feedChanged(poll) || filmsDue`, and a film
+   * coming into range renders without moving anything a poll counts. A reader
+   * working back from the counts alone would state the opposite.
+   */
+  rendered: boolean;
 }
 
 /**
@@ -117,6 +124,7 @@ const quietPoll = (at: string, changed: boolean): PollOutcome => ({
   updated: 0,
   reshaped: 0,
   removed: 0,
+  rendered: false,
 });
 
 // The poll's consequences, as named questions over one outcome. Each reader
@@ -128,7 +136,7 @@ const quietPoll = (at: string, changed: boolean): PollOutcome => ({
  * episode rewrites a record the feed cannot see any of, and rendering on it
  * rewrites the file for a fresh DTSTAMP and nothing else.
  */
-export const feedChanged = (poll: PollOutcome): boolean => poll.pull === 'full' || poll.reshaped > 0 || poll.removed > 0;
+const feedChanged = (poll: PollOutcome): boolean => poll.pull === 'full' || poll.reshaped > 0 || poll.removed > 0;
 
 /**
  * Whether the film list needs re-resolving: a film enters or leaves
@@ -352,10 +360,10 @@ export class Orchestrator {
         return;
       }
 
-      const poll = await this.pull(token, activities, gate, signal);
+      const poll = await this.pull(token, activities, gate, filmsDue, signal);
       this.lastPoll = poll;
 
-      shouldRender = feedChanged(poll) || filmsDue;
+      shouldRender = poll.rendered;
       if (filmsNeedResolving(poll) || filmsDue) {
         // A failed lookup needs no flag: it leaves that film's stamp alone,
         // so `filmsDue` is already true next poll for exactly the films that
@@ -398,7 +406,7 @@ export class Orchestrator {
    * call that consumed it returns; advancing before would skip the change
    * permanently.
    */
-  private async pull(token: string, activities: Activities, gate: GateDecision, signal: AbortSignal): Promise<PollOutcome> {
+  private async pull(token: string, activities: Activities, gate: GateDecision, filmsDue: boolean, signal: AbortSignal): Promise<PollOutcome> {
     // Taken before the pull replaces the library; null when there was none —
     // a first load is not movement, and reporting every count arriving from
     // zero says nothing. `libraryCounts` is memoised on the library's
@@ -466,6 +474,10 @@ export class Orchestrator {
 
     // An empty full pull still records a movement of nothing, so the page's
     // line says what happened rather than holding a stale one.
+    // Set before the movement is recorded, so the record carries the decision
+    // rather than something a reader has to reconstruct from the counts.
+    poll.rendered = feedChanged(poll) || filmsDue;
+
     if (poll.pull === 'full' || libraryMoved(poll)) {
       const deltas = before === null ? [] : countDeltas(before, libraryCounts(this.library));
       this.lastMovement = { ...poll, deltas };

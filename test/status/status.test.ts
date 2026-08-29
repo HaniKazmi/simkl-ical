@@ -24,7 +24,7 @@ const wired = (): Orchestrator => {
   state.library = libraryOf({ id: 1, status: 'watching' }, { id: 2, status: 'dropped' });
   state.polledAt = ago(MINUTE);
   state.libraryAt = ago(2 * MINUTE);
-  state.lastPoll = { at: ago(MINUTE), changed: true, pull: 'delta', removalsChecked: true, refusedRemovals: false, updated: 7, reshaped: 0, removed: 3 };
+  state.lastPoll = { at: ago(MINUTE), changed: true, pull: 'delta', removalsChecked: true, refusedRemovals: false, updated: 7, reshaped: 0, removed: 3, rendered: true };
   state.feed.calendars = { tv: { data: calendarOf(), source: 'fresh' }, anime: { data: calendarOf(), source: 'fresh' } };
   state.feed.events = [];
   state.feed.renderedAt = ago(3 * MINUTE);
@@ -42,6 +42,17 @@ test('the counts the library holds reach the page, totalled by type', async () =
     // the split that makes it up.
     assert.match(page, /<td>shows<\/td><td class="total">2<\/td>/);
     assert.match(page, /<td>anime<\/td><td class="total">0<\/td>/);
+  });
+});
+
+// The link is built from `config.sheetId`, and every other test supplies the
+// URL as a fixture literal — so nothing else would notice the shell mapping
+// the wrong config field into it.
+test('the spreadsheet link is built from the configured id', async () => {
+  const configured = { sheetId: 'THE-SHEET-ID', sheetName: 'Progress', sheetSyncMode: 'report' as const, googleKeyBase64: 'stub' };
+  await withConfig({ timezone: 'Europe/London', ...configured }, () => {
+    const page = renderStatus(wired(), { now: Temporal.Now.instant() });
+    assert.match(page, /href="https:\/\/docs\.google\.com\/spreadsheets\/d\/THE-SHEET-ID\/edit"/);
   });
 });
 

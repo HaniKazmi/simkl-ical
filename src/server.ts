@@ -14,15 +14,23 @@ const tokenMatches = (candidate: string): boolean => {
 
 /**
  * The origin the reader actually reached the status page on, for the copyable
- * feed URL it prints. `Host` is what this browser asked for, so it is right by
- * construction, and a proxy's `x-forwarded-proto` is the only way to know the
- * scheme survived. It reaches the page as *text* only — the link's href is
- * root-relative, so a forged header cannot aim a click off-origin.
+ * feed URL it prints, and — since `webcal:` needs a full authority — the one
+ * click target on the page not fixed by config. `Host` is what this browser
+ * asked for, so it is right by construction; a proxy that forwards a forged
+ * one aims the subscribe link elsewhere, and a subscription is durable, so
+ * that keeps re-fetching with the token. `PUBLIC_URL` is the fix if `Host`
+ * ever stops being trustworthy here.
+ *
+ * The scheme is checked against the two that exist rather than passed through:
+ * it is client-settable, and anything else survives the `^https?:` rewrite in
+ * `status.ts` unchanged and lands in an `href` verbatim. An uppercase `HTTPS`
+ * from a proxy is the same defect without an attacker.
  */
 const originOf = (req: FastifyRequest): string => {
   const forwarded = req.headers['x-forwarded-proto'];
   // A chain of proxies sends a list; the first entry is the client's scheme.
-  const proto = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(',')[0]?.trim() || req.protocol;
+  const claimed = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(',')[0]?.trim().toLowerCase();
+  const proto = claimed === 'https' || claimed === 'http' ? claimed : req.protocol;
   return `${proto}://${req.headers.host ?? `localhost:${config.port}`}`;
 };
 

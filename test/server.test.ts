@@ -241,6 +241,10 @@ test('the feed token only ever addresses this service', async () => {
       });
       const carrying = [...res.body.matchAll(/[a-z]+:\/\/[^"'\s<>]+/g)].map((m) => m[0]).filter((url) => url.includes(TOKEN));
 
+      // Consistency, not containment: the host is echoed from the request, so
+      // this cannot catch a forged `Host` — only a link built from something
+      // other than the origin the reader arrived on. `originOf`'s comment says
+      // what actually bounds that.
       assert.ok(carrying.length > 0, 'the feed links are on the page at all');
       for (const url of carrying) {
         assert.equal(new URL(url.replace(/^webcal:/, 'https:')).host, 'simkl.hani.fyi', `${url} is not this service`);
@@ -261,6 +265,38 @@ test('the feed links follow the host the reader arrived on', async () => {
     });
     assert.ok(res.body.includes(`href="webcal://simkl.hani.fyi/${TOKEN}/feed.ics"`), 'clicking it subscribes');
     assert.ok(res.body.includes(`title="https://simkl.hani.fyi/${TOKEN}/feed.ics"`), 'and the https form is there to paste');
+  });
+});
+
+// The scheme is client-settable and lands in an `href`. Anything but http or
+// https survives the `^https?:` rewrite unchanged, so the subscribe link would
+// carry whatever was sent — `HTTPS` from a real proxy is the same defect.
+test('a scheme the page did not choose never reaches the link', async () => {
+  await withServer(async (app) => {
+    for (const claimed of ['javascript', 'ftp', 'HTTPS', 'https evil']) {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/${TOKEN}/status`,
+        headers: { host: 'simkl.hani.fyi', 'x-forwarded-proto': claimed },
+      });
+      const hrefs = [...res.body.matchAll(/<a [^>]*href="([^"]*)"/g)].map((m) => m[1]!);
+      for (const href of hrefs) {
+        assert.match(href, /^(webcal|https):/, `${claimed} produced ${href}`);
+      }
+    }
+  });
+});
+
+// `x-forwarded-proto: https` is the only way to know a proxy terminated TLS,
+// so the honest value still has to win over the connection's own scheme.
+test('a proxy that terminated TLS is believed', async () => {
+  await withServer(async (app) => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/${TOKEN}/status`,
+      headers: { host: 'simkl.hani.fyi', 'x-forwarded-proto': 'https' },
+    });
+    assert.ok(res.body.includes(`title="https://simkl.hani.fyi/${TOKEN}/feed.ics"`));
   });
 });
 

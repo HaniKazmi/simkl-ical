@@ -164,6 +164,7 @@ test('marking an episode watched does not re-render the feed', async () => {
 
     assert.equal(state.library?.get(100)?.item.watched_episodes_count, 4, 'the library did take the update');
     assert.equal(state.feed.renderedAt, RENDERED, 'but the feed was left alone');
+    assert.equal(state.lastPoll?.rendered, false, 'and the outcome records that, since the page reads it');
   });
 });
 
@@ -181,6 +182,44 @@ test('dropping a show does re-render the feed', async () => {
     await withFetch(api(moved, { body: dropped }), () => state.refreshLibraryIfChanged());
 
     assert.notEqual(state.feed.renderedAt, RENDERED, 'membership moved, so the feed must be rebuilt');
+    assert.equal(state.lastPoll?.rendered, true, 'and the outcome records that, since the page reads it');
+  });
+});
+
+// The render gate is `feedChanged(poll) || filmsDue`, and a film reaching its
+// release date satisfies the second term while moving nothing the first one
+// counts. `rendered` has to carry the whole decision: the status page states it
+// as fact, so a version derived from the counts alone reports the opposite.
+test('a poll that renders only because a film is due records that it rendered', async () => {
+  await withToken(async (state) => {
+    state.feed.calendars = emptyCalendars();
+    await prime(state);
+    // A plan-to-watch film with no release resolved yet is what makes
+    // `filmsDue` true while the show below moves no membership.
+    state.library = libraryOf({ id: 100, status: 'watching' }, { id: 200, type: 'movies', status: 'plantowatch' });
+    state.feed.movieReleases = new Map();
+    assert.equal(state.feed.filmsDue(state.library), true, 'precondition: the film is what is due');
+
+    const RENDERED = '2020-01-01T00:00:00.000Z';
+    state.feed.renderedAt = RENDERED;
+
+    // The same show, same status, one episode further on: no membership moves.
+    const progressed = {
+      shows: [
+        {
+          show: { title: 'A Show', ids: { simkl: 100 } },
+          status: 'watching',
+          watched_episodes_count: 4,
+          last_watched_at: '2026-08-15T18:00:00Z',
+        },
+      ],
+    };
+    const moved = activities({ tv_shows: { watching: '2026-08-15T18:00:00Z' } }, '2026-08-15T18:00:00Z');
+    await withFetch(api(moved, { body: progressed }), () => state.refreshLibraryIfChanged());
+
+    assert.equal(state.lastPoll?.reshaped, 0, 'precondition: nothing the feed reads moved');
+    assert.equal(state.lastPoll?.rendered, true, 'but the film made it render, and the outcome says so');
+    assert.notEqual(state.feed.renderedAt, RENDERED, 'and it really did render');
   });
 });
 
