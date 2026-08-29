@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { renderIcs } from '../../src/feed/2-ics.ts';
-import type { FeedEvent } from '../../src/feed/1-join.ts';
+import { renderIcs } from '../../src/feed/3-ics.ts';
+import type { FeedEvent } from '../../src/feed/2-join.ts';
 import { plainDateFrom } from '../../src/shared/dates.ts';
 
 const event: FeedEvent = {
@@ -41,8 +41,6 @@ test('episode title is in the description, never the summary', () => {
   assert.match(ics, /Our Flag Means Medical Coverage/);
 });
 
-// The link belongs to the URL property; repeating it in DESCRIPTION adds
-// length and no information.
 test('the simkl link is a URL property, not duplicated into the description', () => {
   const ics = renderIcs([event]).replace(/\r\n /g, '');
   assert.match(ics, /URL;VALUE=URI:https:\/\/simkl\.com\/tv\/3407/);
@@ -101,16 +99,10 @@ test('an event with no url omits the URL property', () => {
 });
 
 /**
- * ical-generator picks its date branch by duck-typing — a `PlainDate` is
- * recognised by having `toPlainDateTime` and lacking `hour`, `timeZoneId` and
- * `epochSeconds` — so which branch a value takes is not pinned by any type.
- *
- * That matters less than it looks: passing `start.toString()` instead routes
- * through the string branch and yields byte-identical output, so a tightened
- * check upstream would be harmless. What this asserts is the property that has
- * to hold whichever branch runs. A DATE-VALUE that became a DATE-TIME, or an
- * all-day event that acquired a time, are both silent from the calendar's point
- * of view until an event lands on the wrong day.
+ * ical-generator picks its date branch by duck-typing, so no type pins which
+ * branch a `PlainDate` takes. This asserts the property that must hold
+ * whichever branch runs: a DATE-VALUE become a DATE-TIME, or an all-day event
+ * that acquired a time, is silent until an event lands on the wrong day.
  */
 test('an all-day event renders as a bare DATE, with the exclusive end date', () => {
   const ics = renderIcs([{ ...event, date: plainDateFrom('2026-08-16') }]);
@@ -119,8 +111,8 @@ test('an all-day event renders as a bare DATE, with the exclusive end date', () 
   assert.doesNotMatch(ics, /DTSTART[^\r]*T\d{6}/, 'never a DATE-TIME');
 });
 
-// Month and year rollover. The exclusive end is the only arithmetic this module
-// does, and a day added across either boundary is where it would show.
+// The exclusive end is the only arithmetic this module does, and a day added
+// across a month or year boundary is where it would show.
 test('the exclusive end rolls over the month and the year', () => {
   assert.match(renderIcs([{ ...event, date: plainDateFrom('2026-02-28') }]), /^DTEND;VALUE=DATE:20260301\r$/m);
   assert.match(renderIcs([{ ...event, date: plainDateFrom('2026-12-31') }]), /^DTEND;VALUE=DATE:20270101\r$/m);

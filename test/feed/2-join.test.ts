@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { airingIds, plannedIds, episodeCode, join } from '../../src/feed/1-join.ts';
+import { airingIds, plannedIds, episodeCode, join } from '../../src/feed/2-join.ts';
 import { itemSimklId } from '../../src/api/simkl/item.ts';
 import { plainDateFrom, releaseDate } from '../../src/shared/dates.ts';
 import type { CalendarEntry, CalendarFile, CalendarType, LibraryItem } from '../../src/api/simkl/types.ts';
 import type { Library, LibraryEntry } from '../../src/library.ts';
-import type { MovieRelease } from '../../src/feed/io/movies.ts';
+import type { MovieRelease } from '../../src/feed/1-films.ts';
 import { calendarOf } from '../helpers.ts';
 
 type Cals = Partial<Record<CalendarType, CalendarFile>>;
@@ -19,9 +19,9 @@ test('releaseDate normalises to a plain date', () => {
   assert.equal(releaseDate('2026-12-18T04:00:00Z')?.toString(), '2026-12-18');
 });
 
-// A partial date is a shape TMDB-derived records really carry. Throwing would
-// escape the per-title lookup, be classified transient, and leave that film
-// re-requested on every poll for the life of the process.
+// TMDB-derived records really carry partial dates. Throwing would escape the
+// per-title lookup, read as transient, and leave the film re-requested every
+// poll for the life of the process.
 test('a release date that is not a date costs the date, not the film', () => {
   for (const bad of ['2013-00-00', '2026-13-01', 'unknown', '']) {
     assert.equal(releaseDate(bad), null, `${bad} should not parse`);
@@ -34,9 +34,9 @@ test('itemSimklId bridges the library ids.simkl to the calendar simkl_id', () =>
   assert.equal(itemSimklId({ show: { title: 'No ids', ids: {} } }), null);
 });
 
-// The library holds every film the user has ever completed, so a negative rule
-// here would sweep hundreds of watched films into the feed and into a per-title
-// lookup each. A show carrying no status is still one we hold.
+// The library retains every completed film, so a negative film rule would
+// sweep hundreds of watched films into the feed and a per-title lookup each.
+// A show carrying no status is still one we hold.
 test('the airing rule is negative and the planned rule is positive', () => {
   const library: Library = new Map([
     [1, { type: 'shows', item: show(1) }],
@@ -54,7 +54,7 @@ test('episodeCode pads, and omits the season for unseasoned anime', () => {
 
 test('episodeCode returns null rather than formatting a missing episode', () => {
   // The anime calendar carries occasional entries with no `episode` object;
-  // formatting those produced "Eundefined" in the summary and the UID.
+  // formatting those puts "Eundefined" in the summary and the UID.
   assert.equal(episodeCode(null, null), null);
   assert.equal(episodeCode(undefined, undefined), null);
 });
@@ -102,10 +102,9 @@ const withEntry = (base: Library, [id, value]: [number, LibraryEntry]): Library 
 
 // --- what the feed is allowed to depend on ---------------------------------
 //
-// The feed answers "what airs next for the things you follow". Whether you have
-// watched any of it is the sheet's question, not this one — and the poll runs
-// on every episode you mark, so a feed that varied with watch progress would
-// re-render and rewrite itself all day to produce the same bytes.
+// The feed answers "what airs next for the things you follow"; watch progress
+// is the sheet's question. The poll runs on every episode marked, so a feed
+// that varied with progress would rewrite itself all day for the same bytes.
 
 /** Everything a watched episode rewrites on a record, and none of it is status. */
 const watched = (item: LibraryItem, count: number): LibraryItem => ({
@@ -130,9 +129,9 @@ test('watch progress does not change the feed', () => {
   assert.ok(at(1).length > 0, 'and it is not vacuously empty');
 });
 
-// SIMKL marks an ongoing show completed the moment you catch up, and back to
-// watching when the next episode drops — so this pair moves constantly. Both
-// mean "still following it", so the feed must not be able to tell them apart.
+// SIMKL flips completed/watching every time you catch up, so this pair moves
+// constantly. Both mean "still following it"; the feed must not tell them
+// apart.
 test('a move between watching and completed does not change the feed', () => {
   const cals = calendars([tvEntry(100, 4, 3, '2026-08-15T20:00:00Z')]);
   const as = (status: string) =>
@@ -142,8 +141,8 @@ test('a move between watching and completed does not change the feed', () => {
   assert.ok(as('watching').length > 0);
 });
 
-// A record with no `status` at all is still a title we hold — the reason the
-// airing rule is negative rather than positive.
+// A record with no `status` is still a title we hold — why the airing rule is
+// negative.
 test('a record carrying no status is treated as still followed', () => {
   const cals = calendars([tvEntry(100, 4, 3, '2026-08-15T20:00:00Z')]);
   const stateless = join(cals, withEntry(library, [100, { type: 'shows', item: show(100, 'Watched Show') }]), {
@@ -169,8 +168,7 @@ test('plan-to-watch contributes premieres only', () => {
   assert.equal(events[0]?.summary, 'Planned Show – S01E01');
 });
 
-// SIMKL marks an ongoing show completed once everything aired has been watched,
-// so a between-seasons show lives here. Excluding it would silently drop the
+// A between-seasons show sits in `completed`; excluding it silently drops the
 // next season from the feed.
 test('completed shows still contribute upcoming episodes', () => {
   const events = join(calendars([tvEntry(400, 4, 1, '2026-08-15T20:00:00Z')]), library, { timezone: 'Europe/London', now: NOW });
@@ -187,8 +185,8 @@ test('completed shows are not limited to premieres the way plan-to-watch is', ()
   assert.equal(events.length, 2);
 });
 
-// SIMKL's anime calendar carries no season field at all, so a premiere rule
-// requiring season === 1 could never match anything anime.
+// SIMKL's anime calendar carries no season field, so a premiere rule requiring
+// season === 1 could never match anime.
 test('anime plan-to-watch premieres match despite having no season', () => {
   const animeLibrary = withEntry(library, entry('anime', show(500, 'Some Anime'), 'plantowatch'));
   const cals: Cals = {
@@ -222,8 +220,8 @@ test('an entry with no episode object gets a date-keyed uid, not "Eundefined"', 
   assert.equal(events[0]?.uid, 'simkl-600-20260827@simkl-ical');
 });
 
-// A future date is always inside the grace window, so without this a dropped or
-// on-hold show keeps generating episodes forever.
+// A future date is always inside the grace window, so without this a dropped
+// or on-hold show generates episodes forever.
 test('a show whose status says it moved on contributes nothing', () => {
   for (const status of ['dropped', 'hold']) {
     const moved = withEntry(library, entry('shows', show(100, 'Watched Show'), status));
@@ -232,8 +230,8 @@ test('a show whose status says it moved on contributes nothing', () => {
   }
 });
 
-// The counterpart, and the reason `completed` is not on that list: everything a
-// completed title contributes is already dated, so it ages out on its own.
+// Why `completed` is not on that list: everything it contributes is already
+// dated, so it ages out on its own.
 test('a completed show is still not treated as having moved on', () => {
   const completed = withEntry(library, entry('shows', show(400, 'Completed Show'), 'completed'));
   const events = join(calendars([tvEntry(400, 4, 1, '2026-08-15T20:00:00Z')]), completed, { timezone: 'Europe/London', now: NOW });
@@ -279,8 +277,8 @@ test('the grace boundary is inclusive on its oldest day', () => {
   assert.equal(dayBefore.length, 0);
 });
 
-// The grace window is independent of watch state: the feed records what aired,
-// it is not a to-do list.
+// The grace window ignores watch state: the feed records what aired, not a
+// to-do list.
 test('an already-watched episode still lingers', () => {
   const watchedUpToDate = withEntry(library, [
     100,
@@ -346,11 +344,10 @@ test('events are deduplicated by uid and sorted by date', () => {
   assert.deepEqual(events.map((e) => String(e.date)), ['2026-08-12', '2026-08-15']);
 });
 
-// Upstream data, several thousand entries per file, validated on arrival only
-// for `Array.isArray(calendar)`. `Intl.DateTimeFormat.format` raises on an
-// Invalid Date rather than returning anything a NaN check would catch, so one
-// bad `date` field would abort the join, set `errors.render`, and stop the feed
-// updating until the CDN fixed itself.
+// Several thousand upstream entries per file, validated only for
+// `Array.isArray(calendar)`. `Intl.DateTimeFormat.format` raises on an Invalid
+// Date, so one bad `date` field would abort the join, set `errors.render`, and
+// stop the feed updating until the CDN fixed itself.
 test('a malformed airdate skips its entry rather than aborting the render', () => {
   const cals = calendars([
     { simkl_id: 100, date: 'not a date', finale_type: null, episode: { season: 4, episode: 2, title: 'bad', url: '' } },
@@ -370,14 +367,12 @@ test('an entry with no date at all is skipped the same way', () => {
 // --- the zone in the conversion --------------------------------------------
 
 /**
- * The highest-risk conversion in the project, and until now the only one with
- * no test: pinning the join to UTC broke nothing.
- *
- * An airdate is a UTC instant, and a US evening broadcast is stamped the
- * following day in UTC — 20:30 in New York on the 13th is `02:30Z` on the 14th.
- * Reading that as the 14th puts roughly a fifth of entries on the wrong day, and
- * because the UID carries the date for entries with no episode number, it also
- * changes their identity and duplicates them in every subscriber's calendar.
+ * The highest-risk conversion in the project. An airdate is a UTC instant, and
+ * a US evening broadcast is stamped the next day in UTC — 20:30 in New York on
+ * the 13th is `02:30Z` on the 14th. Reading that as the 14th puts roughly a
+ * fifth of entries on the wrong day, and — since the UID carries the date for
+ * entries with no episode number — changes their identity and duplicates them
+ * in every subscriber's calendar.
  */
 test('an airdate lands on the local calendar day, not the UTC one', () => {
   const lateNight = [tvEntry(100, 5, 1, '2026-08-14T02:30:00Z')];
@@ -389,8 +384,8 @@ test('an airdate lands on the local calendar day, not the UTC one', () => {
   assert.equal(String(utc[0]?.date), '2026-08-14', 'and the same instant is the 14th in UTC');
 });
 
-// East of UTC the shift goes the other way, so a zone that is merely ignored
-// rather than wrong would still pass the New York case alone.
+// East of UTC the shift goes the other way; a zone merely ignored would still
+// pass the New York case alone.
 test('a zone ahead of UTC moves the date forward, not back', () => {
   const evening = [tvEntry(100, 5, 2, '2026-08-14T23:30:00Z')];
 
@@ -398,13 +393,13 @@ test('a zone ahead of UTC moves the date forward, not back', () => {
   assert.equal(String(join(calendars(evening), library, { timezone: 'UTC', now: NOW })[0]?.date), '2026-08-14');
 });
 
-// The grace cutoff is computed from the local date too, so a zone applied to the
-// entry but not to "today" would drop an entry that is still inside the window.
+// The grace cutoff is computed from the local date too; a zone applied to the
+// entry but not to "today" would drop an entry still inside the window.
 test('the grace cutoff is measured in the same zone as the entries', () => {
-  // 02:00Z on the 10th is still the 9th in New York, so the local cutoff is the
-  // 8th where a UTC one would be the 9th. The entry is placed exactly between
-  // them: 01:00Z on the 9th is the evening of the 8th locally, so it survives a
-  // cutoff computed in the same zone and is dropped by one computed in UTC.
+  // 02:00Z on the 10th is still the 9th in New York, so the local cutoff is
+  // the 8th where a UTC one is the 9th. The entry sits exactly between: 01:00Z
+  // on the 9th is the evening of the 8th locally, so it survives a same-zone
+  // cutoff and is dropped by a UTC one.
   const now = Temporal.Instant.from('2026-08-10T02:00:00Z');
   const entries = [tvEntry(100, 5, 3, '2026-08-09T01:00:00Z')];
 

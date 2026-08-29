@@ -1,15 +1,14 @@
 /**
- * READ and APPLY — one tab of the spreadsheet, and the only Google I/O in the
- * sync. In `io/` rather than numbered because it is used at both ends of the
+ * READ and APPLY — one tab of the spreadsheet, the only Google I/O in the
+ * sync. In `io/` rather than numbered because it serves both ends of the
  * pipeline: the read that starts a cycle and the batch that ends it.
  *
  * Reads use `spreadsheets.get` with grid data rather than `values.get`: one
  * request returns `userEnteredValue` (the definitive formula test) and
  * `effectiveValue` (true date serials, no locale-formatted `'1,102'` to
- * unpick). Writes use `batchUpdate`, which is atomic and
- * ordered, leaves number formats alone, and sidesteps the locale trap entirely
- * by sending `{numberValue: 46265}` rather than a date string that `08/15` and
- * `15/08` misparse identically for the first twelve days of every month.
+ * unpick). Writes use `batchUpdate`: atomic, ordered, leaves number formats
+ * alone, and sends `{numberValue: 46265}` rather than a date string that
+ * `08/15` and `15/08` misparse for the first twelve days of every month.
  */
 
 import { config } from '../../shared/config.ts';
@@ -28,14 +27,14 @@ export interface SheetSnapshot {
   columnCount: number;
   rows: CellData[][];
   /**
-   * When the read completed, on the monotonic clock. The freshness gate compares
-   * against this, and its window is two minutes — close enough to a plausible
-   * clock step that wall time could call a fresh snapshot stale, or worse, a
-   * stale one fresh. Never rendered, so it has no reason to be a wall-clock time.
+   * When the read completed, on the monotonic clock. The freshness gate's
+   * window is two minutes — close enough to a plausible clock step that wall
+   * time could call a fresh snapshot stale, or a stale one fresh. Never
+   * rendered, so it has no reason to be wall-clock.
    *
-   * The clock is in the name because the type cannot carry it: both clocks are
-   * `number`, and a fixture assigning `Date.now()` here reads as a difference of
-   * ~1.7e12 ms, which is always "fresh" and silently disables the gate.
+   * The clock is in the name because the type cannot carry it: both clocks
+   * are `number`, and a fixture assigning `Date.now()` here reads as ~1.7e12
+   * ms of difference — always "fresh", silently disabling the gate.
    */
   readAtMono: number;
 }
@@ -47,12 +46,12 @@ const target = (): string => {
 };
 
 /**
- * Exactly the four things `parseGrid` and `verify` read, and nothing else.
+ * Exactly what `parseGrid` and `verify` read, nothing else.
  *
  * Without a mask the response carries every cell's full format block — font,
- * borders, number format, conditional formatting — for 1644 rows, all of it
- * parsed and discarded. Naming `userEnteredValue` keeps `formulaValue`, which
- * is the definitive formula test and the one field the whole design rests on.
+ * borders, number format, conditional formatting — for 1644 rows, all parsed
+ * and discarded. Naming `userEnteredValue` keeps `formulaValue`, the
+ * definitive formula test the whole design rests on.
  *
  * A field mask supersedes `includeGridData`, so asking for `data` here is what
  * makes the grid come back at all.
@@ -70,12 +69,11 @@ export const readSnapshot = async ({ signal }: { signal?: AbortSignal } = {}): P
     signal,
   });
 
-  // By name only. Falling back to the first tab is safe solely because
-  // `params.ranges` constrains the response to one — and if that mask were ever
-  // loosened, the sync would read, plan against and write to whatever came
-  // back first, which after a frozen run is a `_sync-REPAIR-…` snapshot. The
-  // title below defaults to the *configured* name, so the mismatch would not
-  // even show up in the log.
+  // By name only. Falling back to the first tab would be safe only while
+  // `params.ranges` constrains the response to one; loosen that mask and the
+  // sync would read, plan against and write to whatever came back first —
+  // after a frozen run, a `_sync-REPAIR-…` snapshot. The title below defaults
+  // to the configured name, so the mismatch would not even show in the log.
   const sheet = response.sheets?.find((s) => s.properties?.title === title);
   const sheetId = sheet?.properties?.sheetId;
   if (!sheet || sheetId === undefined) {
@@ -83,8 +81,8 @@ export const readSnapshot = async ({ signal }: { signal?: AbortSignal } = {}): P
   }
 
   const grid = sheet.data?.[0];
-  // A non-zero startRow would silently shift every row index by that offset,
-  // which is the one-row misalignment this whole design exists to prevent.
+  // A non-zero startRow silently shifts every row index by that offset — the
+  // one-row misalignment this whole design exists to prevent.
   if (grid?.startRow || grid?.startColumn) {
     throw new Error(`The read came back offset (startRow ${grid.startRow ?? 0}, startColumn ${grid.startColumn ?? 0}).`);
   }
@@ -92,9 +90,9 @@ export const readSnapshot = async ({ signal }: { signal?: AbortSignal } = {}): P
   return {
     sheetId,
     title: sheet.properties?.title ?? title,
-    // Both floored: a rollback pastes over exactly these dimensions, and a zero
-    // restores nothing while reporting success — the confirming verify then
-    // fails and the run freezes, in the one path where freezing is worst.
+    // Both floored: a rollback pastes over exactly these dimensions, and a
+    // zero restores nothing while reporting success — the confirming verify
+    // then fails and the run freezes, in the path where freezing is worst.
     rowCount: Math.max(sheet.properties?.gridProperties?.rowCount ?? grid?.rowData?.length ?? 0, grid?.rowData?.length ?? 0),
     columnCount: Math.max(
       sheet.properties?.gridProperties?.columnCount ?? 0,
@@ -107,11 +105,11 @@ export const readSnapshot = async ({ signal }: { signal?: AbortSignal } = {}): P
 };
 
 /**
- * One batchUpdate. Never retried, and never split: the ordering within the
- * array is load-bearing, and a partially-sent plan is a corrupt sheet.
+ * One batchUpdate. Never retried, never split: the array's ordering is
+ * load-bearing, and a partially-sent plan is a corrupt sheet.
  *
  * The replies are returned because `duplicateSheet` reports the id of the tab
- * it created, and that id is what a rollback restores from.
+ * it created — the id a rollback restores from.
  */
 export const applyRequests = async (
   requests: SheetRequest[],
@@ -128,8 +126,8 @@ export const applyRequests = async (
 };
 
 /**
- * Every tab's id and title, and nothing else. Used to find backup tabs — both
- * the one this run made and any a frozen run left behind.
+ * Every tab's id and title. Used to find backup tabs — this run's and any a
+ * frozen run left behind.
  */
 export const listSheets = async ({ signal }: { signal?: AbortSignal } = {}): Promise<Array<{ sheetId: number; title: string }>> => {
   const response = await sheetsRequest<SpreadsheetResponse>(target(), {

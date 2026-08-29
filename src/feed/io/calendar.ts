@@ -1,8 +1,7 @@
 /**
- * FETCH — airdates, from the rolling file plus whatever monthly archives the
- * grace window reaches, merged.
- *
- * First of **FETCH** → JOIN → RENDER → SAVE, alongside `movies.ts`.
+ * FETCH — airdates: the rolling file plus the monthly archives the grace
+ * window reaches, merged. First of **FETCH** → JOIN → RENDER → SAVE,
+ * alongside `movies.ts`.
  */
 
 import { evictCache, fetchCached, type CdnResult, type CdnSource } from '../../api/cdn.ts';
@@ -14,11 +13,10 @@ import type { CalendarFile, CalendarType } from '../../api/simkl/types.ts';
 const CDN_BASE = 'https://data.simkl.in/calendar/v2/';
 
 /**
- * Calendar file per content type. Anime is a separate type in SIMKL, not a show genre.
- *
- * movie_release.json is deliberately absent: it only covers a rolling 33-day
- * window and carries a date-only 04:00Z placeholder, so films are resolved
- * per-title through /movies/{id} instead — see movies.ts.
+ * Calendar file per content type. Anime is a separate SIMKL type, not a show
+ * genre. movie_release.json is absent: it covers only a rolling 33-day window
+ * and carries a date-only 04:00Z placeholder, so films go per-title through
+ * /movies/{id} — see movies.ts.
  */
 export const CALENDAR_FILES: Record<CalendarType, string> = {
   tv: 'tv.json',
@@ -29,9 +27,9 @@ export const CALENDAR_FILES: Record<CalendarType, string> = {
 const ROLLING_PAST_DAYS = 2;
 
 /**
- * A calendar file, or the reason it is unusable. Parseable is not usable: a 200
- * carrying `{}` or an error object would replace a good cache entry and render
- * a near-empty feed, so this is the caller's half of the conditional GET.
+ * Why the payload is unusable, or null. Parseable is not usable: a 200
+ * carrying `{}` or an error object would replace a good cache entry and
+ * render a near-empty feed.
  */
 const usable = (data: unknown): string | null =>
   Array.isArray((data as CalendarFile | undefined)?.calendar) ? null : 'returned JSON with no calendar array';
@@ -42,10 +40,8 @@ const fetchFile = (url: string, key: string, signal?: AbortSignal): Promise<CdnR
 export const rollingUrl = (type: CalendarType): string => CDN_BASE + CALENDAR_FILES[type];
 
 /**
- * Monthly archive URL.
- *
- * The month is NOT zero-padded: /2026/8/tv.json returns 200 while /2026/08/tv.json
- * returns 404. This is the one trap in the archive API.
+ * Monthly archive URL. The month is NOT zero-padded: /2026/8/tv.json is a
+ * 200, /2026/08/tv.json a 404 — the one trap in the archive API.
  */
 export const archiveUrl = (type: CalendarType, year: number, month: number): string =>
   `${CDN_BASE}${year}/${month}/${CALENDAR_FILES[type]}`;
@@ -71,22 +67,21 @@ export interface YearMonth {
 /**
  * Distinct {year, month} pairs spanned by the last `days` days, oldest first.
  *
- * Counted from the **local** date, because the join's cutoff is
- * the local date minus `graceDays`, and the two must agree about which months the
- * window reaches. Counting in UTC instead loses up to a day of grace in any
- * behind-UTC zone near a month boundary: at 2026-03-15T02:00Z in
- * America/New_York the local cutoff is 2026-02-28, but a UTC window from the
- * 15th spans March alone — so an entry dated 2026-02-28T23:00Z passes the
- * join's filter while living in a February archive nothing ever fetched.
+ * Counted from the **local** date: the join's cutoff is the local date minus
+ * `graceDays`, and the two must agree about which months the window reaches.
+ * Counting in UTC loses up to a day of grace in a behind-UTC zone near a
+ * month boundary: at 2026-03-15T02:00Z in America/New_York the local cutoff
+ * is 2026-02-28, but a UTC window spans March alone — an entry dated
+ * 2026-02-28T23:00Z passes the join's filter while living in a February
+ * archive nothing fetched.
  */
 export const monthsBack = (days: number, now: Temporal.Instant = Temporal.Now.instant(), timezone: string = config.timezone): YearMonth[] => {
   const today = plainDateIn(now, timezone);
   const months = new Map<string, YearMonth>();
   for (let i = days; i >= 0; i -= 1) {
-    // Plain calendar arithmetic on a plain date: the zone was applied above,
-    // and applying it twice is how an off-by-one gets in. `PlainDate.month` is
-    // 1-based and unpadded here, which is the archive URL scheme — a padded one
-    // is a 404.
+    // Plain calendar arithmetic: the zone was applied above, and applying it
+    // twice invites an off-by-one. `PlainDate.month` is 1-based and unpadded,
+    // matching the archive URL scheme — a padded month is a 404.
     const d = today.subtract({ days: i });
     months.set(`${d.year}-${d.month}`, { year: d.year, month: d.month });
   }
@@ -122,26 +117,24 @@ export interface CalendarOptions {
 }
 
 /**
- * A fetched calendar and how fresh it is. Freshness sits beside the payload
- * rather than on it: this is the shape after merging, which no single SIMKL
- * response has.
+ * A fetched calendar and how fresh it is. Freshness sits beside the payload:
+ * this is the merged shape, which no single SIMKL response has.
  */
 export interface CalendarResult {
   data: CalendarFile;
   /**
    * Read from the rolling file alone: a closed month's archive answers from
-   * cache every time by design, so folding archives in would report both an
-   * outage and "unchanged" on a poll where the rolling file was perfectly fine.
+   * cache by design, so folding archives in would report an outage on a poll
+   * where the rolling file was fine.
    */
   source: CdnSource;
 }
 
 /**
  * One content type's calendar, widened backwards to cover the grace window.
- *
- * The rolling file only reaches about two days into the past, so a longer grace
- * window needs the monthly archives. Archives are merged first and the rolling
- * file last, so the freshest data wins on any overlap.
+ * The rolling file reaches only ~2 days into the past, so a longer window
+ * needs the monthly archives. The rolling file merges last, so the freshest
+ * data wins on overlap.
  */
 export const fetchCalendar = async (
   type: CalendarType,
@@ -152,14 +145,14 @@ export const fetchCalendar = async (
   const months = graceDays > ROLLING_PAST_DAYS ? monthsBack(graceDays, now, timezone) : [];
 
   // Safe to parallelise: unauthenticated and CDN-cached. SIMKL's warning
-  // against it covers the authenticated sync endpoints, not these.
+  // covers the authenticated sync endpoints, not these.
   const archives = await Promise.all(
     months.map(async ({ year, month }) => {
       try {
         return (await fetchArchive(type, year, month, { signal })).data;
       } catch (err) {
-        // A missing archive only narrows the window. Logged because a shorter
-        // grace window looks identical to a feed with nothing old to show.
+        // A missing archive only narrows the window. Logged because a narrowed
+        // window looks identical to a feed with nothing old to show.
         log?.(`archive ${year}/${month} ${type} unavailable, grace window narrowed: ${errorMessage(err)}`);
         return null;
       }
@@ -167,14 +160,14 @@ export const fetchCalendar = async (
   );
 
   // Only the rolling file's freshness matters: a closed month's archive never
-  // changes, so serving one from cache is not staleness.
+  // changes, so a cached one is not stale.
   const rolling = await fetchRolling(type, { signal });
   // Rolling last so it wins on overlap; Promise.all preserves input order.
   const parts: Array<CalendarFile | null> = [...archives, rolling.data];
 
-  // Drop cached files outside the current window: each retained month costs
-  // roughly 4 MB for the life of the process. Scoped to this type's keys — the
-  // other type's window is not ours to prune.
+  // Drop cached files outside the window: each retained month costs ~4 MB for
+  // the life of the process. Scoped to this type's keys — the other type's
+  // window is not ours to prune.
   const wanted = new Set([rollingKey(type), ...months.map((m) => archiveKey(type, m.year, m.month))]);
   evictCache((key) => !key.startsWith(`calendar-${type}`) || wanted.has(key));
 
@@ -194,9 +187,9 @@ export const fetchAllCalendars = async ({ graceDays = config.graceDays, timezone
 export const anyStale = (calendars: Calendars): boolean => Object.values(calendars).some((c) => c.source === 'cache');
 
 /**
- * True when the CDN sent new bytes for any type. A 304 on every file means the
- * poll cost two conditional requests and changed nothing — which is the normal,
- * healthy outcome, and worth being able to say rather than infer.
+ * True when the CDN sent new bytes for any type. A 304 on every file means
+ * the poll changed nothing — the normal, healthy outcome, worth saying rather
+ * than inferring.
  */
 export const anyChanged = (calendars: Calendars): boolean => Object.values(calendars).some((c) => c.source === 'fresh');
 

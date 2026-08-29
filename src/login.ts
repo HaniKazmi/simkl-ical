@@ -1,15 +1,14 @@
 #!/usr/bin/env node
-// One-shot device login. Deliberately a CLI, not an HTTP route: nothing
-// reachable from the public hostname should be able to start an OAuth flow.
+// One-shot device login. A CLI, not an HTTP route: nothing reachable from the
+// public hostname should be able to start an OAuth flow.
 //
 //   npm run login
 //   docker compose run --rm simkl-ical npm run login
 import { login, writeToken, readToken } from './api/simkl/auth.ts';
 import { errorMessage } from './shared/errors.ts';
 
-// --force first, and the read inside a try: `readToken` rethrows anything that
-// is not ENOENT, so a corrupt or unreadable token.json would crash the one
-// command that exists to replace it.
+// The read sits in a try: `readToken` rethrows anything but ENOENT, and a
+// corrupt token.json must not crash the one command that replaces it.
 if (!process.argv.includes('--force')) {
   let existing: string | null = null;
   try {

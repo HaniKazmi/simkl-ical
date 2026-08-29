@@ -24,10 +24,9 @@ export const writeFileAtomic = async (
   try {
     await rename(tmp, path);
   } catch (err) {
-    // The temp file is unique per call, so a failed rename strands it rather
-    // than overwriting anything — on a full disk that is one more file per
-    // write, forever. Unlinking is best-effort: the original error is the one
-    // worth reporting.
+    // A failed rename strands the unique temp file rather than overwriting
+    // anything — on a full disk, one more file per write. Unlinking is
+    // best-effort; the original error is the one worth reporting.
     await rm(tmp, { force: true }).catch(() => {});
     throw err;
   }

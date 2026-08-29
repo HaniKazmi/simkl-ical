@@ -42,8 +42,6 @@ test('monthsBack crosses a year boundary', () => {
   ]);
 });
 
-// A 90-day window spans exactly the four months it touches, in order, with no
-// padding in the URLs they build.
 test('a long window spans every month it touches, oldest first', () => {
   const months = monthsBack(90, Temporal.Instant.from('2026-08-10T12:00:00Z'));
   assert.deepEqual(months, [
@@ -61,10 +59,9 @@ test('a zero-day window is still the current month, not nothing', () => {
   assert.deepEqual(monthsBack(0, Temporal.Instant.from('2026-08-10T12:00:00Z')), [{ year: 2026, month: 8 }]);
 });
 
-// The window has to be measured in the same zone the join's cutoff is, or the
-// two disagree about which months the grace period reaches. Behind UTC, near a
-// month boundary, an entry that passes the join's filter would live in an
-// archive nothing ever fetched.
+// The window must be measured in the join cutoff's zone, or the two disagree
+// about which months grace reaches: behind UTC near a month boundary, an entry
+// passing the join's filter lives in an archive nothing fetched.
 test('the window is counted from the local date, not the UTC one', () => {
   const now = Temporal.Instant.from('2026-03-15T02:00:00Z'); // 14 March, 22:00 in New York
   assert.deepEqual(monthsBack(14, now, 'America/New_York'), [
@@ -97,9 +94,9 @@ test('merging de-duplicates episodes and unions metadata', () => {
   assert.equal(merged.metadata['2']!.title, 'Archive only');
 });
 
-// Entries with no `episode` object exist in the live anime calendar. Keying on
-// season/episode alone made every one of them collapse onto a single slot,
-// before the join's date-keyed UID ever saw them.
+// The live anime calendar has entries with no `episode` object. Keyed on
+// season/episode alone they all collapse onto one slot before the join's
+// date-keyed UID ever sees them.
 test('episode-less entries are keyed by date, not collapsed together', () => {
   const merged = mergeCalendars([
     {
@@ -126,8 +123,8 @@ beforeEach(clearCache);
 const entry = (id: number, date: string) => ({ simkl_id: id, date, finale_type: null });
 const GOOD = calendarFile([entry(1, '2026-08-01T20:00:00Z')]);
 
-// A failure must be distinguishable from a real fetch, or an outage reports as
-// a success on every cycle.
+// A failure must be distinguishable from a real fetch, or an outage reports
+// as success every cycle.
 test('a CDN failure serves the cached copy but reports it as stale', async () => {
   let calls = 0;
   await withFetch(
@@ -145,10 +142,10 @@ test('a CDN failure serves the cached copy but reports it as stale', async () =>
   );
 });
 
-// A timeout, a DNS failure or a reset are the likeliest ways the CDN fails, and
-// they arrive as a throw rather than a status. One escaping past the fallback
-// discarded a perfectly good cached month — silently, because the caller reads
-// staleness off the rolling file alone.
+// A timeout, DNS failure or reset — the likeliest CDN failures — arrive as a
+// throw, not a status. One escaping past the fallback discards a good cached
+// month silently, because the caller reads staleness off the rolling file
+// alone.
 test('a network throw serves the cached copy, exactly as a bad status does', async () => {
   let calls = 0;
   await withFetch(
@@ -185,8 +182,8 @@ test('a 304 reports the CDN answered with nothing new', async () => {
       assert.equal(first.source, 'fresh', 'a body is not a 304');
       const cached = await fetchRolling('tv');
       assert.equal(cached.data.calendar.length, 1);
-      // Not `cache`: a 304 means the CDN answered and had nothing new, which is
-      // the healthy outcome and must not read as an outage.
+      // Not `cache`: a 304 means the CDN answered with nothing new — healthy,
+      // and must not read as an outage.
       assert.equal(cached.source, 'not-modified');
     },
   );
@@ -231,8 +228,8 @@ test('a first fetch with nothing cached still throws rather than inventing a fee
   );
 });
 
-// Keyed per archive month, so without eviction every month the process
-// survives retains two more multi-MB parsed calendars.
+// Keyed per archive month: without eviction, every month the process survives
+// retains two more multi-MB parsed calendars.
 test('archives outside the grace window are evicted from the cache', async () => {
   await withFetch(
     () => jsonResponse(GOOD),
@@ -264,8 +261,8 @@ test('evicting one calendar type leaves the other alone', async () => {
   );
 });
 
-// A missing archive narrows the grace window, which looks identical to a feed
-// with nothing old to show.
+// A missing archive narrows the grace window, which looks like a feed with
+// nothing old to show.
 test('an unavailable archive is reported rather than swallowed', async () => {
   const logged: string[] = [];
   await withFetch(
@@ -283,8 +280,8 @@ test('an unavailable archive is reported rather than swallowed', async () => {
   );
 });
 
-// The third outcome, and the only one that is a fault: a cache served after a
-// failure must not read as "the CDN said nothing changed" — it said nothing.
+// The one outcome that is a fault: a cache served after a failure must not
+// read as "the CDN said nothing changed" — it said nothing.
 test('a cache served after a failure is neither fresh nor a 304', async () => {
   let calls = 0;
   await withFetch(
@@ -299,8 +296,8 @@ test('a cache served after a failure is neither fresh nor a 304', async () => {
 
 // --- what the status page is shown -----------------------------------------
 
-// The 304 row is the one that proves the conditional GET is doing its job: the
-// CDN answered, and there was nothing to download.
+// The 304 row proves the conditional GET works: the CDN answered, nothing to
+// download.
 test('a 304 is recorded as an answer carrying no body', async () => {
   clearCache();
   clearRequests();
@@ -323,8 +320,8 @@ test('a 304 is recorded as an answer carrying no body', async () => {
   assert.equal(log[0]?.component, 'calendars', 'and says which part of the service asked');
 });
 
-// Serving a stale cache is a success to the caller and a failure upstream. The
-// row is the only place that distinction survives.
+// A stale cache is success to the caller and failure upstream; the row is the
+// only place the distinction survives.
 test('a CDN failure served from cache is still recorded as a failure', async () => {
   clearCache();
   clearRequests();
@@ -343,9 +340,8 @@ test('a CDN failure served from cache is still recorded as a failure', async () 
   assert.match(log[0]?.error ?? '', /503/);
 });
 
-// `Orchestrator.stop()` aborts in-flight calendar fetches, so a shutdown would
-// otherwise file an error row per calendar and feed them to the page's error
-// summary — a clean stop reading as three CDN failures.
+// `Orchestrator.stop()` aborts in-flight calendar fetches; recorded, a clean
+// stop would read as three CDN failures on the page's error summary.
 test('a fetch the caller cancelled is not recorded as a failure', async () => {
   clearCache();
   clearRequests();
@@ -354,8 +350,8 @@ test('a fetch the caller cancelled is not recorded as a failure', async () => {
 
   await withFetch(
     () => {
-      // What undici does with an aborted signal, which the stub does not model
-      // on its own — and without the rejection the guard is never reached.
+      // What undici does with an aborted signal; without the rejection the
+      // guard is never reached.
       throw new DOMException('This operation was aborted', 'AbortError');
     },
     async () => {

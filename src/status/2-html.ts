@@ -1,21 +1,20 @@
 /**
  * RENDER — a StatusModel to one self-contained HTML page. Pure: no clock, no
- * config reads, no io.
+ * config, no io.
  *
- * Everything on this page that is not a config constant is
- * attacker-or-accident controlled: SIMKL show titles, spreadsheet cell contents
- * and tab names, and Google or SIMKL error bodies. So the primitives below
- * escape by default and the escape hatch is explicit — a bare `escapeHtml` that
- * has to be remembered at each of a hundred call sites is a rule, and rules get
- * forgotten. This is the one file to audit for interpolation.
+ * Everything here that is not a config constant is attacker-or-accident
+ * controlled: SIMKL show titles, spreadsheet contents and tab names, Google
+ * and SIMKL error bodies. So the primitives escape by default — a bare
+ * `escapeHtml` remembered at a hundred call sites is a rule, and rules get
+ * forgotten. The one file to audit for interpolation.
  */
 
-import type { Stamp, StatusModel } from './1-model.ts';
+import type { RunView, Stamp, StatusModel } from './1-model.ts';
 
 /**
- * Module-private, so the brand cannot be forged. A `{ html: string }` duck type
- * is satisfied by any object that happens to carry that key — including one
- * parsed from JSON — and would pass straight through unescaped.
+ * Module-private so the brand cannot be forged: a `{ html: string }` duck
+ * type is satisfied by any object with that key — including one parsed from
+ * JSON — and would pass through unescaped.
  */
 const SAFE = Symbol('safe-html');
 
@@ -26,7 +25,7 @@ export interface SafeHtml {
 const ENTITIES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 
 /**
- * One pass over a character class, never a chain of `.replace` calls: replacing
+ * One pass over a character class, never chained `.replace` calls: replacing
  * `&` after `<` turns an already-escaped `&lt;` into `&amp;lt;`.
  */
 export const escapeHtml = (value: string): string => value.replace(/[&<>"']/g, (c) => ENTITIES[c]!);
@@ -37,12 +36,10 @@ export const raw = (value: string): SafeHtml => ({ [SAFE]: value });
 const isSafe = (value: unknown): value is SafeHtml => typeof value === 'object' && value !== null && SAFE in value;
 
 /**
- * Interpolate, escaping anything not already marked safe.
- *
- * `null` and `undefined` render as nothing, so an unset timestamp never prints
- * the word "null"; arrays join, which is what makes a list of rows an
- * expression rather than a loop; and a nested `html` passes through, so
- * composing fragments does not double-escape them.
+ * Interpolate, escaping anything not marked safe. `null`/`undefined` render
+ * as nothing, so an unset timestamp never prints "null"; arrays join, making
+ * a list of rows an expression; a nested `html` passes through, so composing
+ * fragments does not double-escape.
  */
 export const html = (strings: TemplateStringsArray, ...values: unknown[]): SafeHtml => {
   let out = strings[0] ?? '';
@@ -62,135 +59,215 @@ const stringify = (value: unknown): string => {
 /** Unwrap for the transport. The only place a SafeHtml becomes a string. */
 export const toHtml = (value: SafeHtml): string => value[SAFE];
 
+
 // --- The page --------------------------------------------------------------
 
 /**
- * Inlined, and the only `raw()` in the file. A stylesheet cannot be escaped and
- * stay a stylesheet, and it is the one string here with no untrusted input in
- * it. External assets are not an option: the feed token is in this page's URL,
- * so any off-origin request would carry it out in a `Referer` header.
+ * Inlined, and the only `raw()` in the file: a stylesheet cannot be escaped
+ * and stay one, and it is the one string here with no untrusted input.
+ * External assets are out — the feed token is in this page's URL, and any
+ * off-origin request would carry it out in a `Referer` header.
+ *
+ * The palette, the type stack and the card treatment come from the index at
+ * hani.fyi that links here; the two are consecutive screens. What that page
+ * has no need for is state, so `--ok/--warn/--crit` are added from the same
+ * family, and `--faint` gives labels a third rank below `--muted`.
  */
 const STYLE = `
-:root{--bg:#fff;--panel:#f5f6f9;--ink:#191b21;--slate:#5c6475;--faint:#858c9c;--line:#e3e6ec;
---accent:#3e3b86;--ok:#2e7d52;--warn:#9a6b12;--crit:#a63028;--okbg:#e6f2ea;--warnbg:#f8f0dd;--critbg:#fbeae8}
-@media(prefers-color-scheme:dark){:root{--bg:#14151a;--panel:#1c1e25;--ink:#e6e8ee;--slate:#a3aab9;--faint:#7c8494;
---line:#2a2d36;--accent:#9b96e8;--ok:#5fb98a;--warn:#d1a34d;--crit:#e07d73;--okbg:#1a2a22;--warnbg:#2c2518;--critbg:#2e1d1b}}
+:root{--bg:#f6f7f9;--card:#fff;--ink:#1b1f24;--muted:#6a737d;--faint:#8b949e;--line:#e1e4e8;--accent:#2f6feb;
+--ok:#1a7f4b;--okbg:#e8f5ee;--warn:#9a6700;--warnbg:#fdf3d8;--crit:#cf222e;--critbg:#ffebe9;
+--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+@media(prefers-color-scheme:dark){:root{--bg:#14171a;--card:#1d2126;--ink:#e8eaed;--muted:#9aa4af;--faint:#7d8590;
+--line:#2c3238;--accent:#6c9bff;--ok:#3fb950;--okbg:#12261c;--warn:#d29922;--warnbg:#2a2113;--crit:#f85149;--critbg:#2d1a1a}}
 *{box-sizing:border-box}
-body{margin:0;padding:0 20px 64px;background:var(--bg);color:var(--ink);
-font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;-webkit-font-smoothing:antialiased}
-.wrap{max-width:820px;margin:0 auto}
-header{display:flex;flex-wrap:wrap;align-items:baseline;gap:12px;padding:28px 0 18px;border-bottom:1px solid var(--line)}
-h1{font-size:17px;font-weight:650;margin:0;letter-spacing:-.01em}
-.meta{margin-left:auto;text-align:right;color:var(--faint);font-size:12px}
-.pill{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:650;letter-spacing:.05em;
-text-transform:uppercase;padding:3px 9px;border-radius:3px;border:1px solid currentColor}
+body{margin:0;padding:2.5rem 1.25rem 3rem;background:var(--bg);color:var(--ink);
+font:0.875rem/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{max-width:65rem;margin:0 auto;display:grid;gap:.75rem}
+header{display:flex;flex-wrap:wrap;align-items:baseline;gap:.75rem;margin-bottom:.5rem}
+h1{font-size:1.5rem;font-weight:600;margin:0;letter-spacing:-.01em}
+.meta{margin-left:auto;text-align:right;color:var(--muted);font-size:.8125rem;line-height:1.45}
+.pill{display:inline-flex;align-items:center;gap:.375rem;font-size:.6875rem;font-weight:600;letter-spacing:.06em;
+text-transform:uppercase;padding:.15rem .5rem;border-radius:6px;border:1px solid currentColor;white-space:nowrap}
 .pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
 .pill.ok{color:var(--ok);background:var(--okbg)}.pill.warn{color:var(--warn);background:var(--warnbg)}
 .pill.crit{color:var(--crit);background:var(--critbg)}
-.pill.mute{color:var(--faint);background:var(--panel);border-color:var(--line)}.pill.mute::before{display:none}
-section{padding:20px 0 22px;border-bottom:1px solid var(--line)}
-section:last-of-type{border-bottom:0}
-.head{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px;margin-bottom:14px}
-.name{font-size:11px;letter-spacing:.17em;text-transform:uppercase;color:var(--accent);font-weight:650}
-.sum{margin-left:auto;color:var(--faint);font-size:12px}
-.problems{margin:14px 0 0;padding:12px 14px;border:1px solid var(--crit);background:var(--critbg);border-radius:4px}
-.problems ul{margin:0;padding-left:18px}.problems li{margin:2px 0}
+.pill.mute{color:var(--muted);background:var(--bg);border-color:var(--line)}.pill.mute::before{display:none}
+.tiles{display:grid;gap:.5rem;grid-template-columns:repeat(auto-fit,minmax(14rem,1fr))}
+.tile{display:grid;gap:.125rem;padding:.75rem .9rem;border:1px solid var(--line);border-radius:8px;background:var(--card)}
+.tile.warn{border-color:var(--warn);background:var(--warnbg)}
+.tile.crit{border-color:var(--crit);background:var(--critbg)}
+.t-name{display:flex;align-items:center;gap:.375rem;font-size:.75rem;letter-spacing:.08em;text-transform:uppercase;
+font-weight:600;color:var(--muted)}
+.t-name::before{content:"";width:7px;height:7px;border-radius:50%;flex:none;background:var(--faint)}
+.tile.ok .t-name::before{background:var(--ok)}
+.tile.warn .t-name::before{background:var(--warn)}.tile.warn .t-name{color:var(--warn)}
+.tile.crit .t-name::before{background:var(--crit)}.tile.crit .t-name{color:var(--crit)}
+.t-head{font-size:1rem;font-weight:600;letter-spacing:-.01em}
+.t-next{color:var(--muted);font-size:.85rem}
+.problems{padding:.75rem .9rem;border:1px solid var(--crit);background:var(--critbg);border-radius:8px}
+.problems ul{margin:0;padding-left:1.1rem}.problems li{margin:.125rem 0}
+.grid{display:grid;gap:.75rem;grid-template-columns:1fr}
+@media(min-width:900px){.grid{grid-template-columns:1fr 1fr}}
+section{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:.9rem 1.1rem 1rem;min-width:0}
+.head{display:flex;flex-wrap:wrap;align-items:baseline;gap:.625rem;margin-bottom:.75rem}
+h2.name{font-size:.75rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600;margin:0}
+.sum{margin-left:auto;color:var(--muted);font-size:.8125rem}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+a:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
+.ext{color:var(--faint);font-size:.7rem}
+.mono{font-family:var(--mono)}
+.dim{color:var(--muted)}
+time{border-bottom:1px dotted transparent;cursor:help}
+time:hover{border-bottom-color:var(--line)}
 table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
-th{text-align:left;font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--faint);
-font-weight:600;padding:0 8px 7px 0;border-bottom:1px solid var(--line)}
-td{padding:4px 8px 4px 0;border-bottom:1px solid var(--panel);font-size:12.5px}
+th{text-align:left;font-size:.6875rem;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);
+font-weight:600;padding:0 .625rem .45rem 0;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:.25rem .625rem .25rem 0;border-bottom:1px solid var(--bg);font-size:.8125rem}
 tr:last-child td{border-bottom:0}
-.num{text-align:right;width:64px}
-.dim{color:var(--faint)}
-.totals{display:flex;flex-wrap:wrap;gap:0 1.1rem;padding:.5rem .9rem;border-bottom:1px solid var(--line)}
-.tot b{font-weight:600;color:var(--faint)}
-.moved{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 .6rem;padding:.5rem .9rem}
-.deltas{display:flex;flex-wrap:wrap;gap:0 .5rem}
+table.counts{width:auto;min-width:min(100%,24rem);margin-bottom:.9rem;font-family:var(--mono);font-size:.8125rem}
+table.counts th{padding:0 0 .375rem 1rem;text-align:right}
+table.counts th:first-child{padding-left:0;text-align:left}
+table.counts td{padding:.15rem 0 .15rem 1rem;text-align:right;border-bottom:0}
+table.counts td:first-child{padding-left:0;text-align:left;color:var(--muted);font-family:inherit;font-weight:600}
+table.counts td.total{font-weight:600}
+table.counts td.none{color:var(--line)}
+.moved{display:grid;grid-template-columns:5rem minmax(0,1fr);gap:.125rem .75rem}
+.moved .k,.subscribe .k,.lbl{font-size:.6875rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
+.moved .v{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 .6rem}
+.moved .because{grid-column:2;color:var(--muted)}
+.deltas{display:flex;flex-wrap:wrap;gap:0 .75rem;font-family:var(--mono);font-size:.8125rem}
 .delta{color:var(--ok)}
-td.src{color:var(--slate)}
-td.svc{color:var(--faint)}
-td.path{word-break:break-all}
-tr.bad td{color:var(--crit)}
-.step{display:grid;grid-template-columns:14px 62px minmax(0,1fr) auto;gap:12px;align-items:baseline;padding:5px 0}
+.run-when{color:var(--muted)}
+.step{display:grid;grid-template-columns:.5rem 3.75rem minmax(0,1fr) auto;gap:.625rem;align-items:baseline;padding:.2rem 0}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);align-self:center}
 .step.bad .dot{background:var(--crit)}
-.lbl{font-size:11px;font-weight:650;letter-spacing:.04em;text-transform:uppercase;color:var(--slate)}
-.when{color:var(--faint);font-size:12px;text-align:right;white-space:nowrap}
-.next{margin-top:12px;padding-top:10px;border-top:1px dashed var(--line);color:var(--faint);
-font-size:12px;display:flex;gap:18px;flex-wrap:wrap}.next b{color:var(--slate);font-weight:600}
-.run{border:1px solid var(--line);border-radius:5px;margin-bottom:9px;overflow:hidden}
-.run-head{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:9px 12px;background:var(--panel);border-bottom:1px solid var(--line)}
+.when{color:var(--muted);font-size:.8125rem;text-align:right;white-space:nowrap}
+.next{margin-top:.75rem;padding-top:.6rem;border-top:1px solid var(--line);color:var(--muted);font-size:.8125rem;
+display:flex;gap:.875rem;flex-wrap:wrap}
+.next b{color:var(--ink);font-weight:600}
+.subscribe{display:grid;grid-template-columns:5rem minmax(0,1fr);gap:.75rem;margin-top:.5rem;padding-top:.6rem;
+border-top:1px solid var(--line)}
+.subscribe a{overflow-wrap:anywhere;font-family:var(--mono);font-size:.8125rem}
+.run{border:1px solid var(--line);border-radius:8px;margin-bottom:.5rem;overflow:hidden}
+.run:last-child{margin-bottom:0}
+.run-head,details.run>summary{display:flex;flex-wrap:wrap;align-items:center;gap:.625rem;padding:.6rem .9rem;background:var(--bg)}
+.run-head{border-bottom:1px solid var(--line)}
 .run-head.bare{border-bottom:0}
-.run-when{color:var(--slate);font-size:12px}.run-count{margin-left:auto;color:var(--faint);font-size:12px}
-.edit{display:grid;grid-template-columns:64px 78px minmax(0,1fr);gap:10px;padding:4px 12px;font-size:12.5px}
-.edit .addr{color:var(--accent)}.edit.ins .addr{color:var(--ok)}.edit .fld{color:var(--faint)}
-.msg{padding:8px 12px;font-size:12.5px;white-space:pre-wrap;word-break:break-word}
-.freeze{border:1px solid var(--crit);background:var(--critbg);border-radius:5px;padding:11px 13px;margin-bottom:12px;white-space:pre-wrap}
-.freeze b{display:block;color:var(--crit);font-size:11px;letter-spacing:.06em;text-transform:uppercase;margin-bottom:5px}
-footer{padding-top:18px;color:var(--faint);font-size:11.5px}
+.run-count{margin-left:auto;color:var(--muted);font-size:.8125rem}
+details.run>summary{list-style:none;cursor:pointer}
+details.run>summary::-webkit-details-marker{display:none}
+details.run>summary::before{content:"\\25B8";color:var(--muted);font-size:.8rem;line-height:1;display:inline-block;transition:transform .12s ease}
+details.run[open]>summary::before{transform:rotate(90deg)}
+details.run[open]>summary{border-bottom:1px solid var(--line)}
+details.run:hover{border-color:var(--accent)}
+details.run>summary:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+@media(prefers-reduced-motion:reduce){details.run>summary::before{transition:none}}
+.edit{display:grid;grid-template-columns:4.5rem 5rem minmax(0,1fr);gap:.625rem;padding:.2rem .9rem;font-size:.8125rem}
+.edit:first-of-type{padding-top:.5rem}.edit:last-child{padding-bottom:.5rem}
+.edit .addr{color:var(--accent);font-family:var(--mono)}
+.edit.ins .addr{color:var(--ok)}
+.edit .fld{color:var(--muted)}
+.msg{padding:.6rem .9rem;font-size:.8125rem;font-family:var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
+.freeze{border:1px solid var(--crit);background:var(--critbg);border-radius:8px;padding:.75rem .9rem;margin-bottom:.75rem;
+white-space:pre-wrap;font-family:var(--mono);font-size:.8125rem}
+.freeze b{display:block;color:var(--crit);font-size:.6875rem;letter-spacing:.06em;text-transform:uppercase;
+margin-bottom:.35rem;font-family:system-ui,sans-serif}
+.t-wrap{overflow-x:auto}
+td.src{white-space:nowrap}
+td.svc{color:var(--faint);white-space:nowrap}
+td.path{overflow-wrap:anywhere;font-family:var(--mono);color:var(--muted)}
+.num{text-align:right;white-space:nowrap;font-family:var(--mono)}
+th.st,td.st{width:4rem}th.sz,td.sz{width:3.5rem}th.ms,td.ms{width:4rem}
+td.when{color:var(--faint);text-align:right;white-space:nowrap}
+th.wh{text-align:right;padding-right:0}
+tr.bad td,tr.bad td.path{color:var(--crit)}
+@media(max-width:640px){
+thead{display:none}
+table,tbody,tr,td{display:block;width:auto}
+tr{border:1px solid var(--line);border-radius:8px;padding:.5rem .7rem;margin-bottom:.375rem}
+tr.bad{border-color:var(--crit)}
+td{border-bottom:0;padding:0}
+td.src,td.svc,td.st,td.sz,td.ms,td.when{display:inline;text-align:left;font-size:.75rem}
+td.src::after,td.svc::after,td.st::after,td.sz::after,td.ms::after{content:" \\00B7 ";color:var(--line)}
+td.path{display:block;margin-top:.2rem;color:var(--ink)}
+table.counts,table.counts tbody,table.counts tr,table.counts td{display:revert}
+table.counts tr{border:0;padding:0;margin:0}
+}
+footer{color:var(--faint);font-size:.8125rem;padding:.25rem .25rem 0}
 `;
 
 /**
- * Looked up with `Object.hasOwn`, not `?? 'mute'`: `status` comes from
- * `sheet-runs.json`, and a record saying `"constructor"` resolves through the
- * prototype to a function, so the default never fires and the class attribute
- * becomes the source of `Object`. Escaped, so not an injection — but that file
- * is the untrusted surface this module exists to be careful with.
+ * `title` is null for every stamp with no usable instant, which includes a
+ * timestamp read off disk that will not parse — a wider condition than a null
+ * `iso`. Branching on it keeps the `datetime` attribute valid.
  */
-const STATE_PILL: Record<string, string> = {
-  applied: 'ok',
-  reported: 'mute',
-  idle: 'mute',
-  refused: 'warn',
-  'rolled-back': 'warn',
-  failed: 'crit',
-  frozen: 'crit',
-};
-
-const pill = (status: string): string => (Object.hasOwn(STATE_PILL, status) ? STATE_PILL[status]! : 'mute');
-
-const time = (s: Stamp) => (s.iso === null ? html`<span class="dim">never</span>` : html`<time datetime="${s.iso}">${s.label}</time>`);
-
-const countRows = (model: StatusModel) =>
-  model.library.counts.map((row) => html`<span class="tot"><b>${row.key}</b> ${row.count}</span>`);
+const time = (s: Stamp) =>
+  s.title === null ? html`<span class="dim">${s.label}</span>` : html`<time datetime="${s.iso}" title="${s.title}">${s.label}</time>`;
 
 /**
- * How the library last moved — the part a count on its own cannot say.
- *
- * The two lines are different questions. The deltas are membership, and are
- * absent on the commonest poll there is, because watching an episode moves no
- * count at all. The summary is what the delta carried, which is never zero on a
- * poll that pulled. Showing both is what separates "your library changed" from
- * "the poll did some work".
+ * The first screen: one card per half of the service, each saying what it
+ * holds and when it next acts. A healthy tile is as quiet as any other card —
+ * only `warn` and `crit` take colour, so the eye lands on what wants it.
+ */
+const tiles = (model: StatusModel) =>
+  model.tiles.map(
+    (tile) => html`<div class="tile ${tile.state}">
+      <span class="t-name">${tile.name}</span>
+      <span class="t-head">${tile.headline}</span>
+      <span class="t-next">${tile.next}</span>
+    </div>`,
+  );
+
+/**
+ * Every count the library holds, not just the totals: the per-status split is
+ * the sanity check, and it costs three rows. An em dash is a status the type
+ * does not have, which is not the same as a zero.
+ */
+const counts = (model: StatusModel) => html`<table class="counts">
+  <thead><tr><th></th><th>total</th>${model.library.countColumns.map((column) => html`<th>${column}</th>`)}</tr></thead>
+  <tbody>${model.library.counts.map(
+    (row) => html`<tr>
+      <td>${row.key}</td><td class="total">${row.count}</td>
+      ${row.byStatus.map((n) => (n === null ? html`<td class="none">—</td>` : html`<td>${n}</td>`))}
+    </tr>`,
+  )}</tbody>
+</table>`;
+
+/**
+ * What the last pull was and what it meant. The label matters: this is the
+ * last poll that *moved* something, which on a quiet system is days older than
+ * the gate pill beside it.
  */
 const movement = (model: StatusModel) => {
   const moved = model.library.movement;
-  if (moved === null) return html`<div class="moved dim">no library movement seen yet</div>`;
+  if (moved === null) return html`<div class="dim">no library movement seen yet</div>`;
   return html`<div class="moved">
-    <span class="run-when">${time(moved.at)}</span>
-    ${moved.deltas.length === 0 ? null : html`<span class="deltas">${moved.deltas.map((d) => html`<span class="delta">${d}</span>`)}</span>`}
-    <span class="dim">${moved.summary}</span>
+    <span class="k">last pull</span>
+    <span class="v"><span class="run-when">${time(moved.at)}</span><span>${moved.pulled}</span></span>
+    ${moved.deltas.length === 0
+      ? null
+      : html`<span class="because"><span class="deltas">${moved.deltas.map((d) => html`<span class="delta">${d}</span>`)}</span></span>`}
+    <span class="because">${moved.consequence}</span>
   </div>`;
 };
 
 /**
- * Every outbound call this process made, newest first.
- *
- * The one view that shows whether the gate is working: a column of lone
- * `/sync/activities` rows with the occasional delta beside them is the delta
- * sync doing its job, and nothing else on this page can show it. A failure
- * carries its body, because `user_token_failed` and a revoked credential look
- * identical without one.
+ * Every outbound call this process made, newest first. The one view that
+ * shows the gate working: lone `/sync/activities` rows with the occasional
+ * delta beside them is the delta sync doing its job. A failure carries its
+ * body — `user_token_failed` and a revoked credential look identical without
+ * one.
  */
 const requestRows = (model: StatusModel) =>
   model.requests.map(
     (r) => html`<tr class="${r.error === null ? '' : 'bad'}">
       <td class="src">${r.component}</td>
       <td class="svc">${r.service}</td>
-      <td class="path">${r.method === 'GET' ? null : html`${r.method} `}${r.path}</td>
-      <td class="num">${r.status === null ? '—' : r.status}${r.attempts > 1 ? html` ×${r.attempts}` : null}</td>
-      <td class="num">${r.size}</td>
-      <td class="num">${r.ms}ms</td>
+      <td class="path" title="${r.full}">${r.method === 'GET' ? null : html`${r.method} `}${r.path}</td>
+      <td class="num st">${r.status === null ? '—' : r.status}${r.attempts > 1 ? html` ×${r.attempts}` : null}</td>
+      <td class="num sz">${r.size}</td>
+      <td class="num ms">${r.ms}ms</td>
       <td class="when">${time(r.at)}</td>
     </tr>`,
   );
@@ -203,22 +280,34 @@ const steps = (model: StatusModel) =>
     </div>`,
   );
 
+const runChanges = (run: RunView) => [
+  ...run.edits.map(
+    (e) => html`<div class="edit"><span class="addr">${e.address}</span><span class="fld">${e.field}</span><span>${e.note}</span></div>`,
+  ),
+  ...run.inserts.map(
+    (i) => html`<div class="edit ins"><span class="addr">${i.address}</span><span class="fld">insert</span><span>${i.note}</span></div>`,
+  ),
+  ...(run.error === null ? [] : [html`<div class="msg">${run.error}</div>`]),
+];
+
+/**
+ * The newest run stands open; the rest collapse to their summary line. Fifty
+ * runs of fifteen near-identical edits is what the journal can hold, and
+ * expanded it buries every section below this one. `details` does it with no
+ * script, which the page's `default-src 'none'` requires.
+ */
 const runs = (model: StatusModel) =>
   model.sheet.runs.map((run) => {
-    const changes = [
-      ...run.edits.map((e) => html`<div class="edit"><span class="addr">${e.address}</span><span class="fld">${e.field}</span><span>${e.note}</span></div>`),
-      ...run.inserts.map((i) => html`<div class="edit ins"><span class="addr">${i.address}</span><span class="fld">insert</span><span>${i.note}</span></div>`),
-    ];
-    const count = `${run.edits.length} edits · ${run.inserts.length} inserts${run.repeats > 1 ? ` · ${run.repeats} polls` : ''}`;
-    return html`<div class="run">
-      <div class="run-head ${changes.length || run.error ? '' : 'bare'}">
-        <span class="pill ${pill(run.status)}">${run.status}</span>
-        <span class="run-when">${time(run.at)}</span>
-        <span class="run-count">${count}</span>
-      </div>
-      ${changes}
-      ${run.error === null ? null : html`<div class="msg">${run.error}</div>`}
-    </div>`;
+    const changes = runChanges(run);
+    const summary = html`<span class="pill ${run.state}">${run.status}</span>
+      <span class="run-when">${time(run.at)}</span>
+      <span class="run-count">${run.count}</span>`;
+    return run.open
+      ? html`<div class="run">
+          <div class="run-head ${changes.length ? '' : 'bare'}">${summary}</div>
+          ${changes}
+        </div>`
+      : html`<details class="run"><summary>${summary}</summary>${changes}</details>`;
   });
 
 const sheetBody = (model: StatusModel) => {
@@ -226,9 +315,15 @@ const sheetBody = (model: StatusModel) => {
   if (!sheet.configured) return html`<p class="dim">Not configured — set SHEET_ID and a Google credential to switch it on.</p>`;
   return html`
     ${sheet.frozen === null ? null : html`<div class="freeze"><b>Frozen — no further writes this process</b>${sheet.frozen}</div>`}
-    ${sheet.error === null || sheet.error === sheet.frozen ? null : html`<div class="msg">${sheet.error}</div>`}
+    ${sheet.error === null ? null : html`<div class="msg">${sheet.error}</div>`}
     ${sheet.runs.length ? runs(model) : html`<p class="dim">Nothing written yet.</p>`}`;
 };
+
+/** The tab, linked when there is a spreadsheet id to link it to. */
+const sheetTab = (model: StatusModel) =>
+  model.sheet.url === null
+    ? html`tab “${model.sheet.tab}”`
+    : html`tab <a href="${model.sheet.url}" target="_blank" rel="noopener noreferrer">“${model.sheet.tab}” <span class="ext">↗</span></a>`;
 
 /** The whole page, as one self-contained document. */
 export const renderPage = (model: StatusModel): string =>
@@ -247,43 +342,50 @@ export const renderPage = (model: StatusModel): string =>
   <span class="meta">v${model.version} · ${model.timezone}<br>${model.uptime === null ? 'starting' : html`up ${model.uptime}`} · ${model.feed.events} events</span>
 </header>
 
+<div class="tiles">${tiles(model)}</div>
+
 ${model.problems.length === 0 ? null : html`<div class="problems"><ul>${model.problems.map((p) => html`<li>${p}</li>`)}</ul></div>`}
 
-<section>
-  <div class="head">
-    <span class="name">Library</span>
-    <span class="pill mute">${model.library.gate}</span>
-    <span class="sum">gated ${time(model.library.polled)} · ${model.library.total} items</span>
-  </div>
-  <div class="totals">${countRows(model)}</div>
-  ${movement(model)}
-  <div class="next">
-    <span><b>next gate</b> ${model.library.due.label}</span>
-    <span class="dim">one /sync/activities call, then a delta pull, a render and a sheet sync if anything moved</span>
-  </div>
-  ${model.library.error === null ? null : html`<div class="msg">${model.library.error}</div>`}
-</section>
+<div class="grid">
+  <section>
+    <div class="head">
+      <h2 class="name">Library</h2>
+      <span class="pill mute">${model.library.gate}</span>
+      <span class="sum">gated ${time(model.library.polled)} · ${model.library.total} items</span>
+    </div>
+    ${counts(model)}
+    ${movement(model)}
+    <div class="next">
+      <span class="dim">a gate is one <b class="mono">/sync/activities</b> call; a delta pull, a render and a sheet sync follow only if it says something moved</span>
+    </div>
+    ${model.library.error === null ? null : html`<div class="msg">${model.library.error}</div>`}
+  </section>
+
+  <section>
+    <div class="head">
+      <h2 class="name">Feed</h2>
+      <span class="pill mute">fetch → join → render → save</span>
+      <span class="sum">rendered ${time(model.feed.rendered)}</span>
+    </div>
+    ${steps(model)}
+    <div class="next">
+      <span><b>films</b> ${model.feed.filmsDue ? 'due on the next gate' : 'none due'}</span>
+      <span class="dim">films resolve on the gate, not on a timer of their own</span>
+    </div>
+    <div class="subscribe">
+      <span class="k">subscribe</span>
+      <a href="${model.feed.subscribe.href}" title="${model.feed.subscribe.url}" rel="noopener noreferrer">feed.ics <span class="ext">↗</span></a>
+    </div>
+    ${model.feed.error === null ? null : html`<div class="msg">${model.feed.error}</div>`}
+  </section>
+</div>
 
 <section>
   <div class="head">
-    <span class="name">Feed</span>
-    <span class="pill mute">fetch → join → render → save</span>
-    <span class="sum">rendered ${time(model.feed.rendered)}</span>
-  </div>
-  ${steps(model)}
-  <div class="next">
-    <span><b>next calendars</b> ${model.feed.calendarsDue.label}</span>
-    <span><b>films</b> ${model.feed.filmsDue ? 'due on the gate above' : 'none due'}</span>
-  </div>
-  ${model.feed.error === null ? null : html`<div class="msg">${model.feed.error}</div>`}
-</section>
-
-<section>
-  <div class="head">
-    <span class="name">Sheet</span>
-    <span class="pill ${pill(model.sheet.status)}">${model.sheet.status}</span>
+    <h2 class="name">Sheet</h2>
+    <span class="pill ${model.sheet.state}">${model.sheet.status}</span>
     <span class="sum">${model.sheet.configured
-      ? html`${model.sheet.mode} mode · tab “${model.sheet.tab}” · ${time(model.sheet.lastRun)}${model.sheet.runtimes ? null : ' · runtimes off'}`
+      ? html`${model.sheet.mode} mode · ${sheetTab(model)} · ${time(model.sheet.lastRun)}${model.sheet.runtimes ? null : ' · runtimes off'}`
       : 'off'}</span>
   </div>
   ${sheetBody(model)}
@@ -291,19 +393,19 @@ ${model.problems.length === 0 ? null : html`<div class="problems"><ul>${model.pr
 
 <section>
   <div class="head">
-    <span class="name">Requests</span>
+    <h2 class="name">Requests</h2>
     <span class="pill mute">${model.requests.length} recent</span>
     <span class="sum">every outbound call, newest first</span>
   </div>
   ${model.requests.length === 0
     ? html`<p class="dim">Nothing requested yet.</p>`
-    : html`<table>
-        <thead><tr><th>From</th><th></th><th>Path</th><th class="num">Status</th><th class="num">Size</th><th class="num">Took</th><th>When</th></tr></thead>
+    : html`<div class="t-wrap"><table>
+        <thead><tr><th>From</th><th></th><th>Path</th><th class="num st">Status</th><th class="num sz">Size</th><th class="num ms">Took</th><th class="num wh">When</th></tr></thead>
         <tbody>${requestRows(model)}</tbody>
-      </table>`}
+      </table></div>`}
   ${model.requestErrors.map((error) => html`<div class="msg">${error}</div>`)}
 </section>
 
-<footer>Read-only. Nothing on this page triggers a fetch.</footer>
+<footer>Read-only. The page itself fetches nothing; the two links are yours to click.</footer>
 
 </div></body></html>`);

@@ -2,11 +2,10 @@
  * Service-account access tokens for the Sheets API.
  *
  * Zero dependencies: the RS256 assertion is signed with `node:crypto` and
- * exchanged for a bearer token, which is all the Sheets endpoints need.
+ * exchanged for a bearer token, all the Sheets endpoints need.
  *
- * Import-safe on purpose — the key is read inside `readServiceAccountKey`,
- * never at module load, so importing this file from a test cannot touch a
- * credential.
+ * Import-safe: the key is read inside `readServiceAccountKey`, never at module
+ * load, so importing this from a test cannot touch a credential.
  */
 
 import { createSign } from 'node:crypto';
@@ -15,22 +14,23 @@ import { config } from '../../shared/config.ts';
 import { withTimeout } from '../../shared/signals.ts';
 import { errorMessage } from '../../shared/errors.ts';
 import { beginRequest, readBody } from '../requests.ts';
+import { tokenCache } from '../token-cache.ts';
 
 const TIMEOUT_MS = 30_000;
 
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 
 /**
- * Read-write, unlike the mapping tool this was ported from. The narrower
- * `spreadsheets.readonly` cannot batchUpdate, and the sheet must also be
- * re-shared with the service account as Editor — the scope alone is not enough.
+ * Read-write: the narrower `spreadsheets.readonly` cannot batchUpdate. The
+ * sheet must also be shared with the service account as Editor — the scope
+ * alone is not enough.
  */
 const SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
 
 /** Assertions last an hour; refresh early so a long poll cannot expire mid-run. */
 const REFRESH_MARGIN_MS = 5 * 60 * 1000;
 
-export interface ServiceAccountKey {
+interface ServiceAccountKey {
   client_email: string;
   private_key: string;
 }
@@ -38,11 +38,11 @@ export interface ServiceAccountKey {
 /**
  * The key, from base64 in the environment or a JSON file on disk.
  *
- * Base64 first because that is the container path: `/data` is a named Docker
+ * Base64 first because it is the container path: `/data` is a named Docker
  * volume with no host side to place a file into, and the private key is a
  * 29-line PEM passing through three parsers that disagree about quoting.
  */
-export const readServiceAccountKey = (c = config): ServiceAccountKey => {
+const readServiceAccountKey = (c = config): ServiceAccountKey => {
   let raw: string;
   if (c.googleKeyBase64) {
     raw = Buffer.from(c.googleKeyBase64, 'base64').toString('utf8');
@@ -63,8 +63,8 @@ export const readServiceAccountKey = (c = config): ServiceAccountKey => {
   try {
     key = JSON.parse(raw) as Partial<ServiceAccountKey>;
   } catch (err) {
-    // Named rather than re-thrown: a truncated base64 var and a wrong file path
-    // produce very different fixes, and the JSON parser cannot tell you which.
+    // Named rather than re-thrown: a truncated base64 var and a wrong file
+    // path want different fixes, and the JSON parser cannot say which.
     throw new Error(`The Google credential is not JSON — check it decoded intact: ${errorMessage(err)}`);
   }
   if (!key.client_email || !key.private_key) {
@@ -73,25 +73,23 @@ export const readServiceAccountKey = (c = config): ServiceAccountKey => {
   return { client_email: key.client_email, private_key: key.private_key };
 };
 
-/** Split out from the signing so the claims can be asserted without an RSA key. */
-export const claimSet = (clientEmail: string, now: Temporal.Instant = Temporal.Now.instant()): Record<string, string | number> => {
-  // Unix seconds, because RFC 7519 defines NumericDate that way. The conversion
-  // stays here rather than becoming a shared helper: this is the only wire
-  // format in the project that counts in seconds.
+const claimSet = (clientEmail: string, now: Temporal.Instant = Temporal.Now.instant()): Record<string, string | number> => {
+  // Unix seconds, per RFC 7519's NumericDate. Not a shared helper: this is
+  // the only wire format in the project that counts in seconds.
   const issued = Math.floor(now.epochMilliseconds / 1000);
   return { iss: clientEmail, scope: SCOPE, aud: TOKEN_URL, iat: issued, exp: issued + 3600 };
 };
 
 const base64url = (input: string): string => Buffer.from(input).toString('base64url');
 
-export const exchangeToken = async (key: ServiceAccountKey, { signal }: { signal?: AbortSignal } = {}): Promise<{ token: string; expiresIn: number }> => {
+const exchangeToken = async (key: ServiceAccountKey, { signal }: { signal?: AbortSignal } = {}): Promise<{ token: string; expiresIn: number }> => {
   const header = base64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
   const claims = base64url(JSON.stringify(claimSet(key.client_email)));
   const signingInput = `${header}.${claims}`;
   const signature = createSign('RSA-SHA256').update(signingInput).sign(key.private_key, 'base64url');
 
-  // Logged like every other outbound call: this one's failure — a bad key, clock
-  // skew — is what has to be told apart from a credential the sheet rejected.
+  // Logged like every other outbound call: this failure — a bad key, clock
+  // skew — has to be told apart from a credential the sheet rejected.
   const finish = beginRequest({ service: 'sheets', component: 'auth', method: 'POST', url: TOKEN_URL });
   const response = await fetch(TOKEN_URL, {
     method: 'POST',
@@ -100,11 +98,9 @@ export const exchangeToken = async (key: ServiceAccountKey, { signal }: { signal
       grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
       assertion: `${signingInput}.${signature}`,
     }),
-    // The caller's signal is the orchestrator's, which only fires on shutdown,
-    // so on its own it is no bound at all. Every other fetch here carries one
-    // for the same reason: a hung connection otherwise stalls the sheet run —
-    // and with it the library poll it sits inside — until undici's 300s
-    // default.
+    // The caller's signal only fires on shutdown, so alone it is no bound. A
+    // hung connection would otherwise stall the sheet run — and the library
+    // poll it sits inside — until undici's 300s default.
     signal: withTimeout(signal, TIMEOUT_MS),
   });
 
@@ -113,8 +109,8 @@ export const exchangeToken = async (key: ServiceAccountKey, { signal }: { signal
   try {
     body = JSON.parse(read.text) as typeof body;
   } catch {
-    // Left empty: the throw below reports the status and the raw body, which is
-    // more use than a parser complaint about Google's error page.
+    // The throw below reports the status and raw body, which says more than a
+    // parser complaint about Google's error page.
   }
   if (!response.ok || !body.access_token) {
     const reason = read.failure ?? body.error_description ?? JSON.stringify(body);
@@ -122,26 +118,25 @@ export const exchangeToken = async (key: ServiceAccountKey, { signal }: { signal
     throw new Error(`Google token exchange failed (${response.status}): ${reason}`);
   }
   finish({ status: response.status, bytes: read.bytes, error: null });
-  // Google says an hour today. Taking it from the response rather than assuming
-  // means a shorter-lived token is never served past its expiry. Note what the
-  // margin does at the short end: anything at or under five minutes is written
-  // to the cache and then never read, so every request re-signs rather than
-  // serving something already stale.
+  // Google says an hour today; reading it from the response means a
+  // shorter-lived token is never served past expiry. At the short end the
+  // margin means a token good for five minutes or less is cached but never
+  // read, so every request re-signs rather than serving something stale.
   const expiresIn = typeof body.expires_in === 'number' && body.expires_in > 0 ? body.expires_in : 3600;
   return { token: body.access_token, expiresIn };
 };
 
-let cached: { token: string; expiresAt: number } | null = null;
+// The refresh margin is folded into the stored expiry: a token within five
+// minutes of expiring is treated as gone and re-signed.
+const cache = tokenCache(async () => {
+  const { token, expiresIn } = await exchangeToken(readServiceAccountKey());
+  return { token, expiresAtMs: Date.now() + expiresIn * 1000 - REFRESH_MARGIN_MS };
+});
 
 /** Dropped between tests, and after any 401 — a stale token outlives its usefulness silently. */
 export const clearTokenCache = (): void => {
-  cached = null;
+  cache.clear();
 };
 
 /** A bearer token, reused until it is close enough to expiry to be worth replacing. */
-export const getAccessToken = async ({ signal }: { signal?: AbortSignal } = {}): Promise<string> => {
-  if (cached && cached.expiresAt - REFRESH_MARGIN_MS > Date.now()) return cached.token;
-  const { token, expiresIn } = await exchangeToken(readServiceAccountKey(), { signal });
-  cached = { token, expiresAt: Date.now() + expiresIn * 1000 };
-  return token;
-};
+export const getAccessToken = (): Promise<string> => cache.get();

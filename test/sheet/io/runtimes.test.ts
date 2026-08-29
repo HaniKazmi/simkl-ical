@@ -8,9 +8,9 @@ const season = (...runtimes: Array<number | null>) =>
   jsonResponse({ data: { episodes: runtimes.map((runtime, i) => ({ number: i + 1, runtime })) } });
 
 /**
- * A configured TVDB with the login already answered, so each test writes only
- * the season response it is about. The login branch is noise in all but the
- * test that wants it to fail, which keeps its own handler.
+ * A configured TVDB with the login answered, so each test writes only the
+ * season response it is about. The one test that wants the login to fail
+ * keeps its own handler.
  */
 const withTvdb = (respond: (url: string) => Response, fn: (calls: string[]) => Promise<void>): Promise<void> => {
   clearTokenCache();
@@ -36,8 +36,8 @@ test('a season resolves to its episode list, keyed by tvdb id and season', async
   );
 });
 
-// TVDB answers a season it does not have with a 200 and no episodes, so this is
-// the commonest "no data" path and it must settle rather than defer.
+// TVDB answers a season it does not have with a 200 and no episodes — the
+// commonest "no data" path, and it must settle rather than defer.
 test('an empty season is a successful answer, not a failure', async () => {
   await withTvdb(
     () => jsonResponse({ data: { episodes: [] } }),
@@ -49,8 +49,8 @@ test('an empty season is a successful answer, not a failure', async () => {
   );
 });
 
-// A retryable failure leaves the key *absent*, which is what the caller reads as
-// "asked and did not get an answer" and leaves the row open on.
+// A retryable failure leaves the key *absent* — what the caller reads as
+// "asked, no answer" and leaves the row open on.
 test('a 500 leaves the key absent and asks to be retried', async () => {
   await withTvdb(
     () => new Response('boom', { status: 500 }),
@@ -73,8 +73,8 @@ test('an unknown series is unavailable rather than failed — retrying never hel
   );
 });
 
-// An account failure is not a fact about any one season, so it escapes rather
-// than being filed as "this season is unavailable". `SheetSync` catches it.
+// An account failure is no fact about any one season, so it escapes rather
+// than filing as "this season is unavailable"; `SheetSync` catches it.
 test('a rejected credential escapes instead of poisoning one season', async () => {
   clearTokenCache();
   await withConfig({ tvdbApiKey: 'k' }, () =>
@@ -97,8 +97,8 @@ test('two rows naming the same title and season cost one call', async () => {
   );
 });
 
-// Four workers start at once, and a cold cache would otherwise have each of them
-// log in separately before its own season read.
+// Four workers start at once; without the shared login each would log in
+// separately before its own season read.
 test('a cold cache logs in once however many seasons are read at once', async () => {
   await withTvdb(
     () => season(24, 24, 24),

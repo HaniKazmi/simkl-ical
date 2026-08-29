@@ -1,8 +1,8 @@
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import { timingSafeEqual } from 'node:crypto';
 import { config } from './shared/config.ts';
 import type { Orchestrator } from './orchestrator.ts';
-import { healthResponse } from './health.ts';
+import { assess, healthResponse } from './health.ts';
 import { renderStatus } from './status/status.ts';
 
 /** Constant-time compare so the token cannot be recovered by timing the 404s. */
@@ -10,6 +10,28 @@ const tokenMatches = (candidate: string): boolean => {
   const a = Buffer.from(String(candidate));
   const b = Buffer.from(String(config.feedToken));
   return a.length === b.length && timingSafeEqual(a, b);
+};
+
+/**
+ * The origin the reader actually reached the status page on, for the copyable
+ * feed URL it prints, and — since `webcal:` needs a full authority — the one
+ * click target on the page not fixed by config. `Host` is what this browser
+ * asked for, so it is right by construction; a proxy that forwards a forged
+ * one aims the subscribe link elsewhere, and a subscription is durable, so
+ * that keeps re-fetching with the token. `PUBLIC_URL` is the fix if `Host`
+ * ever stops being trustworthy here.
+ *
+ * The scheme is checked against the two that exist rather than passed through:
+ * it is client-settable, and anything else survives the `^https?:` rewrite in
+ * `status.ts` unchanged and lands in an `href` verbatim. An uppercase `HTTPS`
+ * from a proxy is the same defect without an attacker.
+ */
+const originOf = (req: FastifyRequest): string => {
+  const forwarded = req.headers['x-forwarded-proto'];
+  // A chain of proxies sends a list; the first entry is the client's scheme.
+  const claimed = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(',')[0]?.trim().toLowerCase();
+  const proto = claimed === 'https' || claimed === 'http' ? claimed : req.protocol;
+  return `${proto}://${req.headers.host ?? `localhost:${config.port}`}`;
 };
 
 /** The one 404 body. Every miss answers with this — see setNotFoundHandler. */
@@ -23,17 +45,16 @@ export interface ServerOptions {
 
 export const buildServer = (state: Orchestrator, { logger = true, logStream }: ServerOptions = {}): FastifyInstance => {
   const app = Fastify({
-    // The feed token is a path parameter and Fastify caps those at 100
-    // characters by default, which a longer token would exceed — a 414 rather
-    // than the 404 below, and an unreachable feed.
+    // Fastify caps path parameters at 100 characters by default; a longer
+    // feed token would get a 414 instead of the 404 below, and an
+    // unreachable feed.
     routerOptions: { maxParamLength: 512 },
     logger: logger && {
       ...(logStream ? { stream: logStream } : {}),
-      // The token sits in the path, so an unredacted request log is a log of
-      // the credential once per request. The logs are a trusted surface here —
-      // the boot lines print the token in full — so this is not a disclosure
-      // boundary; it keeps the volume of a long-lived log down to the one line
-      // at startup that an operator actually wants to copy.
+      // The token sits in the path, so an unredacted request log repeats the
+      // credential once per request. The logs are a trusted surface — boot
+      // prints the token in full — so this is volume control, not a
+      // disclosure boundary.
       redact: {
         paths: ['req.url'],
         censor: '[redacted]',
@@ -41,21 +62,21 @@ export const buildServer = (state: Orchestrator, { logger = true, logStream }: S
     },
   });
 
-  // Every miss answers identically. Fastify's default body names the route it
-  // failed to match, which would make a wrong token distinguishable from any
-  // other 404 — exactly what the 404 below is meant to prevent.
+  // Every miss answers identically. Fastify's default body names the missed
+  // route, which would make a wrong token distinguishable from any other 404.
   app.setNotFoundHandler((_req, reply) => reply.code(404).send(NOT_FOUND));
 
   app.get('/healthz', async (_req, reply) => {
-    const health = state.health;
-    return reply.code(health.ok ? 200 : 503).send(healthResponse(health));
+    const snapshot = state.snapshot();
+    const assessment = assess(snapshot);
+    return reply.code(assessment.ok ? 200 : 503).send(healthResponse(snapshot, assessment));
   });
 
   app.get<{ Params: { token: string } }>('/:token/feed.ics', async (req, reply) => {
     if (!config.feedToken || !tokenMatches(req.params.token)) {
-      // 404 rather than 401, with the same body as any other miss: an
+      // 404, not 401, with the same body as any other miss: an
       // unauthenticated caller learns nothing about whether this path serves
-      // anything at all.
+      // anything.
       return reply.code(404).send(NOT_FOUND);
     }
 
@@ -68,8 +89,8 @@ export const buildServer = (state: Orchestrator, { logger = true, logStream }: S
 
   app.get<{ Params: { token: string } }>('/:token/status', async (req, reply) => {
     if (!config.feedToken || !tokenMatches(req.params.token)) {
-      // The same body as the feed's miss and as any other 404, so the route
-      // cannot be discovered by probing.
+      // The same body as any other 404, so the route cannot be found by
+      // probing.
       return reply.code(404).send(NOT_FOUND);
     }
 
@@ -77,16 +98,16 @@ export const buildServer = (state: Orchestrator, { logger = true, logStream }: S
       reply
         // Set here rather than on the route, so the 404 above never acquires it.
         .header('Content-Type', 'text/html; charset=utf-8')
-        // The feed token is in this page's URL, which browser history, bookmark
-        // sync and screenshots all keep. No script-src at all under
-        // `default-src 'none'` means an escaping bug cannot execute, and
-        // no-referrer stops the token riding out on any request the page makes
-        // — which is also why it loads nothing off-origin.
+        // The feed token is in this page's URL, which browser history and
+        // bookmark sync keep. `default-src 'none'` with no script-src means
+        // an escaping bug cannot execute; no-referrer stops the token riding
+        // out on any request the page makes — also why it loads nothing
+        // off-origin.
         .header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'")
         .header('Referrer-Policy', 'no-referrer')
         .header('X-Content-Type-Options', 'nosniff')
         .header('Cache-Control', 'private, no-store')
-        .send(renderStatus(state))
+        .send(renderStatus(state, { origin: originOf(req) }))
     );
   });
 

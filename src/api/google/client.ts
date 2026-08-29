@@ -1,18 +1,15 @@
 /**
- * Transport for the Sheets API. Modelled on `simkl/client.ts`, with one
- * deliberate difference: **retry is opt-in per call**.
+ * Transport for the Sheets API. One difference from the other clients:
+ * **retry is opt-in per call**.
  *
- * A retried write is not a retried read. `batchUpdate` is atomic but not
- * idempotent — a retried `insertDimension` inserts two rows, and a timeout can
- * fire on a request the server already applied. So reads pass `retry: true` and
- * writes never do.
+ * `batchUpdate` is atomic but not idempotent — a retried `insertDimension`
+ * inserts two rows, and a timeout can fire on a request the server already
+ * applied. So reads pass `retry: true` and writes never do.
  */
 
-import { backoffMs, HttpError, retryDelayMs, sleep } from '../backoff.ts';
+import { HttpError, requestJson, type HttpSpec } from '../http.ts';
 import { config } from '../../shared/config.ts';
-import { beginRequest, readBody, type RequestComponent } from '../requests.ts';
-import { errorMessage } from '../../shared/errors.ts';
-import { withTimeout } from '../../shared/signals.ts';
+import type { RequestComponent } from '../requests.ts';
 import { clearTokenCache, getAccessToken } from './auth.ts';
 
 const API_BASE = 'https://sheets.googleapis.com/v4/spreadsheets/';
@@ -20,10 +17,6 @@ const API_BASE = 'https://sheets.googleapis.com/v4/spreadsheets/';
 const RETRYABLE = new Set([408, 429, 500, 502, 503, 504]);
 
 const MAX_ATTEMPTS = 4;
-
-// The grid read is a megabyte or so; generous, but bounded, so a hung
-// connection cannot stall a poll until undici's 300s default.
-const TIMEOUT_MS = 60_000;
 
 export class SheetsError extends HttpError {
   constructor(message: string, status?: number, body?: string) {
@@ -33,14 +26,23 @@ export class SheetsError extends HttpError {
 }
 
 /**
- * Google reports both "the service account is not on this sheet" and "the sheet
- * does not exist" as 403/404, and both need a human. Separated so the sync can
- * say so once rather than retry an access problem for a week.
+ * Google reports "the service account is not on this sheet" and "the sheet
+ * does not exist" both as 403/404, and both need a human. Separated so the
+ * sync can say so once rather than retry an access problem for a week.
  */
 export class SheetsAccessError extends SheetsError {
-  constructor(message: string, status?: number, body?: string) {
+  /**
+   * Whether retrying can never help. Decided beside the status mapping: a 401
+   * is almost always an expired assertion the cleared token cache heals on the
+   * next poll; a 403/404 stays wrong until a person re-shares the sheet or
+   * fixes SHEET_ID.
+   */
+  readonly needsHuman: boolean;
+
+  constructor(message: string, status?: number, body?: string, { needsHuman = true }: { needsHuman?: boolean } = {}) {
     super(message, status, body);
     this.name = 'SheetsAccessError';
+    this.needsHuman = needsHuman;
   }
 }
 
@@ -55,6 +57,33 @@ const describe = (status: number, body: string): string => {
   return `${status}`;
 };
 
+// The grid read is a megabyte or so; the timeout is generous but bounded, so a
+// hung connection cannot stall a poll until undici's 300s default.
+const SPEC: HttpSpec = {
+  service: 'sheets',
+  label: 'Sheets',
+  maxAttempts: MAX_ATTEMPTS,
+  timeoutMs: 60_000,
+  errorFor: (message, status, body) => new SheetsError(message, status, body),
+  onStatus: (status, body, path) => {
+    if (status === 401) {
+      // Almost always an expired assertion, not a revoked key. Dropping the
+      // cache lets the next poll sign a fresh one and recover by itself.
+      clearTokenCache();
+      return new SheetsAccessError(`Google rejected the credential (${describe(status, body)})`, status, body, { needsHuman: false });
+    }
+    if (status === 403 || status === 404) {
+      return new SheetsAccessError(
+        `${describe(status, body)} — share the spreadsheet with the service account as Editor, and check SHEET_ID.`,
+        status,
+        body,
+      );
+    }
+    if (RETRYABLE.has(status)) return 'retry';
+    return new SheetsError(`Sheets ${describe(status, body)} for ${path}`, status, body);
+  },
+};
+
 export interface SheetsRequestOptions {
   /** Which part of the service is asking — see `RequestComponent`. */
   component: RequestComponent;
@@ -62,8 +91,7 @@ export interface SheetsRequestOptions {
   params?: Record<string, string | undefined>;
   body?: unknown;
   /**
-   * Off by default, and never set for a write. See the header comment: this is
-   * the single most consequential option in the file.
+   * Off by default, and never set for a write — see the header comment.
    */
   retry?: boolean;
   signal?: AbortSignal;
@@ -78,109 +106,26 @@ export const sheetsRequest = async <T>(
   { component, method = 'GET', params = {}, body, retry = false, signal }: SheetsRequestOptions,
 ): Promise<T> => {
   // Concatenated, not `new URL(path, API_BASE)`: the batchUpdate path is
-  // `${id}:batchUpdate`, and the URL parser reads that leading `id:` as a
-  // scheme and discards the base entirely.
+  // `${id}:batchUpdate`, and the parser reads the leading `id:` as a scheme
+  // and discards the base.
   const url = new URL(API_BASE + path);
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined) url.searchParams.set(k, v);
   }
 
-  const maxAttempts = retry ? MAX_ATTEMPTS : 1;
-
-  // One record per call, written on the way out. `method` earns its place here:
-  // this is the only transport that writes, and a write is never retried.
-  const finish = beginRequest({ service: 'sheets', component, method, url });
-  let attempts = 0;
-  let status: number | null = null;
-  let bytes: number | null = null;
-  let failure: string | null = null;
-
-  let lastError: unknown;
-  try {
-    while (attempts < maxAttempts) {
-      attempts += 1;
-      status = null;
-      bytes = null;
-      failure = null;
-
-      let res: Response;
-      try {
-        // Inside the try as well as inside the loop: re-signing per attempt is
-        // the point, and a transient failure *obtaining* the token is exactly as
-        // retryable as a transient failure using it — left outside, it escaped a
-        // read that had opted into retrying.
-        const token = await getAccessToken({ signal });
-        const headers: Record<string, string> = {
-          Authorization: `Bearer ${token}`,
-          Accept: 'application/json',
-          'User-Agent': `${config.appName}/${config.appVersion}`,
-        };
-        if (body !== undefined) headers['Content-Type'] = 'application/json';
-
-        res = await fetch(url, {
-          method,
-          headers,
-          body: body === undefined ? undefined : JSON.stringify(body),
-          signal: withTimeout(signal, TIMEOUT_MS),
-        });
-      } catch (err) {
-        if (signal?.aborted) throw err;
-        lastError = err;
-        failure = errorMessage(err);
-        if (attempts < maxAttempts) await sleep(backoffMs(attempts));
-        continue;
-      }
-
-      status = res.status;
-
-      if (res.ok) {
-        const read = await readBody(res);
-        bytes = read.bytes;
-        if (read.failure) {
-          lastError = new SheetsError(`Sheets ${path}: ${read.failure}`, res.status);
-          failure = read.failure;
-          if (attempts < maxAttempts) await sleep(backoffMs(attempts));
-          continue;
-        }
-        try {
-          return JSON.parse(read.text) as T;
-        } catch (err) {
-          lastError = new SheetsError(`Sheets returned unparseable JSON for ${path}: ${errorMessage(err)}`, res.status);
-          failure = errorMessage(lastError);
-          if (attempts < maxAttempts) await sleep(backoffMs(attempts));
-          continue;
-        }
-      }
-
-      const read = await readBody(res);
-      const text = read.text;
-      bytes = read.bytes;
-      failure = read.failure ?? (text || describe(res.status, text));
-
-      if (res.status === 401) {
-        // Almost always an expired assertion rather than a revoked key. Dropping
-        // the cache means the next poll signs a fresh one and recovers by itself.
-        clearTokenCache();
-        throw new SheetsAccessError(`Google rejected the credential (${describe(res.status, text)})`, res.status, text);
-      }
-      if (res.status === 403 || res.status === 404) {
-        throw new SheetsAccessError(
-          `${describe(res.status, text)} — share the spreadsheet with the service account as Editor, and check SHEET_ID.`,
-          res.status,
-          text,
-        );
-      }
-      if (!RETRYABLE.has(res.status)) {
-        throw new SheetsError(`Sheets ${describe(res.status, text)} for ${path}`, res.status, text);
-      }
-
-      lastError = new SheetsError(`Sheets ${describe(res.status, text)} for ${path}`, res.status, text);
-      if (attempts < maxAttempts) await sleep(retryDelayMs(res, attempts));
-    }
-
-    throw lastError;
-  } finally {
-    // A call the caller cancelled is not an outcome worth a row.
-    if (!signal?.aborted) finish({ status, bytes, error: failure, attempts });
-  }
+  return requestJson<T>(SPEC, url, {
+    component,
+    method,
+    body,
+    maxAttempts: retry ? MAX_ATTEMPTS : 1,
+    path,
+    signal,
+    // Re-signed per attempt: a transient failure obtaining the token is as
+    // retryable as one using it.
+    headers: async () => ({
+      Authorization: `Bearer ${await getAccessToken()}`,
+      Accept: 'application/json',
+      'User-Agent': `${config.appName}/${config.appVersion}`,
+    }),
+  });
 };

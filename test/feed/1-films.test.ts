@@ -1,16 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { FILM_HORIZON_DAYS, fetchMovieReleases, filmDue, pickReleaseDate, reconcileReleases } from '../../../src/feed/io/movies.ts';
-import { releaseLabel } from '../../../src/feed/1-join.ts';
-import type { MovieDetail } from '../../../src/api/simkl/types.ts';
-import type { MovieRelease } from '../../../src/feed/io/movies.ts';
-import { clearRequests, recentRequests } from '../../../src/api/requests.ts';
-import { jsonResponse, withFetch } from '../../helpers.ts';
-import { plainDateFrom, plainDateIn } from '../../../src/shared/dates.ts';
+import { FILM_HORIZON_DAYS, filmDue, pickReleaseDate, reconcileReleases } from '../../src/feed/1-films.ts';
+import { fetchMovieReleases } from '../../src/feed/io/movies.ts';
+import { releaseLabel } from '../../src/feed/2-join.ts';
+import type { MovieDetail } from '../../src/api/simkl/types.ts';
+import type { MovieRelease } from '../../src/feed/1-films.ts';
+import { clearRequests, recentRequests } from '../../src/api/requests.ts';
+import { jsonResponse, withFetch } from '../helpers.ts';
+import { plainDateFrom, plainDateIn } from '../../src/shared/dates.ts';
 
-// Shape taken from a real /movies/2242503 response. Note `released` is two days
-// earlier than every country's actual theatrical date — this is not a typo in
-// the fixture, it is what SIMKL returns, and the reason the field is ignored.
+// Shape from a real /movies/2242503 response. `released` really is two days
+// earlier than every country's theatrical date — what SIMKL returns, and why
+// the field is ignored.
 const duneThree: MovieDetail = {
   title: 'Dune: Part Three',
   released: '2026-12-16',
@@ -126,8 +127,8 @@ test('a total failure keeps everything and reports incomplete', () => {
   assert.equal(releases.get(1)!.title, 'Film 1');
 });
 
-// A film with no announced release date is a settled answer, not a failure.
-// Treating it as one made every poll refetch the whole film list forever.
+// No announced release date is a settled answer, not a failure; treated as
+// one, every poll refetches the whole film list forever.
 test('a film with no announced date does not mark the round incomplete', () => {
   const { releases, complete } = reconcileReleases(new Map(), [1, 2], new Set([1, 2]), lookups([[1, release(1)]]));
   assert.equal(complete, true, 'the undated film must not cause a permanent refetch loop');
@@ -142,9 +143,9 @@ test('a film that loses its date is dropped rather than kept stale', () => {
 });
 
 // A round is deliberately partial — a film dated a year out is not re-read
-// daily — so anything not asked about has to keep the date it already had.
-// Conflating "on the list" with "asked this round" empties the feed of every
-// film outside the refresh window on the first partial round.
+// daily — so anything not asked keeps its date. Conflating "on the list" with
+// "asked this round" empties the feed of every film outside the refresh
+// window on the first partial round.
 test('a film that was not asked about keeps its date', () => {
   const previous = new Map([[1, release(1)], [2, release(2)]]);
   const { releases, complete } = reconcileReleases(previous, [1, 2], new Set([1]), lookups([[1, release(1)]]));
@@ -169,8 +170,8 @@ test('an empty film list yields an empty map and counts as complete', () => {
 
 const NOW = { now: Temporal.Instant.from('2026-08-15T12:00:00Z') };
 
-// Array order carries no meaning, so an original run must not beat a
-// re-release — the old date falls behind the cutoff and the film disappears.
+// An original run must not beat a re-release: the old date falls behind the
+// cutoff and the film disappears.
 test('a re-release beats an original run that has already happened', () => {
   const movie: MovieDetail = {
     title: 'Star Wars',
@@ -252,8 +253,8 @@ test('the release country is matched case-insensitively', () => {
 
 // --- permanent versus transient lookup failures ---------------------------
 
-// A 404 fails identically every time, so counting it as retryable refetches
-// the whole film list on every poll forever.
+// A 404 fails identically every time; counted as retryable it refetches the
+// whole film list every poll.
 test('a permanently gone film does not hold the list stale', () => {
   const { releases, complete } = reconcileReleases(new Map(), [1, 2], new Set([1, 2]), lookups([[1, release(1)]], [], [2]));
   assert.equal(complete, true, 'a 4xx is settled, not a retry');
@@ -341,8 +342,8 @@ test('an empty id list makes no requests at all', async () => {
 
 // --- what counts as permanently gone --------------------------------------
 
-// These reach the caller only after apiGet has exhausted its own retries, so
-// filing them as "gone" would drop every film for a full movieRefresh.
+// These reach the caller only after apiGet exhausts its retries; filed as
+// "gone" they would drop every film for a full movieRefresh.
 for (const status of [408, 429]) {
   test(`a ${status} stays retryable rather than counting as gone`, async () => {
     await withFetch(
@@ -383,8 +384,6 @@ for (const status of [401, 403, 412]) {
 
 // --- release types we have no name for ------------------------------------
 
-// An unrecognised type is still real data, and beats falling through to the
-// unreliable `released`.
 test('an unrecognised release type still beats the unreliable released field', () => {
   const movie: MovieDetail = {
     title: 'x',
@@ -412,8 +411,8 @@ test('a known type is still preferred over an unrecognised one', () => {
   assert.equal(pickReleaseDate(movie, 'GB', NOW)!.type, 3);
 });
 
-// "Has this happened yet" is answered in the viewer's zone, as the join does.
-// In UTC, a viewer far enough east sits on yesterday's date.
+// "Has this happened yet" is answered in the viewer's zone, as the join does:
+// in UTC, a viewer far enough east sits on yesterday's date.
 test('whether a date has passed is judged in the viewer timezone, not UTC', () => {
   // 12:00Z is already the 16th in Auckland and still the 15th in UTC.
   const now = { now: Temporal.Instant.from('2026-08-15T12:00:00Z') };
@@ -430,7 +429,7 @@ test('whether a date has passed is judged in the viewer timezone, not UTC', () =
     ],
   };
 
-  // timezone is a parameter now, so this needs no global mutation at all.
+  // timezone is a parameter, so this needs no global mutation.
   assert.equal(
     pickReleaseDate(movie, 'NZ', { ...now, timezone: 'Pacific/Auckland' })!.date.toString(),
     '2026-08-20',
@@ -445,9 +444,8 @@ test('whether a date has passed is judged in the viewer timezone, not UTC', () =
 
 // --- when a film's date is worth re-reading --------------------------------
 //
-// The floor and the horizon answer two different questions, and the order
-// matters: the floor bounds how often any one film is asked about at all, and
-// only past it does the horizon decide whether asking would learn anything.
+// The floor bounds how often any one film is asked about; only past it does
+// the horizon decide whether asking would learn anything.
 
 const DUE_NOW = Temporal.Instant.from('2026-08-15T12:00:00Z');
 const DAY = Temporal.Duration.from({ hours: 24 });
@@ -469,8 +467,8 @@ test('a film asked about within the floor is not due, however imminent', () => {
   assert.equal(filmDue(justAsked, undefined, DUE_NOW, OPTS), false, 'even with no announced date');
 });
 
-// Absent from the release map means resolved with no announced date — the one
-// answer worth re-asking whatever the calendar says.
+// Absent from the release map means resolved with no announced date — worth
+// re-asking whatever the calendar says.
 test('past the floor, a film with no announced date is due', () => {
   assert.equal(filmDue(DUE_NOW.subtract({ hours: 24, seconds: 1 }), undefined, DUE_NOW, OPTS), true);
 });
@@ -486,14 +484,14 @@ test('a release already past is still due', () => {
   assert.equal(filmDue(DUE_NOW.subtract({ hours: 24, seconds: 1 }), dated(-30), DUE_NOW, OPTS), true);
 });
 
-// The boundary is inclusive: a film landing exactly on the horizon is still
-// close enough for a studio to move.
+// A film landing exactly on the horizon is still close enough for a studio to
+// move.
 test('the horizon boundary is inclusive', () => {
   assert.equal(filmDue(DUE_NOW.subtract({ hours: 24, seconds: 1 }), dated(FILM_HORIZON_DAYS), DUE_NOW, OPTS), true);
 });
 
-// The horizon is counted in the viewer's zone for the same reason the join is:
-// a UTC instant is a different local date for a fifth of the day.
+// The horizon is counted in the viewer's zone, like the join: a UTC instant is
+// a different local date for a fifth of the day.
 test('the horizon is measured in the viewer\'s timezone', () => {
   const aged = DUE_NOW.subtract({ hours: 24, seconds: 1 });
   const onTheEdge = { ...release(1), date: plainDateFrom('2026-09-14') };
@@ -501,8 +499,8 @@ test('the horizon is measured in the viewer\'s timezone', () => {
   assert.equal(filmDue(aged, onTheEdge, DUE_NOW, { ...OPTS, horizonDays: 29 }), false);
 });
 
-// The label that actually goes out, asserted where the module that sets it
-// lives. A type can force a label to be present; only this says it is right.
+// The label that actually goes out: a type can force one to be present; only
+// this says it is right.
 test('a film lookup is recorded against the feed', async () => {
   clearRequests();
   await withFetch(

@@ -2,22 +2,21 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Orchestrator } from '../../src/orchestrator.ts';
 import { renderStatus } from '../../src/status/status.ts';
+import { assess } from '../../src/health.ts';
 import { ago, calendarOf, libraryOf, quiet, withConfig } from '../helpers.ts';
 import { plainDateFrom } from '../../src/shared/dates.ts';
 
 /**
- * The 30-field `Orchestrator → StatusInput` mapping, which both other status
- * suites bypass by building their input by hand.
- *
- * It is the highest risk-to-coverage ratio in the repo: swapping `calendarsAt`
- * for `calendarsChangedAt`, or passing `errors.calendar` where `renderError`
- * belongs, is invisible to every other test *and* to CI's smoke check, because
- * both only assert the page is HTML. So each value here is distinctive, and the
- * assertions are that it reached the page at all.
+ * The 30-field `Orchestrator → StatusInput` mapping, which the other status
+ * suites bypass by building input by hand. Swapping `calendarsAt` for
+ * `calendarsChangedAt`, or passing `errors.calendar` where `renderError`
+ * belongs, is invisible to every other test and to CI's smoke check — both
+ * only assert the page is HTML. So each value here is distinctive, and the
+ * assertion is that it reached the page at all.
  */
-// `health` reads the real clock through `ageOf`, so the fixture's stamps are
-// relative: pinned instants would age past the staleness thresholds and make
-// `ok` false for a reason no assertion here is about.
+// `health` reads the real clock through `ageOf`, so the stamps are relative:
+// pinned instants would age past the staleness thresholds and fail `ok` for a
+// reason no assertion here is about.
 const MINUTE = 60_000;
 
 const wired = (): Orchestrator => {
@@ -25,7 +24,7 @@ const wired = (): Orchestrator => {
   state.library = libraryOf({ id: 1, status: 'watching' }, { id: 2, status: 'dropped' });
   state.polledAt = ago(MINUTE);
   state.libraryAt = ago(2 * MINUTE);
-  state.lastGate = { changed: true, pull: 'delta', removals: false, updated: 7, removed: 3 };
+  state.lastPoll = { at: ago(MINUTE), changed: true, pull: 'delta', removalsChecked: true, refusedRemovals: false, updated: 7, reshaped: 0, removed: 3, rendered: true };
   state.feed.calendars = { tv: { data: calendarOf(), source: 'fresh' }, anime: { data: calendarOf(), source: 'fresh' } };
   state.feed.events = [];
   state.feed.renderedAt = ago(3 * MINUTE);
@@ -39,10 +38,21 @@ const wired = (): Orchestrator => {
 test('the counts the library holds reach the page, totalled by type', async () => {
   await withConfig({ timezone: 'Europe/London' }, () => {
     const page = renderStatus(wired(), { now: Temporal.Now.instant() });
-    // Two shows in the fixture, one watching and one dropped — one total, not
-    // a row per status.
-    assert.match(page, /shows<\/b> 2/);
-    assert.match(page, /anime<\/b> 0/);
+    // Two shows, one watching and one dropped: the row carries the total and
+    // the split that makes it up.
+    assert.match(page, /<td>shows<\/td><td class="total">2<\/td>/);
+    assert.match(page, /<td>anime<\/td><td class="total">0<\/td>/);
+  });
+});
+
+// The link is built from `config.sheetId`, and every other test supplies the
+// URL as a fixture literal — so nothing else would notice the shell mapping
+// the wrong config field into it.
+test('the spreadsheet link is built from the configured id', async () => {
+  const configured = { sheetId: 'THE-SHEET-ID', sheetName: 'Progress', sheetSyncMode: 'report' as const, googleKeyBase64: 'stub' };
+  await withConfig({ timezone: 'Europe/London', ...configured }, () => {
+    const page = renderStatus(wired(), { now: Temporal.Now.instant() });
+    assert.match(page, /href="https:\/\/docs\.google\.com\/spreadsheets\/d\/THE-SHEET-ID\/edit"/);
   });
 });
 
@@ -54,17 +64,17 @@ test('what the last gate did reaches the page', async () => {
   });
 });
 
-// The pill and the problems box are rendered from two different fields, and
-// disagreed: `ok` is the container-restart signal and stays narrow.
+// The pill and the problems box render from different fields and can
+// disagree: `ok` is the container-restart signal and stays narrow.
 test('a library error makes the page say so rather than showing a healthy pill', async () => {
   await withConfig({ timezone: 'Europe/London' }, () => {
     const healthy = wired();
-    assert.equal(healthy.health.ok, true, 'precondition: nothing else is making it degraded');
+    assert.equal(assess(healthy.snapshot()).ok, true, 'precondition: nothing else is making it degraded');
     assert.match(renderStatus(healthy, { now: Temporal.Now.instant() }), /class="pill ok">healthy/);
 
     const state = wired();
     state.errors.library = 'AUTH: SIMKL rejected the token';
-    assert.equal(state.health.ok, true, 'precondition: `ok` is the restart signal and stays narrow');
+    assert.equal(assess(state.snapshot()).ok, true, 'precondition: `ok` is the restart signal and stays narrow');
 
     const page = renderStatus(state, { now: Temporal.Now.instant() });
     assert.match(page, /SIMKL rejected the token/, 'the problem is listed');
@@ -72,8 +82,8 @@ test('a library error makes the page say so rather than showing a healthy pill',
   });
 });
 
-// Every field is interpolated through the `html` tag, so a value that failed to
-// map shows up as one of these rather than as a visible gap.
+// Every field goes through the `html` tag, so a value that failed to map
+// shows up as one of these rather than as a visible gap.
 test('nothing renders as undefined or as an object', async () => {
   await withConfig({ timezone: 'Europe/London' }, () => {
     const page = renderStatus(wired(), { now: Temporal.Now.instant() });

@@ -1,13 +1,13 @@
 /**
  * Conditional GET against a public CDN file, with a process-lifetime cache.
  *
- * Generic transport: it knows about `Last-Modified`, timeouts, and serving what
- * it already has when the network fails. It knows nothing about what the files
- * contain — the caller supplies `validate`, because only the caller can say
- * whether a parseable payload is a *usable* one.
+ * Generic transport: `Last-Modified`, timeouts, and serving what it holds when
+ * the network fails. It knows nothing about the files' contents — the caller
+ * supplies `validate`, because only the caller can say whether a parseable
+ * payload is usable.
  *
- * Deliberately not on disk: it makes the 3-hourly conditional GET cheap, while
- * a restart always resyncs from the CDN.
+ * Not on disk: the cache makes the 3-hourly conditional GET cheap, and a
+ * restart always resyncs from the CDN.
  */
 
 import { config } from '../shared/config.ts';
@@ -24,13 +24,12 @@ interface CachedFile<T> {
 }
 
 /**
- * Where the bytes came from. Three outcomes, one field: two booleans would make
- * a fourth combination representable that cannot happen, and force every reader
- * to spell "the CDN regenerated" as a double negative.
+ * Where the bytes came from. One field, not two booleans, which would make a
+ * fourth impossible combination representable.
  *
  * - `fresh` — a body, newer than anything held
  * - `not-modified` — a 304: the CDN answered and has nothing new
- * - `cache` — the CDN did not answer, so the held copy was served instead
+ * - `cache` — the CDN did not answer, so the held copy was served
  *
  * Only `cache` is a fault. A 304 is the expected answer at an interval matched
  * to how often the file regenerates.
@@ -61,8 +60,7 @@ export interface CdnOptions {
   component: RequestComponent;
   /**
    * Why this payload is unusable, or null if it is fine. Parseable is not
-   * usable: a 200 carrying `{}` or an error object would otherwise replace a
-   * good cache entry.
+   * usable: a 200 carrying `{}` would otherwise replace a good cache entry.
    */
   validate?: (data: unknown) => string | null;
   signal?: AbortSignal;
@@ -71,9 +69,8 @@ export interface CdnOptions {
 /**
  * Fetch a JSON file, using the cached copy when the CDN says it hasn't changed.
  *
- * The CDN ignores query strings, so cache-busting is impossible and a
- * conditional GET against the stored `Last-Modified` is the only way to tell
- * whether a regeneration has actually happened.
+ * The CDN ignores query strings, so a conditional GET against the stored
+ * `Last-Modified` is the only way to tell whether a regeneration happened.
  */
 export const fetchCached = async <T>(url: string, key: string, { component, validate, signal }: CdnOptions): Promise<CdnResult<T>> => {
   const cached = (cache.get(key) as CachedFile<T> | undefined) ?? null;
@@ -81,15 +78,14 @@ export const fetchCached = async <T>(url: string, key: string, { component, vali
   if (cached?.lastModified) headers['If-Modified-Since'] = cached.lastModified;
 
   const finish = beginRequest({ service: 'cdn', component, method: 'GET', url });
-  // A call the caller cancelled is not an outcome worth a row. `Orchestrator.stop()`
-  // aborts in-flight calendar fetches, so without this every shutdown files an
-  // error row and feeds it to the page's error summary.
+  // A cancelled call is not worth a row. `Orchestrator.stop()` aborts in-flight
+  // calendar fetches, so without this every shutdown files an error row.
   const log = (status: number | null, bytes: number | null, error: string | null): void => {
     if (!signal?.aborted) finish({ status, bytes, error });
   };
 
-  // Stale data beats no data, so every failure below serves the cache when
-  // there is one — flagged stale rather than passing as a success.
+  // Stale beats nothing: every failure below serves the cache when there is
+  // one, flagged stale rather than passing as a success.
   const fallback = (reason: string, status: number | null = null, bytes: number | null = null): CdnResult<T> => {
     log(status, bytes, reason);
     if (cached) return { ...cached, source: 'cache' };
@@ -97,9 +93,9 @@ export const fetchCached = async <T>(url: string, key: string, { component, vali
   };
 
   // Without a timeout a hung connection blocks a refresh cycle until undici's
-  // 300s default. The throw is caught for the same reason a bad status is: a
-  // timeout, a DNS failure or a reset are the *likeliest* ways a CDN fails, and
-  // letting one escape past `fallback` discards a perfectly good cached entry.
+  // 300s default. The throw is caught like a bad status: a timeout, DNS
+  // failure or reset are the likeliest CDN failures, and letting one escape
+  // past `fallback` discards a good cached entry.
   let res: Response;
   try {
     res = await fetch(url, { headers, signal: withTimeout(signal, FETCH_TIMEOUT_MS) });
@@ -113,9 +109,9 @@ export const fetchCached = async <T>(url: string, key: string, { component, vali
     return { ...cached, source: 'not-modified' };
   }
   if (!res.ok) {
-    // Drained rather than dropped. An unread body holds its socket out of
-    // undici's pool until GC, and these are the multi-MB files — on exactly
-    // the 5xx path where the CDN is already struggling.
+    // Drained, not dropped: an unread body holds its socket out of undici's
+    // pool until GC, and these are multi-MB files on the 5xx path where the
+    // CDN is already struggling.
     await res.body?.cancel().catch(() => {});
     return fallback(`returned ${res.status}`, res.status);
   }
@@ -127,9 +123,9 @@ export const fetchCached = async <T>(url: string, key: string, { component, vali
   try {
     data = JSON.parse(text) as T;
   } catch (err) {
-    // An HTML interstitial served with a 200 must not discard a good cache. The
-    // size is the tell that separates the two: a 2 KB interstitial against the
-    // multi-megabyte file that was expected.
+    // An HTML interstitial served with a 200 must not discard a good cache.
+    // The size is the tell: a 2 KB interstitial against the multi-megabyte
+    // file expected.
     return fallback(`returned unparseable JSON: ${errorMessage(err)}`, res.status, bytes);
   }
 

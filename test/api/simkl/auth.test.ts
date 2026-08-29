@@ -20,15 +20,14 @@ test('the token records when it was saved', async () => {
   await withTempDataDir(async (dir) => {
     await writeToken('t');
     const saved = JSON.parse(await readFile(join(dir, 'token.json'), 'utf8')).saved_at;
-    // Strictly: `Date.parse` would accept `March 5` here and call it a date.
+    // Strict: `Date.parse` would accept `March 5` and call it a date.
     assert.ok(instantFrom(saved) !== null, `saved_at should be an ISO instant, got ${saved}`);
   });
 });
 
-// writeFile creates at 0666 & ~umask, so narrowing with a later chmod leaves a
-// window where the token is world-readable. That window is not observable from
-// outside the process, so these catch the mode going missing altogether; the
-// window itself is closed structurally, by renaming a fresh 0600 inode.
+// writeFile creates at 0666 & ~umask, so a later chmod leaves a window where
+// the token is world-readable. The window itself is closed structurally by
+// renaming a fresh 0600 inode; this catches the mode going missing altogether.
 test('a freshly created token file is 0600 from the moment it exists', async () => {
   await withTempDataDir(async (dir) => {
     await writeToken('secret');
@@ -36,8 +35,8 @@ test('a freshly created token file is 0600 from the moment it exists', async () 
   });
 });
 
-// The assertion that pins the write-and-rename: `mode` alone does nothing to a
-// file that already exists, so only replacing the inode tightens it.
+// Pins the write-and-rename: `mode` does nothing to a file that already
+// exists, so only replacing the inode tightens it.
 test('replacing a loose token file leaves it 0600, not 0644', async () => {
   await withTempDataDir(async (dir) => {
     const path = join(dir, 'token.json');
@@ -70,8 +69,8 @@ test('a token file with no access_token reads as null', async () => {
   });
 });
 
-// Only ENOENT is swallowed: treating a truncated file as "no token" would hide
-// a real problem behind a login prompt.
+// Only ENOENT is swallowed: a truncated file read as "no token" hides a real
+// problem behind a login prompt.
 test('an unreadable token file throws rather than reading as absent', async () => {
   await withTempDataDir(async (dir) => {
     await writeFile(join(dir, 'token.json'), '{ truncated');
@@ -126,7 +125,7 @@ test('a non-OK result from the pin endpoint is an error', async () => {
 });
 
 // SIMKL returns the literal string "DEVICE_CODE" for device_code; polling is
-// keyed on user_code, which is the value shown to the user.
+// keyed on user_code, the value shown to the user.
 test('polling uses the user code, not the device code placeholder', async () => {
   await withFetch(
     () => jsonResponse({ result: 'KO' }),

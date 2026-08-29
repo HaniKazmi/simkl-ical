@@ -2,18 +2,17 @@
  * RENDER — events → an ICS string.
  *
  * Third of FETCH (io/) → JOIN → **RENDER** → SAVE. The only module that knows
- * the output format, which is why it keeps `ics` in its name rather than being
- * called `2-render.ts`.
+ * the output format, hence `ics` in the name.
  */
 
 import ical, { ICalCalendarMethod, ICalEventTransparency } from 'ical-generator';
 import { config } from '../shared/config.ts';
-import type { FeedEvent } from './1-join.ts';
+import type { FeedEvent } from './2-join.ts';
 
 /**
- * Episode titles stay out of SUMMARY — a calendar surfaces those without the
- * user choosing to look, and they occasionally spoil. The simkl.com link is not
- * repeated here either; it is already the event's URL property.
+ * Episode titles stay out of SUMMARY — a calendar surfaces those unasked, and
+ * they occasionally spoil. The simkl.com link is already the event's URL
+ * property, so it is not repeated here.
  */
 const description = (event: FeedEvent): string | undefined => {
   const lines: string[] = [];
@@ -36,8 +35,8 @@ export const renderIcs = (events: FeedEvent[], { name = 'SIMKL', timezone = conf
     name,
     prodId: { company: 'simkl-ical', product: 'simkl-ical', language: 'EN' },
     // No calendar-level `timezone`: it makes ical-generator emit a floating
-    // DTSTAMP, which RFC 5545 requires in UTC. Every event here is all-day, so
-    // only the X-WR-TIMEZONE hint is lost, and that is added back below.
+    // DTSTAMP, which RFC 5545 requires in UTC. Every event is all-day, so only
+    // the X-WR-TIMEZONE hint is lost, and it is added back below.
     ttl: Math.round(config.calendarRefresh.total('seconds')),
     method: ICalCalendarMethod.PUBLISH,
   });
@@ -47,9 +46,8 @@ export const renderIcs = (events: FeedEvent[], { name = 'SIMKL', timezone = conf
   cal.x('X-WR-TIMEZONE', timezone);
 
   for (const event of events) {
-    // Straight through: the join already resolved the zone, ical-generator
-    // accepts Temporal values, and nothing here manufactures a `Date` at UTC
-    // midnight and hopes the zone is never applied to it.
+    // The join already resolved the zone and ical-generator accepts Temporal
+    // values — no `Date` at UTC midnight is manufactured here.
     const start = event.date;
     cal.createEvent({
       id: event.uid,

@@ -26,8 +26,8 @@ test('the newest request is first, because that is the order it is read in', () 
   );
 });
 
-// Bounded because this is a live view, not a session log: it has to stay small
-// enough to render every request and old enough to show a pattern.
+// A live view, not a session log: small enough to render every request, old
+// enough to show a pattern.
 test('the log is capped, and drops the oldest of that component', () => {
   clearRequests();
   for (let i = 0; i < 40; i += 1) recordRequest(record({ path: `/${i}` }));
@@ -37,9 +37,9 @@ test('the log is capped, and drops the oldest of that component', () => {
   assert.equal(kept.at(-1)?.path, '/32', 'and the oldest fall off');
 });
 
-// The property the cap exists for. A cold start looks up every due film in one
-// unbounded pass, so under a single shared ring the two rows that prove the
-// delta sync is working are evicted before anyone can load the page.
+// A cold start looks up every due film in one pass, so under one shared ring
+// the two rows proving the delta sync works are evicted before anyone loads
+// the page.
 test('a burst on one component cannot evict another', () => {
   clearRequests();
   recordRequest(record({ component: 'poll', path: '/sync/activities' }));
@@ -55,8 +55,8 @@ test('a burst on one component cannot evict another', () => {
   assert.equal(recentRequests().filter((r) => r.component === 'films').length, 8);
 });
 
-// One array, not a map of six: a delta landing between two film lookups is what
-// says the poll did more than one thing, and only the interleaving shows it.
+// One array, not a map of six: a delta landing between two film lookups says
+// the poll did more than one thing, and only the interleaving shows it.
 test('the log keeps components interleaved in time order', () => {
   clearRequests();
   recordRequest(record({ component: 'films', path: '/movies/1' }));
@@ -102,9 +102,9 @@ test('a newline-ridden body renders as one line', () => {
 
 // --- describeUrl -----------------------------------------------------------
 
-// Every SIMKL URL carries the same three parameters. Kept, they would be
-// eighty identical characters per row, pushing the part that differs off the
-// end — a legibility decision, not a secrecy one.
+// Every SIMKL URL carries the same three parameters — eighty identical
+// characters per row, pushing what differs off the end. A legibility decision,
+// not a secrecy one.
 test('the boilerplate parameters are dropped and the meaningful ones kept', () => {
   const url = 'https://api.simkl.com/sync/all-items?client_id=abc&app-name=simkl-ical&app-version=0.2.0&date_from=2026-08-15T11%3A59%3A59Z';
   assert.equal(describeUrl(url), '/sync/all-items?date_from=2026-08-15T11:59:59Z');
@@ -130,9 +130,9 @@ test('something that is not a URL is passed through rather than thrown over', ()
 
 // --- who asked, as opposed to who answered ---------------------------------
 
-// SIMKL serves three different parts of this service, so the upstream alone
-// cannot say why a call happened. `/tv/1649662` is the sheet reading a
-// catalogue; `/movies/174094` is the feed dating a film; they look alike.
+// SIMKL serves three parts of this service, so the upstream alone cannot say
+// why a call happened: `/tv/1649662` is the sheet reading a catalogue,
+// `/movies/174094` is the feed dating a film, and they look alike.
 test('a record says which part of the service asked', () => {
   clearRequests();
   recordRequest(record({ service: 'simkl', component: 'catalogue', path: '/tv/1649662' }));

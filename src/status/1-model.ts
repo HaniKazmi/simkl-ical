@@ -1,72 +1,52 @@
 /**
  * MODEL — the running service, reduced to what a page shows. Pure: the clock
- * arrives as `now`, and nothing here reads `config` or touches io.
+ * arrives as `now`; nothing reads `config` or touches io.
  *
- * `StatusInput` is plain data rather than an `Orchestrator`, which is what keeps
- * this module from importing upward into root. It restates field names the
- * shell already has; in exchange a test builds one as a literal instead of
- * assembling a live service.
+ * The state is the shared `Snapshot`; the rest of `StatusInput` is what only
+ * this page wants — config labels, the two links, the request ring, the run
+ * journal. Plain data rather than an `Orchestrator`, so a test builds one as a
+ * literal.
+ *
+ * Every decision lives here and every wording with it, so `2-html.ts` only
+ * places values: which run is open, how long a path may be, which state a
+ * subsystem is in, whether it is one insert or two.
  */
 
-import { instantFrom } from '../shared/dates.ts';
+import { instantFrom, plainDateIn } from '../shared/dates.ts';
 import type { SheetSyncMode } from '../shared/config.ts';
-import { totalsByType } from '../library.ts';
+import { totalCount, totalsByType, type LibraryCounts } from '../library-counts.ts';
+import { pageHealthy, type Assessment } from '../health.ts';
+import type { LibraryMovement, PollOutcome, Snapshot } from '../orchestrator.ts';
 import type { RequestRecord } from '../api/requests.ts';
 import type { SheetRunRecord } from '../sheet/io/journal.ts';
 import type { SheetSyncStatus } from '../sheet/sync.ts';
 
 export interface StatusInput {
   now: Temporal.Instant;
+  snapshot: Snapshot;
+  assessment: Assessment;
   appName: string;
   version: string;
   timezone: string;
-  startedAt: string | null;
-  ok: boolean;
-  problems: string[];
-
-  polledAt: string | null;
-  libraryError: string | null;
-  /** Every type and status, including the empty ones — see `libraryCounts`. */
-  counts: Record<string, number>;
-  gate: { pull: 'none' | 'delta' | 'full'; updated: number; removed: number } | null;
-  /**
-   * How the counts moved on the last poll that moved them, and when. Null until
-   * a poll has pulled — and deliberately *not* cleared by a quiet poll, so the
-   * line keeps reporting the last thing that happened rather than blanking
-   * every half hour.
-   */
-  movement: { at: string; deltas: Record<string, number>; updated: number; removed: number } | null;
-  requests: RequestRecord[];
   activitiesPoll: Temporal.Duration;
-
-  events: number;
-  renderedAt: string | null;
-  servingCached: boolean;
-  renderError: string | null;
-  calendarsAt: string | null;
-  calendarsChangedAt: string | null;
-  calendarError: string | null;
   calendarRefresh: Temporal.Duration;
-  films: number;
-  /** The last round that completed — not a countdown; films have no timer. */
-  filmsResolvedAt: string | null;
+  /** Asked of `Feed`, which owns the rule — per-film, so no instant answers it. */
   filmsDue: boolean;
-
-  sheetConfigured: boolean;
   /**
-   * Whether per-episode runtimes can be looked up. Its own line because an
-   * unconfigured one makes *zero* requests, so nothing else on this page would
-   * distinguish "no credential" from "no season has closed yet" — while the
-   * Episodes column silently stays blank.
+   * Whether per-episode runtimes can be looked up. Unconfigured makes *zero*
+   * requests, so nothing else on the page distinguishes "no credential" from
+   * "no season has closed yet" while the Episodes column stays blank.
    */
   runtimesConfigured: boolean;
   sheetMode: SheetSyncMode;
   sheetTab: string;
-  sheetStatus: SheetSyncStatus;
-  sheetLastRunAt: string | null;
-  /** The whole repair message, which `/healthz` reduces to a boolean. */
-  sheetFrozen: string | null;
-  sheetError: string | null;
+  /** The feed over http, which is the form you paste into a client that asks for a URL. */
+  feedUrl: string;
+  /** The same address as `webcal:`, which asks a calendar client to subscribe rather than download. */
+  feedSubscribeUrl: string;
+  /** The spreadsheet, or null when none is configured. */
+  sheetUrl: string | null;
+  requests: RequestRecord[];
   runs: SheetRunRecord[];
 }
 
@@ -75,12 +55,14 @@ export interface Stamp {
   iso: string | null;
   /** `14m ago`, or `never` when there is nothing to describe. */
   label: string;
+  /** The same moment, absolute and in the configured zone, for a tooltip. */
+  title: string | null;
 }
 
 /**
- * When something is next expected. `label` is deliberately "due in …" rather
- * than "fires at": `schedule()` runs on a fixed interval and skips a tick while
- * the previous one is still going, so this is an expectation, not a promise.
+ * When something is next expected. "due in …" rather than "fires at":
+ * `schedule()` skips a tick while the previous one is still going, so this is
+ * an expectation, not a promise.
  */
 export interface Due {
   /** `in 1h 46m`, `overdue by 1h`, or `due now`. Carries its own state — a
@@ -88,9 +70,28 @@ export interface Due {
   label: string;
 }
 
+/** How loudly the page says a thing. The four classes `2-html.ts` styles. */
+export type State = 'ok' | 'warn' | 'crit' | 'mute';
+
+/**
+ * One half of the service as a single card: what it holds, and when it next
+ * acts. The state is the page's only per-subsystem signal — the header pill
+ * says something is wrong, a tile says which.
+ */
+export interface Tile {
+  name: string;
+  state: State;
+  /** `743 items`, `48 events`, `applied`. */
+  headline: string;
+  /** `gate in 15m`, `calendars in 4h 4m`, `ran 1h 19m ago`. */
+  next: string;
+}
+
 export interface CountRow {
   key: string;
   count: number;
+  /** Aligned to `countColumns`. `null` where the type has no such status at all. */
+  byStatus: (number | null)[];
 }
 
 export interface Step {
@@ -100,18 +101,34 @@ export interface Step {
   ok: boolean;
 }
 
-/** A journal record with its instant made readable. */
-export type RunView = Omit<SheetRunRecord, 'at'> & { at: Stamp };
+/** A journal record with its instant made readable and its wording settled. */
+export type RunView = Omit<SheetRunRecord, 'at'> & {
+  at: Stamp;
+  state: State;
+  /** The newest run only. The page opens it and collapses the rest. */
+  open: boolean;
+  /** `15 edits · 1 insert`, already pluralised. */
+  count: string;
+};
 
 export interface MovementView {
   at: Stamp;
+  /** `full resync · 743 records read`. What came back, and how it was asked for. */
+  pulled: string;
   /** `shows/watching −1`, already ordered and signed. Empty when only progress moved. */
   deltas: string[];
-  /** `14 records updated, 1 removed` — always present, since a pull always did something. */
-  summary: string;
+  /** What that entitled the rest of the service to do. */
+  consequence: string;
 }
 
-export type RequestView = Omit<RequestRecord, 'at'> & { at: Stamp; size: string };
+export type RequestView = Omit<RequestRecord, 'at' | 'path'> & {
+  at: Stamp;
+  size: string;
+  /** Shortened to fit the column. */
+  path: string;
+  /** The whole path, for the tooltip. Equal to `path` when it already fit. */
+  full: string;
+};
 
 export interface StatusModel {
   appName: string;
@@ -120,15 +137,19 @@ export interface StatusModel {
   ok: boolean;
   problems: string[];
   uptime: string | null;
+  /** Library, feed and sheet, in that order. The page's first screen. */
+  tiles: Tile[];
   library: {
     polled: Stamp;
     error: string | null;
     total: number;
-    /** Totals per type: the sanity check, in one line rather than fourteen. */
+    /** The status axis the `byStatus` arrays are aligned to. */
+    countColumns: string[];
+    /** Totals per type, and how they split by status: the sanity check. */
     counts: CountRow[];
     /** What the last poll did, in one phrase. */
     gate: string;
-    /** How the library moved when it last moved, or null if it never has. */
+    /** The last pull that moved anything, and what it meant. */
     movement: MovementView | null;
     due: Due;
   };
@@ -139,13 +160,17 @@ export interface StatusModel {
     steps: Step[];
     calendarsDue: Due;
     filmsDue: boolean;
+    subscribe: { href: string; url: string };
   };
   sheet: {
     configured: boolean;
     runtimes: boolean;
     mode: SheetSyncMode;
     tab: string;
+    url: string | null;
     status: SheetSyncStatus;
+    /** The status as a colour. A freeze outranks it: the message outlives the run that set it. */
+    state: State;
     lastRun: Stamp;
     frozen: string | null;
     error: string | null;
@@ -157,13 +182,10 @@ export interface StatusModel {
 }
 
 /**
- * Coarse on purpose: two units is what a person reads at a glance, and a page
- * that says `4d 6h 12m 3s` is reporting precision the underlying timers do not
- * have.
- *
- * `round` does the unit-splitting, so the only arithmetic left here is choosing
- * which two units to print. Days and below throughout, so no `relativeTo` anchor
- * is needed and a day is exactly 24 hours.
+ * Coarse on purpose: two units read at a glance, and `4d 6h 12m 3s` reports
+ * precision the timers do not have. `round` splits the units; the only
+ * arithmetic left is choosing which two to print. Days and below throughout,
+ * so no `relativeTo` anchor is needed and a day is exactly 24 hours.
  */
 export const duration = (span: Temporal.Duration): string => {
   const total = span.total('milliseconds');
@@ -175,18 +197,35 @@ export const duration = (span: Temporal.Duration): string => {
   return `${seconds}s`;
 };
 
-/**
- * Never `iso.slice(0, 10)`. The stored value is a UTC instant, and this is the
- * layer where slicing it silently shifts a fifth of them by a day.
- */
-const stamp = (iso: string | null, now: Temporal.Instant): Stamp => {
-  const at = instantFrom(iso);
-  return { iso, label: at === null ? 'never' : `${duration(at.until(now))} ago` };
-};
+const pad = (n: number): string => String(n).padStart(2, '0');
+
+/** `3 records`, `1 record`. */
+const plural = (n: number, one: string): string => `${n} ${n === 1 ? one : `${one}s`}`;
 
 /**
- * Counted from the last run rather than from process start, so a skipped tick
- * shows as overdue instead of quietly reporting the next one.
+ * Stamps bound to one clock and one zone, so neither is threaded through the
+ * dozen call sites in `buildModel`.
+ *
+ * Never `iso.slice(0, 10)`. The stored value is a UTC instant, and slicing it
+ * silently shifts a fifth of them by a day; `plainDateIn` cannot produce a date
+ * without being told a zone.
+ */
+const stamper = (now: Temporal.Instant, timeZone: string) => (iso: string | null): Stamp => {
+  const at = instantFrom(iso);
+  if (at === null) return { iso, label: 'never', title: null };
+  const local = at.toZonedDateTimeISO(timeZone);
+  return {
+    iso,
+    label: `${duration(at.until(now))} ago`,
+    title: `${plainDateIn(at, timeZone)} ${pad(local.hour)}:${pad(local.minute)} ${timeZone}`,
+  };
+};
+
+type Stamped = ReturnType<typeof stamper>;
+
+/**
+ * Counted from the last run, not process start, so a skipped tick shows as
+ * overdue instead of quietly reporting the next one.
  */
 const due = (last: string | null, every: Temporal.Duration, now: Temporal.Instant): Due => {
   const at = instantFrom(last);
@@ -197,36 +236,70 @@ const due = (last: string | null, every: Temporal.Duration, now: Temporal.Instan
     : { label: `in ${duration(now.until(next))}` };
 };
 
+const SHEET_STATE: Record<string, State> = {
+  applied: 'ok',
+  reported: 'mute',
+  idle: 'mute',
+  refused: 'warn',
+  'rolled-back': 'warn',
+  failed: 'crit',
+  frozen: 'crit',
+};
+
 /**
- * What the last calendar fetch actually achieved. Early returns rather than a
- * nested ternary, because the branch a reader comes here for — why it says
- * *unchanged* — is the one a ternary buries deepest.
+ * Looked up with `Object.hasOwn`, not `?? 'mute'`: a status read from
+ * `sheet-runs.json` saying `"constructor"` resolves through the prototype to a
+ * function, so the default would never fire.
+ */
+export const sheetState = (status: string): State => (Object.hasOwn(SHEET_STATE, status) ? SHEET_STATE[status]! : 'mute');
+
+/**
+ * Long enough to hold a SIMKL path whole, short enough that a Google one stops
+ * wrapping its row: the 44-character spreadsheet id repeats on every `sheets`
+ * call and is the only thing that overruns.
+ */
+const PATH_BUDGET = 48;
+
+/**
+ * Shortened in the middle, never the end, because the tail is what tells the
+ * rows apart — `…:batchUpdate` from `…?ranges='Sheet1'`. The rule is by length
+ * alone; no upstream's URL shape is known here.
+ */
+const shorten = (path: string): string => {
+  if (path.length <= PATH_BUDGET) return path;
+  const head = Math.ceil((PATH_BUDGET - 1) / 2);
+  return `${path.slice(0, head)}…${path.slice(head + 1 - PATH_BUDGET)}`;
+};
+
+/**
+ * What the last calendar fetch achieved. Early returns, not a nested ternary:
+ * the branch a reader comes for — why it says *unchanged* — is the one a
+ * ternary buries deepest.
  *
  * The `changed === attempted` test is string identity, and holds because
  * `Feed.refreshCalendars` assigns `calendarsChangedAt` the very value it just
  * put in `calendarsAt`.
  */
-const calendarDetail = (input: StatusInput, now: Temporal.Instant): string => {
+const calendarDetail = (calendars: Snapshot['feed']['calendars'], at: Stamped): string => {
   const prefix = 'airdate calendars';
-  // `calendarsAt` is stamped only after a fetch returns, so a failure with none
-  // means the CDN has never answered this process and there is nothing cached
-  // to fall back on. Saying "serving cache" there asserts a copy that does not
-  // exist, on exactly the boot where the page is being read to find that out.
-  if (input.calendarError) return input.calendarsAt === null ? `${prefix} — none yet, the CDN has not answered` : `${prefix} — serving cache`;
-  if (input.calendarsChangedAt === null) return prefix;
-  if (input.calendarsChangedAt === input.calendarsAt) return `${prefix} — new airdates`;
-  return `${prefix} — unchanged since ${stamp(input.calendarsChangedAt, now).label}`;
+  // `attemptedAt` is stamped only after a fetch returns, so a failure with
+  // none means the CDN has never answered this process and nothing is cached.
+  // "Serving cache" there would assert a copy that does not exist.
+  if (calendars.error) return calendars.attemptedAt === null ? `${prefix} — none yet, the CDN has not answered` : `${prefix} — serving cache`;
+  if (calendars.changedAt === null) return prefix;
+  if (calendars.changedAt === calendars.attemptedAt) return `${prefix} — new airdates`;
+  return `${prefix} — unchanged since ${at(calendars.changedAt).label}`;
 };
 
 /**
- * What the last poll did, in one phrase.
- *
- * "not polled yet" is a different claim from "nothing moved" — until the first
- * successful poll, nothing is known, and on a cold page that is the honest
- * thing to say.
+ * What the last poll did, in one phrase. "not polled yet" is a different
+ * claim from "nothing moved": before the first successful poll, nothing is
+ * known. A refused diff outranks the counts — it is the one outcome that
+ * changes what the *next* poll will do.
  */
-const gateDetail = (gate: StatusInput['gate']): string => {
+const gateDetail = (gate: PollOutcome | null): string => {
   if (gate === null) return 'not polled yet';
+  if (gate.refusedRemovals) return 'removals refused — next poll pulls whole';
   if (gate.pull === 'full') return 'full resync';
   const parts: string[] = [];
   if (gate.updated) parts.push(`${gate.updated} updated`);
@@ -234,123 +307,222 @@ const gateDetail = (gate: StatusInput['gate']): string => {
   return parts.length ? parts.join(' · ') : 'nothing moved';
 };
 
+/** The status axis, in the order a title moves along it, with the page's labels. */
+const STATUS_COLUMNS: Array<{ status: string; label: string }> = [
+  { status: 'watching', label: 'watch' },
+  { status: 'completed', label: 'done' },
+  { status: 'plantowatch', label: 'plan' },
+  { status: 'hold', label: 'hold' },
+  { status: 'dropped', label: 'drop' },
+];
+
 /**
- * The totals, named for a reader.
+ * The totals, named for a reader. `library-counts.ts` owns the arithmetic and
+ * the keys; this owns that the page says "films" where SIMKL says "movies",
+ * and that a zero `other` is noise — it exists to keep the rows summing, not
+ * to be read.
  *
- * `library.ts` owns the arithmetic and the key scheme; this owns that the page
- * says "films" where SIMKL says "movies", and that a zero `other` is noise
- * rather than news — it exists to keep the rows summing, not to be read.
+ * A status a type does not have reads `null`, not zero. `movies` carries no
+ * `watching` key at all, and "SIMKL has no such state for films" is a
+ * different claim from "no films are being watched".
  */
-const countRows = (counts: Record<string, number>): CountRow[] => {
-  const { other, ...types } = totalsByType(counts);
-  const rows = Object.entries(types).map(([key, count]) => ({ key: key === 'movies' ? 'films' : key, count }));
-  return other ? [...rows, { key: 'other', count: other }] : rows;
-};
+const countRows = (counts: LibraryCounts): CountRow[] =>
+  totalsByType(counts)
+    .filter((row) => row.type !== 'other' || row.count > 0)
+    .map((row) => ({
+      key: row.type === 'movies' ? 'films' : row.type,
+      count: row.count,
+      byStatus: STATUS_COLUMNS.map(({ status }) => (row.type === 'other' ? null : (counts.byType[row.type][status] ?? null))),
+    }));
 
 /** `+1` / `−1`, with a real minus sign rather than a hyphen. */
-const signed = (n: number): string => (n > 0 ? `+${n}` : `\u2212${Math.abs(n)}`);
+const signed = (n: number): string => (n > 0 ? `+${n}` : `−${Math.abs(n)}`);
 
 /**
- * How the library moved, in the terms the poll actually distinguishes.
+ * The last pull that moved anything, and what it meant.
  *
- * The two lines say different things and both matter. `deltas` is membership —
- * a title left one status and arrived in another — and is empty on the common
- * poll, because watching an episode moves no counts at all. `summary` is what
- * the delta carried, which is non-zero whenever anything was pulled. Together
- * they are `reshaped` versus `updated` made legible, and that distinction is
- * what the feed's own render gate keys on.
+ * Two numbers, not one. `updated` is how many records the payload carried —
+ * the whole library on a full resync — while `reshaped` is how many of them
+ * arrived new or under a different status, which is the only part the feed can
+ * see. Catching up on a season has a large `updated` and a zero `reshaped`,
+ * and the feed is right not to re-render.
+ *
+ * Whether it did re-render is read off `rendered`, never re-derived: the poll
+ * also renders when a film comes into range, which moves no count here, so
+ * working the answer back out of the numbers states the opposite.
  */
-const movementView = (movement: StatusInput['movement'], now: Temporal.Instant): MovementView | null => {
+const movementView = (movement: LibraryMovement | null, at: Stamped): MovementView | null => {
   if (movement === null) return null;
-  const deltas = Object.entries(movement.deltas)
-    .filter(([, delta]) => delta !== 0)
-    .map(([key, delta]) => `${key} ${signed(delta)}`);
-  const parts = [`${movement.updated} ${movement.updated === 1 ? 'record' : 'records'} updated`];
-  if (movement.removed) parts.push(`${movement.removed} removed`);
-  if (!deltas.length) parts.push('nothing moved between statuses');
-  return { at: stamp(movement.at, now), deltas, summary: parts.join(', ') };
+
+  const read = `${plural(movement.updated, 'record')} read`;
+  // `pull` is `none` on a poll where only the membership diff ran: the
+  // signature had not moved, so nothing was asked for and titles still left.
+  const pulled = [movement.pull === 'none' ? 'membership check' : `${movement.pull === 'full' ? 'full resync' : 'delta'} · ${read}`];
+  if (movement.removed) pulled.push(`${plural(movement.removed, 'title')} removed`);
+
+  const moved: string[] = [];
+  if (movement.reshaped) moved.push(`${movement.reshaped} changed membership`);
+  if (movement.removed) moved.push(`${plural(movement.removed, 'title')} left the library`);
+  // A full pull always renders and never sets `reshaped`, so it reaches here
+  // with nothing named. Whatever is left rendered because a film reached its
+  // release date, which moves no count this section shows.
+  if (!moved.length) moved.push(movement.pull === 'full' ? 'the whole library was re-read' : 'a film came into range');
+
+  return {
+    at: at(movement.at),
+    pulled: pulled.join(' · '),
+    deltas: movement.deltas.map((d) => `${d.status === null ? d.type : `${d.type}/${d.status}`} ${signed(d.delta)}`),
+    consequence: movement.rendered ? `${moved.join(', ')}, so the feed re-rendered` : 'progress only, so the feed was left alone',
+  };
 };
 
 /** `21K`, `2.4M`, or `—` for a response that carried no body. */
 const size = (bytes: number | null): string => {
-  if (bytes === null) return '\u2014';
+  if (bytes === null) return '—';
   if (bytes < 1024) return `${bytes}B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)}K`;
   return `${(bytes / (1024 * 1024)).toFixed(1)}M`;
 };
 
+/**
+ * The three tiles. Each subsystem's state comes from the problems `assess`
+ * already tagged, so a tile can never light up over something the box below it
+ * does not explain.
+ *
+ * The feed answers to two areas: its own failure is critical, a quiet CDN only
+ * a warning, because a stale calendar still renders. That is the ranking
+ * `assess` puts the lines in, applied to colour.
+ */
+const tiles = (input: StatusInput, model: Omit<StatusModel, 'tiles'>): Tile[] => {
+  const has = (area: Assessment['problems'][number]['area']): boolean => input.assessment.problems.some((p) => p.area === area);
+  const { library, feed, sheet } = model;
+
+  const sheetTile: Tile = sheet.configured
+    ? {
+        name: 'sheet',
+        state: sheet.state,
+        headline: sheet.status,
+        next: sheet.lastRun.iso === null ? 'not run yet' : `ran ${sheet.lastRun.label}`,
+      }
+    : { name: 'sheet', state: 'mute', headline: 'off', next: 'no SHEET_ID set' };
+
+  return [
+    {
+      name: 'library',
+      state: has('library') ? 'crit' : 'ok',
+      headline: plural(library.total, 'item'),
+      next: `gate ${library.due.label}`,
+    },
+    {
+      name: 'feed',
+      state: has('feed') ? 'crit' : has('calendars') ? 'warn' : 'ok',
+      headline: plural(feed.events, 'event'),
+      next: `calendars ${feed.calendarsDue.label}`,
+    },
+    sheetTile,
+  ];
+};
+
 export const buildModel = (input: StatusInput): StatusModel => {
   const { now } = input;
-  const startedAt = instantFrom(input.startedAt);
-  // One instant, three places: the join, the render and the section heading all
-  // describe the same moment.
-  const rendered = stamp(input.renderedAt, now);
+  const { library, feed, sheet } = input.snapshot;
+  const at = stamper(now, input.timezone);
+  const startedAt = instantFrom(input.snapshot.startedAt);
+  // Newest first for reading; the journal stores oldest first for appending.
+  // Only that newest one opens: fifty runs expanded repeat the same edits and
+  // bury every section below.
+  const runs: RunView[] = input.runs
+    .map((run) => ({
+      ...run,
+      at: at(run.at),
+      state: sheetState(run.status),
+      open: false,
+      count: [plural(run.edits.length, 'edit'), plural(run.inserts.length, 'insert'), ...(run.repeats > 1 ? [`${run.repeats} polls`] : [])].join(' · '),
+    }))
+    .reverse()
+    .map((run, index) => ({ ...run, open: index === 0 }));
+  // One instant: the join, the render and the section heading describe the
+  // same moment.
+  const rendered = at(feed.renderedAt);
 
-  return {
+  const model: Omit<StatusModel, 'tiles'> = {
     appName: input.appName,
     version: input.version,
     timezone: input.timezone,
-    // `ok` from `/healthz` answers "should this container be restarted", which
-    // is deliberately narrower — a revoked token and a quiet CDN are both real
-    // problems that restarting cannot fix. The page reports what a reader sees,
-    // so anything in `problems` makes it not-healthy here.
-    ok: input.ok && input.problems.length === 0,
-    problems: input.problems,
+    // `assessment.ok` answers "should this container be restarted", which is
+    // narrower — a revoked token and a quiet CDN are real problems restarting
+    // cannot fix. Here anything in `problems` makes the page not-healthy.
+    ok: pageHealthy(input.assessment),
+    problems: input.assessment.problems.map((problem) => problem.message),
     uptime: startedAt === null ? null : duration(startedAt.until(now)),
 
     library: {
-      polled: stamp(input.polledAt, now),
-      error: input.libraryError,
-      total: Object.values(input.counts).reduce((sum, n) => sum + n, 0),
-      counts: countRows(input.counts),
-      gate: gateDetail(input.gate),
-      movement: movementView(input.movement, now),
-      due: due(input.polledAt, input.activitiesPoll, now),
+      polled: at(library.polledAt),
+      error: library.error,
+      total: totalCount(library.counts),
+      countColumns: STATUS_COLUMNS.map((column) => column.label),
+      counts: countRows(library.counts),
+      gate: gateDetail(library.poll),
+      movement: movementView(library.movement, at),
+      due: due(library.polledAt, input.activitiesPoll, now),
     },
 
     feed: {
-      events: input.events,
+      events: feed.events,
       rendered,
-      error: input.renderError,
+      error: feed.error,
       steps: [
-        { name: 'fetch', detail: calendarDetail(input, now), at: stamp(input.calendarsAt, now), ok: input.calendarError === null },
-        { name: 'fetch', detail: `film releases — ${input.films} resolved`, at: stamp(input.filmsResolvedAt, now), ok: true },
-        { name: 'join', detail: `${input.events} events`, at: rendered, ok: input.renderError === null },
+        { name: 'fetch', detail: calendarDetail(feed.calendars, at), at: at(feed.calendars.attemptedAt), ok: feed.calendars.error === null },
+        { name: 'fetch', detail: `film releases — ${feed.films.resolved} resolved`, at: at(feed.films.resolvedAt), ok: true },
+        { name: 'join', detail: plural(feed.events, 'event'), at: rendered, ok: feed.error === null },
         {
           name: 'render',
-          detail: input.servingCached ? 'serving the last saved feed' : 'serving live',
+          detail: feed.servingCached ? 'serving the last saved feed' : 'serving live',
           at: rendered,
-          ok: input.renderError === null,
+          ok: feed.error === null,
         },
       ],
-      calendarsDue: due(input.calendarsAt, input.calendarRefresh, now),
-      // A boolean, not a countdown: whether a film is due is per-film — a new or
-      // undated one is due now, a date most of a year out is not — so no single
-      // instant says when the next one falls due.
+      calendarsDue: due(feed.calendars.attemptedAt, input.calendarRefresh, now),
+      // A boolean, not a countdown: due is per-film — a new or undated one is
+      // due now, a date most of a year out is not — so no single instant says
+      // when the next one falls due.
       filmsDue: input.filmsDue,
+      subscribe: { href: input.feedSubscribeUrl, url: input.feedUrl },
     },
 
     // No reverse: the request log is already newest first, unlike the run
-    // journal below, which is a file appended to and so stores oldest first.
-    requests: input.requests.map((request) => ({ ...request, at: stamp(request.at, now), size: size(request.bytes) })),
-    // Capped here rather than in the template: which failures to show is a
-    // decision, and the template's job is turning a list into rows.
+    // journal below, which is appended to and so stores oldest first.
+    requests: input.requests.map((request) => ({
+      ...request,
+      at: at(request.at),
+      size: size(request.bytes),
+      path: shorten(request.path),
+      full: request.path,
+    })),
+    // Capped here, not in the template: which failures to show is a decision;
+    // the template turns lists into rows.
     requestErrors: input.requests
       .filter((request) => request.error !== null)
       .slice(0, 3)
       .map((request) => `${request.path} — ${request.error}`),
 
     sheet: {
-      configured: input.sheetConfigured,
+      configured: sheet.configured,
       runtimes: input.runtimesConfigured,
       mode: input.sheetMode,
       tab: input.sheetTab,
-      status: input.sheetStatus,
-      lastRun: stamp(input.sheetLastRunAt, now),
-      frozen: input.sheetFrozen,
-      error: input.sheetError,
-      // Newest first for reading; the journal stores oldest first for appending.
-      runs: input.runs.map((run) => ({ ...run, at: stamp(run.at, now) })).reverse(),
+      url: input.sheetUrl,
+      status: sheet.status,
+      state: sheet.frozen === null ? sheetState(sheet.status) : 'crit',
+      lastRun: at(sheet.lastRunAt),
+      frozen: sheet.frozen,
+      // The live error slot, dropped when something below already prints the
+      // same text: the run that recorded it is right there, and the freeze
+      // message has its own box.
+      error: sheet.error === sheet.frozen || sheet.error === (runs[0]?.error ?? null) ? null : sheet.error,
+      runs,
     },
   };
+
+  return { ...model, tiles: tiles(input, model) };
 };

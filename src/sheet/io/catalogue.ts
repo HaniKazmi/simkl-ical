@@ -1,19 +1,18 @@
 /**
- * READ — per-title catalogue lookups, and the sync's other input.
+ * READ — per-title catalogue lookups, the sync's other input.
  *
- * In `io/` because it is SIMKL I/O the steps run on rather than a step itself:
- * what SIMKL says *exists*, as opposed to what the
- * library says was watched.
+ * In `io/` because it is I/O the steps run on rather than a step itself: what
+ * SIMKL says *exists*, as opposed to what the library says was watched.
  *
- * Two endpoints, and neither substitutes for the other:
+ * Two endpoints, neither a substitute for the other:
  *
  * - `/tv/episodes/{id}` gives the per-season list with an `aired` flag. It
  *   cannot be gated on "a season ended", because it is what discovers that.
  * - `/tv/{id}` (or `/anime/{id}`) gives `status`. An announced next season
- *   appears in the episode list with `aired: false`, but a show renewed but
- *   unscheduled — House of the Dragon — simply ends its episode list, which is
- *   indistinguishable from a finished show. Closing that gap is the entire
- *   reason this lookup exists.
+ *   appears in the episode list with `aired: false`, but a show renewed and
+ *   unscheduled — House of the Dragon — simply ends its episode list,
+ *   indistinguishable from a finished show. Closing that gap is why this
+ *   lookup exists.
  *
  * Both are unauthenticated and Cloudflare-cached by id, so modest parallelism
  * is allowed — unlike the sync endpoints, which must stay sequential.
@@ -24,14 +23,14 @@ import { lookupPool } from '../../api/pool.ts';
 import type { EpisodeDetail, ShowDetail } from '../../api/simkl/types.ts';
 
 /**
- * No cache here, deliberately — the same division as `movies.ts`, where the
- * source fetches and the caller decides when.
+ * No cache here — the same division as `movies.ts`: the source fetches, the
+ * caller decides when.
  *
  * `SheetSync` retains results across polls and knows which titles moved, so it
- * has strictly better information about when to refetch than a blind TTL does.
- * Two caching layers with different policies is how "why is this stale" bugs
- * happen: a TTL here would serve a five-hour-old episode list for a show the
- * caller just decided to refresh precisely because it changed.
+ * knows better than a blind TTL when to refetch. Two caching layers with
+ * different policies breed "why is this stale" bugs: a TTL here would serve a
+ * five-hour-old episode list for a show the caller decided to refresh
+ * precisely because it changed.
  */
 
 /** What a single title needs looked up. Both flags false is a no-op. */
@@ -55,14 +54,14 @@ export interface Catalogue {
 const fetchEpisodes = (id: number, signal?: AbortSignal): Promise<EpisodeDetail[]> =>
   apiGet<EpisodeDetail[]>(`/tv/episodes/${id}`, { component: 'catalogue', signal });
 
-// No `extended`: the per-title endpoints always return the whole record, and
-// the parameter is accepted for compatibility while changing nothing.
+// No `extended`: the per-title endpoints always return the whole record; the
+// parameter is accepted and changes nothing.
 const fetchDetail = (id: number, anime: boolean, signal?: AbortSignal): Promise<ShowDetail> =>
   apiGet<ShowDetail>(`/${anime ? 'anime' : 'tv'}/${id}`, { component: 'catalogue', signal });
 
 /**
- * Resolve a batch. Requests for the same id are merged, so asking for the
- * episode list and the detail of one show costs the two calls it should.
+ * Resolve a batch. Requests for the same id are merged, so the episode list
+ * and detail of one show cost the two calls they should.
  */
 export const fetchCatalogue = async (
   requests: CatalogueRequest[],

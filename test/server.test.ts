@@ -49,8 +49,8 @@ test('a wrong token is a 404', async () => {
   });
 });
 
-// timingSafeEqual throws on unequal lengths, so the length check in
-// tokenMatches is what keeps a short token a 404 rather than a 500.
+// timingSafeEqual throws on unequal lengths; the length check in tokenMatches
+// keeps a short token a 404 rather than a 500.
 test('a token of the wrong length is a 404, not a 500', async () => {
   await withServer(async (app) => {
     for (const wrong of ['x', 'a'.repeat(47), 'a'.repeat(49), 'a'.repeat(400)]) {
@@ -60,8 +60,8 @@ test('a token of the wrong length is a 404, not a 500', async () => {
   });
 });
 
-// Fastify caps path parameters at 100 characters by default, which a longer
-// token would exceed — a 414 and an unreachable feed.
+// Fastify caps path parameters at 100 characters by default; a longer token
+// would be a 414 and an unreachable feed.
 test('a longer feed token is usable', async () => {
   const long = 'c'.repeat(128); // e.g. openssl rand -hex 64
   await withServer(
@@ -91,7 +91,7 @@ test('with no token configured the feed is unreachable rather than open', async 
   );
 });
 
-// 404 rather than 401 only hides the route if every 404 looks the same;
+// 404 rather than 401 only hides the route if every 404 looks the same, and
 // Fastify's default body names the route it failed to match.
 test('a wrong token is indistinguishable from any other missing path', async () => {
   await withServer(async (app) => {
@@ -134,10 +134,9 @@ test('healthz needs no token', async () => {
   });
 });
 
-// A container healthcheck is a contract, and the key set is the contract: CI
-// parses this body, and so does anything an operator has pointed at it. tsc
-// checks the keys exist but never their order, and `JSON.stringify` emits
-// insertion order, so only an assertion holds the shape.
+// The key set is a contract: CI parses this body, and so does anything an
+// operator points at it. tsc never checks key order and `JSON.stringify`
+// emits insertion order, so only an assertion holds the shape.
 test('the healthz body is state and shape, in a stable order', async () => {
   await withServer(async (app) => {
     const body = (await app.inject({ method: 'GET', url: '/healthz' })).json();
@@ -150,8 +149,8 @@ test('the healthz body is state and shape, in a stable order', async () => {
   });
 });
 
-// The diagnostic half is the status page's job: a healthcheck that carries
-// free text carries wording that changes, in a body a machine parses.
+// Diagnostics are the status page's job: free text in a healthcheck is
+// wording that changes, in a body a machine parses.
 test('the healthz body carries no free-text diagnostics', async () => {
   await withServer(async (app, state) => {
     state.errors.library = 'AUTH: SIMKL rejected the token';
@@ -178,9 +177,9 @@ test('healthz still carries the timezone', async () => {
   });
 });
 
-// The token sits in the URL path, so request logging would write it to disk on
+// The token sits in the URL path, so request logging would write it to disk
 // every poll. Fastify's serializer emits no headers, so `req.url` is the one
-// that has to work.
+// that must be redacted.
 test('the feed token never reaches the logs', async () => {
   const lines: string[] = [];
   const stream = new Writable({
@@ -215,8 +214,8 @@ test('the status page is served to the right token as HTML', async () => {
   });
 });
 
-// The page is inert by design, and these are what keep an escaping bug from
-// executing and the token in the URL from leaving in a Referer header.
+// These keep an escaping bug from executing and the URL's token from leaving
+// in a Referer header.
 test('the status page carries its hardening headers', async () => {
   await withServer(async (app) => {
     const { headers } = await app.inject({ method: 'GET', url: `/${TOKEN}/status` });
@@ -229,15 +228,75 @@ test('the status page carries its hardening headers', async () => {
   });
 });
 
-// The URL bar already has it; a copy in the DOM is one more thing a screenshot
-// or an extension can carry off.
-test('the status page never prints the token or the spreadsheet id', async () => {
+// The page prints both, because it links both: the reader already holds the
+// token — it is in the URL bar — and the spreadsheet id is the link to the
+// sheet. What must never happen is the token addressing another host.
+test('the feed token only ever addresses this service', async () => {
   await withConfig({ sheetId: 'SECRET-SHEET-ID' }, async () => {
     await withServer(async (app) => {
-      const res = await app.inject({ method: 'GET', url: `/${TOKEN}/status` });
-      assert.ok(!res.body.includes(TOKEN), 'not the feed token');
-      assert.ok(!res.body.includes('SECRET-SHEET-ID'), 'and not the spreadsheet id');
+      const res = await app.inject({
+        method: 'GET',
+        url: `/${TOKEN}/status`,
+        headers: { host: 'simkl.hani.fyi', 'x-forwarded-proto': 'https' },
+      });
+      const carrying = [...res.body.matchAll(/[a-z]+:\/\/[^"'\s<>]+/g)].map((m) => m[0]).filter((url) => url.includes(TOKEN));
+
+      // Consistency, not containment: the host is echoed from the request, so
+      // this cannot catch a forged `Host` — only a link built from something
+      // other than the origin the reader arrived on. `originOf`'s comment says
+      // what actually bounds that.
+      assert.ok(carrying.length > 0, 'the feed links are on the page at all');
+      for (const url of carrying) {
+        assert.equal(new URL(url.replace(/^webcal:/, 'https:')).host, 'simkl.hani.fyi', `${url} is not this service`);
+      }
     });
+  });
+});
+
+// Both feed addresses are built from the request, because nothing else knows
+// the public origin — and `webcal:` needs a full authority, so unlike the rest
+// of the page this one is a click target and not only text.
+test('the feed links follow the host the reader arrived on', async () => {
+  await withServer(async (app) => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/${TOKEN}/status`,
+      headers: { host: 'simkl.hani.fyi', 'x-forwarded-proto': 'https' },
+    });
+    assert.ok(res.body.includes(`href="webcal://simkl.hani.fyi/${TOKEN}/feed.ics"`), 'clicking it subscribes');
+    assert.ok(res.body.includes(`title="https://simkl.hani.fyi/${TOKEN}/feed.ics"`), 'and the https form is there to paste');
+  });
+});
+
+// The scheme is client-settable and lands in an `href`. Anything but http or
+// https survives the `^https?:` rewrite unchanged, so the subscribe link would
+// carry whatever was sent — `HTTPS` from a real proxy is the same defect.
+test('a scheme the page did not choose never reaches the link', async () => {
+  await withServer(async (app) => {
+    for (const claimed of ['javascript', 'ftp', 'HTTPS', 'https evil']) {
+      const res = await app.inject({
+        method: 'GET',
+        url: `/${TOKEN}/status`,
+        headers: { host: 'simkl.hani.fyi', 'x-forwarded-proto': claimed },
+      });
+      const hrefs = [...res.body.matchAll(/<a [^>]*href="([^"]*)"/g)].map((m) => m[1]!);
+      for (const href of hrefs) {
+        assert.match(href, /^(webcal|https):/, `${claimed} produced ${href}`);
+      }
+    }
+  });
+});
+
+// `x-forwarded-proto: https` is the only way to know a proxy terminated TLS,
+// so the honest value still has to win over the connection's own scheme.
+test('a proxy that terminated TLS is believed', async () => {
+  await withServer(async (app) => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/${TOKEN}/status`,
+      headers: { host: 'simkl.hani.fyi', 'x-forwarded-proto': 'https' },
+    });
+    assert.ok(res.body.includes(`title="https://simkl.hani.fyi/${TOKEN}/feed.ics"`));
   });
 });
 

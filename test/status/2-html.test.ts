@@ -1,38 +1,38 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { escapeHtml, html, raw, renderPage, toHtml } from '../../src/status/2-html.ts';
-import { buildModel, type StatusInput } from '../../src/status/1-model.ts';
-import { COLD, MINUTE, before, input, moved, request } from './fixtures.ts';
+import { buildModel } from '../../src/status/1-model.ts';
+import { MINUTE, before, countsWith, input, moved, request, type InputOver } from './fixtures.ts';
 
 test('escapeHtml covers every character that can break out of markup', () => {
   assert.equal(escapeHtml(`<script>"x" & 'y'</script>`), '&lt;script&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/script&gt;');
 });
 
-// A chained `.replace('<').replace('&')` turns `&lt;` into `&amp;lt;`, which
-// renders the escape itself on the page. One pass over a class cannot.
+// A chained `.replace('<').replace('&')` turns `&lt;` into `&amp;lt;`,
+// rendering the escape itself; one pass over a class cannot.
 test('escapeHtml does not double-escape its own output', () => {
   assert.equal(escapeHtml(escapeHtml('<a>')), '&amp;lt;a&amp;gt;');
   assert.equal(escapeHtml('&amp;'), '&amp;amp;');
 });
 
-// Exact, not a substring hunt: the payload's own text survives as text, which
-// is the point — `onerror=alert(1)` is inert once no tag can form around it.
+// Exact, not a substring hunt: the payload's text survives as text —
+// `onerror=alert(1)` is inert once no tag can form around it.
 test('interpolated values are escaped', () => {
   const title = '<img src=x onerror=alert(1)>';
   assert.equal(toHtml(html`<td>${title}</td>`), '<td>&lt;img src=x onerror=alert(1)&gt;</td>');
 });
 
-// The property that actually matters, asserted structurally: whatever a title
-// contains, the only tags in the output are the ones this file wrote.
+// Asserted structurally: whatever a title contains, the only tags in the
+// output are the ones this file wrote.
 test('no interpolated value can open a tag', () => {
   const hostile = `</td><script>alert(1)</script><td onmouseover="x">`;
   const rendered = toHtml(html`<tr><td>${hostile}</td></tr>`);
   assert.deepEqual(rendered.match(/<[^>]*>/g), ['<tr>', '<td>', '</td>', '</tr>']);
 });
 
-// The whole reason the brand is a module-private Symbol. A plain object shape
-// is forgeable by anything — including a value parsed out of the run journal,
-// which is a file on disk that a page renders verbatim.
+// Why the brand is a module-private Symbol: a plain object shape is forgeable
+// by anything — including a value parsed out of the run journal, a file on
+// disk the page renders verbatim.
 test('a forged safe-html object is escaped, not trusted', () => {
   for (const forgery of [{ html: '<script>alert(1)</script>' }, { [Symbol('safe-html')]: '<script>alert(1)</script>' }, { toString: () => '<b>' }]) {
     const rendered = toHtml(html`<p>${forgery}</p>`);
@@ -51,8 +51,8 @@ test('arrays join, so a list of rows is an expression rather than a loop', () =>
   assert.equal(toHtml(html`<ul>${rows}</ul>`), '<ul><li>a</li><li>&lt;b&gt;</li></ul>');
 });
 
-// An unset timestamp is the common case on a cold page, and printing the word
-// "null" into the markup is how a first-boot page looks broken.
+// An unset timestamp is the common case on a cold page; printing "null" is
+// how a first-boot page looks broken.
 test('null and undefined render as nothing, not as their names', () => {
   assert.equal(toHtml(html`<p>${null}${undefined}</p>`), '<p></p>');
 });
@@ -68,9 +68,9 @@ test('numbers and booleans render as themselves', () => {
 
 // --- The page --------------------------------------------------------------
 
-const page = (over: Partial<StatusInput> = {}): string => renderPage(buildModel({ ...COLD, ...over }));
+const page = (over: InputOver = {}): string => renderPage(buildModel(input(over)));
 
-// The fresh-container page, which is also what the CI smoke test fetches.
+// The fresh-container page, and what the CI smoke test fetches.
 test('the cold page is a complete document with nothing missing rendered as text', () => {
   const rendered = page();
   assert.ok(rendered.startsWith('<!doctype html>'));
@@ -80,14 +80,13 @@ test('the cold page is a complete document with nothing missing rendered as text
   }
 });
 
-// The realistic path: a show title lands in the run journal, which is a file on
-// disk, and the page renders it on every request from then on.
+// The realistic path: a show title lands in the run journal on disk, and the
+// page renders it on every request from then on.
 test('hostile content from every untrusted source renders inert', () => {
   const payload = `</td></tr><script>alert(1)</script><img src=x onerror="alert(2)">`;
   const rendered = page({
-    problems: [payload],
+    problems: [{ area: 'library', message: payload }],
     libraryError: payload,
-    counts: { [payload]: 3 },
     gate: { pull: 'none', updated: 0, removed: 0 },
     sheetConfigured: true,
     sheetFrozen: `FROZEN: copy ${payload} back`,
@@ -106,21 +105,23 @@ test('hostile content from every untrusted source renders inert', () => {
   });
 
   // Structural, not a substring hunt: `onerror=` legitimately survives as
-  // escaped *text*, which is inert. What must not exist is a tag the payload
-  // opened, so check the set of element names the document actually contains.
+  // escaped text. What must not exist is a tag the payload opened, so check
+  // the set of element names the document contains.
   const elements = new Set([...rendered.matchAll(/<\/?([a-zA-Z][a-zA-Z0-9]*)/g)].map((m) => m[1]!.toLowerCase()));
   assert.ok(!elements.has('script'), 'no script element');
   assert.ok(!elements.has('img'), 'no injected element');
   assert.deepEqual(
-    [...elements].filter((e) => !['html', 'head', 'meta', 'title', 'style', 'body', 'div', 'header', 'h1', 'span', 'section', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'time', 'ul', 'li', 'p', 'b', 'br', 'footer'].includes(e)),
+    [...elements].filter(
+      (e) =>
+        !['html', 'head', 'meta', 'title', 'style', 'body', 'div', 'header', 'h1', 'h2', 'span', 'section', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'time', 'ul', 'li', 'p', 'b', 'br', 'footer', 'a', 'details', 'summary'].includes(e),
+    ),
     [],
     'every element is one this file wrote',
   );
   assert.ok(rendered.includes('&lt;script&gt;'), 'and the text itself is still shown, escaped');
 });
 
-// A page that omits the section is a page that hides the one failure the
-// subsystem exists to survive.
+// Omitting the section hides the one failure the subsystem exists to survive.
 test('a frozen sheet prints the whole repair message', () => {
   const message = 'FROZEN: copy _sync-repair-1 back over Sheet1 and delete rows 610-611';
   const rendered = page({ sheetConfigured: true, sheetStatus: 'frozen', sheetFrozen: message });
@@ -131,17 +132,68 @@ test('an unconfigured sheet says so rather than showing an empty section', () =>
   assert.ok(page().includes('Not configured'));
 });
 
-// Requests never trigger a fetch. A control that started work would break the
-// invariant the whole architecture rests on, so there is nothing to submit.
-test('the page is inert: no script, no form, no off-origin request', () => {
-  const rendered = page({ sheetConfigured: true, counts: { 'shows/watching': 4 }, gate: { pull: 'none', updated: 0, removed: 0 } });
-  for (const forbidden of ['<script', '<form', '<button', 'http://', 'https://', 'src=']) {
+// Requests never trigger a fetch; a control that started work would break the
+// invariant the architecture rests on.
+// The page loads nothing: the feed token is in its URL, and any subresource
+// would carry it to another origin in a `Referer`. A link the reader clicks is
+// not a subresource — `no-referrer` covers it, and the two links are the point
+// of the page — so what is banned is every form of automatic fetching.
+test('the page fetches nothing: no script, no form, no subresource', () => {
+  const rendered = page({
+    sheetConfigured: true,
+    sheetUrl: 'https://docs.google.com/spreadsheets/d/SHEET/edit',
+    counts: countsWith({ shows: { watching: 4 } }),
+    gate: { pull: 'none' },
+  });
+  for (const forbidden of ['<script', '<form', '<button', '<link', '<iframe', 'src=', 'srcset', '@import', 'url(', 'http-equiv', 'ping=']) {
     assert.ok(!rendered.includes(forbidden), `the page must contain no ${forbidden}`);
   }
 });
 
+/** Every absolute URL in the document, whatever attribute or text it sits in. */
+const urlsIn = (rendered: string): string[] => [...rendered.matchAll(/[a-z]+:\/\/[^"'\s<>]+/g)].map((m) => m[0]);
+
+/** `webcal:` addresses the same authority; parse it as https to read the host. */
+const hostOf = (url: string): string => new URL(url.replace(/^webcal:/, 'https:')).host;
+
+// The token is in this page's own URL and in both feed links, which is fine:
+// the reader already has it. What must never happen is it addressing another
+// host. A `webcal:` subscription is durable — one wrong address keeps
+// re-fetching with the token for as long as that calendar lives.
+test('the feed token only ever addresses this service', () => {
+  const rendered = page({ sheetConfigured: true, sheetUrl: 'https://docs.google.com/spreadsheets/d/SHEET/edit' });
+  const carrying = urlsIn(rendered).filter((url) => url.includes('fixture-token'));
+
+  assert.ok(carrying.length > 0, 'the feed links are on the page at all');
+  for (const url of carrying) assert.equal(hostOf(url), 'localhost:3000', `${url} is not this service`);
+});
+
+test('the spreadsheet is the only host the page links out to', () => {
+  const rendered = page({ sheetConfigured: true, sheetUrl: 'https://docs.google.com/spreadsheets/d/SHEET/edit' });
+  const hosts = new Set([...rendered.matchAll(/<a [^>]*href="([^"]*)"/g)].map((m) => hostOf(m[1]!)));
+  assert.deepEqual([...hosts].sort(), ['docs.google.com', 'localhost:3000']);
+});
+
+// Following the http address downloads a snapshot, which a client imports once
+// and never refreshes. Only `webcal:` asks it to subscribe.
+test('the subscribe link asks for a subscription, not a download', () => {
+  const rendered = page({});
+  const hrefs = [...rendered.matchAll(/<a [^>]*href="([^"]*)"/g)].map((m) => m[1]!);
+  assert.ok(
+    hrefs.some((href) => href.startsWith('webcal://') && href.endsWith('/feed.ics')),
+    'the feed is linked as webcal',
+  );
+});
+
+test('every link is safe to follow', () => {
+  const rendered = page({ sheetConfigured: true, sheetUrl: 'https://docs.google.com/spreadsheets/d/SHEET/edit' });
+  for (const tag of [...rendered.matchAll(/<a [^>]*>/g)].map((m) => m[0])) {
+    assert.match(tag, /rel="noopener noreferrer"/, `${tag} needs rel`);
+  }
+});
+
 // An upstream failure body is untrusted text of unknown shape — exactly what
-// the `html` tag exists for, and now rendered in a second place.
+// the `html` tag exists for.
 test('a failing request renders its body inert', () => {
   const payload = `</td></tr><script>alert(1)</script>`;
   const rendered = page({
@@ -160,14 +212,14 @@ test('an empty request log renders the section rather than breaking the page', (
   assert.ok(!rendered.includes('undefined'));
 });
 
-// The change line is the part that says whether anything actually happened.
 test('the library movement reaches the page', () => {
   const rendered = page({
-    movement: moved({ at: before(MINUTE), deltas: { 'shows/watching': -1, 'shows/completed': 1 }, updated: 3 }),
+    movement: moved({ at: before(MINUTE), deltas: [{ type: 'shows', status: 'watching', delta: -1 }, { type: 'shows', status: 'completed', delta: 1 }], updated: 3 }),
   });
   assert.match(rendered, /shows\/watching \u22121/);
   assert.match(rendered, /shows\/completed \+1/);
-  assert.match(rendered, /3 records updated/);
+  assert.match(rendered, /3 records read/);
+  assert.match(rendered, /last pull/, 'labelled, because it is a different moment from the gate pill');
 });
 
 test('the summary says when runtime lookups are off, and nothing when they work', () => {
@@ -175,4 +227,12 @@ test('the summary says when runtime lookups are off, and nothing when they work'
   assert.match(off, /runtimes off/);
   const on = renderPage(buildModel(input({ sheetConfigured: true, runtimesConfigured: true })));
   assert.doesNotMatch(on, /runtimes off/, 'a page that works says nothing about it');
+});
+
+// A stamp with no usable instant must not become a `<time>`: the attribute
+// would carry the unparseable string and the tooltip would be empty.
+test('an unparseable timestamp renders no time element', () => {
+  const rendered = page({ polledAt: 'not a date' });
+  assert.ok(!rendered.includes('datetime="not a date"'), 'no invalid datetime attribute');
+  assert.ok(!rendered.includes('title=""'), 'and no empty tooltip');
 });
