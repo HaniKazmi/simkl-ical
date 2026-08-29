@@ -155,7 +155,9 @@ test('the page fetches nothing off this host: no script, no form, no remote subr
   // Pinned exactly, so a fourth one cannot arrive unnoticed, and every href stays relative.
   assert.deepEqual(
     [...rendered.matchAll(/<link[^>]*href="([^"]*)"/g)].map((m) => m[1]!),
-    ['favicon.svg', 'favicon.ico', 'apple-touch-icon.png'],
+    // Order is asserted, not just membership: the `.ico` leads because Safari before 26 renders
+    // no SVG favicon and has to reach a raster one.
+    ['favicon.ico', 'favicon.svg', 'apple-touch-icon.png'],
     'the icons are the only subresources, and all of them are same-origin',
   );
 });

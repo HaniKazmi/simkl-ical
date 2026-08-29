@@ -11,7 +11,7 @@
  * Preferred by every current browser and sharp at any size, so it is the only one that has to look
  * right. A calendar because a calendar feed is what this service exists to produce.
  */
-export const ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+export const ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
 <rect width="32" height="32" rx="7" fill="#2f6feb"/>
 <rect x="7" y="8.5" width="18" height="16" rx="2.5" fill="#fff"/>
 <rect x="7" y="12.5" width="18" height="1.5" fill="#2f6feb"/>
