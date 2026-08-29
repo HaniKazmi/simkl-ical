@@ -33,10 +33,9 @@ test('a season read returns the parsed body', async () => {
   );
 });
 
-// The load-bearing one. `describeUrl` renders request paths onto the status
-// page and into the request log, so a credential in the query string is a
-// credential on a page — and the denylist that hides boring parameters is the
-// wrong mechanism to rely on for that.
+// `describeUrl` renders request paths onto the status page and into the
+// request log, so a credential in the query string is a credential on a page —
+// and the boring-parameter denylist is the wrong mechanism to rely on.
 test('neither the key nor the pin ever reaches a URL', async () => {
   clearTokenCache();
   await withConfig({ tvdbApiKey: KEY, tvdbPin: PIN }, () =>
@@ -71,9 +70,9 @@ test('the token is sent as a bearer, and the key goes in the login body alone', 
   );
 });
 
-// A licensed key logs in with the key alone, and TVDB hands back a token for a
-// *wrong* pin rather than refusing — so sending an empty one would look like it
-// worked while proving nothing.
+// A licensed key logs in alone, and TVDB hands back a token for a *wrong* pin
+// rather than refusing — an empty one would look like it worked while proving
+// nothing.
 test('an unset pin is omitted from the login body rather than sent empty', async () => {
   clearTokenCache();
   await withConfig({ tvdbApiKey: KEY, tvdbPin: undefined }, () =>
@@ -132,9 +131,6 @@ test('a rejected login is an account failure, not a fact about any season', asyn
   );
 });
 
-// The lifetime in auth.ts is assumed rather than read from the response, so a
-// token can in principle outlive its welcome. Dropping the cache is what makes
-// a wrong guess cost one poll instead of every poll after it.
 // The token lifetime in auth.ts is assumed, not read, so TVDB can invalidate
 // a cached bearer early. That must cost one re-login, never the seasons: an
 // 'account' classification settles every pending season's cell for good.
@@ -158,9 +154,8 @@ test('a stale bearer re-logs in and succeeds within the same call', async () => 
   );
 });
 
-// Only a rejection that survives the fresh login proves the credential is bad
-// — and that one must classify 'account', or a typo in the key would retry
-// forever.
+// Only a rejection surviving the fresh login proves the credential is bad —
+// and that one must classify 'account', or a typo'd key retries forever.
 test('a 401 that survives a fresh login settles as account', async () => {
   clearTokenCache();
   await withKey(() =>
@@ -190,10 +185,9 @@ test('a 404 is settled and a 500 is worth retrying', async () => {
     withFetch(server({}, { status: 500 }), async (calls) => {
       const err = await apiGet('/series/9/episodes/official', { component: 'runtimes' }).catch((e: unknown) => e);
       assert.equal(classify(err), 'transient');
-      // Two, not the five the other clients allow. This phase sits inside a
-      // sheet run whose snapshot goes stale at 120s, and nothing it produces is
-      // load-bearing — so it gives up first rather than costing the run a
-      // re-read.
+      // Two, not the other clients' five: this phase sits inside a sheet run
+      // whose snapshot goes stale at 120s, and nothing it produces is
+      // load-bearing, so it gives up rather than costing the run a re-read.
       assert.equal(calls.filter((c) => !c.endsWith('/login')).length, 2, 'retried to the cap');
     }),
   );

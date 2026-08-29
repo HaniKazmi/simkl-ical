@@ -36,10 +36,10 @@ interface Scenario {
 }
 
 /**
- * A grid, a library, and a catalogue in some state of answeredness. A title
- * with no `details` entry is one whose `/tv/{id}` has not answered — the store
- * writes `tvdbId` as a number or an explicit null the moment it lands, so its
- * absence is the state the planner reads as *pending*.
+ * A grid, a library, and a partially answered catalogue. A title with no
+ * `details` entry is one whose `/tv/{id}` has not answered — the store writes
+ * `tvdbId` (number or explicit null) the moment it lands, so absence is what
+ * the planner reads as pending.
  */
 const scenario = ({ rows, items, episodes = {}, details = {}, tvdbIds = {}, runtimes = {} }: Scenario) => {
   const grid = parseGrid(sheetSnapshot([H, ...rows]));
@@ -66,8 +66,8 @@ const skipMessages = (plan: SheetPlan): string => plan.skips.map((s) => s.messag
 
 // --- the core case ---------------------------------------------------------
 
-// The first run's single largest edit, and the shape of nearly every edit: a
-// count advancing on an open season, with nothing at all on the show row.
+// The shape of nearly every edit: a count advancing on an open season, with
+// nothing on the show row.
 test('a part-watched open season advances its count and touches nothing else', () => {
   const { plan } = scenario({
     rows: [show('Malcolm in the Middle', 'Watching', 100), season(6, 22, 44000), season(7, 1, null)],
@@ -80,8 +80,7 @@ test('a part-watched open season advances its count and touches nothing else', (
   assert.equal(result.insert, null);
 });
 
-// The whole sheet is derived from formulas on the show row; the sync must never
-// write one, so a run that produces any show-row edit but Status is a bug.
+// Show-row cells are formula roll-ups; any show-row edit but Status is a bug.
 test('nothing but Status is ever planned for a show row', () => {
   const { plan, grid } = scenario({
     rows: [show('Futurama', 'Up To Date', 3407), season(10, 13, 44000)],
@@ -96,8 +95,8 @@ test('nothing but Status is ever planned for a show row', () => {
 
 // --- the cut-off -----------------------------------------------------------
 
-// The rule applies uniformly, with no exemptions. A dormant sheet produces zero
-// edits, and no run can retro-edit years of history.
+// The cut-off has no exemptions: a dormant sheet produces zero edits, so no
+// run can retro-edit years of history.
 test('a show with no recent activity produces nothing at all, show row included', () => {
   const { plan } = scenario({
     rows: [show('The Sandman', 'Ended', 200), season(2, 1, null)],
@@ -126,8 +125,8 @@ test('within an eligible show, a dormant season is still left alone', () => {
 
 // --- end dates -------------------------------------------------------------
 
-// Silo S3: 7 aired of 10, all watched. The naive "every aired episode watched"
-// test stamps a permanent end date on a season with three episodes to come.
+// Silo S3: 7 aired of 10, all 7 watched. "Every aired episode watched" would
+// stamp a permanent end date on a season with three episodes to come.
 test('a season still airing is never dated, however much of it has been watched', () => {
   const { plan } = scenario({
     rows: [show('Silo', 'Watching', 300), season(2, 10, 44000), season(3, 3, null)],
@@ -152,8 +151,8 @@ test('a fully aired, fully watched season is dated on its last watch', () => {
   assert.equal(end?.value.numberValue, dateSerial(plainDateIn(Temporal.Instant.from(last), TZ)));
 });
 
-// A dated season is closed by the user's decision — which is also why a wrongly
-// stamped date could never be corrected, and why `End` is so conservative.
+// A date records the user's decision, and a wrong one could never be
+// corrected — hence `End`'s conservatism.
 test('a season that already has an end date is never revisited', () => {
   const { plan } = scenario({
     rows: [show('Fargo', 'Ended', 500), season(1, 4, 44000)],
@@ -167,9 +166,8 @@ test('a season that already has an end date is never revisited', () => {
 // --- insertion, and the runtime the new row carries -------------------------
 
 /**
- * One block, one uncovered season, and every knob the runtime decision reads.
- * `aired` short of `total` is what makes the season still be running, which is
- * the difference between the blank cell and the filled one.
+ * One block, one uncovered season. `aired` short of `total` keeps the season
+ * running, which decides between the blank Episodes cell and the filled one.
  */
 const adding = (over: Partial<Scenario> & { aired?: number } = {}) => {
   const { aired = 10, ...rest } = over;
@@ -186,8 +184,8 @@ const adding = (over: Partial<Scenario> & { aired?: number } = {}) => {
 const fields = (insert: RowInsert | null): string[] => (insert?.fill ?? []).map((f) => f.field).sort();
 const cellIn = (insert: RowInsert | null, field: string) => insert?.fill.find((f) => f.field === field)?.value;
 
-// The headline. A blank cell is what makes the row eligible for the per-season
-// average later; a filled one is refused by the runtime rules for ever.
+// A blank cell keeps the row eligible for the per-season average later; a
+// filled one the runtime rules refuse for ever.
 test('a season still running is inserted with a blank Episodes cell, for its close to fill', () => {
   const { plan, runtimeDemands } = adding({ aired: 6 });
   const insert = plan().insert;
@@ -195,8 +193,7 @@ test('a season still running is inserted with a blank Episodes cell, for its clo
   assert.deepEqual(fields(insert), ['Episode', 'Length', 'Season', 'Start']);
   assert.equal(cellIn(insert, 'Episodes'), undefined, 'left for the season average');
   assert.equal(cellIn(insert, 'End'), undefined, 'and not dated, because it is still running');
-  // The gate that stops a settled null being recorded for a season whose SIMKL
-  // episode count has not finished moving.
+  // Stops a settled null landing while SIMKL's episode count is still moving.
   assert.deepEqual(runtimeDemands(), [], 'and nothing is asked about a season still airing');
 });
 
@@ -207,8 +204,8 @@ test('a season already over is inserted dated, carrying its own average', () => 
   assert.ok((cellIn(insert, 'End')?.numberValue ?? 0) > 0);
 });
 
-// The row is created and dated by one fill, so dating it now would freeze a
-// blank cell. The date is not lost: it comes from the watch timestamp.
+// Dating the row now would freeze a blank cell. The date is not lost: it
+// comes from the watch timestamp.
 test('a season over but whose runtimes have not come back is inserted open', () => {
   const { plan } = adding();
   const insert = plan().insert;
@@ -217,23 +214,23 @@ test('a season over but whose runtimes have not come back is inserted open', () 
   assert.match(insert?.note ?? '', /have not come back/);
 });
 
-// Settled means no number is coming. The show-wide guess is worse than the
-// season's own average and better than a cell nothing can ever fill again.
+// Settled means no number is coming. The show-wide guess beats a cell nothing
+// can ever fill again.
 test('a settled null closes the new row on SIMKL’s show-wide runtime', () => {
   const insert = adding({ runtimes: { 800: { 2: null } } }).plan().insert;
   assert.deepEqual(fields(insert), ['End', 'Episode', 'Episodes', 'Length', 'Season', 'Start']);
   assert.ok(Math.abs((cellIn(insert, 'Episodes')?.numberValue ?? 0) - 43 / 1440) < 1e-9);
 });
 
-// An average no episode could have. Treated as the settled null above, never as
-// a refusal: one title's bad upstream data must not cost the row.
+// An average no episode could have is treated as the settled null, never a
+// refusal: one title's bad upstream data must not cost the row.
 test('an implausible average falls back rather than writing 1440 times the truth', () => {
   const insert = adding({ runtimes: { 800: { 2: 5000 } } }).plan().insert;
   assert.ok(Math.abs((cellIn(insert, 'Episodes')?.numberValue ?? 0) - 43 / 1440) < 1e-9);
 });
 
-// The inert path. Without a join key a blank cell could never be filled by
-// anything, so the show-wide runtime is the best there will ever be.
+// Without a join key the blank cell could never be filled, so the show-wide
+// runtime is the best there will ever be.
 test('with no TVDB id the new row keeps SIMKL’s show-wide runtime', () => {
   const { plan, runtimeDemands } = adding({ tvdbIds: {}, aired: 6 });
   const insert = plan().insert;
@@ -241,10 +238,9 @@ test('with no TVDB id the new row keeps SIMKL’s show-wide runtime', () => {
   assert.deepEqual(runtimeDemands(), []);
 });
 
-// `ShowDetail.runtime` is show-wide, so one title missing it speaks for every
-// season of that title. Refusing the row over it withholds the count, the start
-// date and the season number too — all of which are known — to avoid one blank
-// cell a reader can fill by hand.
+// `ShowDetail.runtime` is show-wide, so one missing value speaks for every
+// season. Refusing the row would withhold the known count, start date and
+// season number over one blank cell a reader can fill by hand.
 test('a title SIMKL gives no runtime for is added blank rather than refused', () => {
   const { plan } = adding({ tvdbIds: {}, details: { 800: { status: 'airing' } }, aired: 6 });
   const result = plan();
@@ -255,11 +251,9 @@ test('a title SIMKL gives no runtime for is added blank rather than refused', ()
 });
 
 /**
- * A season that finished airing long ago, one episode in. Its episode lengths
- * are settled and its end date is nowhere near due, which is the case that shows
- * the two questions apart: gate the runtime on watching and a binge-started
- * season carries a blank cell and a Length of zero for as long as it takes to
- * get through it.
+ * A season finished long ago, one episode in: runtimes settled, end date
+ * nowhere near due. Gating the runtime on watching instead would leave a
+ * binge-started season with a blank cell and a Length of zero throughout.
  */
 const started = (over: Partial<Scenario> = {}) =>
   scenario({
@@ -281,18 +275,17 @@ test('a finished season just started is asked about, and carries its average und
   assert.deepEqual(runtimeDemands(), [], 'and not again once answered');
 });
 
-// The runtime is not there yet, so the cell waits — but the row is undated for
-// its own reason, and it is the close that will fill the cell either way.
+// The runtime is not back, so the cell waits — the row is undated for its own
+// reason, and the close fills the cell either way.
 test('a finished season just started, with no answer yet, is added blank and undated', () => {
   const insert = started().plan().insert;
   assert.deepEqual(fields(insert), ['Episode', 'Length', 'Season', 'Start']);
 });
 
 /**
- * A title whose `/tv/{id}` never answered: the episode list landed, so the shape
- * says the season is over, but no `tvdbId` and no show-wide runtime came with
- * it. Absent is not null here — null is the detail answering that there is no
- * key, which settles the question, where absent leaves it open.
+ * `/tv/{id}` never answered: the episode list says the season is over, but no
+ * `tvdbId` or show-wide runtime came. Absent is not null — null settles the
+ * question, absence leaves it open.
  */
 test('a title whose detail has not answered is added open, not dated blank', () => {
   const { plan } = scenario({
@@ -308,9 +301,8 @@ test('a title whose detail has not answered is added open, not dated blank', () 
   assert.match(insert?.note ?? '', /have not come back/);
 });
 
-// A dated row is never revisited, so a blank cell on one is blank for good. It
-// reads the same to a reader however the planner got there, and the report is
-// the only place they would learn to fill it in.
+// A dated row is never revisited, so a blank cell on one is blank for good;
+// the report is the only place a reader learns to fill it in.
 test('a row dated with a cell nothing can fill says so, whatever left it blank', () => {
   const insert = adding({ runtimes: { 800: { 2: null } }, details: { 800: { status: 'ended' } } }).plan().insert;
   assert.ok(cellIn(insert, 'End'), 'dated');
@@ -319,10 +311,9 @@ test('a row dated with a cell nothing can fill says so, whatever left it blank',
 });
 
 /**
- * The planner and the guard bounding a runtime differently is not a disagreement
- * that stays local: `assertPlanSafe` refuses whole-plan, so one title with a
- * sub-minute length upstream would drop every unrelated Episode, End and Status
- * edit in the run, every poll, for as long as its block stayed in scope.
+ * `assertPlanSafe` refuses whole-plan, so a planner/guard bound disagreement
+ * over one sub-minute length would drop every unrelated edit in the run, every
+ * poll, for as long as the block stays in scope.
  */
 test('a length the guard would refuse is never planned in the first place', () => {
   const { plan, grid } = adding({ tvdbIds: {}, details: { 800: { status: 'airing', runtime: 0.9 } }, aired: 6 });
@@ -331,15 +322,14 @@ test('a length the guard would refuse is never planned in the first place', () =
   assert.doesNotThrow(() => assertPlanSafe(result, grid), 'and the run is not refused whole over one title');
 });
 
-// What to fetch and what to write are one computation, asserted directly: the
-// season demanded is the season the plan then inserts.
+// What to fetch and what to write are one computation.
 test('the demand names exactly the season the plan inserts', () => {
   const { plan, runtimeDemands } = adding();
   assert.deepEqual(runtimeDemands(), [{ id: 800, tvdbId: 403245, season: 2 }]);
   assert.equal(plan().insert?.season, 2);
 });
 
-// Once answered the question is settled, including when the answer was null.
+// A null answer still counts as answered.
 test('a season already answered is not demanded again', () => {
   assert.deepEqual(adding({ runtimes: { 800: { 2: null } } }).runtimeDemands(), []);
 });
@@ -356,7 +346,7 @@ test('the status rule runs in order, and says nothing where it knows nothing', (
   assert.equal(deriveStatus(base, { detailStatus: 'airing' }), 'Up To Date');
   assert.equal(deriveStatus(base, { detailStatus: 'tba' }), 'Up To Date');
 
-  // hold, plantowatch and absent-from-every-list are all *no information*,
+  // hold, plantowatch and absent-from-every-list are all no information,
   // never a reason to write.
   assert.equal(deriveStatus({ ...base, status: 'hold' }, { detailStatus: 'ended' }), null);
   assert.equal(deriveStatus({ ...base, status: 'plantowatch' }, { detailStatus: 'ended' }), null);
@@ -364,7 +354,7 @@ test('the status rule runs in order, and says nothing where it knows nothing', (
 });
 
 // SIMKL cannot tell "axed" from "ended", so Cancelled is never produced — but
-// it is freely overwritten once there is recent activity.
+// recent activity freely overwrites it.
 test('Cancelled is never produced, and is overwritten when activity resumes', () => {
   const produced = new Set<string>();
   for (const detailStatus of ['ended', 'airing', 'tba', 'cancelled', 'canceled']) {
@@ -387,8 +377,8 @@ test('Cancelled is never produced, and is overwritten when activity resumes', ()
   assert.deepEqual(plan().edits.map((e) => [e.field, e.value.stringValue]), [['Status', 'Ended']]);
 });
 
-// Branch 1 reads item.status. A show the sheet already calls Ended, still being
-// watched, must not be rewritten to Abandoned.
+// Abandoned reads item.status. A show the sheet calls Ended, still being
+// watched, must not become Abandoned.
 test('Abandoned comes from the item status', () => {
   const grid = parseGrid(sheetSnapshot([H, show('Beef', 'Ended', 700), season(1, 10, 44000)]));
   const index = indexLibrary(libraryOf({ id: 700, status: 'watching', seasons: { 1: watched(10) } }));
@@ -470,8 +460,8 @@ test('an anime cour is completed on its own counters, with no episode lookup', (
   assert.deepEqual(demands().catalogue.filter((r) => r.episodes), []);
 });
 
-// A new cour is a separate SIMKL title with its own romaji name; attributing it
-// to a block needs the fuzzy matching that took 24 hand-written overrides.
+// A new cour is a separate SIMKL title with its own romaji name; matching it
+// to a block needs fuzzy matching that takes 24 hand-written overrides.
 test('a title with no row anywhere is reported, never added', () => {
   const { plan } = scenario({
     rows: [show('Frieren', 'Watching', null, 'anime'), season(1, 11, 44000, 1500)],
@@ -486,8 +476,8 @@ test('a title with no row anywhere is reported, never added', () => {
   assert.match(result.notes.join('\n'), /Sousou no Frieren 2nd Season \(simkl 1600\) has recent activity and no row/);
 });
 
-// A cour entry stands for exactly one season. One reporting several means the
-// row and the entry are not the same thing, and no rule here says which.
+// A cour entry stands for exactly one season; one reporting several means the
+// row and the entry disagree, and no rule says which wins.
 test('a season row whose own id spans several seasons is refused as ambiguous', () => {
   const { plan } = scenario({
     rows: [show('Doctor Who', 'Ended', null), season(14, 1, null, 2463827)],
@@ -509,7 +499,7 @@ test('a newly started season is inserted after the last season row, not at the s
   const insert = plan().insert;
   assert.equal(insert?.season, 11);
   // Row 5 in the UI is the row after S10 — not the show row, where
-  // inheritFromBefore would pick up the wrong formats.
+  // inheritFromBefore picks up the wrong formats.
   assert.equal(insert?.row, 4);
   assert.notEqual(insert?.row, grid.blocks[0]?.row);
   assert.deepEqual(insert?.fill.map((f) => f.field).sort(), ['Episode', 'Episodes', 'Length', 'Season', 'Start']);
@@ -542,8 +532,8 @@ test('a season with no row above it in the block is reported rather than inserte
   assert.match(skip?.message ?? '', /no season row above the insertion point/);
 });
 
-// Anime is refused because a new cour is a separate title; specials because a
-// fractional label encodes a judgement no rule here reproduces.
+// Anime: a new cour is a separate title. Specials: a fractional label encodes
+// a judgement no rule here reproduces.
 test('anime blocks are never inserted into', () => {
   const { plan } = scenario({
     rows: [show('Frieren', 'Watching', null, 'anime'), season(1, 11, 44000, 1500)],
@@ -565,7 +555,7 @@ test('SIMKL season 0 is never inserted — specials are maintained by hand', () 
 
 // --- idempotence -----------------------------------------------------------
 
-// The job re-plans the whole sheet every run, so the second run over an applied
+// The job re-plans the whole sheet every run; a second run over the applied
 // result is the cheapest proof it converges.
 test('running again over the applied result produces nothing', () => {
   const items: ItemSpec[] = [{ id: 100, status: 'completed', seasons: { 7: watched(7) }, watched: 7, total: 22, notAired: 0 }];
@@ -588,7 +578,7 @@ test('running again over the applied result produces nothing', () => {
 
 // --- demands ---------------------------------------------------------------
 
-// The cut-off is what keeps a cold run at roughly 28 calls rather than 600: an
+// The cut-off keeps a cold run at roughly 28 calls rather than 600: an
 // out-of-scope block demands nothing, however stale its catalogue.
 test('only eligible blocks demand catalogue lookups', () => {
   const { demands } = scenario({
@@ -601,9 +591,8 @@ test('only eligible blocks demand catalogue lookups', () => {
   assert.deepEqual([...new Set(demands().catalogue.map((r) => r.id))], [1]);
 });
 
-// The planner demands with no memory: what was already fetched, and what is
-// merely stale, is the store's question. The demand set only has to be right
-// about *which titles the plan runs on*.
+// The planner demands with no memory — filtering already-fetched is the
+// store's job. The demand set only has to name the titles the plan runs on.
 test('an eligible block demands its episode list and detail every pass', () => {
   const { demands } = scenario({
     rows: [show('Fargo', 'Watching', 1), season(1, 1, null)],
@@ -618,9 +607,9 @@ test('an eligible block demands its episode list and detail every pass', () => {
   ]);
 });
 
-// A row the planner declined to read is still a row. Inserting a second one for
-// the same season is the one insert mistake nothing downstream could detect —
-// the guard sees a well-formed insert into the right block.
+// An unresolved row is still a row. A second insert for the same season is the
+// one insert mistake nothing downstream detects — the guard sees a well-formed
+// insert into the right block.
 test('a season row that failed to resolve still blocks an insert for that season', () => {
   const { plan } = scenario({
     // S11 has an id of its own that resolves to nothing, so the row is skipped.
@@ -634,10 +623,10 @@ test('a season row that failed to resolve still blocks an insert for that season
   assert.match(skipMessages(result), /SIMKL id 999999 is in no list/);
 });
 
-// A live-action block with no episode shapes is a *failed lookup*, not a cour.
-// Reading it as one answers with `notAiredCount`, which spans the whole show
-// rather than the latest season — so Status fails closed the way End already
-// does, and the run's `retry` flag brings it back next poll.
+// A live-action block with no episode shapes is a failed lookup, not a cour.
+// Reading it as one answers with `notAiredCount`, which spans the whole show,
+// not the latest season — so Status fails closed like End, and the run's
+// `retry` flag brings it back next poll.
 test('a live-action show whose episode list did not arrive gets no Status', () => {
   const { plan } = scenario({
     rows: [show('Silo', 'Ended', 300), season(1, 1, null)],
@@ -650,8 +639,8 @@ test('a live-action show whose episode list did not arrive gets no Status', () =
   const skip = result.skips.find((s) => s.code === 'no-episode-list');
   assert.match(skip?.message ?? '', /Silo: no episode list came back, so Status is left alone/);
 
-  // With the list present the same inputs do produce it, so the guard above is
-  // the missing data and not something else.
+  // With the list present the same inputs do produce a Status, so the missing
+  // data is what gates.
   const withList = scenario({
     rows: [show('Silo', 'Ended', 300), season(1, 1, null)],
     items: [{ id: 300, status: 'watching', seasons: { 1: watched(10) }, watched: 10, total: 10, notAired: 0 }],
@@ -661,8 +650,8 @@ test('a live-action show whose episode list did not arrive gets no Status', () =
   assert.deepEqual(withList.plan().edits.filter((e) => e.field === 'Status').map((e) => e.value.stringValue), ['Up To Date']);
 });
 
-// Anime legitimately has no episode list — one entry is one cour — so it must
-// keep deriving Status from its own not-aired counter.
+// Anime legitimately has no episode list — one entry is one cour — so Status
+// derives from its own not-aired counter.
 test('an anime block still gets a Status without any episode list', () => {
   const { plan } = scenario({
     rows: [show('Frieren', 'Watching', null, 'anime'), season(1, 11, 44000, 1500)],
@@ -685,10 +674,8 @@ const twoNewSeasons = (rows: CellSpec[][]) =>
     details: { 3407: { status: 'airing', runtime: 22 }, 300: { status: 'airing', runtime: 45 } },
   });
 
-// One insert per run keeps the rollback trivially correct, so two seasons
-// started between polls cannot both land at once. What matters is that the
-// second is not lost: the job re-plans the whole sheet every run, so the next
-// one picks it up.
+// One insert per run keeps the rollback trivially correct. The second season
+// is not lost: the job re-plans the whole sheet, so the next run picks it up.
 test('two new seasons insert one per run, and the second survives to the next', () => {
   const before: CellSpec[][] = [
     show('Futurama', 'Watching', 3407),
@@ -718,8 +705,8 @@ test('two new seasons insert one per run, and the second survives to the next', 
   assert.equal(twoNewSeasons(settled).plan().insert, null);
 });
 
-// Deferring it silently is the part that would bite: the report says "1 insert"
-// and nothing tells you a second season is waiting.
+// Deferring silently is what bites: the report says "1 insert" and nothing
+// names the waiting season.
 test('a season deferred past the per-run cap is reported', () => {
   const before: CellSpec[][] = [
     show('Futurama', 'Watching', 3407),
@@ -729,14 +716,14 @@ test('a season deferred past the per-run cap is reported', () => {
   ];
   const result = twoNewSeasons(before).plan();
   assert.match(result.notes.join('\n'), /Silo S2/, 'the deferred season is named');
-  // Counted, not just mentioned: this is what makes the sync ask for another
-  // poll instead of waiting on unrelated watch activity to wake one.
+  // Counted, not just mentioned: the count makes the sync ask for another
+  // poll rather than wait on unrelated watch activity.
   assert.equal(result.deferredInserts, 1);
   assert.equal(twoNewSeasons([...before.slice(0, 2)]).plan().deferredInserts, 0, 'nothing deferred when it fits');
 });
 
-// The projection the status page's history is built from. It outlives the run,
-// so what it drops is dropped for good.
+// The projection behind the status page's history; it outlives the run, so
+// what it drops is dropped for good.
 test('planRecord keeps where and what changed, and drops the diagnostics', () => {
   const plan: SheetPlan = {
     edits: [
@@ -755,10 +742,9 @@ test('planRecord keeps where and what changed, and drops the diagnostics', () =>
   });
 });
 
-// `skips` and `notes` answer "why was this row left alone", which is the
-// per-show diagnostic the status page deliberately does not carry. Widening the
-// record to include them turns a change log into a question the page cannot
-// answer well, and does it in a file that survives restarts.
+// `skips` and `notes` answer "why was this row left alone" — a per-show
+// diagnostic the status page deliberately does not carry, in a file that
+// survives restarts.
 test('planRecord carries no skip or note lines', () => {
   const record = planRecord({ edits: [], insert: null, skips: [{ code: 'unknown-id', message: 'a skip' }], notes: ['a note'], deferredInserts: 1 });
   assert.deepEqual(record, { edits: [], inserts: [] });
@@ -768,17 +754,15 @@ test('planRecord carries no skip or note lines', () => {
 
 // --- rows the planner declines rather than handing to the guard -------------
 //
-// `assertPlanSafe` refuses a whole plan, by design. So anything the planner can
-// see will be refused has to be declined here instead, or one hand-annotated
-// cell stops every unrelated edit in the run for as long as that row stays
-// inside the activity window.
+// `assertPlanSafe` refuses a whole plan, so anything the planner can see will
+// be refused must be declined here — or one hand-annotated cell stops every
+// unrelated edit while the row stays inside the activity window.
 
 test('a season whose Episode cell holds text is skipped, not planned', () => {
   const { plan } = scenario({
     rows: [
       show('Fargo', 'Watching', 100),
-      // A count the user annotated by hand: it carries a stringValue, so it
-      // parses to no number at all.
+      // A hand-annotated count: a stringValue, so it parses to no number.
       [null, null, 1, '12 (rewatch)', 44000, null, 0.0153, { formula: '=G3*D3' }, null, null],
     ],
     items: [{ id: 100, status: 'watching', seasons: { 1: watched(14) }, watched: 14, total: 14 }],
@@ -815,14 +799,13 @@ test('one unusable Episode cell does not stop the other rows', () => {
   const episodeEdits = plan.edits.filter((e) => e.field === 'Episode');
   assert.equal(episodeEdits.length, 1, 'the healthy row is still planned');
   assert.equal(episodeEdits[0]?.row, 4, 'and it is the healthy one');
-  // The whole point: this plan passes the guard rather than being refused.
+  // The plan passes the guard rather than being refused.
   assert.doesNotThrow(() => assertPlanSafe(plan, grid));
 });
 
-// A hand-maintained file can end up with two rows for one season — a paste that
-// duplicated a row, or a split someone abandoned. One title's progress cannot
-// say which to advance, so both would take the same count: the same number
-// written twice, and only one of them rolling up into the show row.
+// A hand-maintained file can hold two rows for one season. Progress cannot say
+// which to advance, so both would take the same count — and only one of them
+// rolls up into the show row.
 test('two rows describing one season are both skipped, not both written', () => {
   const { plan } = scenario({
     rows: [show('Fargo', 'Watching', 100), season(1, 2, null), season(1, 2, null)],
@@ -836,8 +819,8 @@ test('two rows describing one season are both skipped, not both written', () => 
   assert.match(skip?.message ?? '', /more than one row describes this season/, `expected a skip naming the clash, got ${JSON.stringify(result.skips)}`);
 });
 
-// The same clash written the other way: one row names the block's id outright
-// and the other inherits it. Both resolve to the same title and season.
+// The same clash the other way: one row names the block's id, the other
+// inherits it. Both resolve to the same title and season.
 test('an explicit id and an inherited one are the same claim', () => {
   const { plan } = scenario({
     rows: [show('Fargo', 'Watching', 100), season(1, 2, null, 100), season(1, 2, null)],
@@ -847,8 +830,8 @@ test('an explicit id and an inherited one are the same claim', () => {
   assert.deepEqual(plan().edits.filter((e) => e.field === 'Episode'), []);
 });
 
-// And the shape that is *not* a clash: an anime block whose rows each carry
-// their own SIMKL id has one season 1 per title.
+// Not a clash: an anime block whose rows each carry their own SIMKL id has one
+// season 1 per title.
 test('separate titles each with a season 1 are not a clash', () => {
   const { plan } = scenario({
     rows: [show('Some Anime', 'Watching'), season(1, 2, null, 200), season(1, 2, null, 300)],
@@ -892,8 +875,8 @@ test('a season closing with a blank runtime cell gets its average, in the same b
   assert.match(episodes.note, /49 min average/);
 });
 
-// A runtime typed by hand is a deliberate correction, and the row freezes the
-// moment End lands — so an overwrite could never be undone.
+// A hand-typed runtime is a deliberate correction, and the row freezes when
+// End lands — so an overwrite could never be undone.
 test('a runtime already in the cell is never overwritten', () => {
   const plan = closing({
     rows: [show('Silo', 'Watching', 800), seasonRow(1, 9, null, { episodes: 0.0299 })],
@@ -903,9 +886,8 @@ test('a runtime already in the cell is never overwritten', () => {
   assert.deepEqual(plan.edits.filter((e) => e.field === 'Episodes'), []);
 });
 
-// End is a one-way door: the guard refuses every later edit to a dated row, so
-// closing before the answer arrives forfeits the cell for good. The serial comes
-// from the watch timestamp, so waiting costs nothing.
+// End is a one-way door: closing before the answer arrives forfeits the cell
+// for good. The serial comes from the watch timestamp, so waiting is free.
 test('a runtime still outstanding holds the End write rather than closing blind', () => {
   const plan = closing().plan();
   assert.equal(has(plan, 'End'), false, 'the row stays open');
@@ -914,10 +896,9 @@ test('a runtime still outstanding holds the End write rather than closing blind'
   assert.match(skip?.message ?? '', /have not come back/);
 });
 
-// Settled means no season average is coming. This batch dates the row either
-// way, so the choice is between an approximate number and a cell nothing can
-// ever fill again — and it cannot turn on whether the row was created by this
-// run or an earlier one, or two identical rows differ invisibly.
+// Settled means no season average is coming. The batch dates the row either
+// way, so the choice is an approximate number or a cell nothing can ever fill
+// again — and it cannot turn on which run created the row.
 test('a settled null closes the season on the show-wide runtime', () => {
   const plan = closing({ runtimes: { 800: { 1: null } } }).plan();
   assert.ok(has(plan, 'End'), 'the season is dated');
@@ -931,11 +912,9 @@ test('a season with neither an average nor a show-wide length closes blank, and 
   assert.match(plan.notes.join(' '), /no usable episode runtimes/);
 });
 
-// No join key is the one state that means "no runtime is obtainable here",
-// whether SIMKL carries no id or there is no credential to ask with — the store
-// withholds it in both cases. Read as *pending* instead, every season in the
-// sheet would stop being dated, which is why this asserts the skips are empty
-// rather than only that the End landed.
+// No join key means no runtime is obtainable — no SIMKL id, or no credential;
+// the store withholds it either way. Read as pending instead, every season in
+// the sheet would stop being dated, hence asserting the skips are empty.
 test('a row with no tvdb id closes exactly as it did before this existed', () => {
   const bare = closing({ tvdbIds: {} });
   closedBare(bare.plan());
@@ -944,11 +923,10 @@ test('a row with no tvdb id closes exactly as it did before this existed', () =>
 });
 
 /**
- * Absent is not null: a title whose episode list arrived but whose `/tv/{id}`
- * detail did not has an unanswered runtime question, not a settled one. The
- * one merged catalogue task fetches episodes before the detail, so a transient
- * failure leaves exactly this state — and dating the row on it would forfeit
- * its Episodes cell on a 503, since a dated row is never revisited.
+ * Absent is not null: episodes arrived but `/tv/{id}` did not, so the runtime
+ * question is unanswered, not settled. The catalogue task fetches episodes
+ * before the detail, so a transient failure leaves exactly this state — and a
+ * dated row is never revisited, so dating on it forfeits the cell on a 503.
  */
 test('a row whose detail has not answered holds its close open', () => {
   const undetailed = closing({ details: {}, tvdbIds: {} });
@@ -956,8 +934,8 @@ test('a row whose detail has not answered holds its close open', () => {
   assert.equal(has(plan, 'End'), false, 'the row stays open');
   const skip = plan.skips.find((s) => s.code === 'awaiting-runtimes');
   assert.match(skip?.message ?? '', /detail has not come back/);
-  // No runtime demand — there is no key to ask TVDB with; the catalogue demand
-  // is what brings the answer.
+  // No runtime demand — no key to ask TVDB with; the catalogue demand brings
+  // the answer.
   assert.deepEqual(undetailed.runtimeDemands(), []);
   assert.equal(plan.edits.some((e) => e.field === 'Episode'), true, 'the count still advances');
 });
@@ -992,8 +970,8 @@ test('an anime block is never demanded, however its ids are arranged', () => {
       tvdbIds: { 900: 424536 },
     });
   assert.deepEqual(anime('anime', null, 900).runtimeDemands(), [], 'ids on the cour row, as anime is kept');
-  // The hole an id-location test alone leaves: Type says anime, but someone put
-  // an id on the show row, so "no block ids" reads it as live-action.
+  // Type says anime but the id sits on the show row, so an id-location rule
+  // alone would read it as live-action.
   assert.deepEqual(anime('anime', 900, null).runtimeDemands(), [], 'Type is what settles it');
 });
 
@@ -1001,9 +979,8 @@ test('a row carrying its own id is never demanded — its number is not the entr
   const own = scenario({
     rows: [show('Doctor Who', 'Watching', 810), seasonRow(14, 8, null, { id: 811, episodes: null })],
     items: [
-      // The show-row entry's own watched season is the one the row already
-      // covers, so nothing here is insertable and the only thing left to ask
-      // about is the row itself — which is the rule under test.
+      // The show-row entry's watched season is already covered, so the row
+      // itself is the only thing left to ask about.
       { id: 810, status: 'watching', seasons: { 14: watched(8) }, watched: 8, total: 8 },
       { id: 811, status: 'completed', seasons: { 1: watched(8) }, watched: 8, total: 8 },
     ],
@@ -1015,15 +992,15 @@ test('a row carrying its own id is never demanded — its number is not the entr
 });
 
 test('a fractional season is never demanded', () => {
-  // Season 1 has a row of its own, closed, so the only thing the block could ask
-  // about is the fractional row — and the only reason it does not is the rule.
+  // Season 1's own row is closed, so only the fractional row could be asked
+  // about.
   const half = closing({ rows: [show('Silo', 'Watching', 800), seasonRow(1, 9, 44000), seasonRow(1.5, 9, null, { episodes: null })] });
   assert.deepEqual(half.runtimeDemands(), []);
 });
 
-// The old failure mode this design deletes: a row the planner treats as
-// *waiting* whose lookup was never requested would defer for ever. Both now
-// come out of one pass, so the invariant is asserted over every closing shape.
+// A row treated as waiting whose lookup is never requested defers for ever.
+// Plan and demands come out of one pass; the invariant is asserted over every
+// closing shape.
 test('every row the plan waits on is a season the same pass demanded', () => {
   const cases = [
     closing(),

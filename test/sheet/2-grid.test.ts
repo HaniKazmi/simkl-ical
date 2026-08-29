@@ -35,8 +35,8 @@ test('headers resolve case-insensitively and on trimmed text', () => {
   assert.equal(columns.id, 8);
 });
 
-// The cheapest proof that nothing depends on position: the same data in a
-// different column order must produce the same logical grid.
+// The cheapest proof nothing depends on position: the same data in a different
+// column order must produce the same logical grid.
 test('a shuffled column order resolves to the same blocks', () => {
   const shuffled = ['Type', 'id', 'Show', 'End', 'Start', 'Episode', 'Season', 'Status', 'Length', 'Episodes'];
   const pick = (row: CellSpec[]): CellSpec[] => shuffled.map((h) => row[H.indexOf(h)] as CellSpec);
@@ -58,8 +58,8 @@ test('a missing, renamed or duplicated header is a hard failure', () => {
 });
 
 test('the declared width is used, not the widest row', () => {
-  // A short read must not present a displaced header as missing, which under
-  // the fail-closed rule would disable the sync entirely.
+  // A short read must not present a displaced header as missing — under the
+  // fail-closed rule that disables the sync entirely.
   const snapshot = sheetSnapshot([H, show('Fargo', 'Ended', 1, 'show')], { columnCount: 31 });
   assert.equal(parseGrid(snapshot).columns.Type, 9);
 });
@@ -81,8 +81,8 @@ test('a season row with no show row above it throws rather than being orphaned',
   assert.throws(() => parseGrid(sheetSnapshot([H, season(1, 6, 45000, null)])), GridError);
 });
 
-// The show-row roll-up formulas use MATCH("*", …), which matches text only.
-// "24", "1899" and "1923" are real show names, so this is not theoretical.
+// The roll-up formulas use MATCH("*", …), which matches text only. "24",
+// "1899" and "1923" are real show names, so this is not theoretical.
 test('a numeric show title is refused, because the roll-up would merge two blocks', () => {
   assert.throws(() => parseGrid(sheetSnapshot([H, show('Fargo', 'Ended', 1, 'show'), season(1, 6, 45000, null), [1899, 'Ended', 1, 1, 1, 1, 1, 1, 2, 'show']])), /is not text/);
 });
@@ -107,8 +107,8 @@ test('a split cour reads as an ordered list of ids', () => {
   assert.deepEqual(parseIds(undefined), []);
 });
 
-// Both exceptions exist in the real sheet, and they are independent: Doctor Who
-// carries ids in both places, Parasyte carries one only on a season row.
+// Both exceptions exist in the real sheet: Doctor Who carries ids in both
+// places, Parasyte only on a season row.
 test("a season row's own id wins, and a blank one inherits the show row's", () => {
   const grid = parseGrid(sheetSnapshot([H, show('Doctor Who', 'Ended', 8530, 'show'), season(13, 8, 45000, 45010), season(14, 8, 45500, null, 2463827)]));
   const block = grid.blocks[0]!;
@@ -120,8 +120,8 @@ test('a block whose show row has no id still resolves from its season rows', () 
   const grid = parseGrid(sheetSnapshot([H, show('Parasyte: The Grey', 'Ended', null, 'show'), season(1, 6, 45000, null, 1990183)]));
   const block = grid.blocks[0]!;
   assert.deepEqual(block.ids, []);
-  // Type says `show` and SIMKL agrees, so the id's location was never inferable
-  // from it — which is exactly why nothing does.
+  // Type says `show` and SIMKL agrees, so the id's location is not inferable
+  // from it — which is why nothing infers it.
   assert.equal(block.type, 'show');
   assert.deepEqual(idsFor(block, block.seasons[0]!), [1990183]);
 });
@@ -131,9 +131,9 @@ test('an id claimed by two rows is reported, because neither claimant is safe to
   assert.deepEqual([...duplicateIds(grid.blocks)], [99]);
 });
 
-// The likeliest duplication in a hand-maintained file, and the one a
-// season-rows-only scan misses: every season of both blocks would inherit the
-// id, so one title's progress would drive edits in two unrelated places.
+// The likeliest duplication, and the one a season-rows-only scan misses:
+// every season of both blocks inherits the id, so one title's progress drives
+// edits in two places.
 test('the same id on two show rows is caught, not just on two season rows', () => {
   const grid = parseGrid(
     sheetSnapshot([H, show('Fargo', 'Ended', 3381, 'show'), season(1, 6, 45000, null), show('Fargo (again)', 'Ended', 3381, 'show'), season(1, 6, 45000, null)]),
@@ -141,26 +141,26 @@ test('the same id on two show rows is caught, not just on two season rows', () =
   assert.deepEqual([...duplicateIds(grid.blocks)], [3381]);
 });
 
-// A row is closed by having anything in End, not by that thing parsing as a
-// date — otherwise a hand-typed note reads as open and gets overwritten.
+// A row is closed by anything in End, not by it parsing as a date — otherwise
+// a hand-typed note reads as open and gets overwritten.
 test('a non-numeric End still closes the row', () => {
   const rows = [H, show('Fargo', 'Ended', 1, 'show'), season(1, 6, 45000, null)];
   rows[2]![5] = 'TBD';
   assert.equal(parseGrid(sheetSnapshot(rows)).blocks[0]?.seasons[0]?.closed, true);
 });
 
-// The likeliest false positive, and the one that made a block permanently
-// inert: the series id belongs on the show row, and a user who also writes it
-// on that show's own season row has repeated a true statement, not created a
-// conflict. Counted per row it reported every row in the block as clashing.
+// The likeliest false positive: a user writing the series id on both the show
+// row and its own season row has repeated a true statement, not created a
+// conflict. Counted per row, every row in the block reads as clashing and the
+// block goes permanently inert.
 test('a show row and its own season row naming one id is not a duplicate', () => {
   const grid = parseGrid(sheetSnapshot([H, show('Frieren', 'Watching', 99, 'anime'), season(1, 12, 44000, null, 99)]));
   assert.deepEqual([...duplicateIds(grid.blocks)], []);
 });
 
-// A row with an id and nothing else has no season to advance and no shape to
-// compare against, but the by-id resolution path never consults `season` — so
-// a count would be planned into a row that is not a season row at all.
+// A row with only an id has no season to advance, but the by-id resolution
+// path never consults `season` — a count would be planned into a row that is
+// not a season row at all.
 test('a row carrying only an id is not read as a season row', () => {
   const grid = parseGrid(sheetSnapshot([H, show('Fargo', 'Ended', 100), [null, null, null, null, null, null, null, null, 3381, null]]));
   assert.deepEqual(grid.blocks[0]?.seasons, []);

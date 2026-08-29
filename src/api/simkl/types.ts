@@ -1,15 +1,13 @@
 /**
  * Shapes of the SIMKL payloads this service consumes.
  *
- * These are written from live responses, not the published docs, which the
- * payloads contradict in several places. Where a field is optional or nullable
- * here it is because live data makes it so, never as defensive typing — there
- * is no compiler at runtime, so narrowing one is a crash rather than an error.
+ * Written from live responses, not the published docs, which the payloads
+ * contradict in places. A field is optional or nullable here because live data
+ * makes it so, never as defensive typing — there is no compiler at runtime, so
+ * narrowing one is a crash.
  *
  * Only what SIMKL sends. A shape this service derives lives with the module
- * that derives it — the library model beside `library.ts`, a resolved film
- * release beside the lookup that builds one — because the rule above is only
- * useful while it is true of everything here.
+ * that derives it, so this rule stays true of everything here.
  */
 
 // --- Calendar (public CDN) -------------------------------------------------
@@ -31,8 +29,8 @@ export interface CalendarEntry {
   date: string;
   finale_type: FinaleType | null;
   /**
-   * Absent on some anime entries. Formatting a missing one yields "Eundefined"
-   * in both the summary and the UID.
+   * Absent on some anime entries. Formatting a missing one yields
+   * "Eundefined" in the summary and the UID.
    */
   episode?: CalendarEpisode;
 }
@@ -65,9 +63,9 @@ export interface LibraryIds {
   slug?: string;
   /**
    * A string, as SIMKL sends it — `"371572"`, not `371572`. The per-title
-   * endpoints carry several more (`imdb`, `tmdb`, `tvdbslug`, `traktslug`);
-   * only this one is read, and listing the rest would make this file a
-   * transcription of the payload rather than evidence of what is used.
+   * endpoints carry more (`imdb`, `tmdb`, `tvdbslug`, `traktslug`); only this
+   * one is read, and listing the rest would make this file a transcription
+   * rather than evidence of what is used.
    */
   tvdb?: string;
 }
@@ -82,10 +80,10 @@ export interface LibraryTitle {
 /**
  * One watched episode, from `include_all_episodes=yes`.
  *
- * `watched_at` is nullable because the docs say unwatched rows can be filled in
- * with the show's last-watched time. Live data does not appear to do it, but
- * counting filters on the field regardless: the whole sync rests on that number
- * and the filter is free.
+ * `watched_at` is nullable: the docs say unwatched rows can carry the show's
+ * last-watched time. Live data does not appear to do it, but counting filters
+ * on the field anyway — the whole sync rests on that number and the filter is
+ * free.
  */
 export interface WatchedEpisode {
   number: number;
@@ -103,8 +101,8 @@ export interface LibraryItem {
   show?: LibraryTitle;
   movie?: LibraryTitle;
   /**
-   * Per-item and authoritative — the only membership there is, since the
-   * library holds one record per id and a move replaces it.
+   * The only membership there is: the library holds one record per id, and a
+   * move replaces it.
    */
   status?: string;
   /** Always populated. "S07E06", or "E07" for anime. */
@@ -117,16 +115,16 @@ export interface LibraryItem {
   total_episodes_count?: number;
   not_aired_episodes_count?: number;
   /**
-   * Only present with `include_all_episodes=yes`, which is required for the
-   * completed and dropped lists — without it the key is absent entirely.
+   * Only present with `include_all_episodes=yes`, which the completed and
+   * dropped lists require — without it the key is absent entirely.
    */
   seasons?: WatchedSeason[];
 }
 
 /**
  * The wire shape of `/sync/all-items`, whatever the query. All keys optional:
- * nothing to report comes back as `{}`, not `{shows: []}` — which is what a
- * `date_from` delta returns on a quiet poll, all two bytes of it.
+ * nothing to report comes back as `{}`, not `{shows: []}` — a quiet poll's
+ * delta is those two bytes.
  *
  * A type-less pull populates all three keys at once, so nothing may read this
  * as "the one key that is set".
@@ -141,8 +139,8 @@ export type SyncType = 'shows' | 'anime' | 'movies';
 
 
 /**
- * Per-status last-modified timestamps. `movies` carries no `watching` or `hold`
- * key at all, hence the narrower type.
+ * Per-status last-modified timestamps. `movies` carries no `watching` or
+ * `hold` key, hence the narrower type.
  */
 export interface CategoryActivity {
   all?: string | null;
@@ -177,8 +175,8 @@ export interface MovieDetail {
   title: string;
   year?: number;
   /**
-   * Unreliable — consistently two days earlier than the real theatrical date.
-   * Use `release_dates` instead; this is a last resort only.
+   * Consistently two days earlier than the real theatrical date. Use
+   * `release_dates` instead; this is a last resort.
    */
   released?: string;
   /** Minutes here, unlike the calendar's display string. */
@@ -190,12 +188,12 @@ export interface MovieDetail {
 // --- Show detail -----------------------------------------------------------
 
 /**
- * One entry from `/tv/episodes/{id}` — what SIMKL knows exists, as opposed to
- * what the library says was watched.
+ * One entry from `/tv/episodes/{id}` — what SIMKL knows exists, not what the
+ * library says was watched.
  *
- * `aired` is the field that distinguishes a season still running from a
- * finished one, and `type` is what keeps a special out of a numbered season's
- * total. Both are optional: absent means "do not conclude anything".
+ * `aired` distinguishes a season still running from a finished one; `type`
+ * keeps a special out of a numbered season's total. Both optional: absent
+ * means "do not conclude anything".
  */
 export interface EpisodeDetail {
   season?: number | null;
@@ -209,11 +207,11 @@ export interface EpisodeDetail {
 /**
  * `/tv/{id}` and `/anime/{id}`.
  *
- * Three fields are read, for three different reasons. `status` separates a show
- * that has ended from one merely between seasons, which the episode list cannot
- * express. `runtime` is the show-wide "most common length", which a newly
- * inserted season row takes for its `Episodes` cell. And `ids.tvdb` is the join
- * key to the per-episode runtimes, which SIMKL holds but does not serve.
+ * Three fields are read. `status` separates a show that has ended from one
+ * between seasons, which the episode list cannot express. `runtime` is the
+ * show-wide "most common length", which a newly inserted season row takes for
+ * its `Episodes` cell. `ids.tvdb` is the join key to the per-episode runtimes,
+ * which SIMKL holds but does not serve.
  */
 export interface ShowDetail {
   title?: string;

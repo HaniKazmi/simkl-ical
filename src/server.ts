@@ -23,17 +23,16 @@ export interface ServerOptions {
 
 export const buildServer = (state: Orchestrator, { logger = true, logStream }: ServerOptions = {}): FastifyInstance => {
   const app = Fastify({
-    // The feed token is a path parameter and Fastify caps those at 100
-    // characters by default, which a longer token would exceed — a 414 rather
-    // than the 404 below, and an unreachable feed.
+    // Fastify caps path parameters at 100 characters by default; a longer
+    // feed token would get a 414 instead of the 404 below, and an
+    // unreachable feed.
     routerOptions: { maxParamLength: 512 },
     logger: logger && {
       ...(logStream ? { stream: logStream } : {}),
-      // The token sits in the path, so an unredacted request log is a log of
-      // the credential once per request. The logs are a trusted surface here —
-      // the boot lines print the token in full — so this is not a disclosure
-      // boundary; it keeps the volume of a long-lived log down to the one line
-      // at startup that an operator actually wants to copy.
+      // The token sits in the path, so an unredacted request log repeats the
+      // credential once per request. The logs are a trusted surface — boot
+      // prints the token in full — so this is volume control, not a
+      // disclosure boundary.
       redact: {
         paths: ['req.url'],
         censor: '[redacted]',
@@ -41,9 +40,8 @@ export const buildServer = (state: Orchestrator, { logger = true, logStream }: S
     },
   });
 
-  // Every miss answers identically. Fastify's default body names the route it
-  // failed to match, which would make a wrong token distinguishable from any
-  // other 404 — exactly what the 404 below is meant to prevent.
+  // Every miss answers identically. Fastify's default body names the missed
+  // route, which would make a wrong token distinguishable from any other 404.
   app.setNotFoundHandler((_req, reply) => reply.code(404).send(NOT_FOUND));
 
   app.get('/healthz', async (_req, reply) => {
@@ -54,9 +52,9 @@ export const buildServer = (state: Orchestrator, { logger = true, logStream }: S
 
   app.get<{ Params: { token: string } }>('/:token/feed.ics', async (req, reply) => {
     if (!config.feedToken || !tokenMatches(req.params.token)) {
-      // 404 rather than 401, with the same body as any other miss: an
+      // 404, not 401, with the same body as any other miss: an
       // unauthenticated caller learns nothing about whether this path serves
-      // anything at all.
+      // anything.
       return reply.code(404).send(NOT_FOUND);
     }
 
@@ -69,8 +67,8 @@ export const buildServer = (state: Orchestrator, { logger = true, logStream }: S
 
   app.get<{ Params: { token: string } }>('/:token/status', async (req, reply) => {
     if (!config.feedToken || !tokenMatches(req.params.token)) {
-      // The same body as the feed's miss and as any other 404, so the route
-      // cannot be discovered by probing.
+      // The same body as any other 404, so the route cannot be found by
+      // probing.
       return reply.code(404).send(NOT_FOUND);
     }
 
@@ -78,11 +76,11 @@ export const buildServer = (state: Orchestrator, { logger = true, logStream }: S
       reply
         // Set here rather than on the route, so the 404 above never acquires it.
         .header('Content-Type', 'text/html; charset=utf-8')
-        // The feed token is in this page's URL, which browser history, bookmark
-        // sync and screenshots all keep. No script-src at all under
-        // `default-src 'none'` means an escaping bug cannot execute, and
-        // no-referrer stops the token riding out on any request the page makes
-        // — which is also why it loads nothing off-origin.
+        // The feed token is in this page's URL, which browser history and
+        // bookmark sync keep. `default-src 'none'` with no script-src means
+        // an escaping bug cannot execute; no-referrer stops the token riding
+        // out on any request the page makes — also why it loads nothing
+        // off-origin.
         .header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'")
         .header('Referrer-Policy', 'no-referrer')
         .header('X-Content-Type-Options', 'nosniff')

@@ -7,10 +7,8 @@ import { clearRequests, recentRequests } from '../../../src/api/requests.ts';
 import { jsonResponse, withConfig, withFetch } from '../../helpers.ts';
 
 /**
- * A real RSA key, because `exchangeToken` signs before it fetches and no stub
- * short of one reaches the transport at all. Generated once: 2048 bits is
- * ~100ms, which is the whole reason this file has a shared key rather than one
- * per test.
+ * A real RSA key: `exchangeToken` signs before it fetches, so no lesser stub
+ * reaches the transport. Shared, because 2048 bits is ~100ms to generate.
  */
 const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const credential = Buffer.from(
@@ -48,8 +46,8 @@ test('a read records one row, not one per attempt', async () => {
   );
 });
 
-// The only transport that writes, and a write is never retried — so `method` is
-// the field that says which of the two happened.
+// The one transport that writes, and a write is never retried — `method` is
+// the field that says which happened.
 test('a write records its method and does not retry', async () => {
   let calls = 0;
   await withSheets(
@@ -80,8 +78,8 @@ test('a failure carries the status and the upstream body', async () => {
   );
 });
 
-// A row with no status is a call that never got an answer, which is a different
-// fix from one that got a bad answer.
+// A row with no status is a call that never got an answer — a different fix
+// from a bad answer.
 test('a fetch that throws records a status-less row', async () => {
   await withSheets(
     () => {
@@ -96,8 +94,8 @@ test('a fetch that throws records a status-less row', async () => {
   );
 });
 
-// A body that dies mid-download must not be reported as a 200 carrying nonsense:
-// the fixes are opposite, and only the message tells them apart.
+// A body dying mid-download must not report as a 200 carrying nonsense: the
+// fixes are opposite, and only the message tells them apart.
 test('a body that cannot be read is reported as itself, not as a parse failure', async () => {
   await withSheets(
     () =>
@@ -119,8 +117,8 @@ test('a body that cannot be read is reported as itself, not as a parse failure',
   );
 });
 
-// The token exchange is a different endpoint from the spreadsheet, and its
-// failure — a bad key, clock skew — wants a different fix from a rejected read.
+// The token exchange is a different endpoint, and its failure — a bad key,
+// clock skew — wants a different fix from a rejected read.
 test('the token exchange is logged under its own component', async () => {
   clearTokenCache();
   clearRequests();

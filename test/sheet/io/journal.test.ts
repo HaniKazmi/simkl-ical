@@ -23,9 +23,9 @@ const run = (overrides: Partial<NewSheetRun> = {}): NewSheetRun => ({
   ...overrides,
 });
 
-// The guard in helpers.ts, asserted rather than assumed. A journal write is the
-// first thing in the suite that persists outside a temp-dir block, and it wrote
-// into the real ./data — passing green — before this was added.
+// The helpers.ts guard, asserted rather than assumed: a journal write is the
+// one thing in the suite that persists outside a temp-dir block, and pointed
+// at the real ./data it writes there while passing green.
 test('the suite never points config.dataDir at the repo checkout', () => {
   assert.notEqual(resolve(config.dataDir), resolve('./data'));
 });
@@ -53,7 +53,7 @@ test('a run round-trips through the file, oldest first', async () => {
 });
 
 // The notes name the user's shows, which the README treats as a credential —
-// the same reason feed.ics is 0600.
+// same reason feed.ics is 0600.
 test('the file is written 0600', async () => {
   await withFreshJournal(async (dir) => {
     await appendSheetRun(run());
@@ -72,8 +72,8 @@ test('the history is capped, keeping the newest', async () => {
   });
 });
 
-// A quiet poll on an unchanged sheet is the overwhelmingly common outcome. At
-// one every two hours it would evict fifty real entries inside four days.
+// A quiet poll on an unchanged sheet is the common outcome; at one every two
+// hours it would evict fifty real entries inside four days.
 test('a run that says nothing is not recorded at all', async () => {
   await withFreshJournal(async (dir) => {
     await appendSheetRun(run({ status: 'idle', edits: [], inserts: [], error: null }));
@@ -90,14 +90,14 @@ test('an idle run that still errored is recorded', async () => {
   });
 });
 
-// `frozen` is re-reported on every poll for the life of the process. Without
-// collapsing, one freeze fills all fifty slots with the same message and every
-// run that led up to it is lost — which is the history an operator wants most.
+// `frozen` re-reports every poll for the life of the process. Uncollapsed, one
+// freeze fills all fifty slots with the same message and loses every run that
+// led up to it — the history an operator wants most.
 test('a repeated identical run collapses instead of filling the history', async () => {
   await withFreshJournal(async () => {
     const frozen = run({ status: 'frozen', error: 'FROZEN: copy _sync-1 back' });
     // Eleven polls, not thirty-seven: past a day apart they stop being one
-    // episode, which is the point of SAME_EPISODE_MS.
+    // episode — the point of SAME_EPISODE_MS.
     for (let i = 0; i < 11; i += 1) await appendSheetRun({ ...frozen, at: poll(i) });
 
     assert.equal(sheetRuns().length, 1, 'eleven polls, one row');
@@ -122,8 +122,8 @@ test('a different plan on the same status does not collapse', async () => {
   });
 });
 
-// Every degradation below has to leave the sync running: this sits on six
-// return paths inside the refresh path, where nothing may be fatal.
+// Every degradation below must leave the sync running: this sits inside the
+// refresh path, where nothing may be fatal.
 test('a missing file is a first run, not an error', async () => {
   await withFreshJournal(async () => {
     const log = recorder();
@@ -152,8 +152,7 @@ test('an unreadable file degrades to an empty history with one warning', async (
   }
 });
 
-// One bad entry should not cost the rest, which is the part that would be
-// missed. All-or-nothing here throws away a good history over a single record.
+// All-or-nothing here throws away a good history over a single record.
 test('a malformed record is dropped and the rest of the history kept', async () => {
   await withFreshJournal(async (dir) => {
     const good = { ...run({ at: poll(0) }), repeats: 1 };
@@ -162,9 +161,9 @@ test('a malformed record is dropped and the rest of the history kept', async () 
       42,
       { at: poll(1) }, // no status
       { ...good, at: 'not a date' }, // would render as `NaNd ago`
-      // `Date.parse` accepts all three of these and yields a plausible instant,
-      // so a gate built on it admits exactly what it exists to reject — and this
-      // file is read back off disk and rendered verbatim.
+      // `Date.parse` accepts all three and yields a plausible instant, so a
+      // gate built on it admits what it exists to reject — and this file is
+      // read off disk and rendered verbatim.
       { ...good, at: '2026' },
       { ...good, at: 'March 5' },
       { ...good, at: 'Dec 25 1995' },
@@ -181,7 +180,7 @@ test('a malformed record is dropped and the rest of the history kept', async () 
   });
 });
 
-// The run's own result must be unaffected: the history is observational, and
+// The run's own result is unaffected: the history is observational, and
 // losing it costs only what survives the next restart.
 test('a write that cannot land is warned about, never thrown', async () => {
   await withFreshJournal(async (dir) => {
@@ -201,9 +200,9 @@ test('a write that cannot land is warned about, never thrown', async () => {
   });
 });
 
-// The history survives a restart, so without a time bound a sheet hand-reverted
-// and re-applied days later folds into the record from the first time — losing
-// the second write, which is exactly what this file exists to keep.
+// The history survives restarts, so without a time bound a sheet
+// hand-reverted and re-applied days later folds into the first record —
+// losing the second write, exactly what this file exists to keep.
 test('an identical run a long time later is a new record, not a repeat', async () => {
   await withFreshJournal(async () => {
     await appendSheetRun(run({ at: poll(0) }));

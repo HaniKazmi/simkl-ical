@@ -1,11 +1,10 @@
 /**
  * The one retrying JSON transport, plus the retry timing it runs on.
  *
- * SIMKL, Sheets and TVDB differ in how a URL is assembled, what headers carry
- * the credential, and what each status means — and in nothing else. Those
- * differences live in each client's `HttpSpec`; the loop itself exists once, so
- * a fix to the truncated-body path or the abort handling cannot be made in one
- * upstream and missed in two.
+ * SIMKL, Sheets and TVDB differ only in URL assembly, credential headers and
+ * status meanings — all held in each client's `HttpSpec`. The loop exists once,
+ * so a fix to the truncated-body path or the abort handling cannot land in one
+ * upstream and miss the other two.
  */
 
 import { config } from '../shared/config.ts';
@@ -21,31 +20,28 @@ export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeou
 export const backoffMs = (attempt: number): number => 2 ** (attempt - 1) * config.retryBase.total('milliseconds');
 
 /**
- * How long to wait before the next attempt. Cloudflare answers a 429 with
- * `Retry-After` and retrying sooner can extend the throttle. Both forms are
- * accepted — seconds or an HTTP date — and anything unusable falls back to the
- * exponential backoff.
+ * Wait before the next attempt. Cloudflare answers a 429 with `Retry-After`,
+ * and retrying sooner can extend the throttle. Accepts seconds or an HTTP
+ * date; anything unusable falls back to the exponential backoff.
  */
 export const retryDelayMs = (res: Response, attempt: number): number => {
-  // Blank as well as absent: Number('') is 0, which would mean "retry now"
-  // against a server that just asked us to slow down.
+  // Blank as well as absent: Number('') is 0, which would mean "retry now".
   const header = res.headers.get('retry-after');
   if (header === null || header.trim() === '') return backoffMs(attempt);
 
   const seconds = Number(header);
-  // The one `Date.parse` in `src/`, and it has to be: the other form of this
-  // header is an RFC 7231 HTTP-date (`Wed, 21 Oct 2015 07:28:00 GMT`), which
-  // Temporal does not parse — it reads ISO 8601 and nothing else. The leniency
-  // is harmless here because the result is range-checked below and clamped, so
-  // a header that parses to nonsense falls back to the backoff.
+  // The one `Date.parse` in `src/`: the other form of this header is an RFC
+  // 7231 HTTP-date (`Wed, 21 Oct 2015 07:28:00 GMT`), which Temporal cannot
+  // parse — it reads ISO 8601 only. The leniency is harmless: the result is
+  // range-checked and clamped below, so nonsense falls back to the backoff.
   const ms = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header) - Date.now();
   if (!Number.isFinite(ms) || ms < 0) return backoffMs(attempt);
   return Math.min(ms, MAX_RETRY_AFTER_MS);
 };
 
 /**
- * A failed HTTP call, carrying enough to classify it. Each client subclasses
- * this so `instanceof` still separates a SIMKL problem from a Sheets one.
+ * A failed HTTP call, with enough to classify it. Each client subclasses this
+ * so `instanceof` separates a SIMKL problem from a Sheets one.
  */
 export class HttpError extends Error {
   status: number | undefined;
@@ -69,10 +65,10 @@ export interface HttpSpec {
   /** Wraps a failure the loop itself detects — a dead download, unparseable JSON, an exhausted retry. */
   errorFor: (message: string, status?: number, body?: string) => HttpError;
   /**
-   * What a non-ok status means: the error to throw, or `'retry'` to hand it to
-   * the loop, which sleeps per `Retry-After`. Side effects that must accompany
-   * a terminal status — clearing a token cache on a 401 — belong in here, so
-   * they cannot be separated from the classification that requires them.
+   * What a non-ok status means: an error to throw, or `'retry'` (the loop
+   * sleeps per `Retry-After`). Side effects tied to a status — clearing a
+   * token cache on a 401 — belong here, beside the classification that
+   * requires them.
    */
   onStatus: (status: number, body: string, path: string) => Error | 'retry';
 }
@@ -82,9 +78,9 @@ export interface HttpRequestOptions {
   component: RequestComponent;
   method?: string;
   /**
-   * Re-evaluated on every attempt, inside the retry: re-signing an expired
-   * credential per attempt is the point, and a transient failure *obtaining*
-   * one is exactly as retryable as a transient failure using it.
+   * Re-evaluated on every attempt: re-signing an expired credential per
+   * attempt is the point, and a transient failure obtaining one is as
+   * retryable as one using it.
    */
   headers?: (signal?: AbortSignal) => Promise<Record<string, string>> | Record<string, string>;
   /** JSON-encoded when present. */
@@ -99,10 +95,9 @@ export interface HttpRequestOptions {
 /**
  * GET/POST a JSON endpoint with backoff, one request-log record per call.
  *
- * One record per call rather than per attempt: the retries are the fact worth
- * surfacing, and the loop spends up to five of them without saying so. It is
- * written once on the way out, from whatever the last attempt saw — so a new
- * exit added below cannot forget to record, which hand-placed calls could.
+ * Per call, not per attempt: the retries are the fact worth surfacing, and the
+ * loop spends up to five without saying so. Written once on the way out from
+ * whatever the last attempt saw, so a new exit cannot forget to record.
  */
 export const requestJson = async <T>(
   spec: HttpSpec,
@@ -116,12 +111,12 @@ export const requestJson = async <T>(
   let failure: string | null = null;
 
   let lastError: unknown;
-  // The one tail every retryable outcome funnels through, so a fix to the
-  // retry path cannot land on one kind of failure and miss the others.
+  // Every retryable outcome funnels through here, so a retry-path fix cannot
+  // land on one kind of failure and miss the others.
   const retryWith = async (err: unknown, message: string, delay: number): Promise<void> => {
     lastError = err;
     failure = message;
-    // Guarded: sleeping after the final attempt is dead wait.
+    // Sleeping after the final attempt is dead wait.
     if (attempts < maxAttempts) await sleep(delay);
   };
 
@@ -155,15 +150,15 @@ export const requestJson = async <T>(
         bytes = read.bytes;
         if (read.failure) {
           // The download died mid-body. Retryable, and named as itself rather
-          // than left to reach the parser as a truncation.
+          // than reaching the parser as a truncation.
           await retryWith(spec.errorFor(`${spec.label} ${path}: ${read.failure}`, res.status), read.failure, backoffMs(attempts));
           continue;
         }
         try {
           return JSON.parse(read.text) as T;
         } catch (err) {
-          // A 200 carrying an HTML interstitial. Transient, so it belongs in
-          // the retry loop rather than escaping as a bare SyntaxError.
+          // A 200 carrying an HTML interstitial. Transient, so it retries
+          // rather than escaping as a bare SyntaxError.
           const wrapped = spec.errorFor(`${spec.label} returned unparseable JSON for ${path}: ${errorMessage(err)}`, res.status);
           await retryWith(wrapped, errorMessage(wrapped), backoffMs(attempts));
           continue;

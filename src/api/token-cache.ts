@@ -1,13 +1,12 @@
 /**
  * A cached bearer token around an exchange function.
  *
- * Epoch milliseconds on purpose: a token lifetime is a countdown with both
- * endpoints inside this process — no zone and no calendar in it — which is the
- * documented `Date` exception.
+ * Epoch milliseconds on purpose: a token lifetime is a process-internal
+ * countdown with no zone or calendar — the documented `Date` exception.
  *
- * The in-flight exchange is held as well as the token, because callers can
- * arrive in parallel: `lookupPool` starts four workers at once, and on a cold
- * cache each would otherwise miss and log in separately.
+ * The in-flight exchange is held as well as the token: `lookupPool` starts
+ * four workers at once, and on a cold cache each would otherwise miss and log
+ * in separately.
  */
 
 export interface TokenCache {
@@ -17,9 +16,9 @@ export interface TokenCache {
 }
 
 /**
- * `exchange` runs with no caller's abort signal on purpose: the in-flight
- * promise is shared by everyone waiting, so one caller cancelling must not
- * reject the others. The exchange bounds itself with its own timeout.
+ * `exchange` runs with no caller's abort signal: the in-flight promise is
+ * shared, so one caller cancelling must not reject the others. The exchange
+ * bounds itself with its own timeout.
  */
 export const tokenCache = (exchange: () => Promise<{ token: string; expiresAtMs: number }>): TokenCache => {
   let cached: { token: string; expiresAtMs: number } | null = null;

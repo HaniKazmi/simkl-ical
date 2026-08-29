@@ -1,11 +1,10 @@
 /**
  * MODEL — the running service, reduced to what a page shows. Pure: the clock
- * arrives as `now`, and nothing here reads `config` or touches io.
+ * arrives as `now`; nothing reads `config` or touches io.
  *
- * The state arrives as the one `Snapshot` every reader shares; the rest of
- * `StatusInput` is what only this page wants — config labels, the request
- * ring, the run journal. Plain data rather than an `Orchestrator`, so a test
- * builds one as a literal instead of assembling a live service.
+ * The state is the shared `Snapshot`; the rest of `StatusInput` is what only
+ * this page wants — config labels, the request ring, the run journal. Plain
+ * data rather than an `Orchestrator`, so a test builds one as a literal.
  */
 
 import { instantFrom } from '../shared/dates.ts';
@@ -29,10 +28,9 @@ export interface StatusInput {
   /** Asked of `Feed`, which owns the rule — per-film, so no instant answers it. */
   filmsDue: boolean;
   /**
-   * Whether per-episode runtimes can be looked up. Its own line because an
-   * unconfigured one makes *zero* requests, so nothing else on this page would
-   * distinguish "no credential" from "no season has closed yet" — while the
-   * Episodes column silently stays blank.
+   * Whether per-episode runtimes can be looked up. Unconfigured makes *zero*
+   * requests, so nothing else on the page distinguishes "no credential" from
+   * "no season has closed yet" while the Episodes column stays blank.
    */
   runtimesConfigured: boolean;
   sheetMode: SheetSyncMode;
@@ -49,9 +47,9 @@ export interface Stamp {
 }
 
 /**
- * When something is next expected. `label` is deliberately "due in …" rather
- * than "fires at": `schedule()` runs on a fixed interval and skips a tick while
- * the previous one is still going, so this is an expectation, not a promise.
+ * When something is next expected. "due in …" rather than "fires at":
+ * `schedule()` skips a tick while the previous one is still going, so this is
+ * an expectation, not a promise.
  */
 export interface Due {
   /** `in 1h 46m`, `overdue by 1h`, or `due now`. Carries its own state — a
@@ -128,13 +126,10 @@ export interface StatusModel {
 }
 
 /**
- * Coarse on purpose: two units is what a person reads at a glance, and a page
- * that says `4d 6h 12m 3s` is reporting precision the underlying timers do not
- * have.
- *
- * `round` does the unit-splitting, so the only arithmetic left here is choosing
- * which two units to print. Days and below throughout, so no `relativeTo` anchor
- * is needed and a day is exactly 24 hours.
+ * Coarse on purpose: two units read at a glance, and `4d 6h 12m 3s` reports
+ * precision the timers do not have. `round` splits the units; the only
+ * arithmetic left is choosing which two to print. Days and below throughout,
+ * so no `relativeTo` anchor is needed and a day is exactly 24 hours.
  */
 export const duration = (span: Temporal.Duration): string => {
   const total = span.total('milliseconds');
@@ -147,8 +142,8 @@ export const duration = (span: Temporal.Duration): string => {
 };
 
 /**
- * Never `iso.slice(0, 10)`. The stored value is a UTC instant, and this is the
- * layer where slicing it silently shifts a fifth of them by a day.
+ * Never `iso.slice(0, 10)`. The stored value is a UTC instant, and slicing it
+ * silently shifts a fifth of them by a day.
  */
 const stamp = (iso: string | null, now: Temporal.Instant): Stamp => {
   const at = instantFrom(iso);
@@ -156,8 +151,8 @@ const stamp = (iso: string | null, now: Temporal.Instant): Stamp => {
 };
 
 /**
- * Counted from the last run rather than from process start, so a skipped tick
- * shows as overdue instead of quietly reporting the next one.
+ * Counted from the last run, not process start, so a skipped tick shows as
+ * overdue instead of quietly reporting the next one.
  */
 const due = (last: string | null, every: Temporal.Duration, now: Temporal.Instant): Due => {
   const at = instantFrom(last);
@@ -169,9 +164,9 @@ const due = (last: string | null, every: Temporal.Duration, now: Temporal.Instan
 };
 
 /**
- * What the last calendar fetch actually achieved. Early returns rather than a
- * nested ternary, because the branch a reader comes here for — why it says
- * *unchanged* — is the one a ternary buries deepest.
+ * What the last calendar fetch achieved. Early returns, not a nested ternary:
+ * the branch a reader comes for — why it says *unchanged* — is the one a
+ * ternary buries deepest.
  *
  * The `changed === attempted` test is string identity, and holds because
  * `Feed.refreshCalendars` assigns `calendarsChangedAt` the very value it just
@@ -179,10 +174,9 @@ const due = (last: string | null, every: Temporal.Duration, now: Temporal.Instan
  */
 const calendarDetail = (calendars: Snapshot['feed']['calendars'], now: Temporal.Instant): string => {
   const prefix = 'airdate calendars';
-  // `attemptedAt` is stamped only after a fetch returns, so a failure with none
-  // means the CDN has never answered this process and there is nothing cached
-  // to fall back on. Saying "serving cache" there asserts a copy that does not
-  // exist, on exactly the boot where the page is being read to find that out.
+  // `attemptedAt` is stamped only after a fetch returns, so a failure with
+  // none means the CDN has never answered this process and nothing is cached.
+  // "Serving cache" there would assert a copy that does not exist.
   if (calendars.error) return calendars.attemptedAt === null ? `${prefix} — none yet, the CDN has not answered` : `${prefix} — serving cache`;
   if (calendars.changedAt === null) return prefix;
   if (calendars.changedAt === calendars.attemptedAt) return `${prefix} — new airdates`;
@@ -190,11 +184,9 @@ const calendarDetail = (calendars: Snapshot['feed']['calendars'], now: Temporal.
 };
 
 /**
- * What the last poll did, in one phrase.
- *
- * "not polled yet" is a different claim from "nothing moved" — until the first
- * successful poll, nothing is known, and on a cold page that is the honest
- * thing to say.
+ * What the last poll did, in one phrase. "not polled yet" is a different
+ * claim from "nothing moved": before the first successful poll, nothing is
+ * known.
  */
 const gateDetail = (gate: Snapshot['library']['poll']): string => {
   if (gate === null) return 'not polled yet';
@@ -206,11 +198,9 @@ const gateDetail = (gate: Snapshot['library']['poll']): string => {
 };
 
 /**
- * The totals, named for a reader.
- *
- * `library.ts` owns the arithmetic and the key scheme; this owns that the page
- * says "films" where SIMKL says "movies", and that a zero `other` is noise
- * rather than news — it exists to keep the rows summing, not to be read.
+ * The totals, named for a reader. `library.ts` owns the arithmetic and keys;
+ * this owns that the page says "films" where SIMKL says "movies", and that a
+ * zero `other` is noise — it exists to keep the rows summing, not to be read.
  */
 const countRows = (counts: LibraryCounts): CountRow[] =>
   totalsByType(counts)
@@ -221,14 +211,11 @@ const countRows = (counts: LibraryCounts): CountRow[] =>
 const signed = (n: number): string => (n > 0 ? `+${n}` : `\u2212${Math.abs(n)}`);
 
 /**
- * How the library moved, in the terms the poll actually distinguishes.
- *
- * The two lines say different things and both matter. `deltas` is membership —
- * a title left one status and arrived in another — and is empty on the common
- * poll, because watching an episode moves no counts at all. `summary` is what
- * the delta carried, which is non-zero whenever anything was pulled. Together
- * they are `reshaped` versus `updated` made legible, and that distinction is
- * what the feed's own render gate keys on.
+ * How the library moved, in the terms the poll distinguishes. `deltas` is
+ * membership, and empty on the common poll — watching an episode moves no
+ * counts. `summary` is what the delta carried, non-zero whenever anything was
+ * pulled. Together they are `reshaped` versus `updated` made legible, the
+ * distinction the feed's render gate keys on.
  */
 const movementView = (movement: LibraryMovement | null, now: Temporal.Instant): MovementView | null => {
   if (movement === null) return null;
@@ -251,8 +238,8 @@ export const buildModel = (input: StatusInput): StatusModel => {
   const { now } = input;
   const { library, feed, sheet } = input.snapshot;
   const startedAt = instantFrom(input.snapshot.startedAt);
-  // One instant, three places: the join, the render and the section heading all
-  // describe the same moment.
+  // One instant: the join, the render and the section heading describe the
+  // same moment.
   const rendered = stamp(feed.renderedAt, now);
 
   return {
@@ -260,9 +247,8 @@ export const buildModel = (input: StatusInput): StatusModel => {
     version: input.version,
     timezone: input.timezone,
     // `assessment.ok` answers "should this container be restarted", which is
-    // deliberately narrower — a revoked token and a quiet CDN are both real
-    // problems that restarting cannot fix. The page reports what a reader sees,
-    // so anything in `problems` makes it not-healthy here.
+    // narrower — a revoked token and a quiet CDN are real problems restarting
+    // cannot fix. Here anything in `problems` makes the page not-healthy.
     ok: pageHealthy(input.assessment),
     problems: input.assessment.problems,
     uptime: startedAt === null ? null : duration(startedAt.until(now)),
@@ -293,17 +279,17 @@ export const buildModel = (input: StatusInput): StatusModel => {
         },
       ],
       calendarsDue: due(feed.calendars.attemptedAt, input.calendarRefresh, now),
-      // A boolean, not a countdown: whether a film is due is per-film — a new or
-      // undated one is due now, a date most of a year out is not — so no single
-      // instant says when the next one falls due.
+      // A boolean, not a countdown: due is per-film — a new or undated one is
+      // due now, a date most of a year out is not — so no single instant says
+      // when the next one falls due.
       filmsDue: input.filmsDue,
     },
 
     // No reverse: the request log is already newest first, unlike the run
-    // journal below, which is a file appended to and so stores oldest first.
+    // journal below, which is appended to and so stores oldest first.
     requests: input.requests.map((request) => ({ ...request, at: stamp(request.at, now), size: size(request.bytes) })),
-    // Capped here rather than in the template: which failures to show is a
-    // decision, and the template's job is turning a list into rows.
+    // Capped here, not in the template: which failures to show is a decision;
+    // the template turns lists into rows.
     requestErrors: input.requests
       .filter((request) => request.error !== null)
       .slice(0, 3)

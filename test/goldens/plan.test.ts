@@ -1,11 +1,9 @@
 /**
- * The reference grid × reference library must plan the identical write set
- * before and after the refactor: same addresses, same fields, same insert.
- *
- * The golden is the `PlanRecord` — the structured projection that survives the
- * run — not `describePlan`'s strings, whose wording is allowed to drift. The
- * plan is also pushed through the guard, so the golden additionally pins that a
- * realistic plan stays guard-clean.
+ * The reference grid × reference library must always plan the identical write
+ * set: same addresses, same fields, same insert. The golden is the
+ * `PlanRecord` — the projection that survives the run — not `describePlan`'s
+ * strings, whose wording may drift. The plan also runs through the guard, so
+ * the golden pins that a realistic plan stays guard-clean.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

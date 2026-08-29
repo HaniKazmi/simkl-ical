@@ -1,14 +1,13 @@
 /**
  * How the library is gated, merged and read.
  *
- * The library is the one input both halves consume — the feed joins it against
- * the airdate calendars, the sheet sync derives every write from it — but only
- * the orchestrator owns it, so this sits beside the orchestrator rather than in
- * `shared/`. Pure: the calls themselves are in `api/simkl/lists.ts`.
+ * The library is the one input both halves consume, but only the orchestrator
+ * owns it, so this sits beside the orchestrator rather than in `shared/`.
+ * Pure: the calls themselves are in `api/simkl/lists.ts`.
  *
- * One record per SIMKL id, keyed by id. A delta returns each changed item once
- * carrying its current `status`, so a move is a replacement and no second copy
- * of a title can survive to disagree with the first.
+ * One record per SIMKL id. A delta returns each changed item once carrying its
+ * current `status`, so a move is a replacement and no stale copy survives to
+ * disagree.
  */
 
 import { itemSimklId, itemStatus } from './api/simkl/item.ts';
@@ -19,14 +18,12 @@ import { instantFrom } from './shared/dates.ts';
  * One library record, and the type it belongs to.
  *
  * `type` is the only thing not derivable from the item: an anime record is a
- * show record with an extra `anime_type` field, and both nest their title under
- * `show`. Which top-level key of the response it arrived under is the answer,
- * and it is needed downstream — the feed picks a calendar with it, the sheet
- * skips films with it.
+ * show record plus `anime_type`, and both nest their title under `show`, so
+ * the top-level response key it arrived under is the answer. The feed picks a
+ * calendar with it; the sheet skips films with it.
  *
- * `status` is deliberately *not* copied up here. `itemStatus` reads it from the
- * item, and a second copy is one that can disagree with the payload it was
- * built from — the class of bug this whole model exists to remove.
+ * `status` is *not* copied up here: `itemStatus` reads it from the item, and
+ * a second copy can disagree with the payload it was built from.
  */
 export interface LibraryEntry {
   type: SyncType;
@@ -34,11 +31,8 @@ export interface LibraryEntry {
 }
 
 /**
- * The user's library: one authoritative record per SIMKL id.
- *
- * A delta returns each changed item once, carrying its current `status`, so an
- * item cannot be present twice and cannot disagree with itself. List membership
- * is not a thing this model can represent, which is the point.
+ * The user's library: one authoritative record per SIMKL id. An item cannot
+ * be present twice, and list membership is not representable — the point.
  */
 export type Library = Map<number, LibraryEntry>;
 
@@ -65,21 +59,21 @@ const signature = (activities: Activities | null | undefined, fields: readonly (
 /**
  * Whether anything worth a pull moved.
  *
- * Deliberately not `activities.all`, which rolls up `playback` and `rated_at`
- * as well: a scrobbler reporting progress bumps `playback` continuously, and
- * gating on the roll-up would pull a delta on every single poll to find nothing
- * that changes a feed or a sheet. `all` is still what gets *sent* as
- * `date_from` — the trigger and the watermark are different questions.
+ * Not `activities.all`: it rolls up `playback` and `rated_at`, and a
+ * scrobbler bumps `playback` continuously, so gating on the roll-up would
+ * pull a delta every poll to find nothing the feed or sheet can see. `all` is
+ * still what gets *sent* as `date_from` — the trigger and the watermark are
+ * different questions.
  */
 export const librarySignature = (activities: Activities | null | undefined): string => signature(activities, STATUSES);
 
 /**
  * When each category last had something removed from it.
  *
- * Tracked per category rather than as one string because a removal moves this
- * and nothing else — the item simply stops existing, so no status timestamp
- * advances and no delta record is ever produced for it — and because *which*
- * category moved is what makes a truncated membership response detectable.
+ * Per category: a removal moves this stamp and nothing else — the item stops
+ * existing, so no status timestamp advances and no delta record appears — and
+ * *which* category moved is what makes a truncated membership response
+ * detectable.
  */
 export const removalStamps = (activities: Activities | null | undefined): Record<SyncType, string> =>
   Object.fromEntries(
@@ -92,16 +86,15 @@ export const removalStamps = (activities: Activities | null | undefined): Record
 /**
  * The watermark to send as `date_from`, from the payload rather than the clock.
  *
- * `activities.all` is the roll-up and is what SIMKL means us to send back. When
- * it is absent the newest timestamp anywhere in the payload says the same thing
- * — still a server instant, still monotonic, still comparable against the times
- * the items carry. Preferring the local clock instead would be none of those:
- * it depends on this container agreeing with SIMKL's clock, and if `all` never
- * returns it freezes at whatever the clock said once, so every later delta
- * re-asks for everything since that moment.
+ * `activities.all` is the roll-up SIMKL means us to send back. When absent,
+ * the newest timestamp in the payload says the same thing — still a server
+ * instant, still comparable against the times the items carry. The local
+ * clock is neither: it depends on this container agreeing with SIMKL's clock,
+ * and if `all` never returns it freezes, so every later delta re-asks for
+ * everything since that moment.
  *
- * Null only for a payload carrying no timestamps at all, which is a brand-new
- * account — nothing has happened, so there is nothing a watermark could miss.
+ * Null only for a payload with no timestamps at all — a brand-new account,
+ * where there is nothing a watermark could miss.
  */
 export const watermarkOf = (activities: Activities | null | undefined): string | null => {
   if (activities?.all) return activities.all;
@@ -119,29 +112,25 @@ export const movedRemovals = (
 ): Set<SyncType> => new Set(TYPES.filter((type) => previous[type] !== current[type]));
 
 /**
- * The watermark, backed off by a second, which is what `date_from` should ask
- * for.
+ * The watermark backed off by a second — what `date_from` should ask for.
  *
- * `date_from` is compared strictly greater, at one-second granularity: passing
- * back the exact `activities.all` returns nothing at all, and one second
- * earlier returns the newest change. So a write landing in the same second as
- * the `activities.all` this poll read, but committed just after it, would never
- * be asked for again — the next poll's watermark is already past it. Overlapping
- * by a second closes that, and costs one re-sent record into an idempotent
- * merge.
+ * `date_from` is compared strictly greater at one-second granularity: the
+ * exact `activities.all` returns nothing at all, and a write committed in the
+ * same second just after this poll read it would never be asked for again.
+ * Overlapping by a second closes that, at the cost of one re-sent record into
+ * an idempotent merge.
  *
- * Returns the input unchanged if it is not a parseable instant: sending back
- * what SIMKL gave us is always safer than sending a guess.
+ * Returns the input unchanged when it is not a parseable instant: sending
+ * back what SIMKL gave is safer than a guess.
  */
 export const deltaFrom = (watermark: string | null | undefined): string | null => {
   if (!watermark) return null;
   const at = instantFrom(watermark);
-  // `smallestUnit` rather than a regex over the rendered string: SIMKL compares
-  // `date_from` at one-second granularity, so the milliseconds are not merely
-  // noise, they are a precision the endpoint does not have.
+  // `smallestUnit`, not a regex: SIMKL compares `date_from` at one-second
+  // granularity, so milliseconds are a precision the endpoint does not have.
   //
-  // No `timeZone` option — the default renders `Z`, and naming a zone would
-  // render an offset instead. This string goes to SIMKL verbatim.
+  // No `timeZone` option — the default renders `Z`; a named zone would render
+  // an offset. This string goes to SIMKL verbatim.
   return at === null ? watermark : at.subtract({ seconds: 1 }).toString({ smallestUnit: 'second' });
 };
 
@@ -153,9 +142,8 @@ export interface GateState {
   syncedAll: string | null;
   hasLibrary: boolean;
   /**
-   * Set when a cheaper path could not answer safely — a membership response
-   * that would have deleted implausibly much. The full pull is the way out:
-   * it is authoritative, so it settles what the diff could only guess at.
+   * Set when a membership response would have deleted implausibly much. The
+   * full pull is authoritative and settles what the diff could only guess at.
    */
   resyncPending: boolean;
 }
@@ -177,14 +165,13 @@ export interface GateDecision {
 /**
  * Whether this payload is worth a request, and which kind.
  *
- * Pure, and separated from the poll for that reason: it is the trickiest
- * reasoning in the refresh path — three independent triggers, one of which
- * (`force`) deliberately diverges from what the gate itself observed — and
- * inline it could only be exercised through a fake HTTP layer.
+ * Pure and separate from the poll: three independent triggers, one of which
+ * (`force`) diverges from what the gate observed, and inline it could only be
+ * exercised through a fake HTTP layer.
  *
- * `changed` stays the gate's own answer rather than being folded into `full`.
- * A forced poll pulls everything while every signature still matches, and
- * reporting that as a change would be reporting one that did not happen.
+ * `changed` stays the gate's own answer rather than folding into `full`: a
+ * forced poll pulls everything while every signature matches, and reporting
+ * that as a change would report one that did not happen.
  */
 export const evaluateGate = (
   activities: Activities | null | undefined,
@@ -209,8 +196,8 @@ const entriesOf = function* (response: AllItemsResponse | null | undefined): Gen
   for (const type of TYPES) {
     for (const item of response?.[type] ?? []) {
       const id = itemSimklId(item);
-      // An item with no usable id is dropped here, at the one point it enters
-      // the model. Everything downstream keys on the id and can assume one.
+      // An item with no usable id is dropped at the one point it enters the
+      // model; everything downstream keys on the id.
       if (id !== null) yield [id, type, item];
     }
   }
@@ -223,29 +210,26 @@ export const toLibrary = (response: AllItemsResponse | null | undefined): Librar
 /**
  * A delta folded into what we already hold.
  *
- * A plain upsert by id, and nothing else: delta records are complete item
- * records rather than partial patches — a changed show carries its full
- * `seasons[]` with every watched episode — so there is no field-level merging
- * to do, and re-merging the same record is a no-op. That idempotence is load
- * bearing, because the poll asks for one second more than it strictly needs and
- * so re-receives the newest records by design.
+ * A plain upsert by id: delta records are complete items, not patches — a
+ * changed show carries its full `seasons[]` — so there is no field-level
+ * merging, and re-merging the same record is a no-op. That idempotence is
+ * load-bearing: the poll asks for one second more than it needs and
+ * re-receives the newest records by design.
  *
- * Type-blind and status-blind on purpose. Filtering here — dropping films that
- * come back `completed`, say — would skip the very record that says a film left
- * plan-to-watch, leaving the stale `plantowatch` copy in place and the film in
- * the feed for good. The consumers filter; the merge only records what SIMKL
- * said.
+ * Type- and status-blind on purpose. Filtering here — dropping films that
+ * come back `completed`, say — would skip the very record that says a film
+ * left plan-to-watch, leaving the stale copy and the film in the feed for
+ * good. Consumers filter; the merge records what SIMKL said.
  *
- * Returns a new Map rather than mutating, so the orchestrator swaps the library
- * in one assignment and a render holding the old one renders a coherent
- * library rather than a half-merged one.
+ * Returns a new Map, so the orchestrator swaps the library in one assignment
+ * and a render holding the old one sees a coherent library, not a half-merged
+ * one.
  *
- * `updated` counts every record the delta carried; `reshaped` counts only those
- * that arrived new or under a different `status`. The two differ on the most
- * common event there is — watching an episode rewrites a record without moving
- * it — and the gap is what tells a consumer that reads membership from one that
- * reads progress. Which of the two matters is the consumer's business, so this
- * reports both and decides neither.
+ * `updated` counts every record the delta carried; `reshaped` only those
+ * arriving new or under a different `status`. They differ on the most common
+ * event there is — watching an episode rewrites a record without moving it —
+ * which separates a consumer reading membership from one reading progress.
+ * This reports both and decides neither.
  */
 export const mergeDelta = (
   previous: Library,
@@ -272,33 +256,29 @@ export const membershipIds = (response: AllItemsResponse | null | undefined): Se
 
 /**
  * Drop everything the membership set no longer names, within the categories
- * that actually reported a removal.
+ * that reported a removal.
  *
- * `within` is the discriminator, and it is the only one available. A category
- * holding nothing is *omitted* from the response rather than sent empty, so a
- * truncated payload and a category the user emptied are the same bytes. What
- * separates them is `removed_from_list`: emptying a category moves that
- * category's stamp, and a truncated response does not move anything. So a
- * category nobody reported a removal for is left alone entirely, however many
- * of its ids the response failed to mention.
+ * `within` is the only discriminator there is. An empty category is *omitted*
+ * from the response rather than sent empty, so a truncated payload and a
+ * category the user emptied are the same bytes. `removed_from_list` separates
+ * them: emptying a category moves its stamp; a truncated response moves
+ * nothing. A category with no reported removal is left alone entirely.
  *
- * Within a category that did report one, dropping more than half of what is
- * held is refused — the stamp says *something* went, not that everything did,
- * and applying a partial payload there empties the feed of that type.
+ * Within one that did report, dropping more than half of what is held is
+ * refused — the stamp says *something* went, not everything, and applying a
+ * partial payload there empties the feed of that type.
  *
- * Refusing is cheap because it is not the end of the matter: the caller answers
- * it with a full pull, which is authoritative and settles what the diff could
- * only guess at. That is what makes the threshold safe to keep at half even for
- * a category holding two items, where the proportion means very little — a user
- * emptying a small category and a payload that lost it look identical here, and
- * the full pull tells them apart instead of a rule that cannot.
+ * Refusing is cheap: the caller answers with a full pull, which is
+ * authoritative. That keeps the half threshold safe even for a category
+ * holding two items, where the proportion means little — the full pull tells
+ * the cases apart instead of a rule that cannot.
  *
- * The refusal lives here, in the only function that deletes, so no caller can
- * reach the delete without it. Reporting `applied` rather than acting on it
- * keeps what happens next — the log line, the re-pull — in the shell.
+ * The refusal lives in the only function that deletes, so no caller reaches
+ * the delete without it. Reporting `applied` rather than acting on it keeps
+ * what happens next — the log line, the re-pull — in the shell.
  *
- * The same Map comes back when nothing goes, so a poll that reconciled and
- * found nothing removed does not churn the library or force a re-render.
+ * The same Map comes back when nothing goes, so a quiet reconcile does not
+ * churn the library or force a re-render.
  */
 export const retainOnly = (
   library: Library,

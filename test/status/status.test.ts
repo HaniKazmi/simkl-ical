@@ -7,18 +7,16 @@ import { ago, calendarOf, libraryOf, quiet, withConfig } from '../helpers.ts';
 import { plainDateFrom } from '../../src/shared/dates.ts';
 
 /**
- * The 30-field `Orchestrator → StatusInput` mapping, which both other status
- * suites bypass by building their input by hand.
- *
- * It is the highest risk-to-coverage ratio in the repo: swapping `calendarsAt`
- * for `calendarsChangedAt`, or passing `errors.calendar` where `renderError`
- * belongs, is invisible to every other test *and* to CI's smoke check, because
- * both only assert the page is HTML. So each value here is distinctive, and the
- * assertions are that it reached the page at all.
+ * The 30-field `Orchestrator → StatusInput` mapping, which the other status
+ * suites bypass by building input by hand. Swapping `calendarsAt` for
+ * `calendarsChangedAt`, or passing `errors.calendar` where `renderError`
+ * belongs, is invisible to every other test and to CI's smoke check — both
+ * only assert the page is HTML. So each value here is distinctive, and the
+ * assertion is that it reached the page at all.
  */
-// `health` reads the real clock through `ageOf`, so the fixture's stamps are
-// relative: pinned instants would age past the staleness thresholds and make
-// `ok` false for a reason no assertion here is about.
+// `health` reads the real clock through `ageOf`, so the stamps are relative:
+// pinned instants would age past the staleness thresholds and fail `ok` for a
+// reason no assertion here is about.
 const MINUTE = 60_000;
 
 const wired = (): Orchestrator => {
@@ -40,8 +38,8 @@ const wired = (): Orchestrator => {
 test('the counts the library holds reach the page, totalled by type', async () => {
   await withConfig({ timezone: 'Europe/London' }, () => {
     const page = renderStatus(wired(), { now: Temporal.Now.instant() });
-    // Two shows in the fixture, one watching and one dropped — one total, not
-    // a row per status.
+    // Two shows, one watching and one dropped — one total, not a row per
+    // status.
     assert.match(page, /shows<\/b> 2/);
     assert.match(page, /anime<\/b> 0/);
   });
@@ -55,8 +53,8 @@ test('what the last gate did reaches the page', async () => {
   });
 });
 
-// The pill and the problems box are rendered from two different fields, and
-// disagreed: `ok` is the container-restart signal and stays narrow.
+// The pill and the problems box render from different fields and can
+// disagree: `ok` is the container-restart signal and stays narrow.
 test('a library error makes the page say so rather than showing a healthy pill', async () => {
   await withConfig({ timezone: 'Europe/London' }, () => {
     const healthy = wired();
@@ -73,8 +71,8 @@ test('a library error makes the page say so rather than showing a healthy pill',
   });
 });
 
-// Every field is interpolated through the `html` tag, so a value that failed to
-// map shows up as one of these rather than as a visible gap.
+// Every field goes through the `html` tag, so a value that failed to map
+// shows up as one of these rather than as a visible gap.
 test('nothing renders as undefined or as an object', async () => {
   await withConfig({ timezone: 'Europe/London' }, () => {
     const page = renderStatus(wired(), { now: Temporal.Now.instant() });

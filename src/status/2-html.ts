@@ -1,21 +1,20 @@
 /**
  * RENDER — a StatusModel to one self-contained HTML page. Pure: no clock, no
- * config reads, no io.
+ * config, no io.
  *
- * Everything on this page that is not a config constant is
- * attacker-or-accident controlled: SIMKL show titles, spreadsheet cell contents
- * and tab names, and Google or SIMKL error bodies. So the primitives below
- * escape by default and the escape hatch is explicit — a bare `escapeHtml` that
- * has to be remembered at each of a hundred call sites is a rule, and rules get
- * forgotten. This is the one file to audit for interpolation.
+ * Everything here that is not a config constant is attacker-or-accident
+ * controlled: SIMKL show titles, spreadsheet contents and tab names, Google
+ * and SIMKL error bodies. So the primitives escape by default — a bare
+ * `escapeHtml` remembered at a hundred call sites is a rule, and rules get
+ * forgotten. The one file to audit for interpolation.
  */
 
 import type { Stamp, StatusModel } from './1-model.ts';
 
 /**
- * Module-private, so the brand cannot be forged. A `{ html: string }` duck type
- * is satisfied by any object that happens to carry that key — including one
- * parsed from JSON — and would pass straight through unescaped.
+ * Module-private so the brand cannot be forged: a `{ html: string }` duck
+ * type is satisfied by any object with that key — including one parsed from
+ * JSON — and would pass through unescaped.
  */
 const SAFE = Symbol('safe-html');
 
@@ -26,7 +25,7 @@ export interface SafeHtml {
 const ENTITIES: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 
 /**
- * One pass over a character class, never a chain of `.replace` calls: replacing
+ * One pass over a character class, never chained `.replace` calls: replacing
  * `&` after `<` turns an already-escaped `&lt;` into `&amp;lt;`.
  */
 export const escapeHtml = (value: string): string => value.replace(/[&<>"']/g, (c) => ENTITIES[c]!);
@@ -37,12 +36,10 @@ export const raw = (value: string): SafeHtml => ({ [SAFE]: value });
 const isSafe = (value: unknown): value is SafeHtml => typeof value === 'object' && value !== null && SAFE in value;
 
 /**
- * Interpolate, escaping anything not already marked safe.
- *
- * `null` and `undefined` render as nothing, so an unset timestamp never prints
- * the word "null"; arrays join, which is what makes a list of rows an
- * expression rather than a loop; and a nested `html` passes through, so
- * composing fragments does not double-escape them.
+ * Interpolate, escaping anything not marked safe. `null`/`undefined` render
+ * as nothing, so an unset timestamp never prints "null"; arrays join, making
+ * a list of rows an expression; a nested `html` passes through, so composing
+ * fragments does not double-escape.
  */
 export const html = (strings: TemplateStringsArray, ...values: unknown[]): SafeHtml => {
   let out = strings[0] ?? '';
@@ -65,10 +62,10 @@ export const toHtml = (value: SafeHtml): string => value[SAFE];
 // --- The page --------------------------------------------------------------
 
 /**
- * Inlined, and the only `raw()` in the file. A stylesheet cannot be escaped and
- * stay a stylesheet, and it is the one string here with no untrusted input in
- * it. External assets are not an option: the feed token is in this page's URL,
- * so any off-origin request would carry it out in a `Referer` header.
+ * Inlined, and the only `raw()` in the file: a stylesheet cannot be escaped
+ * and stay one, and it is the one string here with no untrusted input.
+ * External assets are out — the feed token is in this page's URL, and any
+ * off-origin request would carry it out in a `Referer` header.
  */
 const STYLE = `
 :root{--bg:#fff;--panel:#f5f6f9;--ink:#191b21;--slate:#5c6475;--faint:#858c9c;--line:#e3e6ec;
@@ -133,9 +130,8 @@ footer{padding-top:18px;color:var(--faint);font-size:11.5px}
 /**
  * Looked up with `Object.hasOwn`, not `?? 'mute'`: `status` comes from
  * `sheet-runs.json`, and a record saying `"constructor"` resolves through the
- * prototype to a function, so the default never fires and the class attribute
- * becomes the source of `Object`. Escaped, so not an injection — but that file
- * is the untrusted surface this module exists to be careful with.
+ * prototype to a function, so the default never fires. Escaped, so not an
+ * injection — but that file is the untrusted surface here.
  */
 const STATE_PILL: Record<string, string> = {
   applied: 'ok',
@@ -155,13 +151,11 @@ const countRows = (model: StatusModel) =>
   model.library.counts.map((row) => html`<span class="tot"><b>${row.key}</b> ${row.count}</span>`);
 
 /**
- * How the library last moved — the part a count on its own cannot say.
- *
- * The two lines are different questions. The deltas are membership, and are
- * absent on the commonest poll there is, because watching an episode moves no
- * count at all. The summary is what the delta carried, which is never zero on a
- * poll that pulled. Showing both is what separates "your library changed" from
- * "the poll did some work".
+ * How the library last moved — what a bare count cannot say. The deltas are
+ * membership, absent on the commonest poll (watching an episode moves no
+ * count). The summary is what the delta carried, never zero on a poll that
+ * pulled. Both together separate "your library changed" from "the poll did
+ * some work".
  */
 const movement = (model: StatusModel) => {
   const moved = model.library.movement;
@@ -174,13 +168,11 @@ const movement = (model: StatusModel) => {
 };
 
 /**
- * Every outbound call this process made, newest first.
- *
- * The one view that shows whether the gate is working: a column of lone
- * `/sync/activities` rows with the occasional delta beside them is the delta
- * sync doing its job, and nothing else on this page can show it. A failure
- * carries its body, because `user_token_failed` and a revoked credential look
- * identical without one.
+ * Every outbound call this process made, newest first. The one view that
+ * shows the gate working: lone `/sync/activities` rows with the occasional
+ * delta beside them is the delta sync doing its job. A failure carries its
+ * body — `user_token_failed` and a revoked credential look identical without
+ * one.
  */
 const requestRows = (model: StatusModel) =>
   model.requests.map(

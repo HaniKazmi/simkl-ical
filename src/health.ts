@@ -1,19 +1,16 @@
 /**
- * What the service's state *means*: the one place both notions of "healthy"
- * are defined.
- *
- * Two readers ask two different questions of the same `Snapshot`:
+ * What the service's state *means*: both notions of "healthy", defined once.
  *
  * - `/healthz` asks **would restarting this container help** — `assess().ok`,
- *   which drives the status code. Deliberately narrower than "is anything
- *   wrong": a revoked token is usually a self-clearing rate limit, and a
- *   restart cold-starts into the full pull that provokes it.
- * - the status page asks **is everything fine** — `pageHealthy`, which is
- *   false whenever `problems` has anything to say.
+ *   which drives the status code. Narrower than "is anything wrong": a
+ *   revoked token is usually a self-clearing rate limit, and a restart
+ *   cold-starts into the full pull that provokes it.
+ * - the status page asks **is everything fine** — `pageHealthy`, false
+ *   whenever `problems` has anything to say.
  *
- * The sheet is deliberately in neither. `/healthz` is the container healthcheck
- * and the CI smoke test, and a frozen sheet sync must not restart the container
- * or fail a deploy; it is reported in `sheet.error` instead.
+ * The sheet is in neither: `/healthz` is the container healthcheck and the CI
+ * smoke test, and a frozen sheet sync must not restart the container or fail
+ * a deploy. It is reported in `sheet.error` instead.
  */
 
 import { config } from './shared/config.ts';
@@ -25,28 +22,27 @@ export interface Assessment {
   /** Whether restarting this container would help — not whether anything is wrong. */
   ok: boolean;
   /**
-   * Everything wrong right now, worst first — library, then calendars, then
-   * rendering. Library outranks calendars because a stale calendar still
-   * renders and a revoked token eventually will not.
+   * Everything wrong right now, worst first: library, calendars, rendering.
+   * Library outranks calendars because a stale calendar still renders and a
+   * revoked token eventually will not.
    */
   problems: string[];
 }
 
 export const assess = (snapshot: Snapshot): Assessment => {
-  // Three intervals, in one place: one missed tick is a retry, three is a stall.
-  // `Duration` has no scalar multiply, so the factor is applied to milliseconds.
+  // Three intervals: one missed tick is a retry, three is a stall. `Duration`
+  // has no scalar multiply, so the factor applies to milliseconds.
   const stale = (at: string | null, every: Temporal.Duration): boolean => ageOf(at) > every.total('milliseconds') * 3;
 
   const { library, feed } = snapshot;
   const stalePoll = stale(library.polledAt, config.activitiesPoll);
   const staleCalendars = stale(feed.calendars.freshAt, config.calendarRefresh);
   // A render happens on every calendar refresh, so an old renderedAt means
-  // rendering has stopped even when nothing reported an error.
+  // rendering has stopped even with no reported error.
   const staleRender = stale(feed.renderedAt, config.calendarRefresh);
 
-  // Each subsystem contributes at most one line: its own error if it has one,
-  // otherwise its staleness — an error like "serving cached calendars since X"
-  // already says the CDN is quiet, so emitting both would just say it twice.
+  // At most one line per subsystem: its error, else its staleness — an error
+  // like "serving cached calendars since X" already says the CDN is quiet.
   const problems = [
     library.error ?? (stalePoll ? `SIMKL has not been polled since ${library.polledAt ?? 'startup'}` : null),
     feed.calendars.error ?? (staleCalendars ? `the CDN has not answered since ${feed.calendars.freshAt ?? 'startup'}` : null),
@@ -60,24 +56,18 @@ export const assess = (snapshot: Snapshot): Assessment => {
 };
 
 /**
- * The status page's stricter question: anything in `problems` makes it
- * not-healthy. Keyed on `problems` alone — every conjunct of `ok` implies a
- * problem line when false — so the page can never claim unhealthy without a
- * line saying why.
+ * The status page's stricter question. Keyed on `problems` alone — every
+ * conjunct of `ok` implies a problem line when false — so the page can never
+ * claim unhealthy without a line saying why.
  */
 export const pageHealthy = ({ problems }: Assessment): boolean => problems.length === 0;
 
 /**
  * What `/healthz` serialises: state and shape, no free text.
  *
- * A healthcheck is a contract, and a stable key set is the contract. Every
- * field here answers a question a machine can act on — is it up, when did each
- * subsystem last succeed, how many events are being served. The wording of a
- * failure is a question for a person, and the status page renders `problems`
- * for exactly that.
- *
- * `ok` still decides the status code, so a probe that reads nothing but the
- * code is unaffected.
+ * A stable key set is the contract. Every field answers a question a machine
+ * can act on; the wording of a failure is for a person, and the status page
+ * renders `problems` for that. `ok` still decides the status code.
  */
 export interface HealthResponse {
   ok: boolean;

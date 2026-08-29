@@ -1,8 +1,6 @@
 /**
- * SAVE — the rendered feed on disk, and back on boot.
- *
- * Last of FETCH → JOIN → RENDER → **SAVE**, and in `io/` because it is the step
- * that touches something outside the process.
+ * SAVE — the rendered feed on disk, and back on boot. Last of FETCH → JOIN →
+ * RENDER → **SAVE**, in `io/` because it touches something outside the process.
  */
 
 import { readFile } from 'node:fs/promises';
@@ -11,9 +9,9 @@ import { writeFileAtomic } from '../../shared/atomic-write.ts';
 import { config } from '../../shared/config.ts';
 
 /**
- * The last rendered feed, and the only derived thing kept on disk. Storing the
- * output rather than the inputs means what is persisted and what is served
- * cannot disagree; all control state stays in memory, so a restart resyncs.
+ * The only derived thing kept on disk. Storing the output rather than the
+ * inputs means the persisted and the served feed cannot disagree; control
+ * state stays in memory, so a restart resyncs.
  */
 const feedPath = (): string => join(config.dataDir, 'feed.ics');
 
@@ -25,22 +23,21 @@ export const loadFeed = async (): Promise<string | null> => {
   try {
     text = await readFile(feedPath(), 'utf8');
   } catch (err) {
-    // Only a missing file is a first run. A permission error or a directory
-    // where the file belongs reads identically to a cold start otherwise, and
-    // the operator sees a silently empty feed with nothing in the log.
+    // Only a missing file is a first run. A permission error read as a cold
+    // start leaves the operator a silently empty feed and nothing in the log.
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw err;
   }
 
-  // Unlike JSON, a truncated ICS still reads as a string, so it would be served
-  // verbatim. Check both ends before trusting it.
+  // Unlike JSON, a truncated ICS still reads as a string and would be served
+  // verbatim. Check both ends.
   if (!looksLikeCalendar(text)) return null;
   return text;
 };
 
-// Queued as well as individually atomic: writeFileAtomic stops two writers
-// corrupting each other but not from finishing out of order, and a save landing
-// second with older content would persist a feed already moved past.
+// Queued as well as atomic: writeFileAtomic stops two writers corrupting each
+// other, not finishing out of order — a save landing second with older
+// content would persist a feed already moved past.
 let queue: Promise<void> = Promise.resolve();
 
 export const saveFeed = (ics: string): Promise<void> => {
@@ -52,6 +49,6 @@ export const saveFeed = (ics: string): Promise<void> => {
 };
 
 const writeFeed = (ics: string): Promise<void> =>
-  // 0600 because the feed is the user's watchlist, which the README rightly
-  // treats as a credential.
+  // 0600: the feed is the user's watchlist, which the README treats as a
+  // credential.
   writeFileAtomic(feedPath(), ics);

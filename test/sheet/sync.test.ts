@@ -40,8 +40,8 @@ const run = async (mode: 'report' | 'apply', options: FakeSheetsOptions, asserti
   );
 };
 
-// The whole point of the default mode: it can be pointed at the real sheet
-// before the service account is ever given Editor access.
+// The point of the default mode: it can run against the real sheet before the
+// service account has Editor access.
 test('report mode plans in full and makes no mutating request', async () => {
   await run('report', {}, (result, calls, _sheet, _sync, log) => {
     assert.equal(result.status, 'reported');
@@ -56,31 +56,30 @@ test('apply mode writes exactly what it planned and verifies it', async () => {
     assert.equal(result.status, 'applied', result.error ?? '');
     assert.equal(result.error, null);
     assert.equal(sheet.state[3]?.[3]?.userEnteredValue?.numberValue, 5);
-    // Snapshot and write in one atomic batch, then a read, then the snapshot is
-    // dropped. Nothing is written without a fresh read either side of it.
+    // Snapshot and write in one atomic batch, a verify read, then the snapshot
+    // is dropped.
     assert.deepEqual(sheet.batches, [['duplicateSheet', 'updateCells'], ['deleteSheet']]);
     const sheets = calls.filter((c) => c.startsWith('https://sheets.googleapis.com/v4/spreadsheets/'));
     assert.deepEqual(sheets.map((c) => (c.includes(':batchUpdate') ? 'write' : 'read')), ['read', 'write', 'read', 'read', 'write']);
-    // Pinned because `new URL('SID:batchUpdate', base)` reads `SID:` as a
-    // scheme and silently sends the request somewhere else entirely.
+    // `new URL('SID:batchUpdate', base)` reads `SID:` as a scheme and silently
+    // sends the request elsewhere.
     assert.ok(sheets[1]?.startsWith('https://sheets.googleapis.com/v4/spreadsheets/SID:batchUpdate'), String(sheets[1]));
   });
 });
 
-// Rollback exists for one failure: our plan was wrong. That is why the rollback
-// set comes from the observed diff — the plan is the thing under suspicion.
+// Rollback exists for one failure: the plan was wrong. So the rollback set
+// comes from the observed diff, not the suspect plan.
 test('a write that does not verify is rolled back exactly once', async () => {
   await run('apply', { meddle: (state) => void (state[2]![3] = cellOf(99)) }, (result, _calls, sheet) => {
     assert.equal(result.status, 'rolled-back');
     assert.match(result.error ?? '', /changed without being planned/);
-    // The run that had to be undone is the one whose detail matters most, so it
-    // reports what it planned rather than reporting nothing.
+    // The undone run reports what it planned rather than nothing.
     assert.equal(result.record.edits.length, 1);
     assert.match(result.record.edits[0]?.note ?? '', /Fargo S2: 3 -> 5 episodes/);
     // One wholesale paste from the snapshot, not a cell-by-cell repair.
     assert.deepEqual(sheet.batches, [['duplicateSheet', 'updateCells'], ['copyPaste'], ['deleteSheet']]);
-    // The meddled cell is back, and so is the planned edit — a restore from the
-    // snapshot undoes the whole write, not just the part that surprised us.
+    // The restore undoes the whole write — the meddled cell and the planned
+    // edit both.
     assert.equal(sheet.state[2]?.[3]?.userEnteredValue?.numberValue, 6);
     assert.equal(sheet.state[3]?.[3]?.userEnteredValue?.numberValue, 3, 'the planned edit is undone too');
   });
@@ -113,11 +112,10 @@ test('a 500 on the write is never retried, and the re-read settles what happened
   });
 });
 
-// An atomic failure on a plan containing an insert leaves the row count
-// unchanged, which is the one shape in which "did it land" is easy to answer
-// backwards. Getting it wrong here costs everything: the snapshot tab rode the
-// same failed batch, so the rollback finds nothing and freezes the process for
-// good — over a sheet a single transient 503 left completely untouched.
+// A failed batch carrying an insert leaves the row count unchanged — the one
+// shape where "did it land" is easy to answer backwards. Answered wrongly, the
+// rollback finds no snapshot tab (it rode the same failed batch) and freezes
+// the process over a sheet a transient 503 left untouched.
 test('a 500 on a write that inserts a row fails cleanly instead of freezing', async () => {
   clearTokenCache();
   const grid: CellSpec[][] = [H, show('Fargo', 'Watching', 3381), season(1, 6, 44000)];
@@ -189,18 +187,17 @@ test('run never rejects, however the sheet misbehaves', async () => {
         const result = await new SheetSync({ logger: quiet }).run(LIBRARY);
         assert.equal(result.status, 'failed');
         assert.match(result.error ?? '', /share the spreadsheet with the service account as Editor/);
-        // A wrong SHEET_ID or an unshared spreadsheet needs a human. Arming the
-        // retry would defeat the quiet-poll early return every two hours for a
-        // week; the error still reaches errors.sheet and /healthz each run.
+        // A wrong SHEET_ID or an unshared spreadsheet needs a human; arming
+        // the retry would defeat the quiet-poll early return. The error still
+        // reaches errors.sheet and /healthz each run.
         assert.equal(result.retry, false);
       },
     ),
   );
 });
 
-// The same class, the opposite conclusion: the transport clears the token cache
-// on its way out of a 401, so the next poll signs a fresh assertion and recovers
-// by itself — but only if it is asked for one.
+// Same class, opposite conclusion: the transport clears the token cache on a
+// 401, so the next poll signs a fresh assertion and recovers — if asked for.
 test('a 401 asks for another poll, unlike the access errors it shares a class with', async () => {
   await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL }, () =>
     withFetch(
@@ -219,9 +216,8 @@ test('a 401 asks for another poll, unlike the access errors it shares a class wi
 
 const catalogueCalls = (calls: string[]) => calls.filter((c) => /api\.simkl\.com\/(tv|anime)\//.test(c));
 
-// The claim the gating exists to make. `/sync/activities` names a list, never a
-// title, so a second poll with nothing moved would otherwise re-read every
-// eligible show's catalogue from scratch.
+// `/sync/activities` names a list, never a title, so without the gating a
+// second poll with nothing moved would re-read every eligible show's catalogue.
 test('a second run with nothing moved makes no catalogue requests at all', async () => {
   clearTokenCache();
   const sheet = server();
@@ -236,8 +232,8 @@ test('a second run with nothing moved makes no catalogue requests at all', async
       calls.length = 0;
       const again = await sync.run(LIBRARY);
       assert.deepEqual(catalogueCalls(calls), []);
-      // And the plan is unchanged, because the retained catalogue still feeds
-      // it in full — the gate is on the network, not on what the planner sees.
+      // The plan is unchanged: the retained catalogue still feeds it in full.
+      // The gate is on the network, not on what the planner sees.
       assert.equal(again.status, 'reported');
       assert.equal(again.record.edits.length, 1);
     }),
@@ -260,7 +256,7 @@ test('a title that moved is re-read, and only that title', async () => {
       calls.length = 0;
       await sync.run(second);
       // Fargo's last watch moved, so it is re-read. Silo has no row, so it is
-      // reported rather than read at all.
+      // reported, not read.
       assert.deepEqual([...new Set(catalogueCalls(calls).map((c) => c.split('?')[0]))], [
         'https://api.simkl.com/tv/episodes/3381',
         'https://api.simkl.com/tv/3381',
@@ -269,9 +265,9 @@ test('a title that moved is re-read, and only that title', async () => {
   );
 });
 
-// A rollback that must both delete an inserted row and put cells back has to do
-// them in separate batches: the delete rewrites the relative references in
-// everything it shifts, including anything written earlier in the same batch.
+// Delete and restore must be separate batches: the delete rewrites the
+// relative references in everything it shifts, including cells written earlier
+// in the same batch.
 test('a rollback involving an insert deletes first, then restores from the backup tab', async () => {
   clearTokenCache();
   // A Fargo block with no S2 row, so the plan inserts one mid-sheet.
@@ -303,8 +299,8 @@ test('a rollback involving an insert deletes first, then restores from the backu
       const result = await new SheetSync({ logger: quiet }).run(library);
       assert.equal(result.status, 'rolled-back', result.error ?? '');
 
-      // Batch 1 snapshots and writes, in that order and atomically. Batch 2 is
-      // the delete ALONE. Batch 3 is the paste. Batch 4 drops the snapshot.
+      // Batch 1 snapshots and writes atomically. Batch 2 is the delete ALONE.
+      // Batch 3 is the paste. Batch 4 drops the snapshot.
       assert.equal(sheet.batches[0]?.[0], 'duplicateSheet', 'the snapshot leads the write batch');
       assert.ok(sheet.batches[0]?.includes('insertDimension'), 'and the write follows it');
       assert.deepEqual(sheet.batches[1], ['deleteDimension'], 'the delete travels alone');
@@ -317,10 +313,10 @@ test('a rollback involving an insert deletes first, then restores from the backu
   );
 });
 
-// The snapshot is what makes a frozen sheet recoverable without archaeology in
-// version history, so it must survive precisely when the rollback did not — and
-// it is renamed out of the swept namespace on the way, because `frozen` is
-// process state and a restart forgets all of this.
+// The snapshot makes a frozen sheet recoverable without version-history
+// archaeology, so it must survive exactly when the rollback did not — renamed
+// out of the swept namespace, because `frozen` is process state a restart
+// forgets.
 test('a failed rollback keeps the backup tab, renames it for repair, and names it', async () => {
   clearTokenCache();
   const sheet = server({ meddle: (state) => void (state[2]![3] = cellOf(99)), failRollback: true });
@@ -338,11 +334,9 @@ test('a failed rollback keeps the backup tab, renames it for repair, and names i
   );
 });
 
-// "No id" is not "no tab". A timeout loses the reply that carries the new
-// sheetId, and the listing that would recover it can fail on its own — while
-// the duplicate, riding the same atomic batch, is sitting right there. Leaving
-// it under the swept name hands the user a repair target the next clean run
-// deletes.
+// "No id" is not "no tab": a timeout loses the reply carrying the new sheetId
+// while the duplicate sits right there. Left under the swept name, the repair
+// target is deleted by the next clean run.
 test('a snapshot whose id was lost is still found and renamed', async () => {
   clearTokenCache();
   const sheet = server({ meddle: (state) => void (state[2]![3] = cellOf(99)), hideReplies: true, failTabLists: 4 });
@@ -358,8 +352,8 @@ test('a snapshot whose id was lost is still found and renamed', async () => {
   );
 });
 
-// And when even that cannot be done, the message has to carry the deadline the
-// user is working to rather than implying the tab will keep.
+// When even the rename fails, the message must carry the deadline rather than
+// imply the tab will keep.
 test('a snapshot that could not be renamed says so, and says to hurry', async () => {
   clearTokenCache();
   const sheet = server({ meddle: (state) => void (state[2]![3] = cellOf(99)), hideReplies: true, failTabLists: 8 });
@@ -374,8 +368,8 @@ test('a snapshot that could not be renamed says so, and says to hurry', async ()
   );
 });
 
-// The whole point of the rename: the restart that clears `frozen` must not let
-// the next clean write take the tab the user was told to repair from.
+// The point of the rename: after the restart that clears `frozen`, a clean run
+// must not sweep the tab the user was told to repair from.
 test('a repair snapshot survives a later clean run, which sweeps everything else', async () => {
   clearTokenCache();
   const sheet = server();
@@ -392,8 +386,6 @@ test('a repair snapshot survives a later clean run, which sweeps everything else
   );
 });
 
-// A snapshot left lying around on every successful run would be clutter, and
-// clutter that looks like a failure.
 test('a clean run leaves no backup tab behind', async () => {
   clearTokenCache();
   const sheet = server();
@@ -405,9 +397,8 @@ test('a clean run leaves no backup tab behind', async () => {
   );
 });
 
-// The write batch always makes a snapshot, and any failure between the write
-// and the verify read leaves it behind with nothing to remove it. A clean run
-// is the one moment the sheet is known good, so it clears the lot.
+// Any failure between the write and the verify read strands a snapshot tab. A
+// clean run is the one moment the sheet is known good, so it clears the lot.
 test('a clean run sweeps snapshot tabs an earlier run left behind', async () => {
   clearTokenCache();
   const sheet = server();
@@ -423,8 +414,8 @@ test('a clean run sweeps snapshot tabs an earlier run left behind', async () => 
 });
 
 // A deferred row is work known to be waiting, held back only by the one-row
-// cap. Without the retry flag it would sit until some unrelated thing woke the
-// next poll — the daily film clock, at worst.
+// cap. Without the retry flag it sits until something unrelated wakes a poll —
+// the daily film clock, at worst.
 test('a run that deferred a row asks for another poll', async () => {
   clearTokenCache();
   const grid: CellSpec[][] = [
@@ -454,9 +445,8 @@ test('a run that deferred a row asks for another poll', async () => {
     }),
   );
 
-  // Report mode never takes the first row either, so the deferral cannot drain
-  // and asking for another poll is an unbroken loop of full grid reads — in the
-  // default mode, on a sheet nobody has ever written to.
+  // Report mode never inserts, so the deferral cannot drain — asking for
+  // another poll would be an unbroken loop of full grid reads.
   const reporting = server({ grid, episodes });
   await withConfig({ sheetId: 'SID', sheetSyncMode: 'report', googleKeyBase64: CREDENTIAL }, () =>
     withFetch(reporting.handler, async () => {
@@ -467,9 +457,9 @@ test('a run that deferred a row asks for another poll', async () => {
   );
 });
 
-// The history exists so a restart does not erase what the sync did. `record()`
-// is the one choke point every terminal path funnels through, which is why the
-// append lives there rather than at six call sites.
+// The history survives restarts. `record()` is the one choke point every
+// terminal path funnels through, so the append lives there, not at six call
+// sites.
 test('a run is recorded in the journal with what it planned', async () => {
   await withFreshJournal(async () => {
     await run('apply', {}, (result) => {
@@ -485,8 +475,8 @@ test('a run is recorded in the journal with what it planned', async () => {
   });
 });
 
-// An install with no SHEET_ID must leave no trace on disk at all: the `off`
-// return in run() deliberately never reaches `record()`.
+// An install with no SHEET_ID leaves no trace on disk: the `off` return in
+// run() never reaches `record()`.
 test('an inert sync writes no journal', async () => {
   await withFreshJournal(async (dir) => {
     await withConfig({ sheetSyncMode: 'off' }, async () => {
@@ -500,14 +490,10 @@ test('an inert sync writes no journal', async () => {
 // --- the freshness gate ----------------------------------------------------
 
 /**
- * Advance the monotonic clock faster than the run can plan.
- *
- * The freshness window is two minutes, so a test cannot wait it out — the clock
- * has to move instead. Swapping `performance.now` is the move `withFetch` makes
- * on `fetch`, for the same reason: the seam is a global.
- *
- * Every reading is 5 minutes past the one before, so a snapshot is stale by the
- * time its plan is ready, on every attempt.
+ * Advance the monotonic clock faster than the run can plan. The freshness
+ * window is two minutes, so a test cannot wait it out. Each reading is 5
+ * minutes past the one before, so every snapshot is stale by the time its plan
+ * is ready.
  */
 const withRunawayClock = async (fn: () => Promise<void>): Promise<void> => {
   const real = performance.now.bind(performance);
@@ -521,11 +507,10 @@ const withRunawayClock = async (fn: () => Promise<void>): Promise<void> => {
 };
 
 /**
- * A plan is built against row indices, so applying it to a grid that has since
- * moved writes to the wrong rows. The gate is what makes that unreachable, and
- * it compares two readings of the *same* clock — a fixture stamping `readAtMono`
- * from `Date.now()` would read as a difference of ~1.7e12 ms, which is always
- * fresh, and would disable this silently.
+ * A plan is built against row indices, so applying it to a grid that has moved
+ * writes to the wrong rows. The gate compares two readings of the same clock —
+ * a fixture stamping `readAtMono` from `Date.now()` reads as ~1.7e12 ms old,
+ * always fresh, silently disabling this.
  */
 test('a snapshot that ages past the freshness window is re-read, never written against', async () => {
   await withRunawayClock(() =>
@@ -586,8 +571,8 @@ test('a season closing writes its end date and its runtime in one verified batch
   );
 });
 
-// The whole point of the deferral: End is a one-way door, so a poll that cannot
-// reach TVDB must leave the row open rather than close it blank for ever.
+// End is a one-way door, so a poll that cannot reach TVDB must leave the row
+// open rather than close it blank for ever.
 test('a TVDB outage leaves the row open and asks for another poll', async () => {
   clearTokenCache();
   clearTvdbTokenCache();
@@ -603,10 +588,9 @@ test('a TVDB outage leaves the row open and asks for another poll', async () => 
   );
 });
 
-// An account-level TVDB failure escapes the pool by design — it is not a fact
-// about any one season — but it must not escape the run. Letting it through
-// throws away the grid read and every SIMKL call this poll already made, and
-// costs the sheet a write, over an optional column.
+// An account-level TVDB failure escapes the pool by design — it is no fact
+// about any one season — but must not escape the run: that would throw away
+// the grid read and every SIMKL call over an optional column.
 const loginFails = (status: number) => (over: Parameters<typeof server>[0] = {}) => {
   const sheet = closingRun(over);
   return {
@@ -616,8 +600,8 @@ const loginFails = (status: number) => (over: Parameters<typeof server>[0] = {})
   };
 };
 
-// A typo in the key will never start answering, so leaving the rows pending
-// would stop the sheet being dated at all — silently, and for ever.
+// A typo'd key will never start answering, so leaving rows pending would stop
+// the sheet being dated at all — silently, for ever.
 test('a rejected TVDB key settles: the season closes on the show-wide runtime', async () => {
   clearTokenCache();
   clearTvdbTokenCache();
@@ -634,8 +618,8 @@ test('a rejected TVDB key settles: the season closes on the show-wide runtime', 
   );
 });
 
-// The same error class, and the opposite answer: `exchangeToken` raises an auth
-// error for any non-ok login, so only the status separates an outage from a typo.
+// Same error class, opposite answer: `exchangeToken` raises an auth error for
+// any non-ok login, so only the status separates an outage from a typo.
 test('a login outage leaves the row open rather than settling it', async () => {
   clearTokenCache();
   clearTvdbTokenCache();
@@ -651,8 +635,7 @@ test('a login outage leaves the row open rather than settling it', async () => {
   );
 });
 
-// The inert path, and the one the whole suite has been exercising by default:
-// without a key the run must be indistinguishable from before this existed.
+// Without a key the run must behave as if the runtime feature did not exist.
 test('with no TVDB key the season closes and nothing reaches thetvdb.com', async () => {
   clearTokenCache();
   clearTvdbTokenCache();
@@ -668,8 +651,7 @@ test('with no TVDB key the season closes and nothing reaches thetvdb.com', async
   );
 });
 
-// Terminal once answered, so a second poll must not ask again — the season is
-// finished and its runtimes cannot change.
+// A finished season's runtimes cannot change, so one answer is terminal.
 test('a runtime already read is not looked up a second time', async () => {
   clearTokenCache();
   clearTvdbTokenCache();
@@ -685,25 +667,21 @@ test('a runtime already read is not looked up a second time', async () => {
   );
 });
 
-// A failed runtime lookup is deliberately left unrecorded so the next poll asks
-// again — which means a re-plan would re-issue exactly the lookups that aged the
-// snapshot past FRESH_MS in the first place, and a throttled season can spend a
-// minute apiece obeying Retry-After. Three rounds of that ends the run `failed`,
-// losing the Episode and Status writes the poll had already earned.
+// A failed runtime lookup is left unrecorded so the next poll asks again — so
+// a re-plan would re-issue exactly the lookups that aged the snapshot past
+// FRESH_MS, and a throttled season can spend a minute apiece on Retry-After.
+// Three rounds of that ends the run `failed`, losing the Episode and Status
+// writes the poll already earned.
 test('a re-plan does not re-issue the runtime lookups that aged the snapshot', () => {
   clearTokenCache();
   clearTvdbTokenCache();
-  // A *failing* lookup is the case that matters: it is deliberately left
-  // unrecorded so the next poll asks again, so nothing stops a re-plan asking
-  // again inside this same run — where it would stall on exactly what made the
-  // snapshot stale, three times over, and end the run `failed`.
   const sheet = closingRun({ tvdb: () => new Response('boom', { status: 500 }) });
   return withRunawayClock(() =>
     withKey(() =>
       withFetch(sheet.handler, async (calls) => {
         await new SheetSync({ logger: quiet }).run(CLOSING_LIBRARY);
         assert.ok(calls.filter((c) => c.includes('ranges=')).length > 1, 'the grid was re-read, so a re-plan happened');
-        // Two: the client's own retry cap, spent once on the first attempt.
+        // Two calls: the client's own retry cap, spent on the first attempt.
         assert.equal(
           calls.filter((c) => c.includes('/episodes/official')).length,
           2,
@@ -725,8 +703,8 @@ const addingRun = (over: Parameters<typeof server>[0] = {}) =>
 /** The row the insert created, which lands directly below season 1. */
 const addedRow = (sheet: ReturnType<typeof server>) => sheet.tabs.get(1)![3]!;
 
-// The headline. A filled cell is refused by `runtimeTarget` for ever, so a row
-// added mid-season has to go in blank or it can never carry its own average.
+// `runtimeTarget` refuses a filled cell for ever, so a row added mid-season
+// must go in blank or it can never carry its own average.
 test('a season still running is added with a blank runtime cell, and nothing is asked of TVDB', async () => {
   clearTokenCache();
   clearTvdbTokenCache();
@@ -759,10 +737,10 @@ test('a season already over when its row is added is dated and averaged in the s
 });
 
 /**
- * The convergence proof, and the reason a complete season is inserted *open*
- * when its runtime has not come back. Dating it on the first poll would freeze a
- * blank cell; leaving it open costs the end date one poll and nothing else,
- * because the date comes from the watch timestamp rather than from now.
+ * The convergence proof for inserting a complete season open when its runtime
+ * has not come back: dating it on the first poll would freeze a blank cell;
+ * leaving it open costs one poll and nothing else, because the date comes from
+ * the watch timestamp.
  */
 test('a TVDB outage adds the row open, and the next poll dates it and fills the cell', async () => {
   clearTokenCache();
@@ -791,7 +769,6 @@ test('a TVDB outage adds the row open, and the next poll dates it and fills the 
   );
 });
 
-// The inert path for the insert, matching the one the close already holds.
 test('with no TVDB key a new row keeps SIMKL’s show-wide runtime', async () => {
   clearTokenCache();
   clearTvdbTokenCache();

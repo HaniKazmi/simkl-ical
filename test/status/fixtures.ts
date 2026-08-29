@@ -1,17 +1,13 @@
 /**
- * The one cold `StatusInput`, shared by the model and the render suites.
- *
- * Here rather than in each file for the reason `test/sheet/fixture.ts` gives
- * one level up: two copies of a nested literal do not fail to typecheck when
- * they *drift*, only when one omits a field. The two suites are meant to be
- * describing the same cold page — the render suite proves it prints nothing
- * unhandled, the model suite proves the values behind it are sane — so a field
- * that is benign in one copy and null in the other lets the render assertion
- * pass over a state the model assertion never saw.
+ * The one cold `StatusInput`, shared by the model and render suites. Two
+ * copies of a nested literal do not fail to typecheck when they drift, and the
+ * suites must describe the same cold page — a field benign in one copy and
+ * null in the other lets the render assertion pass over a state the model
+ * assertion never saw.
  *
  * `input()` takes the page's knobs by flat name and places each on the nested
- * `Snapshot`, so a test says `input({ renderedAt })` rather than spreading four
- * levels by hand.
+ * `Snapshot`, so a test says `input({ renderedAt })` rather than spreading
+ * four levels by hand.
  *
  * The `test/**\/*.test.ts` glob never runs this as a suite.
  */
@@ -34,9 +30,8 @@ export const DAY = 24 * HOUR;
 export const NOW = Temporal.Instant.from('2026-08-16T14:16:00.000Z');
 
 /**
- * `ms` before `NOW`. Deliberately not `helpers.ts`'s `ago`, which counts back
- * from the real clock — importing both into one file is how a test starts
- * measuring against a moving `now`.
+ * `ms` before `NOW`. Not `helpers.ts`'s `ago`, which counts back from the real
+ * clock — importing both is how a test starts measuring against a moving now.
  */
 export const before = (ms: number): string => isoOf(NOW.subtract({ milliseconds: ms }));
 

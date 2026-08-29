@@ -2,18 +2,15 @@
  * INDEX — what SIMKL says was watched, reduced to the shape the planner needs.
  * Pure.
  *
- * First, and before the spreadsheet is even read: `sync.ts` indexes the library
- * as its cheap early-out — an empty index means there is nothing this run could
- * write, so the grid read never happens.
+ * Runs before the spreadsheet is read: `sync.ts` uses an empty index as its
+ * early-out, so the grid read never happens when there is nothing to write.
  *
- * The library says what was *watched* and never what *exists*; what exists
- * comes from the catalogue (`3-catalogue.ts`). Season completeness needs both,
- * which is why neither can be dropped.
+ * The library says what was *watched*, never what *exists*; what exists comes
+ * from the catalogue (`3-catalogue.ts`). Season completeness needs both.
  *
- * Season 0 is excluded: it is specials, the user maintains those by hand, and
- * including it makes a complete season look incomplete forever — South Park's
- * episode list holds 338 against a watched count of 331, and season 0 holds
- * exactly 7.
+ * Season 0 is excluded: it is specials, maintained by hand, and including it
+ * makes a complete season look incomplete forever — South Park's episode list
+ * holds 338 against a watched count of 331, and season 0 holds exactly 7.
  */
 
 import { instantFrom } from '../shared/dates.ts';
@@ -44,10 +41,10 @@ export interface TitleProgress {
 /**
  * Watched episodes per numbered season, with their first and last timestamps.
  *
- * Counted with a null filter on `watched_at`. SIMKL's reference says
+ * Counted with a null filter on `watched_at`: SIMKL's reference says
  * `include_all_episodes=yes` can fill in virtual rows stamped with the show's
- * last-watched time. Live data does not appear to do it, but the filter is free
- * and the entire value of the sync rests on this number.
+ * last-watched time. Live data does not appear to, but the filter is free and
+ * the sync's whole value rests on this number.
  */
 export const seasonsOf = (item: LibraryItem): Map<number, SeasonProgress> => {
   const out = new Map<number, SeasonProgress>();
@@ -60,8 +57,7 @@ export const seasonsOf = (item: LibraryItem): Map<number, SeasonProgress> => {
       const at = instantFrom(episode.watched_at);
       if (at === null) continue;
       watched += 1;
-      // Instants, so this is a comparison of values rather than of the strings
-      // they happened to arrive as.
+      // Instants: compared as values, not as the strings they arrived as.
       if (first === null || Temporal.Instant.compare(at, first) < 0) first = at;
       if (last === null || Temporal.Instant.compare(at, last) > 0) last = at;
     }
@@ -71,13 +67,11 @@ export const seasonsOf = (item: LibraryItem): Map<number, SeasonProgress> => {
 };
 
 /**
- * Every show and anime in the library, keyed by SIMKL id.
+ * Every show and anime in the library, keyed by SIMKL id. Films are skipped:
+ * no seasons, so the block model does not apply.
  *
- * Films are skipped: they have no seasons, so the whole block model is
- * inapplicable.
- *
- * One record per title, so there is nothing to reconcile here: a status move
- * arrives as a replacement of the record, not as a second copy alongside it.
+ * One record per title, so nothing to reconcile: a status move arrives as a
+ * replacement, not a second copy.
  */
 export const indexLibrary = (library: Library | null | undefined): Map<number, TitleProgress> => {
   const out = new Map<number, TitleProgress>();

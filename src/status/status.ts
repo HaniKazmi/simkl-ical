@@ -1,15 +1,14 @@
 /**
- * The status page's impure shell: MODEL → RENDER, with the live service and the
- * clock read here so the two numbered modules beside it stay pure.
+ * The status page's impure shell: MODEL → RENDER, with the live service and
+ * the clock read here so the two numbered modules stay pure.
  *
- * This is the only file under `status/` that names `Orchestrator`. The state
- * arrives as one `Snapshot`; what the shell adds is everything the snapshot
- * deliberately does not carry — config labels, the request ring, the run
- * journal, and the one question (`filmsDue`) only `Feed` can answer.
+ * The only file under `status/` that names `Orchestrator`. The state arrives
+ * as one `Snapshot`; the shell adds what the snapshot does not carry — config
+ * labels, the request ring, the run journal, and `filmsDue`, which only
+ * `Feed` can answer.
  *
- * Synchronous, deliberately. The run journal is already in memory and nothing
- * here fetches, so a client refreshing the page hard costs a render and nothing
- * else — the same reason requests never trigger a fetch.
+ * Synchronous: the journal is already in memory and nothing here fetches, so
+ * a hard page refresh costs a render and nothing else.
  */
 
 import { config, tvdbConfigured } from '../shared/config.ts';
@@ -33,15 +32,13 @@ export const renderStatus = (state: Orchestrator, { now = Temporal.Now.instant()
       timezone: config.timezone,
       activitiesPoll: config.activitiesPoll,
       calendarRefresh: config.calendarRefresh,
-      // Asked of `Feed`, which owns the rule. Re-deriving it from
-      // `filmsResolvedAt` and an interval would describe the whole-list clock
-      // the per-film horizon replaced.
+      // Asked of `Feed`, which owns the rule. Due is per-film, so no
+      // timestamp plus interval can re-derive it.
       filmsDue: state.feed.filmsDue(state.library),
       runtimesConfigured: tvdbConfigured(),
       sheetMode: config.sheetSyncMode,
-      // The tab name rather than the id, because the name is what a reader can
-      // act on: it is the label on the tab in front of them, and the id names
-      // nothing they can find without following it.
+      // The tab name, not the id: the name is the label on the tab in front
+      // of the reader, and the id names nothing they can find.
       sheetTab: config.sheetName,
       requests: recentRequests(),
       runs: sheetRuns(),

@@ -12,17 +12,17 @@ test('duration reads at a glance rather than to the second', () => {
   assert.equal(duration(Temporal.Duration.from({ milliseconds: -5 })), '0s', 'a clock that went backwards is not negative time');
 });
 
-// The state a fresh container is in, and the state the CI smoke test hits. It
-// must model completely rather than throw or print the word "null".
+// A fresh container's state, and what the CI smoke test hits: it must model
+// completely rather than throw or print "null".
 test('the cold state models without throwing', () => {
   const model = buildModel(COLD);
 
-  // A process always has a start time, so even the cold page has an uptime.
+  // A process always has a start time, so even a cold page has an uptime.
   assert.equal(model.uptime, '1m');
   assert.equal(model.library.polled.label, 'never');
   assert.equal(model.library.total, 0);
-  // The three type rows are a fixed shape, so a cold page has the same
-  // skeleton as a warm one rather than a gap where the totals go.
+  // The three type rows are a fixed shape, so a cold page keeps a warm one's
+  // skeleton rather than a gap where the totals go.
   assert.deepEqual(model.library.counts, [
     { key: 'shows', count: 0 },
     { key: 'anime', count: 0 },
@@ -47,17 +47,16 @@ test('next-due counts from the last run, and says so when it has passed', () => 
   assert.equal(buildModel(input({ polledAt: before(3 * HOUR) })).library.due.label, 'overdue by 1h');
 });
 
-// Not "due in two hours": there is nothing to count from, and claiming a
-// countdown from a run that never happened is worse than saying so.
+// Not "due in two hours": a countdown from a run that never happened is worse
+// than saying so.
 test('something that has never run is due now, not overdue', () => {
   assert.deepEqual(buildModel(COLD).library.due, { label: 'due now' });
 });
 
 const GATE = { pull: 'delta' as const, updated: 1, removed: 0 };
 
-// Fourteen per-status rows that move twice a week, eleven of them usually the
-// same number, is not what the section is for. Three totals answer the question
-// it is for — is the library the size I expect.
+// Fourteen per-status rows that barely move answer nothing; three totals
+// answer the real question — is the library the size I expect.
 test('the counts collapse to one total per type', () => {
   const model = buildModel(
     input({
@@ -74,15 +73,15 @@ test('the counts collapse to one total per type', () => {
   ]);
 });
 
-// `other` exists to keep the rows summing to the total, not to be read — so it
-// shows up only when SIMKL has sent a status nothing here knows about.
+// `other` keeps the rows summing to the total; it shows only when SIMKL sends
+// a status nothing here knows.
 test('an unrecognised status appears only when it is not zero', () => {
   const model = buildModel(input({ counts: countsWith({ shows: { watching: 3 } }, 2), gate: GATE }));
   assert.deepEqual(model.library.counts.at(-1), { key: 'other', count: 2 });
 });
 
-// Before the first poll nothing is known, which is a different claim from
-// nothing having moved.
+// Before the first poll nothing is known — a different claim from nothing
+// having moved.
 test('with no gate yet the page says so rather than claiming nothing moved', () => {
   const model = buildModel(input({ counts: countsWith({ shows: { watching: 3 } }), gate: null }));
   assert.equal(model.library.gate, 'not polled yet');
@@ -100,8 +99,8 @@ test('the gate line names what the pull carried', () => {
   assert.equal(buildModel(input({ gate: { ...GATE, pull: 'full' } })).library.gate, 'full resync');
 });
 
-// The distinction the notModified plumbing exists for: at an interval matched
-// to the CDN's regeneration cycle, "answered" and "regenerated" differ.
+// What the notModified plumbing is for: at an interval matched to the CDN's
+// regeneration cycle, "answered" and "regenerated" differ.
 test('the fetch step separates a fresh calendar from an unchanged one', () => {
   const at = before(2 * HOUR);
   assert.match(buildModel(input({ calendarsAt: at, calendarsChangedAt: at })).feed.steps[0]!.detail, /new airdates/);
@@ -123,8 +122,8 @@ test('runs are newest first for reading, though the journal appends oldest first
   );
 });
 
-// The single highest-value thing on the page: /healthz reduces this to `true`,
-// so the tab to copy back and the rows to delete exist nowhere else.
+// The highest-value line on the page: /healthz reduces this to `true`, so the
+// tab to copy back and the rows to delete exist nowhere else.
 test('the freeze message is carried whole', () => {
   const message = 'FROZEN: copy _sync-repair-1 back over Sheet1 and delete rows 610-611';
   assert.equal(buildModel(input({ sheetFrozen: message })).sheet.frozen, message);
@@ -132,10 +131,9 @@ test('the freeze message is carried whole', () => {
 
 // --- how the library moved -------------------------------------------------
 //
-// The two halves answer different questions, and the commonest poll there is
-// makes them disagree: watching an episode updates records and moves no counts
-// at all. That is `updated` versus `reshaped`, which the render gate keys on,
-// finally visible to a reader.
+// The two halves answer different questions, and the commonest poll makes
+// them disagree: watching an episode updates records and moves no counts —
+// `updated` versus `reshaped`, made visible to a reader.
 
 
 test('watching episodes reports work done and no movement between statuses', () => {
@@ -156,7 +154,7 @@ test('a removal reports its count falling', () => {
   assert.match(model.library.movement?.summary ?? '', /1 removed/);
 });
 
-// Before the first pull there is nothing to report, which is not the same as
+// Before the first pull there is nothing to report — not the same as
 // reporting that nothing moved.
 test('a library that has never moved says so rather than showing an empty change', () => {
   assert.equal(buildModel(input({ movement: null })).library.movement, null);
@@ -173,8 +171,8 @@ test('a size reads at a glance rather than in bytes', () => {
   );
 });
 
-// A 304 is the healthy outcome of a conditional GET, and the absence of a body
-// is the whole point of it.
+// A 304 is the healthy outcome of a conditional GET; the absent body is its
+// point.
 test('a response carrying no body shows a dash, not a zero', () => {
   const model = buildModel(input({ requests: [request({ status: 304, bytes: null })] }));
   assert.equal(model.requests[0]?.size, '\u2014');
@@ -187,15 +185,15 @@ test('a request keeps its instant for a machine and its age for a reader', () =>
 });
 
 // An unconfigured runtime lookup makes zero requests, so nothing else on the
-// page separates "no credential" from "no season has closed yet" — while the
+// page separates "no credential" from "no season closed yet" — while the
 // Episodes column silently stays blank. This line is the only signal.
 test('the page says when runtime lookups are off, and stays quiet when they work', () => {
   assert.equal(buildModel(input({ sheetConfigured: true, runtimesConfigured: false })).sheet.runtimes, false);
   assert.equal(buildModel(input({ sheetConfigured: true, runtimesConfigured: true })).sheet.runtimes, true);
 });
 
-// The claim that the request log carries this for free: a TVDB failure needs no
-// new plumbing to reach the reader.
+// The request log carries this for free: a TVDB failure needs no new plumbing
+// to reach the reader.
 test('a failing TVDB lookup reaches the promoted errors', () => {
   const model = buildModel(
     input({

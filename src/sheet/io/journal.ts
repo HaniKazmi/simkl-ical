@@ -1,17 +1,16 @@
 /**
- * The sheet's own history of what it wrote, on disk so it survives a restart.
+ * The sheet's history of what it wrote, on disk so it survives a restart.
  *
- * In `io/` because it talks outside the process, and under `sheet/` because the
- * half that produces a run owns the record of it. `status/` only reads this.
+ * In `io/` because it talks outside the process; under `sheet/` because the
+ * half that produces a run owns the record. `status/` only reads this.
  *
  * **Observational, never control.** Nothing in `src/` may read this file to
- * decide what to do — not to skip a run, not to arm a retry, not to remember a
- * freeze. A restart still resyncs everything from a fresh read, because no
- * decision consults it. Reading it to make one would make a corrupt or deleted
- * file change behaviour, which is exactly what the rest of the design avoids.
+ * decide what to do — not to skip a run, arm a retry, or remember a freeze. A
+ * restart resyncs everything from a fresh read because no decision consults
+ * it; otherwise a corrupt or deleted file could change behaviour.
  *
- * The type-only import from `../sync.ts` is erased by Node's type stripping, so
- * the cycle with `sync.ts` importing this module exists at build time only.
+ * The type-only import from `../sync.ts` is erased by Node's type stripping,
+ * so the cycle with `sync.ts` exists at build time only.
  */
 
 import { readFile } from 'node:fs/promises';
@@ -36,9 +35,9 @@ export interface SheetRunRecord {
   inserts: RecordedInsert[];
   /**
    * `errors.sheet` verbatim, including the whole FROZEN repair message.
-   * Deliberately uncapped: `/healthz` reduces that message to a boolean, so
-   * this is the only place the tab to copy back and the rows to delete survive
-   * the process that learned them.
+   * Uncapped: `/healthz` reduces that message to a boolean, so this is the
+   * only place the tab to copy back and the rows to delete survive the
+   * process that learned them.
    */
   error: string | null;
   /** How many consecutive identical runs this record stands for. */
@@ -55,24 +54,23 @@ interface JournalFile {
 
 /**
  * Fifty is months of real activity at a few hundred bytes a record. Capped by
- * count alone — the collapse in `appendSheetRun` bounds the one case that could
- * otherwise grow without limit.
+ * count alone — the collapse in `appendSheetRun` bounds the one case that
+ * could grow without limit.
  */
 const MAX_RUNS = 50;
 
 /**
- * Bumped when the record shape changes, so an older file is *dropped* rather
- * than half-read into fields that no longer mean what they did.
+ * Bumped when the record shape changes, so an older file is dropped rather
+ * than half-read into fields that mean something else.
  */
 const VERSION = 1;
 
 const journalPath = (): string => join(config.dataDir, 'sheet-runs.json');
 
 /**
- * Held for the life of the process so rendering the page touches no disk — a
- * client polling it hard must cost nothing, the same reason requests never
- * trigger a fetch. This module is the owner; everything goes through the four
- * functions below.
+ * Held in memory so rendering the page touches no disk — a client polling it
+ * hard must cost nothing. This module is the owner; everything goes through
+ * the four functions below.
  */
 let runs: SheetRunRecord[] = [];
 
@@ -85,15 +83,14 @@ export const clearSheetRuns = (): void => {
 };
 
 /**
- * Enough that every later use is total. `at` must be a real instant, not merely
- * a string — an unusable one renders `NaNd ago` on the status page — and
- * `repeats` must be a real number, or `previous.repeats + 1` is `NaN`, persists
- * as `null`, and the count silently stops working for the life of the file.
+ * Enough that every later use is total. `at` must be a real instant, not
+ * merely a string — an unusable one renders `NaNd ago` on the status page —
+ * and `repeats` must be a real number, or `previous.repeats + 1` is `NaN`,
+ * persists as `null`, and the count silently stops for the life of the file.
  *
- * Strict, which `Date.parse` was not: it accepts `2026`, `March 5` and
- * `Dec 25 1995`, so the gate admitted exactly the values it exists to reject and
- * the page rendered whatever came through. This file is read back off disk and
- * rendered verbatim, so it is the one place that has to be sure.
+ * Strict parsing: `Date.parse` accepts `2026`, `March 5` and `Dec 25 1995` —
+ * exactly the values this gate exists to reject. The file is read off disk
+ * and rendered verbatim, so this is the one place that has to be sure.
  */
 const isRecord = (value: unknown): value is SheetRunRecord => {
   if (typeof value !== 'object' || value === null) return false;
@@ -137,8 +134,8 @@ export const loadSheetRuns = async ({ log }: { log?: Logger } = {}): Promise<voi
     return;
   }
 
-  // Per-record rather than all-or-nothing: one bad entry should not cost the
-  // rest of the history, which is the part that would be missed.
+  // Per-record rather than all-or-nothing: one bad entry must not cost the
+  // rest of the history.
   runs = file.runs.filter(isRecord).slice(-MAX_RUNS);
 };
 
@@ -149,19 +146,19 @@ const saysSomething = (record: NewSheetRun): boolean =>
 /**
  * How far apart two identical runs can be and still be the same episode.
  *
- * The repetition worth collapsing is a stuck state re-reported every poll. The
- * history survives a restart, so without a bound a sheet hand-reverted and
- * re-applied days later folds into the record from the first time — losing the
- * second write entirely, which is the history this file exists to keep.
+ * The repetition worth collapsing is a stuck state re-reported every poll.
+ * The history survives a restart, so without a bound a sheet hand-reverted
+ * and re-applied days later folds into the first record — losing the second
+ * write, which is the history this file exists to keep.
  */
 const SAME_EPISODE_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Whether two records are close enough in time to be one episode.
  *
- * Unparseable reads as *not* close, so the runs stay separate — which is the
- * safe direction, and stated rather than arrived at through `NaN` comparing
- * false against everything.
+ * Unparseable reads as *not* close, so the runs stay separate — the safe
+ * direction, stated rather than arrived at through `NaN` comparing false
+ * against everything.
  */
 const within = (from: string, to: string): boolean => {
   const a = instantFrom(from);
@@ -179,25 +176,24 @@ const sameAs = (a: SheetRunRecord, b: NewSheetRun): boolean =>
   JSON.stringify(a.inserts) === JSON.stringify(b.inserts);
 
 /**
- * Record a finished run. Never throws — this sits on six return paths inside
- * the refresh path, where nothing may be fatal, so it swallows its own failures
- * rather than trusting a caller's try/catch.
+ * Record a finished run. Never throws — it sits on six return paths inside
+ * the refresh path, where nothing may be fatal, so it swallows its own
+ * failures rather than trusting a caller's try/catch.
  *
- * Two runs never reach the file. A quiet poll on an unchanged sheet says
- * nothing and is the overwhelmingly common outcome, so recording it would evict
- * every real entry within days. And a `frozen` run repeats on *every* poll for
- * the life of the process, so without collapsing it the cap fills with one
- * message — "frozen, 37 polls, since 14:02" is what an operator needs, not
- * thirty-seven copies of it. Collapsing is bounded in time as well as by
- * equality; see `SAME_EPISODE_MS`.
+ * Two runs never reach the file. A quiet poll on an unchanged sheet is the
+ * overwhelmingly common outcome; recording it would evict every real entry
+ * within days. And a `frozen` run repeats on every poll for the life of the
+ * process — "frozen, 37 polls, since 14:02" is what an operator needs, not
+ * thirty-seven copies. Collapsing is bounded in time as well as by equality;
+ * see `SAME_EPISODE_MS`.
  */
 export const appendSheetRun = (run: NewSheetRun, { log }: { log?: Logger } = {}): Promise<void> => {
   if (!saysSomething(run)) return Promise.resolve();
 
   const previous = runs[runs.length - 1];
-  // Only this module can know a run repeated, so only this module sets it. The
-  // *first* `at` is kept, not the latest: "frozen, 37 polls, since 14:02" needs
-  // when the state began, and that it is still happening is what the count says.
+  // Only this module can know a run repeated, so only it sets `repeats`. The
+  // *first* `at` is kept: "frozen, 37 polls, since 14:02" needs when the
+  // state began; the count says it is still happening.
   if (previous && sameAs(previous, run)) {
     runs[runs.length - 1] = { ...run, at: previous.at, repeats: previous.repeats + 1 };
   } else {
@@ -209,12 +205,12 @@ export const appendSheetRun = (run: NewSheetRun, { log }: { log?: Logger } = {})
 };
 
 // Queued as well as individually atomic, for the reason `io/store.ts` gives:
-// writeFileAtomic stops two writers corrupting each other but not from
-// finishing out of order, and a write landing second with older content would
-// persist a history already moved past.
+// writeFileAtomic stops two writers corrupting each other but not finishing
+// out of order, and a write landing second with older content would persist a
+// history already moved past.
 //
-// One arm rather than the two `io/store.ts` needs: `write` swallows everything,
-// so the chain has nothing to recover from.
+// One arm rather than `io/store.ts`'s two: `write` swallows everything, so
+// the chain has nothing to recover from.
 let queue: Promise<void> = Promise.resolve();
 
 const save = (log?: Logger): Promise<void> => {
@@ -229,7 +225,7 @@ const write = async (log?: Logger): Promise<void> => {
     // treats as a credential.
     await writeFileAtomic(journalPath(), `${JSON.stringify(file, null, 2)}\n`);
   } catch (err) {
-    // The in-memory history is already updated and the run's own result is
+    // The in-memory history is already updated and the run's result is
     // unaffected; losing the file costs only what survives the next restart.
     log?.warn(`could not save the sheet run log: ${errorMessage(err)}`);
   }

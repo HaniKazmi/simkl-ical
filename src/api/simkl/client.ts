@@ -5,16 +5,15 @@ import type { FailureKind } from '../pool.ts';
 
 const API_BASE = 'https://api.simkl.com';
 
-// 408 is a server-side read timeout, and 520-524 are Cloudflare's own origin
-// failures — SIMKL sits behind it, and all of them are transient by definition.
+// 408 is a server-side read timeout; 520-524 are Cloudflare's origin failures,
+// and SIMKL sits behind it. All transient by definition.
 const RETRYABLE = new Set([408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524]);
 
 /**
- * Statuses meaning the resource will never resolve, however often we ask —
- * typically merged into another id or deleted upstream.
+ * Statuses meaning the resource will never resolve — typically merged into
+ * another id or deleted upstream.
  *
- * Deliberately narrow, and kept beside RETRYABLE: the two answer different
- * questions ("will this ever succeed?" against "retry within this call?") but
+ * Narrow, and kept beside RETRYABLE: the two answer different questions but
  * must stay disjoint, which is only visible with both in one file.
  */
 const GONE = new Set([404, 410]);
@@ -27,7 +26,7 @@ export class SimklError extends HttpError {
 }
 
 /**
- * A revoked or invalid token, so callers can tell "log in again" from "SIMKL is
+ * A revoked or invalid token: callers can tell "log in again" from "SIMKL is
  * having a bad day" and keep serving the last good snapshot.
  */
 export class SimklAuthError extends SimklError {
@@ -77,9 +76,8 @@ export interface ApiGetOptions {
 }
 
 /**
- * GET a SIMKL API path with backoff. `token` makes it an authenticated call.
- * Verified against the live API: omitting client_id entirely returns 412,
- * a valid client_id without a token returns 401.
+ * GET a SIMKL API path with backoff. `token` makes it authenticated. Verified
+ * live: no client_id returns 412; a valid client_id without a token, 401.
  */
 export const apiGet = async <T>(path: string, { component, token, params = {}, signal }: ApiGetOptions): Promise<T> => {
   const url = new URL(path, API_BASE);

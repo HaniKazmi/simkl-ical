@@ -1,16 +1,15 @@
 /**
  * The sheet-grid fixture builder, shared by every suite that needs a grid.
  *
- * Rows are *named*, and every helper takes the name: `fx.cell('fargoS2', …)`
- * rather than `cell(3, …)`. A bare index means nothing to a reader and
- * re-points silently when a row is added above it — and the guard suite is
- * where a wrong row index is the catastrophic failure the whole subsystem
- * exists to prevent. `cell` is also the only thing giving `previous` its real
- * value from the snapshot; a hand-built copy makes every "no longer holds what
- * the plan was built on" assertion pass vacuously.
+ * Rows are *named* — `fx.cell('fargoS2', …)`, not `cell(3, …)`. A bare index
+ * means nothing to a reader and re-points silently when a row is added above
+ * it, and a wrong row index is the catastrophic failure this subsystem exists
+ * to prevent. `cell` also gives `previous` its real value from the snapshot; a
+ * hand-built copy makes every "no longer holds what the plan was built on"
+ * assertion pass vacuously.
  *
- * Not in `helpers.ts`, which would have to import plan types to host this. The
- * `test/**` glob only collects `*.test.ts`, so this file is never run as a suite.
+ * Not in `helpers.ts`, which would have to import plan types. The `test/**`
+ * glob only collects `*.test.ts`, so this file never runs as a suite.
  */
 
 import { a1, columnLetter, parseGrid, type Grid, type HeaderName } from '../../src/sheet/2-grid.ts';
@@ -22,9 +21,8 @@ import { seasonRow, SHEET_HEADERS, sheetSnapshot, showRow, type CellSpec } from 
 export const H = SHEET_HEADERS;
 
 /**
- * A date serial the guard will accept: today, so nothing is implausibly future.
- * Named in UTC rather than sliced off an instant, which is the same value said
- * out loud instead of by accident.
+ * A date serial the guard accepts: today, so nothing is implausibly future.
+ * Named in UTC rather than sliced off an instant.
  */
 export const TODAY = dateSerial(Temporal.Now.plainDateISO('UTC'));
 
@@ -102,9 +100,8 @@ export const gridFixture = (...named: NamedRow[]): GridFixture => {
 
   /**
    * The two options are the states `planInsert` produces: `episodes: null`
-   * omits the cell, which is what a row left for its close to fill looks like,
-   * and `end` dates the row in the same fill, which is what a season already
-   * over gets.
+   * omits the cell (a row left for its close to fill), `end` dates the row in
+   * the same fill (a season already over).
    */
   const insertAt = (row: string | number, season: number, { title = 'Fargo', episodes = 0.0153, end = null }: InsertOptions = {}): RowInsert => {
     const index = indexOf(row);
@@ -118,8 +115,8 @@ export const gridFixture = (...named: NamedRow[]): GridFixture => {
           ['Episode', { numberValue: 4 }],
           ['Start', { numberValue: TODAY - 10 }],
           ...(episodes === null ? [] : [['Episodes', { numberValue: episodes }] as [HeaderName, ExtendedValue]]),
-          // Derived the way the planner derives it, so a reordered header list
-          // cannot leave the fixture asserting a formula production never emits.
+          // Derived as the planner derives it, so a reordered header list
+          // cannot leave the fixture asserting a formula never emitted.
           ['Length', { formulaValue: `=${columnLetter(grid.columns.Episodes)}${index + 1}*${columnLetter(grid.columns.Episode)}${index + 1}` }],
           ...(end === null ? [] : [['End', { numberValue: end }] as [HeaderName, ExtendedValue]]),
         ] as Array<[HeaderName, ExtendedValue]>

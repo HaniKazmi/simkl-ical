@@ -2,9 +2,9 @@
  * The slice of the Google Sheets v4 API this service uses.
  *
  * Written from live responses, like `simkl/types.ts`. Everything is optional
- * because the API omits rather than nulls: a blank cell is `{}`, a trailing run
- * of blanks is absent entirely, and a row of them may be `{}` with no `values`
- * key. Every consumer indexes defensively.
+ * because the API omits rather than nulls: a blank cell is `{}`, a trailing
+ * run of blanks is absent, a row of them may be `{}` with no `values` key.
+ * Every consumer indexes defensively.
  */
 
 export interface ErrorValue {
@@ -31,9 +31,9 @@ export interface CellData {
    */
   userEnteredValue?: ExtendedValue;
   /**
-   * What the formula evaluated to. True date serials and counts, with no
-   * locale-formatted `'1,102'` to unpick — but it also moves on every recalc,
-   * so it can never be used as evidence that nobody wrote anything.
+   * What the formula evaluated to: true date serials and counts, no
+   * locale-formatted `'1,102'` to unpick. It moves on every recalc, so it is
+   * never evidence that nobody wrote anything.
    */
   effectiveValue?: ExtendedValue;
 }
@@ -94,9 +94,9 @@ export interface InsertDimensionRequest {
   insertDimension: {
     range: { sheetId: number; dimension: 'ROWS' | 'COLUMNS'; startIndex: number; endIndex: number };
     /**
-     * Formats come from the row above. Requires a season row above it in the
-     * same block — inheriting a show row's formats renders a correct date
-     * serial as `46265`.
+     * Formats come from the row above, so a season row must sit above it in
+     * the same block — a show row's formats render a correct date serial as
+     * `46265`.
      */
     inheritFromBefore?: boolean;
   };
@@ -109,10 +109,10 @@ export interface DeleteDimensionRequest {
 }
 
 /**
- * A server-side copy of a whole tab. The nearest thing the API offers to the
- * UI's named versions, which are exposed nowhere: Sheets v4 has no revision
- * surface at all, and Drive v3 revisions can only be listed, fetched, deleted
- * or pinned — never named, created, or reverted to.
+ * A server-side copy of a whole tab — the nearest thing the API offers to the
+ * UI's named versions: Sheets v4 has no revision surface at all, and Drive v3
+ * revisions can only be listed, fetched, deleted or pinned, never named,
+ * created or reverted to.
  */
 export interface DuplicateSheetRequest {
   duplicateSheet: { sourceSheetId: number; insertSheetIndex?: number; newSheetId?: number; newSheetName?: string };
@@ -123,8 +123,8 @@ export interface DeleteSheetRequest {
 }
 
 /**
- * Renames a tab. `fields` is a mask over `properties`, so `'title'` changes the
- * title and leaves every other property — index, colour, grid size — alone.
+ * Renames a tab. `fields` is a mask over `properties`: `'title'` changes the
+ * title and leaves index, colour and grid size alone.
  */
 export interface UpdateSheetPropertiesRequest {
   updateSheetProperties: { properties: SheetProperties; fields: string };
@@ -132,8 +132,8 @@ export interface UpdateSheetPropertiesRequest {
 
 /**
  * Copies a range from one tab onto another, server-side — no cell values cross
- * the wire. Relative formula references are adjusted by the paste offset, which
- * is zero when source and destination sit at the same coordinates.
+ * the wire. Relative formula references shift by the paste offset, which is
+ * zero when source and destination share coordinates.
  */
 export interface CopyPasteRequest {
   copyPaste: { source: GridRange; destination: GridRange; pasteType: 'PASTE_NORMAL'; pasteOrientation?: 'NORMAL' };

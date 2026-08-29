@@ -71,8 +71,8 @@ test('extra params are appended, and null or undefined ones are dropped', async 
 
 // --- error classification -------------------------------------------------
 
-// Callers distinguish "log in again" from "SIMKL is having a bad day", so a
-// revoked token keeps serving the last good feed instead of emptying it.
+// Callers tell "log in again" from "SIMKL is having a bad day", so a revoked
+// token keeps serving the last good feed instead of emptying it.
 for (const status of [401, 403]) {
   test(`a ${status} is an auth error and is not retried`, async () => {
     await withFetch(
@@ -159,8 +159,8 @@ test('a caller-supplied abort is not retried', async () => {
   );
 });
 
-// A 200 carrying an HTML interstitial is transient, so it belongs in the retry
-// loop rather than escaping as a bare SyntaxError.
+// A 200 carrying an HTML interstitial is transient: it belongs in the retry
+// loop, not escaping as a bare SyntaxError.
 test('an unparseable success is wrapped as a SimklError and retried', async () => {
   let calls = 0;
   await withFetch(
@@ -184,10 +184,10 @@ test('an unparseable success that never recovers throws a SimklError', async () 
 });
 
 // SIMKL sits behind Cloudflare, which answers 429 with Retry-After; retrying
-// sooner than asked can extend the throttle.
+// sooner can extend the throttle.
 test('Retry-After on a 429 is honoured over the default backoff', async () => {
-  // Long enough that honouring the header is unmistakable; the file-wide
-  // retryBase of 1 would hide the difference.
+  // Long enough that honouring the header is unmistakable; the suite-wide
+  // retryBase of 1 hides the difference.
   let calls = 0;
   const started = performance.now();
   await withConfig({ retryBase: Temporal.Duration.from({ milliseconds: 5_000 }) }, async () => {
@@ -202,7 +202,7 @@ test('Retry-After on a 429 is honoured over the default backoff', async () => {
   });
 });
 
-// The rest is a pure calculation, tested directly rather than by sleeping.
+// The rest is pure calculation, tested directly rather than by sleeping.
 const with429 = (headers: Record<string, string> = {}) => new Response('slow down', { status: 429, headers });
 
 test('a missing Retry-After falls back to the exponential backoff', async () => {
@@ -218,15 +218,14 @@ test('Retry-After in seconds is honoured', () => {
   assert.equal(retryDelayMs(with429({ 'retry-after': '0' }), 4), 0);
 });
 
-// `toUTCString()` is the point, not an oversight: RFC 7231 defines this header's
-// other form as an HTTP-date, which Temporal neither parses nor produces. `Date`
-// is the only thing in the runtime that speaks it.
+// RFC 7231 defines this header's other form as an HTTP-date, which Temporal
+// neither parses nor produces; `Date` is the one thing in the runtime that
+// speaks it.
 test('Retry-After as an HTTP date is honoured', () => {
   const twoSeconds = new Date(Date.now() + 2000).toUTCString();
   const delay = retryDelayMs(with429({ 'retry-after': twoSeconds }), 1);
-  // Bounded below as well as above: the fallback backoff also lands inside
-  // `(0, 2000]`, so a lower bound of zero would pass with the header ignored
-  // entirely.
+  // Bounded below too: the fallback backoff also lands inside `(0, 2000]`, so
+  // a zero lower bound would pass with the header ignored.
   assert.ok(delay > 1_000 && delay <= 2_000, `expected roughly 2s, got ${delay}`);
 });
 
@@ -242,8 +241,8 @@ test('a nonsense or past Retry-After falls back to the backoff', async () => {
   });
 });
 
-// Number('') is 0 and finite, so a present-but-empty header would mean "retry
-// now" against a server asking us to slow down.
+// Number('') is 0 and finite, so a present-but-empty header would mean
+// "retry now" against a server asking us to slow down.
 test('a blank Retry-After falls back to the backoff rather than meaning zero', async () => {
   await withConfig({ retryBase: Temporal.Duration.from({ milliseconds: 1000 }) }, () => {
     assert.equal(retryDelayMs(with429({ 'retry-after': '' }), 1), 1000);
@@ -254,8 +253,8 @@ test('a blank Retry-After falls back to the backoff rather than meaning zero', a
 
 // --- what the status page is shown -----------------------------------------
 //
-// One record per *call*, because the retries are the fact worth surfacing: this
-// client spends up to five attempts without saying so anywhere today.
+// One record per *call*: the retries are the fact worth surfacing, and the
+// client spends up to five attempts without otherwise saying so.
 
 test('a successful call is recorded once, with its size', async () => {
   clearRequests();
@@ -291,8 +290,8 @@ test('a retried call is one record carrying the attempt count', async () => {
   assert.equal(log[0]?.status, 200, 'and the outcome is the one that stuck');
 });
 
-// The failure that lies: this reads as a dead token and usually is not one.
-// The body is what separates `user_token_failed` from a revoked credential.
+// The failure that lies: it reads as a dead token and usually is not one. The
+// body separates `user_token_failed` from a revoked credential.
 test('a rejected token records its status and body', async () => {
   clearRequests();
   await withFetch(
@@ -308,8 +307,8 @@ test('a rejected token records its status and body', async () => {
   assert.match(log[0]?.error ?? '', /user_token_failed/);
 });
 
-// A timeout or a reset never reaches a status code, and a row with no status is
-// how that is told from a server that answered badly.
+// A timeout or reset never reaches a status code; a row with no status is how
+// that is told from a server that answered badly.
 test('a fetch that throws is recorded with no status', async () => {
   clearRequests();
   await withFetch(

@@ -1,9 +1,7 @@
 /**
- * FETCH — film release dates, one lookup per title.
- *
- * The CDN movie calendar covers only a rolling 33-day window, so a film six
- * months out never appears in it; per-title lookups sidestep that. Every rule
- * about what the answers mean lives in `1-films.ts`.
+ * FETCH — film release dates, one lookup per title. The CDN movie calendar
+ * covers only a rolling 33-day window, so a film six months out never appears
+ * in it. Every rule about what the answers mean lives in `1-films.ts`.
  */
 
 import { apiGet, classify } from '../../api/simkl/client.ts';
@@ -12,19 +10,16 @@ import { pickReleaseDate, type MovieLookups, type MovieRelease } from '../1-film
 import type { MovieDetail } from '../../api/simkl/types.ts';
 
 /**
- * Detail lookups need no token — client_id is enough, and they are CDN-cached by
- * id. No `extended` either: this endpoint always returns the whole record, and
- * the parameter is accepted for compatibility while changing nothing.
+ * Needs no token — client_id is enough, and responses are CDN-cached by id.
+ * No `extended`: this endpoint always returns the whole record, and the
+ * parameter changes nothing.
  */
 const fetchMovie = (id: number, { signal }: { signal?: AbortSignal } = {}): Promise<MovieDetail> =>
   apiGet<MovieDetail>(`/movies/${id}`, { component: 'films', signal });
 
 /**
- * Release dates for a set of film ids, keyed by id.
- *
- * The CDN movie calendar covers only a rolling 33-day window, so a film six
- * months out never appears in it; per-title lookups sidestep that. Cloudflare
- * caches them by id, so modest parallelism is allowed.
+ * Release dates for a set of film ids, keyed by id. Cloudflare caches the
+ * lookups by id, so modest parallelism is fine.
  */
 export const fetchMovieReleases = async (
   ids: number[],

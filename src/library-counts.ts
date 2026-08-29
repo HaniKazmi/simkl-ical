@@ -1,10 +1,10 @@
 /**
- * The library, counted — the status page's sanity check that the library is
- * the right size, and the per-status deltas its movement line shows.
+ * The library, counted — the status page's size sanity check and the
+ * per-status deltas its movement line shows.
  *
- * Beside `library.ts` rather than under `status/` because counting is about
- * how the library is shaped and read; what the page calls the rows ("films"
- * for `movies`) stays with the page. Pure, and no new state.
+ * Beside `library.ts`, not under `status/`: counting is about how the library
+ * is shaped; what the page calls the rows ("films" for `movies`) stays with
+ * the page. Pure, no new state.
  */
 
 import { itemStatus } from './api/simkl/item.ts';
@@ -20,13 +20,13 @@ const MOVIE_STATUSES = STATUSES.filter((status) => status !== 'watching' && stat
 const statusesFor = (type: SyncType): string[] => (type === 'movies' ? MOVIE_STATUSES : STATUSES);
 
 /**
- * Every type/status pair, including the ones this library has never held — a
- * count of zero is a fact, and dropping the key would make "nothing there" and
- * "never fetched" look the same.
+ * Every type/status pair, including ones never held — a zero is a fact, and
+ * dropping the key would make "nothing there" and "never fetched" look the
+ * same.
  *
- * `other` catches a status SIMKL adds later, and the records carrying no
+ * `other` catches a status SIMKL adds later and the records carrying no
  * `status` at all — which exist, and are why the feed's airing rule is
- * negative. Without it the rows would not sum to the total on a real library.
+ * negative. Without it the rows would not sum to the total.
  */
 export interface LibraryCounts {
   byType: Record<SyncType, Record<string, number>>;
@@ -34,11 +34,10 @@ export interface LibraryCounts {
 }
 
 /**
- * Memoised on the library's identity, which is exactly right: every change
- * replaces the Map (`toLibrary` and `mergeDelta` build a new one, `retainOnly`
- * returns the same one only when nothing went), so a hit cannot be stale. The
- * status page asks per request, and counting 700-odd records to answer a page
- * a human loaded is work worth remembering.
+ * Memoised on the library's identity: every change replaces the Map
+ * (`retainOnly` returns the same one only when nothing went), so a hit cannot
+ * be stale. The status page asks per request, and counting 700-odd records
+ * per page load is work worth remembering.
  */
 const countsFor = new WeakMap<Library, LibraryCounts>();
 
@@ -65,8 +64,8 @@ export const totalCount = (counts: LibraryCounts): number =>
   TYPES.reduce((sum, type) => sum + Object.values(counts.byType[type]).reduce((s, n) => s + n, 0), counts.other);
 
 /**
- * One total per type, in `TYPES` order, with `other` last. A zero `other` is
- * still returned — whether it is worth a row is the page's call.
+ * One total per type, in `TYPES` order, `other` last. A zero `other` is still
+ * returned — whether it earns a row is the page's call.
  */
 export const totalsByType = (counts: LibraryCounts): Array<{ type: SyncType | 'other'; count: number }> => [
   ...TYPES.map((type) => ({ type: type as SyncType | 'other', count: Object.values(counts.byType[type]).reduce((s, n) => s + n, 0) })),
@@ -82,9 +81,8 @@ export interface CountDelta {
 }
 
 /**
- * Which counts moved between two snapshots, and by how much, in a stable
- * type-then-status order. A count that did not move is not news, so zeroes are
- * left out.
+ * Which counts moved between two snapshots, and by how much, in stable
+ * type-then-status order. Zeroes are left out.
  */
 export const countDeltas = (before: LibraryCounts, after: LibraryCounts): CountDelta[] => {
   const deltas: CountDelta[] = [];

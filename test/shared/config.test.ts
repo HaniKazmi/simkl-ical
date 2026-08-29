@@ -26,8 +26,8 @@ test('a missing client id says which file to fill in', async () => {
 
 // --- parsing and clamping -------------------------------------------------
 
-// Through buildConfig directly, so no child process is needed. Every one of
-// these breaks the service quietly if left unbounded.
+// Via buildConfig directly, so no child process. Each of these breaks the
+// service quietly if left unbounded.
 test('the intervals cannot be set low enough to hammer the APIs', () => {
   const c = buildConfig({ CALENDAR_REFRESH_MS: '0', ACTIVITIES_POLL_MS: '-1', MOVIE_REFRESH_MS: '10' });
   assert.equal(c.calendarRefresh.total('milliseconds'), 60_000, 'a zero interval is a tight loop against the CDN');
@@ -40,8 +40,8 @@ test('the grace window stays in a range the archives can serve', () => {
   assert.equal(buildConfig({ GRACE_DAYS: '400' }).graceDays, 90, 'each extra month is another multi-MB archive');
 });
 
-// PORT=0 is the standard "bind an ephemeral port" idiom; clamping it to 1
-// would give the container a port its unprivileged user cannot bind.
+// PORT=0 is the "bind an ephemeral port" idiom; clamped to 1 the container
+// gets a port its unprivileged user cannot bind.
 test('PORT=0 is preserved, not clamped up to 1', () => {
   assert.equal(buildConfig({ PORT: '0' }).port, 0);
   assert.equal(buildConfig({ PORT: '99999' }).port, 65535);
@@ -60,8 +60,8 @@ test('an unset environment yields the documented defaults', () => {
   assert.equal(c.port, 3000);
 });
 
-// A shell expands `~` before the process sees it; a value read from .env or a
-// compose file arrives verbatim, and .env.example suggests exactly that path.
+// A shell expands `~` first; a value from .env or a compose file arrives
+// verbatim, and .env.example suggests exactly that path.
 test('a leading ~ in the credential path is expanded', () => {
   const home = homedir();
   assert.equal(buildConfig({ GOOGLE_APPLICATION_CREDENTIALS: '~/keys/sa.json' }).googleCredentialsPath, resolve(home, 'keys/sa.json'));
@@ -70,7 +70,7 @@ test('a leading ~ in the credential path is expanded', () => {
   assert.equal(buildConfig({ GOOGLE_APPLICATION_CREDENTIALS: '/etc/~/sa.json' }).googleCredentialsPath, '/etc/~/sa.json');
 });
 
-// SIMKL is told this in every request, so it must not drift from the package.
+// SIMKL sees this in every request, so it must not drift from the package.
 test('the reported version matches package.json', async () => {
   const pkg = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8'));
   assert.equal(config.appVersion, pkg.version);
@@ -81,14 +81,12 @@ test('the reported version matches package.json', async () => {
 // `signal ?? AbortSignal.timeout(ms)` reads as a default but is an override,
 // dropping the timeout whenever a caller passes a signal.
 /**
- * Resolve when the signal aborts, rather than sleeping past a deadline: a fixed
- * margin against a real timer is the classic loaded-runner flake.
- *
- * The keep-alive timer is not the deadline. `AbortSignal.timeout` does not hold
- * the event loop open, so awaiting its abort event alone lets the loop drain and
- * the runner cancels the pending test. This holds it open until the signal
- * fires; if the generous ceiling wins instead, the assertion that follows fails
- * on `aborted` being false rather than passing by luck.
+ * Resolve when the signal aborts, rather than sleeping past a deadline — a
+ * fixed margin against a real timer is the classic loaded-runner flake. The
+ * keep-alive timer is not the deadline: `AbortSignal.timeout` does not hold
+ * the event loop open, so this does, until the signal fires. If the generous
+ * ceiling wins instead, the following assertion fails on `aborted` being
+ * false rather than passing by luck.
  */
 const aborted = (signal: AbortSignal): Promise<void> =>
   new Promise((resolve) => {
@@ -136,8 +134,8 @@ test('an unrecognised sheet sync mode clamps to report, never to apply', () => {
   }
 });
 
-// The credentials path has a default, so testing it for truthiness would report
-// "a credential was supplied" on every machine — and file an ENOENT per poll.
+// The credentials path has a default, so a truthiness test would report "a
+// credential was supplied" on every machine — and file an ENOENT per poll.
 test('the sync needs a target and a credential that was actually supplied', () => {
   const on = (env: NodeJS.ProcessEnv) => sheetSyncConfigured(buildConfig({ SHEET_ID: 'SID', ...env }));
   assert.equal(on({}), false, 'a default credentials path is not a supplied credential');
@@ -147,9 +145,9 @@ test('the sync needs a target and a credential that was actually supplied', () =
   assert.equal(sheetSyncConfigured(buildConfig({ GOOGLE_SA_KEY_B64: 'x' })), false, 'no SHEET_ID');
 });
 
-// The pin is not part of the test on purpose: a licensed key logs in with the
-// key alone, and TVDB answers a *wrong* pin with a token rather than a 401 — so
-// requiring one would switch the feature off for a key that works.
+// The pin is deliberately not required: a licensed key logs in alone, and TVDB
+// answers a *wrong* pin with a token rather than a 401 — requiring one would
+// switch the feature off for a key that works.
 test('runtime lookups need the key alone, and nothing else is required', () => {
   assert.equal(tvdbConfigured(buildConfig({})), false);
   assert.equal(tvdbConfigured(buildConfig({ TVDB_API_KEY: 'k' })), true);
@@ -157,8 +155,8 @@ test('runtime lookups need the key alone, and nothing else is required', () => {
   assert.equal(tvdbConfigured(buildConfig({ TVDB_API_KEY: 'k', TVDB_PIN: '1234' })), true);
 });
 
-// Additive, so there is nothing to clamp and nothing to default to: an unset key
-// has to stay unset rather than becoming an empty string that reads as supplied.
+// Nothing to clamp or default: an unset key must stay unset rather than become
+// an empty string that reads as supplied.
 test('the runtime credential is passed through untouched', () => {
   assert.equal(buildConfig({}).tvdbApiKey, undefined);
   assert.equal(buildConfig({}).tvdbPin, undefined);
@@ -171,9 +169,9 @@ test('the sheet limits are clamped rather than fatal', () => {
   assert.equal(buildConfig({ SHEET_SINCE_DAYS: 'soon' }).sheetSinceDays, 90);
 });
 
-// The version number does not answer the question: Temporal is enabled at build
-// time, so two builds of the same Node disagree. Homebrew's 26 has no Temporal;
-// the nodejs.org binary of the same version does.
+// The version number does not answer it: Temporal is a build-time option, so
+// two builds of the same Node disagree. Homebrew's 26 has none; the
+// nodejs.org binary of the same version does.
 test('a runtime without Temporal is refused at boot, with a message that says what to do', () => {
   assert.throws(() => requireTemporal({}), /typeof Temporal/);
   assert.throws(() => requireTemporal({}), /nodejs\.org|fnm|nvm/);
@@ -184,11 +182,10 @@ test('a runtime with Temporal passes', () => {
 });
 
 /**
- * That the guard *works* is asserted above; this asserts it is *reached*, which
- * is a different claim and the one that broke. `import` is hoisted, so a check
- * written into `index.ts` runs after every imported module has been evaluated —
- * including the one that builds a `Temporal.Duration` for each interval. The
- * only way to see that ordering is from outside the process.
+ * The above asserts the guard works; this asserts it is *reached*. `import` is
+ * hoisted, so a check written into `index.ts` runs after every imported module
+ * — including the one that builds a `Temporal.Duration` per interval. Only an
+ * outside process can see that ordering.
  */
 test('the guard runs before anything constructs a Temporal value', async () => {
   const entry = resolve(import.meta.dirname, '../../src/index.ts');
@@ -203,9 +200,9 @@ test('the guard runs before anything constructs a Temporal value', async () => {
   assert.doesNotMatch(output, /ReferenceError: Temporal is not defined/, 'not a bare global-not-defined from somewhere deeper');
 });
 
-// The environment still speaks milliseconds — `ACTIVITIES_POLL_MS=1800000` is
-// documented — so a value that arrives as an integer must survive as the same
-// span, whatever the field's type became.
+// The environment speaks milliseconds — `ACTIVITIES_POLL_MS=1800000` is
+// documented — so an integer value must survive as the same span, whatever the
+// field's type.
 test('a millisecond env var becomes exactly that span', () => {
   const c = buildConfig({ ACTIVITIES_POLL_MS: '900000', RETRY_BASE_MS: '250' });
   assert.equal(c.activitiesPoll.total('milliseconds'), 900_000);

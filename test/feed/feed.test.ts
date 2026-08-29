@@ -47,9 +47,9 @@ test('the saved feed is served on boot', async () => {
   });
 });
 
-// The structural half of the guarantee: because this renders nothing, the only
-// render is the caller's, which reads the library after this returns. See the
-// overlapping-timers test in orchestrator.test.ts for why that matters.
+// The structural half of the guarantee: because this renders nothing, the
+// only render is the caller's, which reads the library after this returns —
+// see the overlapping-timers test in orchestrator.test.ts.
 test('a calendar fetch renders nothing by itself', async () => {
   await withTempDataDir(async () => {
     const feed = new Feed({ logger: quiet });
@@ -79,8 +79,8 @@ test('hydrating warms the calendars but renders nothing without a library', asyn
   });
 });
 
-// The other half of that claim, and the only place it can be made now that the
-// library lives one level up: hydrate must not go and fetch one.
+// The other half of that claim: the library lives one level up, and hydrate
+// must not go and fetch one.
 test('hydrating is not the library’s job', async () => {
   await withTempDataDir(async () => {
     const service = new Orchestrator({ logger: quiet });
@@ -109,7 +109,7 @@ test('with nothing saved, boot serves the empty calendar rather than failing', a
   });
 });
 
-// The whole point: a half-available refresh must not replace a complete feed.
+// A half-available refresh must not replace a complete feed.
 test('a render with only calendars does not overwrite the served feed', async () => {
   await withTempDataDir(async () => {
     const feed = new Feed({ logger: quiet });
@@ -122,8 +122,8 @@ test('a render with only calendars does not overwrite the served feed', async ()
     assert.equal(feed.ics, ICS, 'the loaded feed must survive');
     assert.equal(feed.renderedAt, null);
     assert.equal(feed.servingCached, true);
-    // render() leaves identical state whether it declined or threw; only
-    // this distinguishes the two.
+    // render() leaves identical state whether it declined or threw; only this
+    // tells the two apart.
     assert.equal(feed.errors.render, null, 'declining to render is not a failure');
   });
 });
@@ -159,14 +159,14 @@ test('a complete render replaces the feed and persists it', async () => {
   });
 });
 
-// The interval is matched to how often the CDN regenerates, so a poll that
-// answers 304 everywhere did no work — the normal, healthy outcome, and worth
-// being able to say rather than infer from a timestamp that always advances.
+// The interval matches the CDN's regeneration, so a refresh answered 304
+// everywhere did no work — the healthy outcome, worth saying rather than
+// inferring from a timestamp that always advances.
 test('calendarsChangedAt advances on new bytes and holds across a 304', async () => {
   clearCache();
   const feed = new Feed({ logger: quiet });
-  // By phase, not by call count: one refresh fetches both types plus every
-  // archive the grace window reaches, so a counted cutoff lands mid-refresh.
+  // By phase, not call count: one refresh fetches both types plus every
+  // archive in the grace window, so a counted cutoff lands mid-refresh.
   let unchanged = false;
   await withFetch(
     () => (unchanged ? new Response(null, { status: 304 }) : jsonResponse(calendarFile(), { lastModified: 'Sat, 01 Aug 2026 00:00:00 GMT' })),

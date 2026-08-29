@@ -1,11 +1,10 @@
 /**
- * The TVDB v4 transport. One endpoint is used: a season's episode list, for the
- * per-episode runtimes SIMKL's API does not carry.
+ * The TVDB v4 transport. One endpoint is used: a season's episode list, for
+ * the per-episode runtimes SIMKL's API does not carry.
  *
- * The credential goes in a header rather than the query: `describeUrl` renders
- * request paths onto the status page and into the request log, and keeping a
- * credential off a rendered page by denylisting its parameter name is exactly
- * the fragility the feed token's rule warns about.
+ * The credential goes in a header, not the query: `describeUrl` renders
+ * request paths onto the status page and the request log, and keeping a
+ * credential off a page by denylisting its parameter name is fragile.
  */
 
 import { HttpError, requestJson, type HttpSpec } from '../http.ts';
@@ -15,9 +14,8 @@ import type { FailureKind } from '../pool.ts';
 
 const API_BASE = 'https://api4.thetvdb.com/v4/';
 
-// 429 is in here as well as the 5xx range: TVDB answers a throttle with
-// `Retry-After`, which is the header `retryDelayMs` exists to read, and honouring
-// it is what stops a retry extending the throttle.
+// 429 included: TVDB answers a throttle with `Retry-After`, the header
+// `retryDelayMs` reads, and honouring it stops a retry extending the throttle.
 const RETRYABLE = new Set([408, 429, 500, 502, 503, 504]);
 
 export class TvdbError extends HttpError {
@@ -30,17 +28,17 @@ export class TvdbError extends HttpError {
 /**
  * TVDB's statuses against the shared split.
  *
- * A 404 is the *series* being unknown. A season the series does not have is not
- * an error at all — it comes back 200 with an empty episode list — so the
- * commonest "no data" case never reaches this function, and it is
- * `averageRuntime` returning null that settles it.
+ * A 404 is the *series* being unknown. A season the series does not have is
+ * not an error — it comes back 200 with an empty episode list — so the
+ * commonest "no data" case never reaches this function; `averageRuntime`
+ * returning null settles it.
  */
 export const classify = (err: unknown): FailureKind => {
-  // Read the status even on an auth error. `exchangeToken` raises one for *any*
-  // non-ok login, so a 503 from the login endpoint arrives as the same class as
-  // a rejected key — and calling that `account` would settle every season on a
-  // TVDB outage, while calling a rejected key `transient` retries a typo for
-  // ever. Only the status separates them.
+  // Read the status even on an auth error. `exchangeToken` raises one for any
+  // non-ok login, so a 503 from the login endpoint arrives as the same class
+  // as a rejected key. Calling that `account` would settle every season on a
+  // TVDB outage; calling a rejected key `transient` retries a typo forever.
+  // Only the status separates them.
   const status = err instanceof TvdbAuthError || err instanceof TvdbError ? err.status : undefined;
   if (status === undefined) return 'transient';
   if (status === 401 || status === 403) return 'account';
@@ -48,13 +46,12 @@ export const classify = (err: unknown): FailureKind => {
 };
 
 /**
- * Two attempts, deliberately below the other clients' budgets.
+ * Two attempts, below the other clients' budgets.
  *
  * This phase sits inside a sheet run whose snapshot goes stale at `FRESH_MS`
- * (120s), and blowing that budget re-reads the whole grid and re-plans. Nothing
- * here is load-bearing — an unanswered season just stays open for a poll — so it
- * should be the first thing to give up, not the thing that costs the run its
- * snapshot.
+ * (120s); blowing that budget re-reads the whole grid and re-plans. Nothing
+ * here is load-bearing — an unanswered season stays open for a poll — so it
+ * should give up first, not cost the run its snapshot.
  */
 const SPEC: HttpSpec = {
   service: 'tvdb',
@@ -64,13 +61,12 @@ const SPEC: HttpSpec = {
   errorFor: (message, status, body) => new TvdbError(message, status, body),
   onStatus: (status, body, path) => {
     if (status === 401 || status === 403) {
-      // Retried, not thrown, and the distinction is what a season's runtime
-      // cell rides on. The lifetime in `auth.ts` is assumed rather than read,
+      // Retried, not thrown. The lifetime in `auth.ts` is assumed, not read,
       // so this can be a cached bearer TVDB invalidated early — dropping the
-      // cache makes the next attempt log in fresh. Only a rejection *after*
-      // that, which exhausts the two attempts, reaches `classify` as
-      // `account` — and `account` is what settles every pending season's cell
-      // as permanently unobtainable, which a stale bearer must never do.
+      // cache makes the next attempt log in fresh. Only a rejection after
+      // that, exhausting the two attempts, reaches `classify` as `account`,
+      // which settles every pending season's cell as permanently
+      // unobtainable — something a stale bearer must never do.
       clearTokenCache();
       return 'retry';
     }
@@ -96,9 +92,9 @@ export const apiGet = async <T>(path: string, { component, params = {}, signal }
     path,
     signal,
     // Per attempt, so the retry a 401 earns picks up a freshly logged-in token
-    // rather than re-sending the one just rejected. The login call still logs
-    // its own row under `auth`, so its failure stays tellable from a failed
-    // season read.
+    // rather than re-sending the one just rejected. The login logs its own
+    // row under `auth`, so its failure stays tellable from a failed season
+    // read.
     headers: async () => ({ Authorization: `Bearer ${await getTvdbToken()}` }),
   });
 };

@@ -47,7 +47,7 @@ test('nothing moved means an unchanged signature', () => {
   assert.equal(librarySignature(activities()), librarySignature(activities()));
 });
 
-// The reason the trigger is not `activities.all`, which rolls both of these up.
+// Why the trigger is not `activities.all`, which rolls playback up too.
 test('playback progress moves no signature', () => {
   const before = librarySignature(activities());
   const after = activities();
@@ -80,7 +80,7 @@ test('a status timestamp in one category is distinguishable from the same one in
   assert.notEqual(librarySignature(a), librarySignature(b), 'otherwise the categories gate together');
 });
 
-// A removal moves this and nothing else, which is why it is gated on its own.
+// A removal moves this and nothing else, so it is gated on its own.
 test('a removal moves the removal signature and leaves the library signature alone', () => {
   const before = { library: librarySignature(activities()), removal: removalStamps(activities()) };
   const after = activities();
@@ -91,9 +91,9 @@ test('a removal moves the removal signature and leaves the library signature alo
 
 // --- The watermark ---------------------------------------------------------
 
-// `date_from` is compared strictly greater at one-second granularity, so asking
-// from the watermark itself returns nothing at all, and a write committed in
-// that same second after the activities read would never be asked for again.
+// `date_from` is compared strictly greater at one-second granularity: asking
+// from the watermark itself returns nothing, and a write committed in that
+// same second is never asked for again.
 test('the delta is asked for from one second behind the watermark', () => {
   assert.equal(deltaFrom('2026-08-15T12:00:00Z'), '2026-08-15T11:59:59Z');
 });
@@ -104,9 +104,9 @@ test('the backoff crosses a minute, an hour and a day cleanly', () => {
   assert.equal(deltaFrom('2026-01-01T00:00:00Z'), '2025-12-31T23:59:59Z');
 });
 
-// Second precision, because that is the granularity `date_from` is compared at.
-// The fractional input is the case that can tell: a whole-second one renders
-// without a fraction anyway, so it would pass whatever the truncation did.
+// `date_from` is compared at second precision. Only a fractional input can
+// tell: a whole-second one renders without a fraction whatever the truncation
+// did.
 test('the result carries no milliseconds, whatever the watermark had', () => {
   assert.doesNotMatch(deltaFrom('2026-08-15T12:00:00Z')!, /\.\d/);
   assert.equal(deltaFrom('2026-08-15T12:00:00.500Z'), '2026-08-15T11:59:59Z');
@@ -136,8 +136,8 @@ test('a full pull keys every item by its simkl id, tagged with the type it arriv
   assert.deepEqual([1, 2, 3].map((id) => library.get(id)?.type), ['shows', 'anime', 'movies']);
 });
 
-// An anime record is a show record plus `anime_type`, and both nest under
-// `show` — the response key is the only witness to which one it is.
+// An anime record is a show record plus `anime_type`, both nested under
+// `show` — the response key is the only witness to which it is.
 test('the type comes from the response key, not the record', () => {
   const item = libraryItem({ id: 7 });
   assert.equal(toLibrary({ shows: [item] }).get(7)?.type, 'shows');
@@ -149,9 +149,8 @@ test('an item with no usable id never enters the library', () => {
   assert.deepEqual([...library.keys()], [4]);
 });
 
-// The poll asks for one second more than it needs, so the newest records arrive
-// twice by design. Merging the same delta twice must be indistinguishable from
-// merging it once.
+// The one-second overlap re-delivers the newest records by design, so merging
+// the same delta twice must equal merging it once.
 test('merging the same delta twice is the same as merging it once', () => {
   const base = toLibrary(shows(1, 2));
   const delta = shows(2, 3);
@@ -183,8 +182,7 @@ test('a delta never mutates the library it merged into', () => {
   assert.deepEqual([...base.keys()], [1], 'the orchestrator swaps in one assignment');
 });
 
-// The move arrives as a replacement of the record, so no second copy of the
-// title can exist to be reconciled against the first.
+// A move arrives as a replacement, so no second copy of the title can exist.
 test('a watching to dropped move leaves exactly one record', () => {
   const base = toLibrary({ shows: [libraryItem({ id: 9, status: 'watching' })] });
   const { library } = mergeDelta(base, { shows: [libraryItem({ id: 9, status: 'dropped' })] });
@@ -192,8 +190,8 @@ test('a watching to dropped move leaves exactly one record', () => {
   assert.equal(library.get(9)?.item.status, 'dropped');
 });
 
-// The case that breaks if the merge filters films by status: the record saying
-// the film left plan-to-watch is the one that would be dropped.
+// If the merge filtered films by status, the record saying the film left
+// plan-to-watch is the one it would drop.
 test('a film moving to completed replaces its plan-to-watch record', () => {
   const base = toLibrary({ movies: [libraryItem({ id: 5, status: 'plantowatch' })] });
   const { library } = mergeDelta(base, { movies: [libraryItem({ id: 5, status: 'completed' })] });
@@ -211,8 +209,8 @@ test('an item reclassified between types follows the response key', () => {
 // --- What the delta reshaped -----------------------------------------------
 //
 // `updated` counts what arrived; `reshaped` counts what moved. The feed reads
-// membership only, so it needs the second — and the two diverge on the most
-// common event there is.
+// membership only, so it needs the second — and the two diverge on the
+// commonest event there is.
 
 test('a record that only changed watch progress is updated but not reshaped', () => {
   const base = toLibrary({ shows: [libraryItem({ id: 1, status: 'watching', watched: 3 })] });
@@ -230,14 +228,14 @@ test('a record arriving for the first time is reshaped', () => {
   assert.equal(mergeDelta(new Map() as Library, shows(1)).reshaped, 1);
 });
 
-// The top-level key is the classification, and it decides which calendar the
-// title joins against — so a reclassification is a change the feed can see.
+// The top-level key decides which calendar the title joins against, so a
+// reclassification is a change the feed can see.
 test('a reclassification between types is reshaped', () => {
   const base = toLibrary({ shows: [libraryItem({ id: 1 })] });
   assert.equal(mergeDelta(base, { anime: [libraryItem({ id: 1 })] }).reshaped, 1);
 });
 
-// The second-overlap re-sends the newest records every poll; none of them moved.
+// The overlap re-sends the newest records every poll; none of them moved.
 test('re-merging an unchanged record reshapes nothing', () => {
   const base = toLibrary(shows(1, 2));
   assert.equal(mergeDelta(base, shows(1, 2)).reshaped, 0);
@@ -270,7 +268,7 @@ test('reconciling that removes nothing returns the same library', () => {
   assert.equal(library, base, 'so a quiet reconcile does not force a re-render');
 });
 
-// A truncated response is indistinguishable from a cleared account, and
+// A truncated response and a cleared account are indistinguishable, and
 // applying one empties the feed. Refusing costs a retry on the next poll.
 test('a membership response that would empty a category is refused, and drops nothing', () => {
   const base = toLibrary(shows(1, 2, 3));
@@ -296,10 +294,9 @@ test('an empty membership response against an empty library is not a fault', () 
   assert.equal(retainOnly(new Map() as Library, new Set(), ALL).applied, true);
 });
 
-// The case a global proportion cannot see. A category omitted from the payload
-// reads as "every id in it is gone"; if the other categories are intact it is a
-// minority of the library, so a whole-library threshold waves it through and
-// the stamp advances, meaning it never retries.
+// The case a whole-library proportion cannot see: an omitted category reads as
+// "every id in it is gone", yet is a minority of the library, so a global
+// threshold waves it through and the stamp advances — it never retries.
 test('a category missing from the response is left alone when it reported no removal', () => {
   const base = toLibrary({
     shows: [libraryItem({ id: 1 }), libraryItem({ id: 2 })],
@@ -315,8 +312,8 @@ test('a category missing from the response is left alone when it reported no rem
   assert.deepEqual([...library.keys()].sort((a, b) => a - b), [1, 2, 3, 4, 5], 'every anime survives');
 });
 
-// And when the truncated category *is* the one that reported a removal, the
-// proportional guard inside it catches the payload instead.
+// When the truncated category *is* the one that reported a removal, its own
+// proportional guard catches the payload.
 test('a category that reported a removal but came back empty is refused', () => {
   const base = toLibrary({
     shows: [libraryItem({ id: 1 })],
@@ -342,9 +339,9 @@ test('nothing moving means no category to reconcile', () => {
 
 // --- The gate --------------------------------------------------------------
 //
-// Three independent triggers, one of which deliberately disagrees with what the
-// gate observed. Inline in the poll this could only be reached through a fake
-// HTTP layer.
+// Three independent triggers, one deliberately disagreeing with what the gate
+// observed. Inline in the poll this is only reachable through a fake HTTP
+// layer.
 
 const held = (over: Partial<Parameters<typeof evaluateGate>[1]> = {}) => ({
   librarySignature: librarySignature(activities()),
@@ -378,9 +375,8 @@ test('no library forces a full pull', () => {
   assert.equal(evaluateGate(activities(), held({ hasLibrary: false })).full, true);
 });
 
-// The distinction the two fields exist for: a forced poll pulls everything
-// while the gate itself saw nothing move, and conflating them would report a
-// change that did not happen.
+// A forced poll pulls everything while the gate saw nothing move; conflating
+// the two fields would report a change that did not happen.
 test('force pulls whole without claiming anything changed', () => {
   const decision = evaluateGate(activities(), held(), { force: true });
   assert.equal(decision.full, true);
@@ -395,8 +391,8 @@ test('only the categories whose removal stamp moved are named', () => {
   assert.deepEqual([...decision.removedFrom], ['anime']);
 });
 
-// The stored values come back with the decision, so the branches that act on it
-// cannot recompute them from a payload that has moved on.
+// The stored values ride the decision, so the branches acting on it cannot
+// recompute them from a payload that has moved on.
 test('the decision carries what the caller must store', () => {
   const after = activities();
   after.tv_shows.watching = '2026-08-11T09:00:00Z';
@@ -412,7 +408,7 @@ test('the roll-up is the watermark when SIMKL sends one', () => {
 });
 
 // A local stamp would depend on this container's clock agreeing with SIMKL's,
-// and would freeze at that moment for as long as the roll-up stayed absent.
+// and would freeze for as long as the roll-up stayed absent.
 test('with no roll-up the newest timestamp in the payload stands in', () => {
   const undated = { ...activities(), all: undefined };
   undated.tv_shows.watching = '2026-08-12T09:00:00Z';

@@ -1,11 +1,10 @@
 /**
- * Transport for the Sheets API, with one deliberate difference from the other
- * clients: **retry is opt-in per call**.
+ * Transport for the Sheets API. One difference from the other clients:
+ * **retry is opt-in per call**.
  *
- * A retried write is not a retried read. `batchUpdate` is atomic but not
- * idempotent — a retried `insertDimension` inserts two rows, and a timeout can
- * fire on a request the server already applied. So reads pass `retry: true` and
- * writes never do.
+ * `batchUpdate` is atomic but not idempotent — a retried `insertDimension`
+ * inserts two rows, and a timeout can fire on a request the server already
+ * applied. So reads pass `retry: true` and writes never do.
  */
 
 import { HttpError, requestJson, type HttpSpec } from '../http.ts';
@@ -27,16 +26,15 @@ export class SheetsError extends HttpError {
 }
 
 /**
- * Google reports both "the service account is not on this sheet" and "the sheet
- * does not exist" as 403/404, and both need a human. Separated so the sync can
- * say so once rather than retry an access problem for a week.
+ * Google reports "the service account is not on this sheet" and "the sheet
+ * does not exist" both as 403/404, and both need a human. Separated so the
+ * sync can say so once rather than retry an access problem for a week.
  */
 export class SheetsAccessError extends SheetsError {
   /**
-   * Whether retrying can never help. Decided here, beside the status mapping,
-   * because which code means what is this spec's one job: a 401 is almost
-   * always an expired assertion that the cleared token cache heals on the next
-   * poll, where a 403/404 stays wrong until a person re-shares the sheet or
+   * Whether retrying can never help. Decided beside the status mapping: a 401
+   * is almost always an expired assertion the cleared token cache heals on the
+   * next poll; a 403/404 stays wrong until a person re-shares the sheet or
    * fixes SHEET_ID.
    */
   readonly needsHuman: boolean;
@@ -69,8 +67,8 @@ const SPEC: HttpSpec = {
   errorFor: (message, status, body) => new SheetsError(message, status, body),
   onStatus: (status, body, path) => {
     if (status === 401) {
-      // Almost always an expired assertion rather than a revoked key. Dropping
-      // the cache means the next poll signs a fresh one and recovers by itself.
+      // Almost always an expired assertion, not a revoked key. Dropping the
+      // cache lets the next poll sign a fresh one and recover by itself.
       clearTokenCache();
       return new SheetsAccessError(`Google rejected the credential (${describe(status, body)})`, status, body, { needsHuman: false });
     }
@@ -93,8 +91,7 @@ export interface SheetsRequestOptions {
   params?: Record<string, string | undefined>;
   body?: unknown;
   /**
-   * Off by default, and never set for a write. See the header comment: this is
-   * the single most consequential option in the file.
+   * Off by default, and never set for a write — see the header comment.
    */
   retry?: boolean;
   signal?: AbortSignal;
@@ -109,8 +106,8 @@ export const sheetsRequest = async <T>(
   { component, method = 'GET', params = {}, body, retry = false, signal }: SheetsRequestOptions,
 ): Promise<T> => {
   // Concatenated, not `new URL(path, API_BASE)`: the batchUpdate path is
-  // `${id}:batchUpdate`, and the URL parser reads that leading `id:` as a
-  // scheme and discards the base entirely.
+  // `${id}:batchUpdate`, and the parser reads the leading `id:` as a scheme
+  // and discards the base.
   const url = new URL(API_BASE + path);
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined) url.searchParams.set(k, v);
@@ -123,8 +120,8 @@ export const sheetsRequest = async <T>(
     maxAttempts: retry ? MAX_ATTEMPTS : 1,
     path,
     signal,
-    // Re-signed per attempt, inside the engine's retry: a transient failure
-    // obtaining the token is exactly as retryable as one using it.
+    // Re-signed per attempt: a transient failure obtaining the token is as
+    // retryable as one using it.
     headers: async () => ({
       Authorization: `Bearer ${await getAccessToken()}`,
       Accept: 'application/json',

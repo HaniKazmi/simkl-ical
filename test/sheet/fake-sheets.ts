@@ -1,22 +1,21 @@
 /**
- * An in-memory Sheets server, shared by every suite that drives a whole sheet
- * run.
+ * An in-memory Sheets server, shared by every whole-run suite.
  *
  * A spreadsheet of several tabs, because the write batch snapshots the target
- * into a new one first. Modelling only Sheet1 would let a duplicateSheet or
- * copyPaste silently no-op and every rollback assertion pass vacuously.
+ * into a new one first: modelling only Sheet1 would let duplicateSheet or
+ * copyPaste no-op and every rollback assertion pass vacuously.
  *
- * One fake rather than one per suite: it is coupled to the Google client's URL
- * shapes (`ranges=` is what separates the grid read from the tab listing), and
- * a second copy is a second place that coupling breaks silently.
+ * One fake, not one per suite: it is coupled to the Google client's URL shapes
+ * (`ranges=` separates the grid read from the tab listing), and a second copy
+ * is a second place that coupling breaks silently.
  */
 
 import { generateKeyPairSync } from 'node:crypto';
 import type { CellData, SheetRequest } from '../../src/api/google/types.ts';
 import { cellOf, jsonResponse, SHEET_HEADERS, seasonRow, showRow, type CellSpec } from '../helpers.ts';
 
-// A real key, because the assertion is really signed. Generated once: the
-// alternative is stubbing node:crypto, which would test nothing.
+// A real key, because the assertion is really signed; stubbing node:crypto
+// would test nothing.
 const { privateKey } = generateKeyPairSync('rsa', {
   modulusLength: 2048,
   privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
@@ -122,9 +121,9 @@ export const fakeSheets = ({
       writes += 1;
       const requests = (JSON.parse(String(init?.body)) as { requests: SheetRequest[] }).requests;
       batches.push(requests.map((r) => Object.keys(r)[0] ?? '?'));
-      // The write is the first batch carrying a cell or a row; anything after
-      // it is rollback or housekeeping. `failRollback` models the *restore*
-      // failing, so tidying up — dropping a tab, renaming one — still works.
+      // The write is the first batch; anything after is rollback or
+      // housekeeping. `failRollback` models the *restore* failing, so tidying
+      // up — dropping or renaming a tab — still works.
       const isRollback = writes > 1;
       const housekeeping = requests.every((r) => 'deleteSheet' in r || 'updateSheetProperties' in r);
       if (writes === failWrite || (isRollback && failRollback && !housekeeping)) {
@@ -154,10 +153,9 @@ export const fakeSheets = ({
       });
     }
 
-    // Host-qualified, so a call to another upstream falls through to the throw
-    // rather than being answered with a SIMKL body. `/tv/` alone also matches
-    // TVDB's season path, which would hand it `{status, runtime}` and make a
-    // test asserting nothing look green.
+    // Host-qualified, so another upstream falls through to the throw. `/tv/`
+    // alone also matches TVDB's season path, which would hand it
+    // `{status, runtime}` and make a test asserting nothing look green.
     if (url.startsWith('https://api.simkl.com/tv/episodes/')) return jsonResponse(episodes);
     if (url.startsWith('https://api.simkl.com/tv/')) return jsonResponse(detail ?? { status: 'airing', runtime: 45 });
 

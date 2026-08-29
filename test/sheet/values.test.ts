@@ -16,9 +16,9 @@ test('a late-evening watch lands on the local date, not the UTC one', () => {
   assert.equal(watchSerial(instantFrom('2026-08-15T02:54:25Z'), 'America/New_York'), dateSerial(plainDateFrom('2026-08-14')));
 });
 
-// The parse is the step that can fail, so it is the step that answers null;
-// the conversion after it is total. The planner never throws, so an unusable
-// timestamp costs that episode's date rather than the run.
+// The parse is the step that can fail, so it answers null; the conversion
+// after it is total. The planner never throws, so an unusable timestamp costs
+// that episode's date, not the run.
 test('an unusable timestamp is refused at the parse, and never reaches the serial', () => {
   for (const bad of ['not a date', '', '2026', 'March 5', null, undefined]) {
     assert.equal(instantFrom(bad), null, `${bad} should not parse`);
@@ -39,9 +39,9 @@ test('a runtime in minutes becomes the day fraction the sheet holds', () => {
   assert.equal(runtimeDays(null), null);
 });
 
-// The guard refuses a day fraction outside these bounds too, and refusal is
-// whole-plan — so one title with bad upstream data would stop every unrelated
-// edit in the run. Bounded here, it costs that one cell.
+// The guard refuses out-of-bounds fractions too, and refusal is whole-plan —
+// one title with bad upstream data would stop every unrelated edit. Bounded
+// here, it costs one cell.
 test('a length no episode has yields no cell rather than a refused plan', () => {
   assert.equal(runtimeDays(1440), null, 'a full day is not a runtime');
   assert.equal(runtimeDays(0.9), null, 'and under a minute is not one either');
@@ -51,9 +51,8 @@ test('a length no episode has yields no cell rather than a refused plan', () => 
 });
 
 // The planner's conversion and the guard's bound are the same numbers in the
-// same file, so a value one emits and the other refuses is unrepresentable.
-// Asserted anyway, because the identity is what the whole-plan-refusal safety
-// rests on.
+// same file, so a value one emits and the other refuses is unrepresentable —
+// asserted anyway, because whole-plan-refusal safety rests on the identity.
 test('every day fraction the conversion produces is one the guard accepts', () => {
   for (const minutes of [1, 22, 41, 61.5, 1439]) {
     assert.ok(plausibleRuntimeDays(runtimeDays(minutes) ?? undefined), `${minutes} minutes should round-trip`);

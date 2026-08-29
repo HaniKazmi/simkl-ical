@@ -1,13 +1,10 @@
 /**
  * PARSE — snapshot → blocks. Pure: no config, no clock, no network.
  *
- * The spreadsheet half of PARSE, after `1-index.ts` has indexed the library
- * and found something worth reading the grid for.
- *
  * The sheet's structure is implicit — a row with the `Show` column filled
  * starts a block, and every row after it belongs to that block until the next
- * one. Everything downstream depends on getting that partition right, so this
- * module fails closed rather than guessing.
+ * one. Everything downstream depends on that partition, so this module fails
+ * closed rather than guessing.
  */
 
 import type { CellData, ExtendedValue } from '../api/google/types.ts';
@@ -15,11 +12,11 @@ import type { SheetSnapshot } from './io/spreadsheet.ts';
 
 /**
  * The labels the sync needs. Columns are resolved by these, never by position:
- * the user rearranges them. Hardcoded on purpose — a rename should stop the
- * sync loudly rather than silently write to whatever now sits in that column.
+ * the user rearranges them. Hardcoded so a rename stops the sync loudly
+ * rather than writing to whatever now sits in that column.
  *
- * Deliberately only the ten that are read or written. Requiring `Genre` would
- * make renaming a column the sync never touches a hard failure.
+ * Only the ten that are read or written. Requiring `Genre` would make
+ * renaming a column the sync never touches a hard failure.
  */
 export const HEADERS = ['Show', 'Status', 'Season', 'Episode', 'Start', 'End', 'Episodes', 'Length', 'id', 'Type'] as const;
 
@@ -40,9 +37,9 @@ export class GridError extends Error {
 // --- Cell accessors --------------------------------------------------------
 
 /**
- * `userEnteredValue.formulaValue` is the definitive test. A cell can *look*
- * like a formula result in `effectiveValue` and be a literal, and vice versa;
- * only what was typed says which.
+ * `userEnteredValue.formulaValue` is the definitive test: `effectiveValue` can
+ * look like a formula result and be a literal, and vice versa. Only what was
+ * typed says which.
  */
 export const isFormulaValue = (value: ExtendedValue | undefined): boolean => typeof value?.formulaValue === 'string';
 
@@ -52,11 +49,11 @@ export const isFormula = (cell: CellData | undefined): boolean => isFormulaValue
  * Whether two cell values are the same. Structural, not `JSON.stringify` — key
  * order is not part of a value.
  *
- * One definition, because two consumers ask the same question for opposite
- * reasons: the guard uses it for "the sheet still holds what the plan was built
- * on", the verifier for "did anything change". `ExtendedValue` has five members
- * and this compares four; if only one copy of that decision ever learned about
- * `errorValue`, the guard would pass plans the verifier then reverts.
+ * One definition for both consumers: the guard asks "does the sheet still hold
+ * what the plan was built on", the verifier "did anything change".
+ * `ExtendedValue` has five members and this compares four; if only one copy of
+ * that decision learned about `errorValue`, the guard would pass plans the
+ * verifier then reverts.
  */
 export const sameValue = (a: ExtendedValue | undefined, b: ExtendedValue | undefined): boolean => {
   if (a === undefined || b === undefined) return a === b;
@@ -65,8 +62,8 @@ export const sameValue = (a: ExtendedValue | undefined, b: ExtendedValue | undef
 
 /**
  * The computed value: a formula's result, or a literal's own value. Date
- * serials and counts arrive here as real numbers, which is the entire reason
- * the read asks for grid data rather than values.
+ * serials and counts arrive as real numbers — the reason the read asks for
+ * grid data rather than values.
  */
 export const numberOf = (cell: CellData | undefined): number | null => {
   const n = cell?.effectiveValue?.numberValue ?? cell?.userEnteredValue?.numberValue;
@@ -92,8 +89,8 @@ export const isBlank = (cell: CellData | undefined): boolean => {
 /**
  * A real base-26 conversion. `String.fromCharCode(65 + i)` yields `[` at index
  * 26 and this sheet already reaches `AE`. Writes are index-based and safe
- * either way, but every A1 reference in the report would be wrong — which is
- * precisely where a human checks the tool's work.
+ * either way, but every A1 reference in the report would be wrong — exactly
+ * where a human checks the tool's work.
  */
 export const columnLetter = (index: number): string => {
   let n = index + 1;
@@ -113,10 +110,7 @@ export const a1 = (row: number, column: number): string => `${columnLetter(colum
 
 const fold = (label: string): string => label.trim().toLowerCase();
 
-/**
- * The header row's index, found by content rather than assumed to be row 1 —
- * the last positional dependency there would otherwise be.
- */
+/** The header row's index, found by content rather than assumed to be row 1. */
 export const findHeaderRow = (rows: CellData[][]): number => {
   const limit = Math.min(rows.length, HEADER_SEARCH_ROWS);
   for (let row = 0; row < limit; row += 1) {
@@ -127,10 +121,9 @@ export const findHeaderRow = (rows: CellData[][]): number => {
 };
 
 /**
- * Column index per label. Every label must appear exactly once: missing,
- * renamed or duplicated writes nothing at all, because a duplicate makes
- * "which column is Episode" unanswerable and the wrong answer is a real edit
- * to the wrong cell.
+ * Column index per label. Every label must appear exactly once: a duplicate
+ * makes "which column is Episode" unanswerable, and the wrong answer is a
+ * real edit to the wrong cell.
  */
 export const resolveColumns = (headerCells: CellData[], width: number): ColumnMap => {
   const found = new Map<string, number[]>();
@@ -159,9 +152,9 @@ export interface SeasonRow {
   row: number;
   /**
    * The season label, or null if unparseable. A fractional one (`4.5`) is a
-   * special: never inserted, and never added to. Callers test that themselves
-   * with `Number.isInteger` — carrying a `fractional` flag alongside would be
-   * a second copy of the same one-line rule.
+   * special: never inserted, never added to. Callers test with
+   * `Number.isInteger`; a `fractional` flag would be a second copy of that
+   * one-line rule.
    */
   season: number | null;
   /** Episodes *watched* — a count, not the highest episode number. */
@@ -169,10 +162,10 @@ export interface SeasonRow {
   /**
    * Whether the row has an end date, which freezes it forever.
    *
-   * A flag rather than the serial, because the serial is never read and asking
-   * `end !== null` of a parsed number gets the fail-safe backwards: a hand-typed
-   * `TBD` is not blank but does not parse, so it would read as *open* and the
-   * sync would overwrite the note with a date.
+   * A flag rather than the serial: the serial is never read, and `end !== null`
+   * on a parsed number gets the fail-safe backwards — a hand-typed `TBD` does
+   * not parse, so it would read as *open* and the sync would overwrite the
+   * note with a date.
    */
   closed: boolean;
   /** SIMKL ids, in release order. A row can carry several when a cour was split. */
@@ -184,10 +177,10 @@ export interface ShowBlock {
   title: string;
   status: string | null;
   /**
-   * `show` or `anime`. Governs two things, both about what may be written: a
-   * row may only be inserted into a `show` block, and only a `show` block's
-   * season rows can be given a runtime — a SIMKL anime record numbers every
-   * cour "season 1", so the row's number addresses no TVDB season.
+   * `show` or `anime`. Governs what may be written: rows are only inserted
+   * into a `show` block, and only a `show` block's season rows can take a
+   * runtime — a SIMKL anime record numbers every cour "season 1", so the
+   * row's number addresses no TVDB season.
    */
   type: string | null;
   /** Ids on the *show* row. A season row's own id wins over these. */
@@ -202,8 +195,8 @@ export interface Grid {
 }
 
 /**
- * Ids from one cell. `"522882,581835"` is a season whose cour was split across
- * two SIMKL entries; a single id arrives as a number, not a string.
+ * Ids from one cell. `"522882,581835"` is a cour split across two SIMKL
+ * entries; a single id arrives as a number, not a string.
  */
 export const parseIds = (cell: CellData | undefined): number[] => {
   const text = textOf(cell);
@@ -220,9 +213,9 @@ export const parseIds = (cell: CellData | undefined): number[] => {
 export const parseGrid = (snapshot: SheetSnapshot): Grid => {
   const { rows } = snapshot;
   const headerRow = findHeaderRow(rows);
-  // The declared width, not the widest row: a user who rearranges may also add
-  // a column, and a truncated read presents a displaced header as *missing*,
-  // which under the fail-closed rule disables the sync entirely.
+  // The declared width, not the widest row: a truncated read presents a
+  // displaced header as *missing*, which fail-closed turns into a disabled
+  // sync.
   const width = Math.max(snapshot.columnCount, ...rows.map((r) => r.length));
   const columns = resolveColumns(rows[headerRow] ?? [], width);
 
@@ -234,9 +227,9 @@ export const parseGrid = (snapshot: SheetSnapshot): Grid => {
     if (!isBlank(showCell)) {
       const title = textOf(showCell);
       // The show-row formulas roll up with MATCH("*", …), which matches text
-      // cells only — a title stored as a number makes the block above it run
-      // straight into this one and over-sum, with no error value to reveal it.
-      // "24", "1899" and "1923" are real show names, so this is not theoretical.
+      // only — a title stored as a number makes the block above run into this
+      // one and over-sum, with no error value to reveal it. "24", "1899" and
+      // "1923" are real show names.
       if (title === null) {
         throw new GridError(`${a1(row, columns.Show)} is not text. The show-row roll-up formulas would silently merge this block into the one above it.`);
       }
@@ -251,11 +244,10 @@ export const parseGrid = (snapshot: SheetSnapshot): Grid => {
       continue;
     }
 
-    // Trailing blank rows are the sheet's empty tail, not data. So is a row
-    // carrying nothing but an id: without a parsed Season it has no episode
-    // count to advance and no shape to compare, yet `resolveRow` takes the
-    // by-id branch — which never consults `season` — and a count gets planned
-    // into a row that is not one.
+    // Blank rows are the sheet's empty tail, not data. So is a row carrying
+    // only an id: with no parsed Season it has nothing to advance or compare,
+    // yet `resolveRow`'s by-id branch never consults `season`, so a count
+    // would be planned into a row that is not one.
     if (cells.every((cell) => isBlank(cell))) continue;
     if (numberOf(cells[columns.Season]) === null && cells.every((cell, i) => i === columns.id || isBlank(cell))) continue;
 
@@ -277,34 +269,31 @@ export const parseGrid = (snapshot: SheetSnapshot): Grid => {
 };
 
 /**
- * Which SIMKL entries a season row maps to: **its own ids win, and a blank one
+ * Which SIMKL entries a season row maps to: **its own ids win, a blank one
  * inherits the show row's**.
  *
- * Never inferred from `Type`. Both exceptions exist in the sheet today —
- * Doctor Who carries ids in *both* places (so precedence matters) and Parasyte
- * carries one *only* on a season row despite reading `Type=show` (so location
- * cannot be inferred).
+ * Never inferred from `Type`. Both exceptions exist in the sheet — Doctor Who
+ * carries ids in *both* places (precedence matters) and Parasyte carries one
+ * *only* on a season row despite `Type=show` (location cannot be inferred).
  */
 export const idsFor = (block: ShowBlock, season: SeasonRow): number[] => (season.ids.length ? season.ids : block.ids);
 
 /**
  * Ids claimed by more than one row. Both claimants are unsafe to write.
  *
- * Show rows count as claimants, not just season rows: the same series entered
- * twice with the same id on both show rows is the likeliest way this happens in
- * a hand-maintained file, and every season row of *both* blocks would then
- * inherit it through `idsFor` — one title's progress driving edits in two
- * unrelated places.
+ * Show rows count as claimants too: the same series entered twice with the
+ * same id on both show rows is the likeliest duplicate in a hand-maintained
+ * file, and every season row of *both* blocks would inherit it through
+ * `idsFor` — one title's progress driving edits in two unrelated places.
  */
 export const duplicateIds = (blocks: ShowBlock[]): Set<number> => {
   const owner = new Map<number, ShowBlock>();
   const duplicates = new Set<number>();
   for (const block of blocks) {
-    // Claimed per block, so writing the series id on the show row *and*
-    // repeating it on one of that show's own season rows is not a clash — it
-    // says the same true thing twice. Counted per row it made every row in the
-    // block report an id "claimed by more than one row", and the planner then
-    // declined the Status and the insert over a conflict that did not exist.
+    // Claimed per block: the series id on the show row *and* on one of its own
+    // season rows says the same true thing twice, not a clash. Counted per row,
+    // every row in the block would report a duplicate and the planner would
+    // decline Status and the insert over a conflict that does not exist.
     const ids = new Set([...block.ids, ...block.seasons.flatMap((season) => season.ids)]);
     for (const id of ids) {
       const first = owner.get(id);
@@ -312,8 +301,8 @@ export const duplicateIds = (blocks: ShowBlock[]): Set<number> => {
       else owner.set(id, block);
     }
 
-    // Two *season* rows of one show naming the same id is a real ambiguity
-    // though: one title's progress cannot say which of them to advance.
+    // Two *season* rows of one show naming the same id is a real ambiguity:
+    // one title's progress cannot say which to advance.
     const perSeason = new Map<number, number>();
     for (const season of block.seasons) {
       for (const id of new Set(season.ids)) perSeason.set(id, (perSeason.get(id) ?? 0) + 1);
@@ -324,23 +313,22 @@ export const duplicateIds = (blocks: ShowBlock[]): Set<number> => {
 };
 
 /**
- * Whether a block's status and lookups run on the cour model: no id on the show
- * row, so each season row carries its own SIMKL entry and that entry's counters
- * describe the whole season. This is how anime is laid out — one SIMKL record
- * per cour — and it is a fact about where the ids sit, never about `Type`.
+ * Whether a block's status and lookups run on the cour model: no id on the
+ * show row, so each season row carries its own SIMKL entry whose counters
+ * describe the whole season. This is how anime is laid out — one record per
+ * cour — and it is a fact about where the ids sit, never about `Type`.
  */
 export const usesCourModel = (block: ShowBlock): boolean => block.ids.length === 0;
 
 /**
  * Whether a block's season numbers can address TVDB seasons at all — the scope
- * of the runtime write, and the one claim a row cannot take back once its cell
- * is filled and dated in the same batch.
+ * of the runtime write, a claim a row cannot take back once its cell is filled
+ * and dated in the same batch.
  *
- * A stricter test than `!usesCourModel`, and the difference is deliberate: a
- * hand-maintained sheet can give an anime block a show-row id, which the cour
- * test would read as live-action. It is not — a SIMKL anime record numbers
- * every cour `season: 1` and all cours of a franchise share one TVDB id, so
- * the row's number addresses no TVDB season. Attack on Titan's six records all
+ * Stricter than `!usesCourModel` on purpose: a hand-maintained sheet can give
+ * an anime block a show-row id, which the cour test would read as live-action.
+ * It is not — a SIMKL anime record numbers every cour `season: 1` and all
+ * cours of a franchise share one TVDB id. Attack on Titan's six records all
  * point at tvdb 267440, whose season 1 holds 25 episodes against their
  * 25/12/12/16/12/2.
  */

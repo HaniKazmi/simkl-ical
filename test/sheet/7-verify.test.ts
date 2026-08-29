@@ -32,8 +32,8 @@ test('the planned write, and only the planned write, verifies', () => {
   assert.equal(result.landed, true);
 });
 
-// This is why the diff is on userEnteredValue and never effectiveValue: writing
-// a season's Episode recalculates five formulas on the show row above it.
+// Why the diff is on userEnteredValue, never effectiveValue: writing a
+// season's Episode recalculates five formulas on the show row above it.
 test('a formula recalculating is not a change', () => {
   const rows = fx.rows.map((r) => [...r]);
   rows[fx.at.fargoS2!]![before.columns.Episode] = 8;
@@ -45,8 +45,8 @@ test('a formula recalculating is not a change', () => {
 
 // A concurrent human, or us being wrong about row alignment. Both mean stop.
 test('an unplanned change fails', () => {
-  // The planned write landed *and* something else moved — the real shape of a
-  // concurrent edit, and what separates it from a batch that never went out.
+  // The planned write landed *and* something else moved — the shape of a
+  // concurrent edit, as opposed to a batch that never went out.
   const rows = fx.rows.map((r) => [...r]);
   rows[fx.at.fargoS2!]![before.columns.Episode] = 8;
   rows[fx.at.fargoS1!]![before.columns.Episode] = 99;
@@ -63,15 +63,15 @@ test('a planned write that did not land fails', () => {
   assert.match(result.problems.join('; '), /did not land/);
 });
 
-// The join key is never written by design, so a change to it means the rows are
-// not the rows we think they are.
+// The join key is never written, so a change to it means the rows are not the
+// rows we think they are.
 test('an id that moved fails even though id is outside the inspected columns', () => {
   const result = verify(before, withChange('fargo', 'id', 999), planOf([editOf('fargoS2', 'Episode', 8)]));
   assert.equal(result.ok, false);
   assert.match(result.problems.join('; '), /the id changed/);
 });
 
-// Free, because the read already carries it: a formula the write broke.
+// A formula the write broke — free to check, the read already carries it.
 test('a new error value fails', () => {
   const rows = fx.rows.map((r) => [...r]);
   rows[fx.at.fargoS2!]![before.columns.Episode] = 8;
@@ -115,9 +115,9 @@ test('an insert with exactly its planned fill verifies', () => {
   assert.deepEqual(result.deleteRows, []);
 });
 
-// An atomic batch failure looks exactly like this, and it must not read as a
-// landed write: the caller would go looking for a snapshot tab that rode the
-// same failed batch, and freeze over a sheet nothing ever touched.
+// An atomic batch failure looks exactly like this and must not read as landed:
+// the caller would hunt for a snapshot tab that rode the same failed batch,
+// and freeze over a sheet nothing touched.
 test('a row the sheet did not grow by fails, and nothing landed', () => {
   const { plan } = insertFixture();
   const result = verify(before, sheetSnapshot(fx.rows), plan);
@@ -128,12 +128,10 @@ test('a row the sheet did not grow by fails, and nothing landed', () => {
 });
 
 // The one catastrophic failure mode: rows below the insert land one off.
-//
-// Nothing is offered for deletion, deliberately. `deleteRows` may only carry a
-// row this read positively identified as ours — every planned cell present at
-// exactly the planned index — and here the row at that index is the sheet's
-// own. Deleting on a guess is the failure the rollback exists to avoid, so a
-// grid this confused restores wholesale or freezes.
+// Nothing is offered for deletion: `deleteRows` may only carry a row this read
+// positively identified as ours — every planned cell at exactly the planned
+// index — and here that row is the sheet's own. A grid this confused restores
+// wholesale or freezes.
 test('a one-row misalignment is caught, and no row is offered for deletion', () => {
   const { plan } = insertFixture();
   // The insert landed a row too high, so the real season 2 row is now below it.
@@ -143,8 +141,8 @@ test('a one-row misalignment is caught, and no row is offered for deletion', () 
   assert.deepEqual(result.deleteRows, []);
 });
 
-// The mirror image, and the case a rollback actually has to handle: the insert
-// went exactly where it was planned, and something *else* failed verification.
+// The mirror image, and the case a rollback has to handle: the insert landed
+// exactly where planned, and something *else* failed verification.
 test('an insert that landed where it was planned is offered for deletion', () => {
   const { newRow, plan } = insertFixture();
   const rows = [...fx.rows.map((r) => [...r]), newRow];
@@ -163,14 +161,13 @@ test('a show row that lost its title fails, because it silently merges two block
 
 // --- formula rewriting on insert ------------------------------------------
 //
-// Inserting a row shifts every row beneath it, and Sheets rewrites the relative
-// A1 references in every formula it shifts. Read as unplanned changes those are
-// ~1500 of them, and the rollback they invite writes the pre-insert text back
-// alongside the delete that shifts it again — one row off.
+// Inserting a row shifts every row beneath it, and Sheets rewrites the
+// relative A1 references in every formula it shifts. Read as unplanned changes
+// those are ~1500, and the rollback they invite writes the pre-insert text
+// back beside the delete that shifts it again — one row off.
 //
-// Two things make a fixture blind to this, and both are easy to write by
-// accident: appending at the end, so nothing shifts, and formulas with no row
-// numbers in them to rewrite. The fixtures below have neither.
+// Two things blind a fixture to this: appending at the end (nothing shifts)
+// and formulas with no row numbers to rewrite. These fixtures have neither.
 
 /** A block whose formulas name their own rows, the way the real sheet's do. */
 const rowsWithFormulas = (): CellSpec[][] => [
@@ -221,9 +218,9 @@ test("a formula Sheets rewrote because the row moved is not an unplanned change"
   assert.deepEqual(result.deleteRows, []);
 });
 
-// The exemption is narrow on purpose: it accepts a formula that is still a
-// formula, and nothing else. A literal moving is still what catches a
-// misalignment, and every literal on a season row moves with the row.
+// The exemption accepts a formula still being a formula, and nothing else. A
+// moved literal is what catches a misalignment, and every literal on a season
+// row moves with the row.
 test('the rewrite exemption does not cover a literal, or a formula replaced by one', () => {
   const grid = parseGrid(sheetSnapshot(rowsWithFormulas()));
 
@@ -239,8 +236,8 @@ test('the rewrite exemption does not cover a literal, or a formula replaced by o
   assert.equal(b.ok, false, 'a roll-up replaced by a frozen number must not pass');
 });
 
-// With no insert there is nothing to rewrite, so the strict comparison stands —
-// which is what the rollback relies on once the inserted row has been deleted.
+// With no insert there is nothing to rewrite, so the strict comparison stands
+// — what the rollback relies on once the inserted row is deleted.
 test('without an insert a changed formula is still a change', () => {
   const grid = parseGrid(sheetSnapshot(rowsWithFormulas()));
   const tampered = rowsWithFormulas();
@@ -250,16 +247,16 @@ test('without an insert a changed formula is still a change', () => {
   assert.match(result.problems.join('; '), /H4: changed without being planned/);
 });
 
-// The guard that decides whether to roll back reads this, so it has to be false
-// only when the sheet really is untouched.
+// The rollback decision reads this, so it must be false only when the sheet
+// really is untouched.
 test('a write that never went out reads as not landed', () => {
   const result = verify(before, sheetSnapshot(fx.rows), planOf([editOf('fargoS2', 'Episode', 8)]));
   assert.equal(result.landed, false);
 });
 
-// Why counting unplanned changes cannot answer it: the batch landed and broke a
-// roll-up, so nothing *unplanned* moved, yet skipping the rollback here would
-// also discard the only snapshot of the pre-write state.
+// Why counting unplanned changes cannot answer it: the batch landed and broke
+// a roll-up, so nothing unplanned moved — yet skipping the rollback would
+// discard the only snapshot of the pre-write state.
 test('a landed write that broke a formula still reads as landed', () => {
   const rows = fx.rows.map((r) => [...r]);
   rows[fx.at.fargoS2!]![before.columns.Episode] = 8;
@@ -270,9 +267,9 @@ test('a landed write that broke a formula still reads as landed', () => {
   assert.equal(result.landed, true);
 });
 
-// `INSPECTED` is derived from HEADERS rather than listed, which is what makes a
-// newly written column verified without anyone remembering to add it. These two
-// are that claim, asserted rather than trusted.
+// `INSPECTED` is derived from HEADERS rather than listed, so a newly written
+// column is verified without anyone remembering to add it. These two assert
+// that claim.
 test('a runtime write verifies like any other edit', () => {
   const plan = planOf([fx.cell('fargoS2', 'Episodes', { numberValue: 49 / 1440 })]);
   const result = verify(before, withChange('fargoS2', 'Episodes', 49 / 1440), plan);
