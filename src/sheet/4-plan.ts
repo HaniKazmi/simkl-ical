@@ -430,7 +430,11 @@ const insertRuntimeOf = ({ source, season }: InsertCandidate, titles: Map<number
  * - only a blank cell is a target: a typed number is a deliberate correction,
  *   and nothing here can tell a better one from a worse one.
  */
-type RuntimeAnswer = { state: 'none' } | { state: 'pending' } | { state: 'target'; request: RuntimeRequest };
+type RuntimeAnswer =
+  | { state: 'ineligible' }
+  | { state: 'pending' }
+  | { state: 'settled'; id: number }
+  | { state: 'target'; id: number; request: RuntimeRequest };
 
 const runtimeAnswer = (
   grid: Grid,
@@ -439,25 +443,27 @@ const runtimeAnswer = (
   index: Map<number, TitleProgress>,
   titles: Map<number, TitleCatalogue>,
 ): RuntimeAnswer => {
-  if (!runtimeScopeOk(block)) return { state: 'none' };
-  if (season.ids.length) return { state: 'none' };
-  if (season.season === null || !Number.isInteger(season.season)) return { state: 'none' };
+  if (!runtimeScopeOk(block)) return { state: 'ineligible' };
+  if (season.ids.length) return { state: 'ineligible' };
+  if (season.season === null || !Number.isInteger(season.season)) return { state: 'ineligible' };
 
   // The same id `resolveRow`'s by-season branch reads. Mirrored: a narrower
   // rule here than there would strand a row.
   const id = idsFor(block, season)[0];
-  if (id === undefined || !index.has(id)) return { state: 'none' };
+  if (id === undefined || !index.has(id)) return { state: 'ineligible' };
 
-  if (!isBlank(cellAt(grid, season.row, grid.columns.Episodes))) return { state: 'none' };
+  if (!isBlank(cellAt(grid, season.row, grid.columns.Episodes))) return { state: 'ineligible' };
 
   // Absent means the detail has not answered; null means it answered "no
   // key". The store writes one or the other the moment `/tv/{id}` lands, so
   // `undefined` reliably means the call is still outstanding.
   const tvdbId = titles.get(id)?.tvdbId;
   if (tvdbId === undefined) return { state: 'pending' };
-  if (tvdbId === null) return { state: 'none' };
+  // No key, so no season average is ever coming — but the row is still one
+  // this sync may fill, and the show-wide length is the best there will be.
+  if (tvdbId === null) return { state: 'settled', id };
 
-  return { state: 'target', request: { id, tvdbId, season: season.season } };
+  return { state: 'target', id, request: { id, tvdbId, season: season.season } };
 };
 
 // --- The plan --------------------------------------------------------------
@@ -569,26 +575,26 @@ export const planSync = (
         plan.skips.push({ code: 'awaiting-runtimes', message: `${label}: complete, but its catalogue detail has not come back — left open for the next poll` });
         continue;
       }
-      const target = runtime.state === 'target' ? runtime.request : null;
       // One map read answers the whole state machine: `undefined` is
       // unanswered, `null` settled with nothing usable, a number the answer.
-      // A row with no target has nothing to wait for.
-      const minutes = target === null ? null : titles.get(target.id)?.seasonRuntimes.get(target.season);
-      if (minutes === undefined && target !== null) {
-        demands.runtimes.push(target);
+      const minutes = runtime.state === 'target' ? titles.get(runtime.id)?.seasonRuntimes.get(runtime.request.season) : null;
+      if (runtime.state === 'target' && minutes === undefined) {
+        demands.runtimes.push(runtime.request);
         plan.skips.push({ code: 'awaiting-runtimes', message: `${label}: complete, but its episode runtimes have not come back — left open for the next poll` });
         continue;
       }
 
       plan.edits.push(edit(grid, season.row, 'End', num(serial), `${label}: ended`));
 
-      if (target !== null) {
+      if (runtime.state !== 'ineligible') {
         // Settled-with-nothing falls back to the show-wide runtime, same as a
         // row being created. This batch dates the row either way, so the
         // choice is between an approximate number and a cell nothing can ever
         // fill — and it must not depend on which run first saw the season, or
         // two identical-looking rows differ for a reason no reader could see.
-        const days = runtimeDays(minutes) ?? runtimeDays(titles.get(target.id)?.runtime);
+        // A title with no TVDB key at all is that same case: no average is
+        // coming, so the show-wide length is what the cell gets.
+        const days = runtimeDays(minutes) ?? runtimeDays(titles.get(runtime.id)?.runtime);
         if (days === null) {
           plan.notes.push(`${label}: ended with no usable episode runtimes, so its Episodes cell is left blank`);
         } else {

@@ -912,14 +912,29 @@ test('a season with neither an average nor a show-wide length closes blank, and 
   assert.match(plan.notes.join(' '), /no usable episode runtimes/);
 });
 
-// No join key means no runtime is obtainable — no SIMKL id, or no credential;
-// the store withholds it either way. Read as pending instead, every season in
-// the sheet would stop being dated, hence asserting the skips are empty.
-test('a row with no tvdb id closes exactly as it did before this existed', () => {
+// No join key means no season average is ever coming — no SIMKL tvdb id, or
+// no credential; the store withholds it either way. The row is still one this
+// sync may fill, so it closes on the show-wide length. Read as pending
+// instead, every season in the sheet would stop being dated, hence asserting
+// the skips are empty.
+test('a row with no tvdb id closes on the show-wide runtime', () => {
   const bare = closing({ tvdbIds: {} });
-  closedBare(bare.plan());
-  assert.deepEqual(bare.plan().skips, []);
-  assert.deepEqual(bare.runtimeDemands(), []);
+  const plan = bare.plan();
+  assert.ok(has(plan, 'End'), 'the season is dated');
+  const cell = plan.edits.find((e) => e.field === 'Episodes');
+  assert.ok(Math.abs((cell?.value.numberValue ?? 0) - 43 / 1440) < 1e-9, 'and carries the show-wide length');
+  assert.deepEqual(plan.skips, [], 'never held open — no answer is coming');
+  assert.deepEqual(bare.runtimeDemands(), [], 'and nothing is asked of TVDB');
+});
+
+// The invariant the fallback exists for. A cell must not depend on whether
+// this run created the row or closed one already there, or two
+// identical-looking rows differ for a reason no reader of the sheet could see.
+test('a season with no tvdb id gets the same cell closed as it would inserted', () => {
+  const closed = closing({ tvdbIds: {} }).plan().edits.find((e) => e.field === 'Episodes')?.value.numberValue;
+  const inserted = adding({ tvdbIds: {}, aired: 6 }).plan().insert?.fill.find((f) => f.field === 'Episodes')?.value.numberValue;
+  assert.ok(closed, 'the closing row carries a runtime');
+  assert.equal(closed, inserted, 'and it is the one the insert would have written');
 });
 
 /**

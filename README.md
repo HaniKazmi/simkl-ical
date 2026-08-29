@@ -167,7 +167,7 @@ for the library: the watch detail rides along on the fetch the feed already make
 | `SHEET_SINCE_DAYS`               | `90`       | Nothing is touched without watch activity this recent           |
 | `SHEET_MAX_EDITS`                | `30`       | Over budget refuses the whole plan rather than trimming it      |
 | `SHEET_MAX_ROWS`                 | `20`       | Distinct rows in one run                                        |
-| `TVDB_API_KEY`                   | —          | **Secret.** Enables the per-episode runtime write only. Unset ⇒ that one cell stays blank and nothing else changes |
+| `TVDB_API_KEY`                   | —          | **Secret.** Gets each season's *own* average runtime. Unset, the cell falls back to SIMKL's show-wide runtime |
 | `TVDB_PIN`                       | —          | **Secret.** Only for a user-supported TVDB key; a licensed one logs in without it |
 
 ### Setting it up
@@ -189,10 +189,15 @@ runtime *into a blank cell only*, and a show row's status — and inserts a seas
 start a new season. It never adds a show, never touches a season that already has an end date,
 never moves a count backwards, and never writes a formula.
 
-The runtime is the one part that needs `TVDB_API_KEY`; without it that cell is left alone and
-the other three behave identically. It is written in the same batch that dates the row, because
-a dated row is never revisited — so a season still airing gets its row added with the cell
-blank, waiting for the close to fill it.
+The runtime is the one part that uses `TVDB_API_KEY`, and it buys accuracy rather than the
+feature: with a key the cell gets that season's own average episode length, and without one it
+gets SIMKL's show-wide runtime for the series. Only a title SIMKL has no runtime for at all
+leaves the cell blank. It is written in the same batch that dates the row, because a dated row
+is never revisited — so a season still airing gets its row added with the cell blank, waiting
+for the close to fill it.
+
+`TVDB_PIN` is needed only for a user-supported TVDB key; a licensed key logs in with the key
+alone, and the pin is irrelevant when no key is set.
 
 Every write is preceded by a server-side snapshot of the tab and followed by a read-back
 compared against what was planned; anything unexpected restores the snapshot wholesale. If even

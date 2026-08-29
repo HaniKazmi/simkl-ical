@@ -635,8 +635,9 @@ test('a login outage leaves the row open rather than settling it', async () => {
   );
 });
 
-// Without a key the run must behave as if the runtime feature did not exist.
-test('with no TVDB key the season closes and nothing reaches thetvdb.com', async () => {
+// Without a key no season average is possible and nothing may reach TVDB —
+// but the cell still gets SIMKL's show-wide length, as an inserted row does.
+test('with no TVDB key the season closes on the show-wide runtime', async () => {
   clearTokenCache();
   clearTvdbTokenCache();
   const sheet = closingRun();
@@ -646,7 +647,7 @@ test('with no TVDB key the season closes and nothing reaches thetvdb.com', async
       assert.equal(calls.filter((c) => c.includes('thetvdb.com')).length, 0);
       const row = sheet.tabs.get(1)![3]!;
       assert.ok(row[H.indexOf('End')]?.userEnteredValue?.numberValue, 'dated all the same');
-      assert.equal(row[H.indexOf('Episodes')]?.userEnteredValue, undefined);
+      assert.equal(row[H.indexOf('Episodes')]?.userEnteredValue?.numberValue, 48 / 1440, 'on the show-wide length');
     }),
   );
 });
