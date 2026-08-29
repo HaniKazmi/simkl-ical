@@ -68,7 +68,7 @@ export const toHtml = (value: SafeHtml): string => value[SAFE];
  * External assets are out — the feed token is in this page's URL, and any
  * off-origin request would carry it out in a `Referer` header.
  *
- * The palette, the type stack and the card treatment come from the index at
+ * The palette, the type stack, the header and the card treatment come from the index at
  * hani.fyi that links here; the two are consecutive screens. What that page
  * has no need for is state, so `--ok/--warn/--crit` are added from the same
  * family, and `--faint` gives labels a third rank below `--muted`.
@@ -80,11 +80,13 @@ const STYLE = `
 @media(prefers-color-scheme:dark){:root{--bg:#14171a;--card:#1d2126;--ink:#e8eaed;--muted:#9aa4af;--faint:#7d8590;
 --line:#2c3238;--accent:#6c9bff;--ok:#3fb950;--okbg:#12261c;--warn:#d29922;--warnbg:#2a2113;--crit:#f85149;--critbg:#2d1a1a}}
 *{box-sizing:border-box}
-body{margin:0;padding:2.5rem 1.25rem 3rem;background:var(--bg);color:var(--ink);
+body{margin:0;padding:0 0 3rem;background:var(--bg);color:var(--ink);
 font:0.875rem/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
-.wrap{max-width:65rem;margin:0 auto;display:grid;gap:.75rem}
-header{display:flex;flex-wrap:wrap;align-items:baseline;gap:.75rem;margin-bottom:.5rem}
-h1{font-size:1.5rem;font-weight:600;margin:0;letter-spacing:-.01em}
+.wrap{max-width:65rem;margin:0 auto;padding:0 1.25rem;display:grid;gap:.75rem}
+header{background:var(--card);border-bottom:1px solid var(--line);margin-bottom:1.5rem}
+.bar{max-width:65rem;margin:0 auto;padding:.75rem 1.25rem;display:flex;flex-wrap:wrap;align-items:center;gap:.75rem}
+.mark{width:1rem;height:1rem;border-radius:4px;background:var(--accent);flex:none}
+h1{font-size:.875rem;font-weight:600;margin:0;letter-spacing:.07em;text-transform:uppercase}
 .meta{margin-left:auto;text-align:right;color:var(--muted);font-size:.8125rem;line-height:1.45}
 .pill{display:inline-flex;align-items:center;gap:.375rem;font-size:.6875rem;font-weight:600;letter-spacing:.06em;
 text-transform:uppercase;padding:.15rem .5rem;border-radius:6px;border:1px solid currentColor;white-space:nowrap}
@@ -333,14 +335,20 @@ export const renderPage = (model: StatusModel): string =>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
 <title>${model.appName} status</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <style>${raw(STYLE)}</style>
-</head><body><div class="wrap">
+</head><body>
 
-<header>
+<header><div class="bar">
+  <span class="mark"></span>
   <h1>${model.appName}</h1>
   <span class="pill ${model.ok ? 'ok' : 'warn'}">${model.ok ? 'healthy' : 'degraded'}</span>
   <span class="meta">v${model.version} · ${model.timezone}<br>${model.uptime === null ? 'starting' : html`up ${model.uptime}`} · ${model.feed.events} events</span>
-</header>
+</div></header>
+
+<div class="wrap">
 
 <div class="tiles">${tiles(model)}</div>
 
@@ -406,6 +414,6 @@ ${model.problems.length === 0 ? null : html`<div class="problems"><ul>${model.pr
   ${model.requestErrors.map((error) => html`<div class="msg">${error}</div>`)}
 </section>
 
-<footer>Read-only. The page itself fetches nothing; the two links are yours to click.</footer>
+<footer>Read-only. The page loads nothing but its own icon; the two links are yours to click.</footer>
 
 </div></body></html>`);

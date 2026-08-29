@@ -4,6 +4,7 @@ import { config } from './shared/config.ts';
 import type { Orchestrator } from './orchestrator.ts';
 import { assess, healthResponse } from './health.ts';
 import { renderStatus } from './status/status.ts';
+import { ICON_APPLE, ICON_ICO, ICON_SVG } from './status/icons.ts';
 
 /** Constant-time compare so the token cannot be recovered by timing the 404s. */
 const tokenMatches = (candidate: string): boolean => {
@@ -87,6 +88,25 @@ export const buildServer = (state: Orchestrator, { logger = true, logStream }: S
       .send(state.ics);
   });
 
+  // Under the token like everything else, so the icons add no path that answers differently to a
+  // caller without one. Cached hard: they change only when this binary does.
+  for (const [name, type, body] of [
+    ['favicon.svg', 'image/svg+xml', ICON_SVG],
+    ['favicon.ico', 'image/x-icon', ICON_ICO],
+    ['apple-touch-icon.png', 'image/png', ICON_APPLE],
+  ] as const) {
+    app.get<{ Params: { token: string } }>(`/:token/${name}`, async (req, reply) => {
+      if (!config.feedToken || !tokenMatches(req.params.token)) {
+        return reply.code(404).send(NOT_FOUND);
+      }
+      return reply
+        .header('Content-Type', type)
+        .header('Cache-Control', 'private, max-age=86400')
+        .header('X-Content-Type-Options', 'nosniff')
+        .send(body);
+    });
+  }
+
   app.get<{ Params: { token: string } }>('/:token/status', async (req, reply) => {
     if (!config.feedToken || !tokenMatches(req.params.token)) {
       // The same body as any other 404, so the route cannot be found by
@@ -103,7 +123,15 @@ export const buildServer = (state: Orchestrator, { logger = true, logStream }: S
         // an escaping bug cannot execute; no-referrer stops the token riding
         // out on any request the page makes — also why it loads nothing
         // off-origin.
-        .header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'")
+        //
+        // `img-src 'self'` is what lets the icons load at all: under
+        // `default-src 'none'` a browser declines to fetch even a favicon this
+        // page names. Same-origin only, so an injected `<img>` still has
+        // nowhere off-host to carry the token to.
+        .header(
+          'Content-Security-Policy',
+          "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
+        )
         .header('Referrer-Policy', 'no-referrer')
         .header('X-Content-Type-Options', 'nosniff')
         .header('Cache-Control', 'private, no-store')
