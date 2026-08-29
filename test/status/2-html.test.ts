@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { escapeHtml, html, raw, renderPage, toHtml } from '../../src/status/2-html.ts';
 import { buildModel } from '../../src/status/1-model.ts';
-import { MINUTE, before, countsWith, input, moved, request, type InputOver } from './fixtures.ts';
+import { MINUTE, before, countsWith, input, moved, request, runRecord, type InputOver } from './fixtures.ts';
 
 test('escapeHtml covers every character that can break out of markup', () => {
   assert.equal(escapeHtml(`<script>"x" & 'y'</script>`), '&lt;script&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/script&gt;');
@@ -70,6 +70,18 @@ test('numbers and booleans render as themselves', () => {
 
 const page = (over: InputOver = {}): string => renderPage(buildModel(input(over)));
 
+/**
+ * The Sheet section alone. `details` is used nowhere else on the page, so a
+ * count of zero over the whole document passes just as well on a page that
+ * dropped the section entirely.
+ */
+const sheetSection = (rendered: string): string => {
+  const from = rendered.indexOf('>Sheet</h2>');
+  const to = rendered.indexOf('>Requests</h2>');
+  assert.ok(from > 0 && to > from, 'the Sheet section is on the page at all');
+  return rendered.slice(from, to);
+};
+
 // The fresh-container page, and what the CI smoke test fetches.
 test('the cold page is a complete document with nothing missing rendered as text', () => {
   const rendered = page();
@@ -101,6 +113,11 @@ test('hostile content from every untrusted source renders inert', () => {
         error: payload,
         repeats: 1,
       },
+      // The same payload again on a run that carries no error, so it reaches
+      // the summary line rather than the expanded rows. Both are journal
+      // fields the page renders verbatim, and they interpolate at different
+      // call sites.
+      { at: before(MINUTE), status: 'applied', mode: 'apply', edits: [{ address: payload, field: payload as never, note: payload }], inserts: [], error: null, repeats: 1 },
     ],
   });
 
@@ -119,6 +136,38 @@ test('hostile content from every untrusted source renders inert', () => {
     'every element is one this file wrote',
   );
   assert.ok(rendered.includes('&lt;script&gt;'), 'and the text itself is still shown, escaped');
+});
+
+// A triangle that reveals the line already shown is worse than no triangle,
+// and a real history is nearly all runs of one write. Asserted on the run
+// markup rather than the page's: `details` is used nowhere else, so a count of
+// zero across the whole document would pass on a page that lost the section.
+test('a run of one write renders flat, with the change on the line and nothing to open', () => {
+  const rendered = page({
+    sheetConfigured: true,
+    runs: [runRecord({ edits: [{ address: 'F1052', field: 'Episode', note: 'Veep S2: 6 -> 7 episodes' }] })],
+  });
+  const section = sheetSection(rendered);
+
+  assert.match(section, /Veep S2: 6 -&gt; 7 episodes/, 'the change is on the page');
+  assert.match(section, /class="run-head bare sole"/, 'as the line itself');
+  assert.ok(!section.includes('<details'), 'and there is nothing left to expand');
+});
+
+// Newest last in the journal, so the two-edit run here is not the open one —
+// the collapse is what is under test, and the newest run never collapses.
+test('a run of several writes keeps the expander it has something to reveal behind', () => {
+  const rendered = page({
+    sheetConfigured: true,
+    runs: [
+      runRecord({ at: before(2 * MINUTE), edits: [{ address: 'B2', field: 'Status', note: 'watching' }, { address: 'B3', field: 'End', note: 'ended' }] }),
+      runRecord({ at: before(MINUTE) }),
+    ],
+  });
+  const section = sheetSection(rendered);
+
+  assert.ok(section.includes('<details'), 'the run collapses');
+  assert.match(section, /2 edits/, 'and its summary says how much is behind it');
 });
 
 // Omitting the section hides the one failure the subsystem exists to survive.
