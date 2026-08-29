@@ -107,10 +107,14 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   `include_all_episodes=yes` are no-ops without it. `ids.simkl` needs none of them.
 - **A dated season row is never revisited**, so every cell it will ever carry has to be right in the
   one batch that closes it. That is the fact behind most of the planner's conservatism: a season
-  whose runtimes have not come back holds its `End` open rather than closing blank (the date comes
-  from the watch timestamp, so waiting a poll costs nothing), and an inserted row leaves its runtime
-  cell blank while the season is still airing. The runtime follows *airing* and the `End` date
-  follows *watching* — `seasonAired` versus `seasonComplete` in `3-catalogue.ts`.
+  holds its `End` open rather than closing blank whenever its runtime question is still open (the
+  date comes from the watch timestamp, so waiting a poll costs nothing), and an inserted row leaves
+  its runtime cell blank while the season is still airing. The runtime follows *airing* and the
+  `End` date follows *watching* — `seasonAired` versus `seasonComplete` in `3-catalogue.ts`.
+- **Absent is not null, for `tvdbId` and for a season runtime alike.** Absent means the lookup has
+  not answered; null means it answered that nothing is obtainable. Only null may date a row.
+  Reading absent as null closes rows on a transient 503 and forfeits their cells for good, so
+  `runtimeAnswer` in `4-plan.ts` returns a `pending` state rather than a nullable target.
 - **The runtime write's scope is `runtimeScopeOk`, and it is stricter than `usesCourModel`** — both
   in `2-grid.ts`, with the Attack on Titan measurement in the doc comment. A SIMKL anime record
   numbers every cour `season: 1` and all cours share one TVDB id, so an anime row's number

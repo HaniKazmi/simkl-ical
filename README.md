@@ -127,8 +127,8 @@ Un-holding brings it back with no further action.
 
 `https://…/<FEED_TOKEN>/status` is a plain HTML page showing what the service is actually
 doing: how many titles you hold at each status, what the last check found, the feed's
-fetch→join→render→save steps with when each last ran, and a history of every edit the sheet
-sync has made — cell by cell, with what changed.
+fetch→join→render steps with when each last ran, every upstream request it has made recently,
+and a history of every edit the sheet sync has made — cell by cell, with what changed.
 
 It is **as sensitive as the feed URL**, and behind the same token: it names your shows.
 Treat it the same way, and note that a URL carrying a credential is kept by browser history
@@ -167,6 +167,8 @@ for the library: the watch detail rides along on the fetch the feed already make
 | `SHEET_SINCE_DAYS`               | `90`       | Nothing is touched without watch activity this recent           |
 | `SHEET_MAX_EDITS`                | `30`       | Over budget refuses the whole plan rather than trimming it      |
 | `SHEET_MAX_ROWS`                 | `20`       | Distinct rows in one run                                        |
+| `TVDB_API_KEY`                   | —          | **Secret.** Enables the per-episode runtime write only. Unset ⇒ that one cell stays blank and nothing else changes |
+| `TVDB_PIN`                       | —          | **Secret.** Only for a user-supported TVDB key; a licensed one logs in without it |
 
 ### Setting it up
 
@@ -182,10 +184,15 @@ shows what each run actually wrote, and survives a restart.
 
 ### What it does
 
-It writes exactly three things — a season row's episode count, a season row's end date, and a
-show row's status — and inserts a season row when you start a new season. It never adds a show,
-never touches a season that already has an end date, never moves a count backwards, and never
-writes a formula.
+It writes exactly four things — a season row's episode count, its end date, its average episode
+runtime *into a blank cell only*, and a show row's status — and inserts a season row when you
+start a new season. It never adds a show, never touches a season that already has an end date,
+never moves a count backwards, and never writes a formula.
+
+The runtime is the one part that needs `TVDB_API_KEY`; without it that cell is left alone and
+the other three behave identically. It is written in the same batch that dates the row, because
+a dated row is never revisited — so a season still airing gets its row added with the cell
+blank, waiting for the close to fill it.
 
 Every write is preceded by a server-side snapshot of the tab and followed by a read-back
 compared against what was planned; anything unexpected restores the snapshot wholesale. If even
@@ -259,25 +266,25 @@ unauthenticated, and answers `503` rather than `200` whenever the feed has stopp
 a revoked token, a CDN that has stopped answering, or a render that keeps throwing — so "the
 container is up" and "the feed is current" are not the same signal.
 
-One block per subsystem, each with its own timestamps and its own error, plus `problems`:
-everything wrong right now, worst first, and empty when there is nothing to say.
+One block per subsystem, each with its own timestamps. State and shape only — no free text:
+a healthcheck is a contract, and every field here answers something a machine can act on.
+*Why* something is wrong is a question for a person, so the wording lives on the [status
+page](#status-page) instead.
 
 ```json
 {
   "ok": false,
   "timezone": "Europe/London",
-  "problems": ["no token — run `npm run login`", "nothing has been rendered yet"],
-  "library": { "polledAt": "…", "syncedAt": "…", "error": "no token — run `npm run login`" },
+  "library": { "polledAt": "…", "syncedAt": "…" },
   "feed": {
     "events": 48,
     "renderedAt": null,
     "servingCached": true,
-    "error": null,
-    "calendars": { "attemptedAt": "…", "freshAt": "…", "error": null }
+    "calendars": { "attemptedAt": "…", "freshAt": "…" }
   },
   "sheet": {
     "configured": true, "mode": "apply", "status": "applied",
-    "lastRunAt": "…", "frozen": false, "error": null
+    "lastRunAt": "…", "frozen": false
   }
 }
 ```
@@ -286,8 +293,9 @@ everything wrong right now, worst first, and empty when there is nothing to say.
 keep succeeding while nothing fresh arrives, and only `freshAt` catches that. `syncedAt` moves
 only when a list actually changed, so it being days old is normal.
 
-A sheet-sync failure is reported in `sheet.error` but is deliberately absent from `problems` and
-never makes it `503`: it cannot affect the feed, and restarting the container would not fix it.
+A sheet-sync failure moves `sheet.status` and `sheet.frozen` but never makes it `503`: it cannot
+affect the feed, and restarting the container would not fix it. The failure itself is on the
+status page.
 
 If your token is ever revoked the last good feed keeps serving and the error is logged;
 re-authorise with `npm run login -- --force`.

@@ -67,8 +67,10 @@ exactly as they do with it.
 
 The plan-fetch loop is the load-bearing shape: what to fetch and what to write are one computation,
 so a season the planner waits on is by construction a season the same pass demanded. A snapshot
-older than 120s is discarded and the cycle restarts from the read; lookups already made in a run are
-never re-issued by that re-plan.
+older than 120s is discarded and the cycle restarts from the read. That re-plan re-issues no
+lookup the run has already made, and asks TVDB for nothing at all: a throttled season can spend a
+minute obeying `Retry-After`, which would age the fresh snapshot in its turn. Those rows stay open
+and the next poll takes them.
 
 `report` mode stops after GUARD and writes nothing — that is the default, and what you point at a
 real spreadsheet before the service account has Editor access.
@@ -229,8 +231,8 @@ that cannot complete freezes the process and renames the snapshot tab out of the
 **What is retained across polls** is the catalogue store (`3-catalogue.ts`): reductions of both
 upstreams' payloads, per-title stamps gated on watch activity with a daily ceiling, and season
 runtimes with **no ceiling at all** — a finished season's lengths are terminal. Its map-presence
-semantics (absent = unanswered, null = settled with nothing usable) are the store's own doc comment;
-getting them backwards forfeits a cell permanently, which is why they live in one map rather than
-two collections.
+semantics (absent = unanswered, null = settled with nothing usable) are the store's own doc comment,
+and the same distinction governs the TVDB id a detail lookup carries; getting either backwards
+dates a row on a 503 and forfeits its cell permanently.
 
 Upstream API references, and what they do not offer, are at the end of [AGENTS.md](AGENTS.md).
