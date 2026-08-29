@@ -159,7 +159,7 @@ border-top:1px solid var(--line)}
 .run-count{margin-left:auto;color:var(--muted);font-size:.8125rem}
 details.run>summary{list-style:none;cursor:pointer}
 details.run>summary::-webkit-details-marker{display:none}
-details.run>summary::before{content:"\\25B8";color:var(--muted);font-size:.8rem;line-height:1;display:inline-block;transition:transform .12s ease}
+details.run>summary::before,.run-head.sole::before{content:"\\25B8";color:var(--muted);font-size:.8rem;line-height:1;display:inline-block;transition:transform .12s ease}
 details.run[open]>summary::before{transform:rotate(90deg)}
 details.run[open]>summary{border-bottom:1px solid var(--line)}
 details.run:hover{border-color:var(--accent)}
@@ -167,9 +167,13 @@ details.run>summary:focus-visible{outline:2px solid var(--accent);outline-offset
 @media(prefers-reduced-motion:reduce){details.run>summary::before{transition:none}}
 .edit{display:grid;grid-template-columns:4.5rem 5rem minmax(0,1fr);gap:.625rem;padding:.2rem .9rem;font-size:.8125rem}
 .edit:first-of-type{padding-top:.5rem}.edit:last-child{padding-bottom:.5rem}
-.edit .addr{color:var(--accent);font-family:var(--mono)}
+.addr{color:var(--accent);font-family:var(--mono)}
 .edit.ins .addr{color:var(--ok)}
-.edit .fld{color:var(--muted)}
+.fld{color:var(--muted)}
+.run-head.sole{display:grid;grid-template-columns:auto 5.5rem 6rem 4.5rem 5rem minmax(0,1fr) auto;gap:.625rem;align-items:center}
+.run-head.sole::before{visibility:hidden}
+.run-head.sole .addr,.run-head.sole .fld,.note{font-size:.8125rem;overflow-wrap:anywhere}
+.run-head.sole .run-count{margin-left:0;text-align:right}
 .msg{padding:.6rem .9rem;font-size:.8125rem;font-family:var(--mono);white-space:pre-wrap;overflow-wrap:anywhere}
 .freeze{border:1px solid var(--crit);background:var(--critbg);border-radius:8px;padding:.75rem .9rem;margin-bottom:.75rem;
 white-space:pre-wrap;font-family:var(--mono);font-size:.8125rem}
@@ -195,6 +199,9 @@ td.src::after,td.svc::after,td.st::after,td.sz::after,td.ms::after{content:" \\0
 td.path{display:block;margin-top:.2rem;color:var(--ink)}
 table.counts,table.counts tbody,table.counts tr,table.counts td{display:revert}
 table.counts tr{border:0;padding:0;margin:0}
+.run-head.sole{display:flex;flex-wrap:wrap}
+.run-head.sole::before{display:none}
+.run-head.sole .note{flex-basis:100%}
 }
 footer{color:var(--faint);font-size:.8125rem;padding:.25rem .25rem 0}
 `;
@@ -297,13 +304,23 @@ const runChanges = (run: RunView) => [
  * runs of fifteen near-identical edits is what the journal can hold, and
  * expanded it buries every section below this one. `details` does it with no
  * script, which the page's `default-src 'none'` requires.
+ *
+ * A run with a `sole` change gets no expander at all: an incremental history
+ * is nearly all one-edit runs, and a triangle that reveals the line already
+ * shown is worse than none. Its cells sit at fixed widths so a column of them
+ * reads down — the reason the whole section exists is to compare one run's
+ * change against the next's.
  */
 const runs = (model: StatusModel) =>
   model.sheet.runs.map((run) => {
     const changes = runChanges(run);
     const summary = html`<span class="pill ${run.state}">${run.status}</span>
       <span class="run-when">${time(run.at)}</span>
-      <span class="run-count">${run.count}</span>`;
+      ${run.sole === null
+        ? null
+        : html`<span class="addr">${run.sole.address}</span><span class="fld">${run.sole.field}</span><span class="note">${run.sole.note}</span>`}
+      ${run.count === null ? null : html`<span class="run-count">${run.count}</span>`}`;
+    if (run.sole !== null) return html`<div class="run"><div class="run-head bare sole">${summary}</div></div>`;
     return run.open
       ? html`<div class="run">
           <div class="run-head ${changes.length ? '' : 'bare'}">${summary}</div>
@@ -335,8 +352,8 @@ export const renderPage = (model: StatusModel): string =>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
 <title>${model.appName} status</title>
-<link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <style>${raw(STYLE)}</style>
 </head><body>

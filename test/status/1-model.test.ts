@@ -327,9 +327,64 @@ test('only the newest run is open; the rest collapse', () => {
   );
 });
 
-test('a run of one edit says edit, not edits', () => {
-  const model = buildModel(input({ sheetConfigured: true, runs: [runRecord({ edits: [{ address: 'B2', field: 'Status', note: 'x' }], inserts: [] })] }));
-  assert.equal(model.sheet.runs[0]?.count, '1 edit · 0 inserts');
+// An incremental history is nearly all one-write runs, and `1 edit · 0
+// inserts` says nothing an expander then has to be clicked to learn. The line
+// carries the change itself instead, and there is nothing left behind it.
+test('a run of one write carries that write on its summary line', () => {
+  const model = buildModel(input({ sheetConfigured: true, runs: [runRecord({ edits: [{ address: 'F1052', field: 'Episode', note: 'Veep S2: 6 -> 7 episodes' }] })] }));
+  assert.deepEqual(model.sheet.runs[0]?.sole, { address: 'F1052', field: 'Episode', note: 'Veep S2: 6 -> 7 episodes' });
+  assert.equal(model.sheet.runs[0]?.count, null, 'and no size beside it, which would only repeat the line');
+});
+
+// `insert` where an edit names its column: an insert writes a whole row, so
+// `address` is a row rather than a cell and there is no one column to name.
+test('a run of one insert reads the same way, with insert in the column slot', () => {
+  const model = buildModel(
+    input({
+      sheetConfigured: true,
+      runs: [runRecord({ edits: [], inserts: [{ address: 'row 610', title: 'Task', season: 1, note: 'Task S1: new season row at 610, 7 episodes' }] })],
+    }),
+  );
+  assert.deepEqual(model.sheet.runs[0]?.sole, { address: 'row 610', field: 'insert', note: 'Task S1: new season row at 610, 7 episodes' });
+});
+
+// The message is a second thing to say however small the plan was, and it is
+// the half a reader opened the section for.
+test('a run carrying an error keeps its expander, one write or not', () => {
+  const model = buildModel(input({ sheetConfigured: true, runs: [runRecord({ error: 'sheets: 503 on batchUpdate' })] }));
+  assert.equal(model.sheet.runs[0]?.sole, null);
+  assert.equal(model.sheet.runs[0]?.count, '1 edit');
+});
+
+test('a run of several writes keeps its size and its expander', () => {
+  const model = buildModel(
+    input({
+      sheetConfigured: true,
+      runs: [
+        runRecord({
+          edits: [{ address: 'B2', field: 'Status', note: 'x' }, { address: 'B3', field: 'End', note: 'y' }],
+          inserts: [{ address: 'row 4', title: 'T', season: 1, note: 'z' }],
+        }),
+      ],
+    }),
+  );
+  assert.equal(model.sheet.runs[0]?.sole, null);
+  assert.equal(model.sheet.runs[0]?.count, '2 edits · 1 insert');
+});
+
+// `0 edits · 0 inserts` counts what a refused run was stopped from doing,
+// which is not a size at all.
+test('a run that wrote nothing says so rather than counting to zero', () => {
+  const model = buildModel(input({ sheetConfigured: true, runs: [runRecord({ status: 'refused', edits: [], inserts: [], error: 'guard: bounds' })] }));
+  assert.equal(model.sheet.runs[0]?.count, 'no writes');
+});
+
+// `report` mode re-plans the identical run every poll, so how long it has been
+// saying so is the reading — and it survives a line that says everything else.
+test('a repeated run keeps its poll count even when its change fits the line', () => {
+  const model = buildModel(input({ sheetConfigured: true, runs: [runRecord({ mode: 'report', status: 'reported', repeats: 9 })] }));
+  assert.ok(model.sheet.runs[0]?.sole, 'the one edit still reaches the line');
+  assert.equal(model.sheet.runs[0]?.count, '9 polls');
 });
 
 // The 44-character spreadsheet id repeats on every Google call and is the only

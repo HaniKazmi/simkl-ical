@@ -101,14 +101,35 @@ export interface Step {
   ok: boolean;
 }
 
+/**
+ * The whole of what a run did, when it did one thing. Address, column and
+ * wording in the order an expanded row already puts them, so the reader learns
+ * the three positions once.
+ */
+export interface SoleChange {
+  /** `F1052`, or `row 610` for an insert — an insert has no single cell. */
+  address: string;
+  /** The column written, or `insert`. The word is the marker; an insert needs
+   * no colour of its own when the cell beside it says what it is. */
+  field: string;
+  note: string;
+}
+
 /** A journal record with its instant made readable and its wording settled. */
 export type RunView = Omit<SheetRunRecord, 'at'> & {
   at: Stamp;
   state: State;
   /** The newest run only. The page opens it and collapses the rest. */
   open: boolean;
-  /** `15 edits · 1 insert`, already pluralised. */
-  count: string;
+  /**
+   * Set on a run of one write and no error, which is what a real history is
+   * nearly all of: the summary line carries the change itself and there is
+   * nothing left to expand.
+   */
+  sole: SoleChange | null;
+  /** `15 edits · 1 insert`, or `3 polls` on a sole run that repeated. Null
+   * when the line already says everything. */
+  count: string | null;
 };
 
 export interface MovementView {
@@ -234,6 +255,41 @@ const due = (last: string | null, every: Temporal.Duration, now: Temporal.Instan
   return Temporal.Instant.compare(next, now) <= 0
     ? { label: `overdue by ${duration(next.until(now))}` }
     : { label: `in ${duration(now.until(next))}` };
+};
+
+/**
+ * A run's whole story, when it is one write. An error is a second thing to
+ * say however small the plan was, so a run carrying one keeps its expander.
+ */
+const soleChange = (run: SheetRunRecord): SoleChange | null => {
+  if (run.error !== null) return null;
+  if (run.edits.length === 1 && run.inserts.length === 0) {
+    const { address, field, note } = run.edits[0]!;
+    return { address, field, note };
+  }
+  if (run.inserts.length === 1 && run.edits.length === 0) {
+    const { address, note } = run.inserts[0]!;
+    return { address, field: 'insert', note };
+  }
+  return null;
+};
+
+/**
+ * What is left to say once the line has said what it can. A zero component is
+ * dropped rather than printed: `0 edits · 0 inserts` counts what a refused run
+ * was stopped from doing, which is not a size at all. `repeats` survives a
+ * sole change — `report` mode re-plans the identical run every poll, and how
+ * long it has been saying so is the reading.
+ */
+const runCount = (run: SheetRunRecord, sole: SoleChange | null): string | null => {
+  const parts: string[] = [];
+  if (sole === null) {
+    if (run.edits.length) parts.push(plural(run.edits.length, 'edit'));
+    if (run.inserts.length) parts.push(plural(run.inserts.length, 'insert'));
+    if (!parts.length) parts.push('no writes');
+  }
+  if (run.repeats > 1) parts.push(`${run.repeats} polls`);
+  return parts.length ? parts.join(' · ') : null;
 };
 
 const SHEET_STATE: Record<string, State> = {
@@ -432,13 +488,10 @@ export const buildModel = (input: StatusInput): StatusModel => {
   // Only that newest one opens: fifty runs expanded repeat the same edits and
   // bury every section below.
   const runs: RunView[] = input.runs
-    .map((run) => ({
-      ...run,
-      at: at(run.at),
-      state: sheetState(run.status),
-      open: false,
-      count: [plural(run.edits.length, 'edit'), plural(run.inserts.length, 'insert'), ...(run.repeats > 1 ? [`${run.repeats} polls`] : [])].join(' · '),
-    }))
+    .map((run) => {
+      const sole = soleChange(run);
+      return { ...run, at: at(run.at), state: sheetState(run.status), open: false, sole, count: runCount(run, sole) };
+    })
     .reverse()
     .map((run, index) => ({ ...run, open: index === 0 }));
   // One instant: the join, the render and the section heading describe the
