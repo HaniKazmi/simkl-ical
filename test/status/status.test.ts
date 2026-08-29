@@ -38,10 +38,10 @@ const wired = (): Orchestrator => {
 test('the counts the library holds reach the page, totalled by type', async () => {
   await withConfig({ timezone: 'Europe/London' }, () => {
     const page = renderStatus(wired(), { now: Temporal.Now.instant() });
-    // Two shows, one watching and one dropped — one total, not a row per
-    // status.
-    assert.match(page, /shows<\/b> 2/);
-    assert.match(page, /anime<\/b> 0/);
+    // Two shows, one watching and one dropped: the row carries the total and
+    // the split that makes it up.
+    assert.match(page, /<td>shows<\/td><td class="total">2<\/td>/);
+    assert.match(page, /<td>anime<\/td><td class="total">0<\/td>/);
   });
 });
 

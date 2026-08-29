@@ -18,22 +18,27 @@ const rendered = () => {
   return state;
 };
 
-/** One snapshot, assessed — the exact pair `/healthz` is served from. */
+/**
+ * One snapshot, assessed — the exact pair `/healthz` is served from. `messages`
+ * drops the area tag, so the tests below assert on wording alone; the tagging
+ * itself is asserted where it matters.
+ */
 const healthOf = (state: Orchestrator) => {
   const snapshot = state.snapshot();
-  return { snapshot, ...assess(snapshot) };
+  const assessment = assess(snapshot);
+  return { snapshot, ...assessment, messages: assessment.problems.map((p) => p.message) };
 };
 
 test('a freshly rendered feed is healthy, and says nothing is wrong', () => {
   const health = healthOf(rendered());
   assert.equal(health.ok, true);
-  assert.deepEqual(health.problems, []);
+  assert.deepEqual(health.messages, []);
 });
 
 test('nothing rendered yet is unhealthy, and says why', () => {
   const health = healthOf(new Orchestrator({ logger: quiet }));
   assert.equal(health.ok, false);
-  assert.ok(health.problems.includes('nothing has been rendered yet'));
+  assert.ok(health.messages.includes('nothing has been rendered yet'));
 });
 
 // A revoked token must eventually read as unhealthy.
@@ -43,7 +48,7 @@ test('a feed that has stopped polling goes unhealthy', () => {
   state.errors.library = 'SIMKL rejected the token (401)';
   const health = healthOf(state);
   assert.equal(health.ok, false);
-  assert.deepEqual(health.problems, ['SIMKL rejected the token (401)']);
+  assert.deepEqual(health.messages, ['SIMKL rejected the token (401)']);
 });
 
 // The two halves own their own error slots, so neither can clear the other's.
@@ -65,7 +70,21 @@ test('problems are ordered library, then calendars, then rendering', () => {
   state.feed.errors.calendar = 'calendar boom';
   state.feed.errors.render = 'render boom';
 
-  assert.deepEqual(healthOf(state).problems, ['library boom', 'calendar boom', 'render boom']);
+  assert.deepEqual(healthOf(state).messages, ['library boom', 'calendar boom', 'render boom']);
+});
+
+// The status page colours one tile per area, so a problem that reaches it
+// untagged would be a problem it cannot place.
+test('every problem names the subsystem it came from', () => {
+  const state = rendered();
+  state.errors.library = 'library boom';
+  state.feed.errors.calendar = 'calendar boom';
+  state.feed.errors.render = 'render boom';
+
+  assert.deepEqual(
+    healthOf(state).problems.map((p) => p.area),
+    ['library', 'calendars', 'feed'],
+  );
 });
 
 // Each subsystem contributes at most one line: the calendar error already
@@ -73,10 +92,10 @@ test('problems are ordered library, then calendars, then rendering', () => {
 test('a subsystem with an error does not also report its staleness', () => {
   const state = rendered();
   state.feed.calendarsFreshAt = ago(config.calendarRefresh.total('milliseconds') * 4);
-  assert.deepEqual(healthOf(state).problems, [`the CDN has not answered since ${state.feed.calendarsFreshAt}`]);
+  assert.deepEqual(healthOf(state).messages, [`the CDN has not answered since ${state.feed.calendarsFreshAt}`]);
 
   state.feed.errors.calendar = 'serving cached calendars — the CDN has not answered since startup';
-  assert.deepEqual(healthOf(state).problems, ['serving cached calendars — the CDN has not answered since startup']);
+  assert.deepEqual(healthOf(state).messages, ['serving cached calendars — the CDN has not answered since startup']);
 });
 
 test('stale calendars go unhealthy', () => {
@@ -104,7 +123,7 @@ test('a render that keeps failing is unhealthy', () => {
   assert.equal(healthOf(state).ok, true, 'precondition');
   state.feed.errors.render = 'Invalid time value';
   assert.equal(healthOf(state).ok, false);
-  assert.deepEqual(healthOf(state).problems, ['Invalid time value']);
+  assert.deepEqual(healthOf(state).messages, ['Invalid time value']);
 });
 
 // Renders happen on every calendar refresh, so a stalled renderedAt means
@@ -113,7 +132,7 @@ test('a feed that has stopped rendering is unhealthy', () => {
   const state = rendered();
   state.feed.renderedAt = ago(config.calendarRefresh.total('milliseconds') * 4);
   assert.equal(healthOf(state).ok, false);
-  assert.deepEqual(healthOf(state).problems, [`nothing has rendered since ${state.feed.renderedAt}`]);
+  assert.deepEqual(healthOf(state).messages, [`nothing has rendered since ${state.feed.renderedAt}`]);
 });
 
 // syncedAt only advances when something changes, so an old value is normal,
@@ -122,7 +141,7 @@ test('an old library sync time alone does not mean unhealthy', () => {
   const state = rendered();
   state.libraryAt = ago(30 * 24 * 60 * 60 * 1000);
   assert.equal(healthOf(state).ok, true);
-  assert.deepEqual(healthOf(state).problems, []);
+  assert.deepEqual(healthOf(state).messages, []);
 });
 
 // /healthz is the container healthcheck. A frozen sheet must not restart the
@@ -131,9 +150,9 @@ test('an old library sync time alone does not mean unhealthy', () => {
 test('a sheet failure is reported but never makes the service unhealthy', () => {
   const state = rendered();
   state.errors.sheet = 'FROZEN: the sheet write failed verification';
-  const { ok, problems, snapshot } = healthOf(state);
+  const { ok, messages, snapshot } = healthOf(state);
   assert.equal(ok, true);
-  assert.deepEqual(problems, []);
+  assert.deepEqual(messages, []);
   assert.equal(snapshot.sheet.error, 'FROZEN: the sheet write failed verification');
 });
 

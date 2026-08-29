@@ -14,6 +14,7 @@
 
 import type { SheetRunRecord } from '../../src/sheet/io/journal.ts';
 import type { RequestRecord } from '../../src/api/requests.ts';
+import type { Problem } from '../../src/health.ts';
 import type { SheetSyncStatus } from '../../src/sheet/sync.ts';
 import type { SheetSyncMode } from '../../src/shared/config.ts';
 import type { StatusInput } from '../../src/status/1-model.ts';
@@ -49,6 +50,9 @@ const coldSnapshot = (): Snapshot => ({
   sheet: { configured: false, status: 'idle', lastRunAt: null, frozen: null, error: null },
 });
 
+/** Stands in for the feed token, which the page prints in both of its links. */
+const TOKEN = 'fixture-token';
+
 /** Nothing has run, nothing is configured, nothing is on disk. */
 export const COLD: StatusInput = {
   now: NOW,
@@ -63,6 +67,9 @@ export const COLD: StatusInput = {
   runtimesConfigured: false,
   sheetMode: 'off',
   sheetTab: 'Sheet1',
+  feedUrl: `http://localhost:3000/${TOKEN}/feed.ics`,
+  feedSubscribeUrl: `webcal://localhost:3000/${TOKEN}/feed.ics`,
+  sheetUrl: null,
   requests: [],
   runs: [],
 };
@@ -71,13 +78,14 @@ export const COLD: StatusInput = {
 export interface InputOver {
   now?: Temporal.Instant;
   ok?: boolean;
-  problems?: string[];
+  problems?: Problem[];
   activitiesPoll?: Temporal.Duration;
   calendarRefresh?: Temporal.Duration;
   filmsDue?: boolean;
   runtimesConfigured?: boolean;
   sheetMode?: SheetSyncMode;
   sheetTab?: string;
+  sheetUrl?: string | null;
   requests?: RequestRecord[];
   runs?: SheetRunRecord[];
 
@@ -85,8 +93,8 @@ export interface InputOver {
   polledAt?: string | null;
   libraryError?: string | null;
   counts?: LibraryCounts;
-  /** Expanded to a whole `PollOutcome` — these three are all the page reads. */
-  gate?: { pull: PollOutcome['pull']; updated: number; removed: number } | null;
+  /** Whatever this poll did; everything unnamed is the all-zero quiet poll. */
+  gate?: Partial<PollOutcome> | null;
   movement?: LibraryMovement | null;
 
   events?: number;
@@ -106,15 +114,21 @@ export interface InputOver {
   sheetError?: string | null;
 }
 
-const pollOf = (gate: NonNullable<InputOver['gate']>): PollOutcome => ({
+/**
+ * One poll, all zeros, with whatever the test names raised. Taking the whole
+ * `PollOutcome` as a partial rather than listing the fields the page happens to
+ * read means a page that starts reading another one needs nothing here.
+ */
+const pollOf = (over: Partial<PollOutcome>): PollOutcome => ({
   at: before(MINUTE),
-  changed: gate.pull !== 'none',
-  pull: gate.pull,
+  changed: (over.pull ?? 'none') !== 'none',
+  pull: 'none',
   removalsChecked: false,
   refusedRemovals: false,
-  updated: gate.updated,
+  updated: 0,
   reshaped: 0,
-  removed: gate.removed,
+  removed: 0,
+  ...over,
 });
 
 export const input = (over: InputOver = {}): StatusInput => {
@@ -128,6 +142,7 @@ export const input = (over: InputOver = {}): StatusInput => {
     filmsDue: over.filmsDue ?? COLD.filmsDue,
     runtimesConfigured: over.runtimesConfigured ?? COLD.runtimesConfigured,
     sheetMode: over.sheetMode ?? COLD.sheetMode,
+    sheetUrl: over.sheetUrl === undefined ? COLD.sheetUrl : over.sheetUrl,
     sheetTab: over.sheetTab ?? COLD.sheetTab,
     requests: over.requests ?? [],
     runs: over.runs ?? [],
@@ -193,12 +208,9 @@ export const request = (over: Partial<RequestRecord> = {}): RequestRecord => ({
 });
 
 /** How the library last moved. Empty deltas is the common poll, not an edge. */
-export const moved = (over: Partial<LibraryMovement> = {}): LibraryMovement => ({
-  at: before(2 * MINUTE),
-  deltas: [],
-  updated: 0,
-  removed: 0,
-  ...over,
+export const moved = ({ deltas = [], ...poll }: Partial<LibraryMovement> = {}): LibraryMovement => ({
+  ...pollOf({ at: before(2 * MINUTE), pull: 'delta', ...poll }),
+  deltas,
 });
 
 /** The all-zero counts with the named buckets raised. `libraryCounts(null)` is fresh per call, so mutating it is safe. */

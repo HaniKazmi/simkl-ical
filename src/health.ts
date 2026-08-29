@@ -18,16 +18,31 @@ import { ageOf } from './shared/dates.ts';
 import type { Snapshot } from './orchestrator.ts';
 import type { SheetSyncStatus } from './sheet/sync.ts';
 
+/** Which half of the service a problem belongs to. */
+export type ProblemArea = 'library' | 'calendars' | 'feed';
+
+/**
+ * One thing wrong, and who owns it. The area is what lets the status page
+ * colour the subsystem at fault rather than say only that something is.
+ */
+export interface Problem {
+  area: ProblemArea;
+  message: string;
+}
+
 export interface Assessment {
   /** Whether restarting this container would help — not whether anything is wrong. */
   ok: boolean;
   /**
    * Everything wrong right now, worst first: library, calendars, rendering.
    * Library outranks calendars because a stale calendar still renders and a
-   * revoked token eventually will not.
+   * revoked token eventually will not. At most one entry per area.
    */
-  problems: string[];
+  problems: Problem[];
 }
+
+const problem = (area: ProblemArea, message: string | null): Problem | null =>
+  message === null ? null : { area, message };
 
 export const assess = (snapshot: Snapshot): Assessment => {
   // Three intervals: one missed tick is a retry, three is a stall. `Duration`
@@ -44,9 +59,9 @@ export const assess = (snapshot: Snapshot): Assessment => {
   // At most one line per subsystem: its error, else its staleness — an error
   // like "serving cached calendars since X" already says the CDN is quiet.
   const problems = [
-    library.error ?? (stalePoll ? `SIMKL has not been polled since ${library.polledAt ?? 'startup'}` : null),
-    feed.calendars.error ?? (staleCalendars ? `the CDN has not answered since ${feed.calendars.freshAt ?? 'startup'}` : null),
-    feed.error ?? (feed.renderedAt === null ? 'nothing has been rendered yet' : staleRender ? `nothing has rendered since ${feed.renderedAt}` : null),
+    problem('library', library.error ?? (stalePoll ? `SIMKL has not been polled since ${library.polledAt ?? 'startup'}` : null)),
+    problem('calendars', feed.calendars.error ?? (staleCalendars ? `the CDN has not answered since ${feed.calendars.freshAt ?? 'startup'}` : null)),
+    problem('feed', feed.error ?? (feed.renderedAt === null ? 'nothing has been rendered yet' : staleRender ? `nothing has rendered since ${feed.renderedAt}` : null)),
   ].filter((p) => p !== null);
 
   return {

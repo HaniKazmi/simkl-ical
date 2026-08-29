@@ -228,15 +228,39 @@ test('the status page carries its hardening headers', async () => {
   });
 });
 
-// The URL bar already has it; a copy in the DOM is one more thing a
-// screenshot or an extension can carry off.
-test('the status page never prints the token or the spreadsheet id', async () => {
+// The page prints both, because it links both: the reader already holds the
+// token — it is in the URL bar — and the spreadsheet id is the link to the
+// sheet. What must never happen is the token addressing another host.
+test('the feed token only ever addresses this service', async () => {
   await withConfig({ sheetId: 'SECRET-SHEET-ID' }, async () => {
     await withServer(async (app) => {
-      const res = await app.inject({ method: 'GET', url: `/${TOKEN}/status` });
-      assert.ok(!res.body.includes(TOKEN), 'not the feed token');
-      assert.ok(!res.body.includes('SECRET-SHEET-ID'), 'and not the spreadsheet id');
+      const res = await app.inject({
+        method: 'GET',
+        url: `/${TOKEN}/status`,
+        headers: { host: 'simkl.hani.fyi', 'x-forwarded-proto': 'https' },
+      });
+      const carrying = [...res.body.matchAll(/[a-z]+:\/\/[^"'\s<>]+/g)].map((m) => m[0]).filter((url) => url.includes(TOKEN));
+
+      assert.ok(carrying.length > 0, 'the feed links are on the page at all');
+      for (const url of carrying) {
+        assert.equal(new URL(url.replace(/^webcal:/, 'https:')).host, 'simkl.hani.fyi', `${url} is not this service`);
+      }
     });
+  });
+});
+
+// Both feed addresses are built from the request, because nothing else knows
+// the public origin — and `webcal:` needs a full authority, so unlike the rest
+// of the page this one is a click target and not only text.
+test('the feed links follow the host the reader arrived on', async () => {
+  await withServer(async (app) => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/${TOKEN}/status`,
+      headers: { host: 'simkl.hani.fyi', 'x-forwarded-proto': 'https' },
+    });
+    assert.ok(res.body.includes(`href="webcal://simkl.hani.fyi/${TOKEN}/feed.ics"`), 'clicking it subscribes');
+    assert.ok(res.body.includes(`title="https://simkl.hani.fyi/${TOKEN}/feed.ics"`), 'and the https form is there to paste');
   });
 });
 

@@ -74,21 +74,6 @@ export interface Snapshot {
 }
 
 /**
- * How the library's shape changed on a poll that changed it.
- *
- * Updated on the same polls as `lastPoll`, so the two cannot drift. Not reset
- * by a quiet poll: the last real movement tells a reader more than a page that
- * blanks every half hour.
- */
-export interface LibraryMovement {
-  at: string;
-  /** Only the counts that moved. */
-  deltas: CountDelta[];
-  updated: number;
-  removed: number;
-}
-
-/**
  * What one poll did, complete at assignment: a page rendered mid-poll shows the
  * previous outcome, never a half-filled one.
  */
@@ -110,6 +95,19 @@ export interface PollOutcome {
   removed: number;
 }
 
+/**
+ * The poll that last moved the library, kept whole, plus how the counts moved.
+ *
+ * A quiet poll does not reset it: the last real movement tells a reader more
+ * than a line that blanks every half hour. It carries the whole `PollOutcome`
+ * rather than naming the fields it wants, so `pull` and `reshaped` are there
+ * for the asking and there is no hand-written copy to drift.
+ */
+export type LibraryMovement = PollOutcome & {
+  /** Only the counts that moved. Empty when a poll changed progress and nothing else. */
+  deltas: CountDelta[];
+};
+
 const quietPoll = (at: string, changed: boolean): PollOutcome => ({
   at,
   changed,
@@ -130,7 +128,7 @@ const quietPoll = (at: string, changed: boolean): PollOutcome => ({
  * episode rewrites a record the feed cannot see any of, and rendering on it
  * rewrites the file for a fresh DTSTAMP and nothing else.
  */
-const feedChanged = (poll: PollOutcome): boolean => poll.pull === 'full' || poll.reshaped > 0 || poll.removed > 0;
+export const feedChanged = (poll: PollOutcome): boolean => poll.pull === 'full' || poll.reshaped > 0 || poll.removed > 0;
 
 /**
  * Whether the film list needs re-resolving: a film enters or leaves
@@ -470,7 +468,7 @@ export class Orchestrator {
     // line says what happened rather than holding a stale one.
     if (poll.pull === 'full' || libraryMoved(poll)) {
       const deltas = before === null ? [] : countDeltas(before, libraryCounts(this.library));
-      this.lastMovement = { at: poll.at, deltas, updated: poll.updated, removed: poll.removed };
+      this.lastMovement = { ...poll, deltas };
     }
     return poll;
   }

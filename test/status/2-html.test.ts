@@ -85,7 +85,7 @@ test('the cold page is a complete document with nothing missing rendered as text
 test('hostile content from every untrusted source renders inert', () => {
   const payload = `</td></tr><script>alert(1)</script><img src=x onerror="alert(2)">`;
   const rendered = page({
-    problems: [payload],
+    problems: [{ area: 'library', message: payload }],
     libraryError: payload,
     gate: { pull: 'none', updated: 0, removed: 0 },
     sheetConfigured: true,
@@ -111,7 +111,10 @@ test('hostile content from every untrusted source renders inert', () => {
   assert.ok(!elements.has('script'), 'no script element');
   assert.ok(!elements.has('img'), 'no injected element');
   assert.deepEqual(
-    [...elements].filter((e) => !['html', 'head', 'meta', 'title', 'style', 'body', 'div', 'header', 'h1', 'span', 'section', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'time', 'ul', 'li', 'p', 'b', 'br', 'footer'].includes(e)),
+    [...elements].filter(
+      (e) =>
+        !['html', 'head', 'meta', 'title', 'style', 'body', 'div', 'header', 'h1', 'h2', 'span', 'section', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'time', 'ul', 'li', 'p', 'b', 'br', 'footer', 'a', 'details', 'summary'].includes(e),
+    ),
     [],
     'every element is one this file wrote',
   );
@@ -131,10 +134,61 @@ test('an unconfigured sheet says so rather than showing an empty section', () =>
 
 // Requests never trigger a fetch; a control that started work would break the
 // invariant the architecture rests on.
-test('the page is inert: no script, no form, no off-origin request', () => {
-  const rendered = page({ sheetConfigured: true, counts: countsWith({ shows: { watching: 4 } }), gate: { pull: 'none', updated: 0, removed: 0 } });
-  for (const forbidden of ['<script', '<form', '<button', 'http://', 'https://', 'src=']) {
+// The page loads nothing: the feed token is in its URL, and any subresource
+// would carry it to another origin in a `Referer`. A link the reader clicks is
+// not a subresource — `no-referrer` covers it, and the two links are the point
+// of the page — so what is banned is every form of automatic fetching.
+test('the page fetches nothing: no script, no form, no subresource', () => {
+  const rendered = page({
+    sheetConfigured: true,
+    sheetUrl: 'https://docs.google.com/spreadsheets/d/SHEET/edit',
+    counts: countsWith({ shows: { watching: 4 } }),
+    gate: { pull: 'none' },
+  });
+  for (const forbidden of ['<script', '<form', '<button', '<link', '<iframe', 'src=', 'srcset', '@import', 'url(']) {
     assert.ok(!rendered.includes(forbidden), `the page must contain no ${forbidden}`);
+  }
+});
+
+/** Every absolute URL in the document, whatever attribute or text it sits in. */
+const urlsIn = (rendered: string): string[] => [...rendered.matchAll(/[a-z]+:\/\/[^"'\s<>]+/g)].map((m) => m[0]);
+
+/** `webcal:` addresses the same authority; parse it as https to read the host. */
+const hostOf = (url: string): string => new URL(url.replace(/^webcal:/, 'https:')).host;
+
+// The token is in this page's own URL and in both feed links, which is fine:
+// the reader already has it. What must never happen is it addressing another
+// host. A `webcal:` subscription is durable — one wrong address keeps
+// re-fetching with the token for as long as that calendar lives.
+test('the feed token only ever addresses this service', () => {
+  const rendered = page({ sheetConfigured: true, sheetUrl: 'https://docs.google.com/spreadsheets/d/SHEET/edit' });
+  const carrying = urlsIn(rendered).filter((url) => url.includes('fixture-token'));
+
+  assert.ok(carrying.length > 0, 'the feed links are on the page at all');
+  for (const url of carrying) assert.equal(hostOf(url), 'localhost:3000', `${url} is not this service`);
+});
+
+test('the spreadsheet is the only host the page links out to', () => {
+  const rendered = page({ sheetConfigured: true, sheetUrl: 'https://docs.google.com/spreadsheets/d/SHEET/edit' });
+  const hosts = new Set([...rendered.matchAll(/<a [^>]*href="([^"]*)"/g)].map((m) => hostOf(m[1]!)));
+  assert.deepEqual([...hosts].sort(), ['docs.google.com', 'localhost:3000']);
+});
+
+// Following the http address downloads a snapshot, which a client imports once
+// and never refreshes. Only `webcal:` asks it to subscribe.
+test('the subscribe link asks for a subscription, not a download', () => {
+  const rendered = page({});
+  const hrefs = [...rendered.matchAll(/<a [^>]*href="([^"]*)"/g)].map((m) => m[1]!);
+  assert.ok(
+    hrefs.some((href) => href.startsWith('webcal://') && href.endsWith('/feed.ics')),
+    'the feed is linked as webcal',
+  );
+});
+
+test('every link is safe to follow', () => {
+  const rendered = page({ sheetConfigured: true, sheetUrl: 'https://docs.google.com/spreadsheets/d/SHEET/edit' });
+  for (const tag of [...rendered.matchAll(/<a [^>]*>/g)].map((m) => m[0])) {
+    assert.match(tag, /rel="noopener noreferrer"/, `${tag} needs rel`);
   }
 });
 
@@ -164,7 +218,8 @@ test('the library movement reaches the page', () => {
   });
   assert.match(rendered, /shows\/watching \u22121/);
   assert.match(rendered, /shows\/completed \+1/);
-  assert.match(rendered, /3 records updated/);
+  assert.match(rendered, /3 records read/);
+  assert.match(rendered, /last pull/, 'labelled, because it is a different moment from the gate pill');
 });
 
 test('the summary says when runtime lookups are off, and nothing when they work', () => {

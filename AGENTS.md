@@ -148,11 +148,25 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   `raw()` is reserved for the stylesheet. The safe-HTML brand is a module-private `Symbol` because a
   `{ html: string }` duck type is forgeable by any object with that key — including one parsed out of
   `sheet-runs.json`, which the page renders verbatim. That file is the only one to audit for this.
-- **The status page loads nothing off-origin, and sends `Referrer-Policy: no-referrer`.** The feed
-  token is in the page's own URL, so any external asset would carry it to a third party in a
-  `Referer` header. That is about who else sees the token, not about the page showing it: the logs,
-  `/healthz` and this page are all trusted surfaces, and printing the token or the spreadsheet id in
-  them is fine.
+- **The status page fetches nothing, and sends `Referrer-Policy: no-referrer`.** The feed token is
+  in the page's own URL, so any subresource — script, font, image, stylesheet — would carry it to a
+  third party in a `Referer` header. That is about who else sees the token, not about the page
+  showing it: the logs, `/healthz` and this page are all trusted surfaces, and printing the token or
+  the spreadsheet id in them is fine. The page does carry two links, which is a different thing: a
+  navigation the reader clicks is not a subresource, and `no-referrer` covers it either way.
+- **The subscribe link is `webcal:`, and it is the one click target built from a request header.**
+  Following the `https:` address downloads a snapshot, which a client imports once and never
+  refreshes; only `webcal:` asks it to subscribe. That scheme needs a full authority, so the href
+  cannot be root-relative and comes from `Host` — and a subscription is durable, so a wrong address
+  keeps re-fetching with the token for as long as that calendar lives. `originOf` in `server.ts` is
+  therefore the one place to be careful, and a `PUBLIC_URL` setting is the fix if `Host` ever stops
+  being trustworthy here. The invariant the tests hold is **every URL carrying the feed token
+  addresses this service**, in `server.test.ts` and `2-html.test.ts` both, scheme-agnostic so
+  `webcal:` cannot slip past a check written for `https:`.
+- **The page's look is hani.fyi's**, the index that links to it. Palette, `system-ui` type, cards on
+  a tinted ground and 8px radii all come from there; state colour, `--faint` and a monospace token
+  for tabular data are what a status page needs and a link list does not. Monospace is for paths,
+  cell addresses and counts — prose in it is what made the old page hard to read.
 - **`sheet-runs.json` is observational, never control.** Nothing may read it to decide behaviour, so
   a corrupt or deleted history cannot change what the sync does.
 - **Tests must not reach the network, the real `./data`, or the real spreadsheet.** Use `withFetch`,

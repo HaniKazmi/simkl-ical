@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import { timingSafeEqual } from 'node:crypto';
 import { config } from './shared/config.ts';
 import type { Orchestrator } from './orchestrator.ts';
@@ -10,6 +10,20 @@ const tokenMatches = (candidate: string): boolean => {
   const a = Buffer.from(String(candidate));
   const b = Buffer.from(String(config.feedToken));
   return a.length === b.length && timingSafeEqual(a, b);
+};
+
+/**
+ * The origin the reader actually reached the status page on, for the copyable
+ * feed URL it prints. `Host` is what this browser asked for, so it is right by
+ * construction, and a proxy's `x-forwarded-proto` is the only way to know the
+ * scheme survived. It reaches the page as *text* only — the link's href is
+ * root-relative, so a forged header cannot aim a click off-origin.
+ */
+const originOf = (req: FastifyRequest): string => {
+  const forwarded = req.headers['x-forwarded-proto'];
+  // A chain of proxies sends a list; the first entry is the client's scheme.
+  const proto = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(',')[0]?.trim() || req.protocol;
+  return `${proto}://${req.headers.host ?? `localhost:${config.port}`}`;
 };
 
 /** The one 404 body. Every miss answers with this — see setNotFoundHandler. */
@@ -85,7 +99,7 @@ export const buildServer = (state: Orchestrator, { logger = true, logStream }: S
         .header('Referrer-Policy', 'no-referrer')
         .header('X-Content-Type-Options', 'nosniff')
         .header('Cache-Control', 'private, no-store')
-        .send(renderStatus(state))
+        .send(renderStatus(state, { origin: originOf(req) }))
     );
   });
 
