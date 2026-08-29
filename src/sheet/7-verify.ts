@@ -189,7 +189,7 @@ export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Ver
       const key = `${row}:${column}`;
       const plannedValue = expected.get(key);
       if (plannedValue) {
-        if (!sameValue(now, plannedValue)) problems.push(`${a1(row, column)}: the inserted row's ${column} did not take`);
+        if (!sameValue(now, plannedValue)) problems.push(`${a1(row, column)}: the planned write did not land`);
         expected.delete(key);
         continue;
       }

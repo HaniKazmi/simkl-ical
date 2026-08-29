@@ -278,6 +278,9 @@ test('a scrobble moves activities.all and still pulls nothing', async () => {
 // what went.
 test('a removal costs one extra request and drops the title', async () => {
   await withToken(async (state) => {
+    // A render needs calendars to join against; the assertion below is that one
+    // happened at all.
+    state.feed.calendars = emptyCalendars();
     // Two films, so dropping one is a proportion the guard lets through.
     const twoFilms = {
       ...libraryBody,
@@ -288,12 +291,18 @@ test('a removal costs one extra request and drops the title', async () => {
 
     const removed = activities({ movies: { removed_from_list: '2026-08-15T18:00:00Z' } });
     const membership = { shows: [{ show: { ids: { simkl: 100 } } }], movies: [{ movie: { ids: { simkl: 300 } } }] };
+    const RENDERED = '2020-01-01T00:00:00.000Z';
+    state.feed.renderedAt = RENDERED;
     await withFetch(api(removed, { membership }), async (calls) => {
       await state.refreshLibraryIfChanged();
       assert.equal(calls.length, 2, `activities and one membership pull, got ${calls.join(', ')}`);
       assert.equal(memberships(calls).length, 1);
     });
     assert.deepEqual([...(state.library?.keys() ?? [])].sort((a, b) => a - b), [100, 300], 'the removed film is gone');
+    // The signature never moved, so `pull` is 'none' and `reshaped` is 0:
+    // `removed` is the only term that can carry this to a render.
+    assert.equal(state.lastPoll?.rendered, true, 'a title leaving must rebuild the feed without it');
+    assert.notEqual(state.feed.renderedAt, RENDERED, 'and it really did');
   });
 });
 

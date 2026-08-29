@@ -162,6 +162,13 @@ test('records that changed membership report the render they caused', () => {
   assert.match(model.library.movement?.consequence ?? '', /2 changed membership, so the feed re-rendered/);
 });
 
+// A full pull renders unconditionally and sets no `reshaped`, so it reaches the
+// consequence with nothing named. Every cold start is one of these.
+test('a full resync says what it re-read rather than blaming a film', () => {
+  const model = buildModel(input({ movement: moved({ pull: 'full', updated: 743, rendered: true }) }));
+  assert.match(model.library.movement?.consequence ?? '', /the whole library was re-read, so the feed re-rendered/);
+});
+
 // The poll renders on `feedChanged(poll) || filmsDue`, and a film reaching its
 // release date moves no count here. Reading the answer back out of the counts
 // alone reports the opposite of what happened.

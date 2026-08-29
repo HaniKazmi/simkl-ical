@@ -363,14 +363,16 @@ const movementView = (movement: LibraryMovement | null, at: Stamped): MovementVi
   const moved: string[] = [];
   if (movement.reshaped) moved.push(`${movement.reshaped} changed membership`);
   if (movement.removed) moved.push(`${plural(movement.removed, 'title')} left the library`);
+  // A full pull always renders and never sets `reshaped`, so it reaches here
+  // with nothing named. Whatever is left rendered because a film reached its
+  // release date, which moves no count this section shows.
+  if (!moved.length) moved.push(movement.pull === 'full' ? 'the whole library was re-read' : 'a film came into range');
 
   return {
     at: at(movement.at),
     pulled: pulled.join(' · '),
     deltas: movement.deltas.map((d) => `${d.status === null ? d.type : `${d.type}/${d.status}`} ${signed(d.delta)}`),
-    consequence: movement.rendered
-      ? `${moved.join(', ') || 'a film came into range'}, so the feed re-rendered`
-      : 'progress only, so the feed was left alone',
+    consequence: movement.rendered ? `${moved.join(', ')}, so the feed re-rendered` : 'progress only, so the feed was left alone',
   };
 };
 
