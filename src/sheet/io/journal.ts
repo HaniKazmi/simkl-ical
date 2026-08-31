@@ -15,7 +15,7 @@
 
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { writeFileAtomic } from '../../shared/atomic-write.ts';
+import { writeFileQueued } from '../../shared/atomic-write.ts';
 import { config } from '../../shared/config.ts';
 import { errorMessage } from '../../shared/errors.ts';
 import type { Logger } from '../../shared/logger.ts';
@@ -204,29 +204,21 @@ export const appendSheetRun = (run: NewSheetRun, { log }: { log?: Logger } = {})
   return save(log);
 };
 
-// Queued as well as individually atomic, for the reason `io/store.ts` gives:
-// writeFileAtomic stops two writers corrupting each other but not finishing
-// out of order, and a write landing second with older content would persist a
-// history already moved past.
-//
-// One arm rather than `io/store.ts`'s two: `write` swallows everything, so
-// the chain has nothing to recover from.
-let queue: Promise<void> = Promise.resolve();
-
+/**
+ * Serialised per path — a poll can overlap the next, and a write landing second
+ * with older content would persist a history already moved past. See
+ * `writeFileQueued`.
+ *
+ * 0600 because the notes name the user's shows, which the README rightly treats
+ * as a credential.
+ */
 const save = (log?: Logger): Promise<void> => {
-  queue = queue.then(() => write(log));
-  return queue;
-};
-
-const write = async (log?: Logger): Promise<void> => {
   const file: JournalFile = { version: VERSION, runs };
-  try {
-    // 0600 because the notes name the user's shows, which the README rightly
-    // treats as a credential.
-    await writeFileAtomic(journalPath(), `${JSON.stringify(file, null, 2)}\n`);
-  } catch (err) {
-    // The in-memory history is already updated and the run's result is
-    // unaffected; losing the file costs only what survives the next restart.
+  // Swallowed here rather than by the caller: this sits on six return paths
+  // inside the refresh path, where nothing may be fatal. The in-memory history
+  // is already updated and the run's result is unaffected; losing the file
+  // costs only what survives the next restart.
+  return writeFileQueued(journalPath(), `${JSON.stringify(file, null, 2)}\n`).catch((err: unknown) => {
     log?.warn(`could not save the sheet run log: ${errorMessage(err)}`);
-  }
+  });
 };

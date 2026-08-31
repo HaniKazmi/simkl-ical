@@ -19,7 +19,7 @@
 
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { writeFileAtomic } from '../../shared/atomic-write.ts';
+import { writeFileQueued } from '../../shared/atomic-write.ts';
 import { config } from '../../shared/config.ts';
 import { errorMessage } from '../../shared/errors.ts';
 import { instantFrom, nowIso } from '../../shared/dates.ts';
@@ -156,26 +156,19 @@ export const saveBaseline = (observed: Baseline, { log }: { log?: Logger } = {})
   return save(log);
 };
 
-// Queued as well as individually atomic, for the reason `io/journal.ts` gives:
-// writeFileAtomic stops two writers corrupting each other but not finishing out
-// of order, and a write landing second with older content would persist a
-// record already moved past — here costing the changes in between.
-let queue: Promise<void> = Promise.resolve();
-
+/**
+ * Serialised per path, and here the ordering costs more than elsewhere: a write
+ * landing second with older content persists a record already moved past, which
+ * is the changes in between lost. See `writeFileQueued`.
+ *
+ * 0600 for the same reason the run log is: the keys name the user's shows.
+ */
 const save = (log?: Logger): Promise<void> => {
-  queue = queue.then(() => write(log));
-  return queue;
-};
-
-const write = async (log?: Logger): Promise<void> => {
   const file: BaselineFile = { version: VERSION, at: movedAt, seasons: Object.fromEntries(seasons) };
-  try {
-    // 0600 for the same reason the run log is: the keys name the user's shows.
-    await writeFileAtomic(baselinePath(), `${JSON.stringify(file, null, 2)}\n`);
-  } catch (err) {
+  return writeFileQueued(baselinePath(), `${JSON.stringify(file, null, 2)}\n`).catch((err: unknown) => {
     // The in-memory record is already updated, so this run behaves correctly.
     // What is lost is the next restart's view: anything observed since the last
     // good write is re-recorded, and the changes in it go unwritten.
     log?.warn(`could not save the sheet baseline: ${errorMessage(err)}`);
-  }
+  });
 };

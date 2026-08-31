@@ -5,7 +5,7 @@
 
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { writeFileAtomic } from '../../shared/atomic-write.ts';
+import { writeFileQueued } from '../../shared/atomic-write.ts';
 import { config } from '../../shared/config.ts';
 
 /**
@@ -35,20 +35,11 @@ export const loadFeed = async (): Promise<string | null> => {
   return text;
 };
 
-// Queued as well as atomic: writeFileAtomic stops two writers corrupting each
-// other, not finishing out of order — a save landing second with older
-// content would persist a feed already moved past.
-let queue: Promise<void> = Promise.resolve();
-
-export const saveFeed = (ics: string): Promise<void> => {
-  queue = queue.then(
-    () => writeFeed(ics),
-    () => writeFeed(ics),
-  );
-  return queue;
-};
-
-const writeFeed = (ics: string): Promise<void> =>
-  // 0600: the feed is the user's watchlist, which the README treats as a
-  // credential.
-  writeFileAtomic(feedPath(), ics);
+/**
+ * Both refresh timers end here and coincide every six hours, so the writes are
+ * serialised per path — see `writeFileQueued`, which carries the reasoning.
+ *
+ * 0600: the feed is the user's watchlist, which the README treats as a
+ * credential.
+ */
+export const saveFeed = (ics: string): Promise<void> => writeFileQueued(feedPath(), ics);
