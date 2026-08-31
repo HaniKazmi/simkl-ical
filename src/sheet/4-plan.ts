@@ -581,26 +581,6 @@ export const observeStarts = (index: Map<number, TitleProgress>): Baseline => {
 };
 
 /**
- * The fields that follow SIMKL, for a row the sheet already holds: written when
- * what SIMKL says has moved away from what was last recorded, and left alone
- * otherwise.
- *
- * The comparison is against the **record**, never against the cell. A cell that
- * disagrees may have disagreed since before this sync first ran, and settling
- * that is not what this does: only a genuine upstream move produces a write,
- * and when one happens the new value goes in over whatever is there. So a
- * first sighting records and writes nothing, which is what confines this to
- * changes from here on.
- *
- * `End` is followed only on a row that is already dated. An open row's end date
- * belongs to `closeSeason`, which holds it back while the runtime question is
- * open — and a row whose date this same batch writes would otherwise be planned
- * two `End` edits. The cost is a one-poll window: a season completing on one
- * poll is first recorded on the next, so an upstream move in between leaves the
- * cell holding the older date. That is the same standing disagreement this is
- * deliberately not in the business of reconciling, and the next move corrects it.
- */
-/**
  * Where each tracked field's current value comes from, and when the row is
  * eligible for it. Keyed on `TrackedField`, so a column added to the set in
  * `values.ts` and not taught to the planner fails to compile — the direction
@@ -610,10 +590,25 @@ export const observeStarts = (index: Map<number, TitleProgress>): Baseline => {
  * `End` is eligible only on a row already dated. An open row's end date belongs
  * to `closeSeason`, which holds it back while the runtime question is open, and
  * a row this batch dates would otherwise be planned two `End` edits.
+ *
+ * The walk order in `TRACKED_FIELDS` is load-bearing: `End` is decided first so
+ * that `Start`'s ordering check can consult the end this same batch plans,
+ * rather than the one the cell holds on its way out.
  */
 const TRACKED_SOURCE: Record<TrackedField, { of: (resolved: ResolvedRow) => Temporal.Instant | null; on: (season: SeasonRow, resolved: ResolvedRow) => boolean }> = {
   Start: { of: (resolved) => resolved.firstWatchedAt, on: () => true },
   End: { of: (resolved) => resolved.lastWatchedAt, on: (season, resolved) => season.closed && resolved.complete },
+};
+
+/**
+ * The end date this row will hold once the batch lands: the one being written
+ * where the batch writes one, else what the cell holds now. Non-numeric reads
+ * as no ordering to check — a hand-typed `TBD` names no day to be after.
+ */
+const endAfter = (plan: SheetPlan, grid: Grid, row: number): number | null => {
+  const planned = plan.edits.find((e) => e.row === row && e.field === 'End');
+  const value = planned ? planned.value?.numberValue : numberOf(cellAt(grid, row, grid.columns.End));
+  return typeof value === 'number' ? value : null;
 };
 
 const followUpstream = (
@@ -640,8 +635,18 @@ const followUpstream = (
     // refusal is whole-plan, so one upstream timestamp outside the writable
     // range would hold up every unrelated edit for as long as its row sat
     // inside the activity window.
-    if (moved && !plausibleSerial(serial, ceiling)) {
-      plan.skips.push({ code: 'unusable-timestamp', message: `${label}: SIMKL's ${field} date is outside the range this sync writes, so that cell is left alone` });
+    // A row whose end date the sync is not replacing may hold one that predates
+    // what SIMKL now calls the first watch — a hand-typed date, or one this sync
+    // wrote before the watch was corrected. Writing the start anyway would leave
+    // the row saying it ended before it began, and letting the guard catch it
+    // costs the whole plan on every poll for as long as the row sits inside the
+    // activity window. One skip, naming the row, is the containable version.
+    const end = field === 'Start' ? endAfter(plan, grid, season.row) : null;
+    const inverted = end !== null && serial > end;
+
+    if (moved && (!plausibleSerial(serial, ceiling) || inverted)) {
+      const why = inverted ? `would fall after the end date the row holds` : `is outside the range this sync writes`;
+      plan.skips.push({ code: 'unusable-timestamp', message: `${label}: SIMKL's ${field} date ${why}, so that cell is left alone` });
     } else if (moved) {
       const before = watchedNote(instantFrom(baseline.get(key)?.[field]), timezone);
       plan.edits.push(edit(grid, season.row, field, num(serial), `${label}: ${field} moved from ${before} to ${watchedNote(at, timezone)}`));
@@ -705,12 +710,16 @@ const closeSeason = (
   resolved: ResolvedRow,
   index: Map<number, TitleProgress>,
   titles: Map<number, TitleCatalogue>,
-  { label, timezone }: { label: string; timezone: string },
+  { label, timezone, ceiling }: { label: string; timezone: string; ceiling: number },
 ): boolean => {
   if (!resolved.complete) return false;
 
   const serial = watchSerial(resolved.lastWatchedAt, timezone);
-  if (serial === null) {
+  // Bounded here, not only in the guard, for the reason `followUpstream` gives:
+  // refusal is whole-plan, so a single upstream timestamp outside the writable
+  // range would hold up every unrelated edit for as long as its row sat inside
+  // the activity window. Both writers of `End` owe the same skip.
+  if (serial === null || !plausibleSerial(serial, ceiling)) {
     plan.skips.push({ code: 'unusable-timestamp', message: `${label}: complete, but its last watch timestamp is unusable` });
     return false;
   }
@@ -908,7 +917,7 @@ export const planSync = (
         plan.edits.push(edit(grid, season.row, 'Episode', num(resolved.watched), `${label}: ${season.episode ?? 0} -> ${resolved.watched} episodes`));
       }
 
-      const closing = closeSeason(plan, demands, grid, block, season, resolved, index, titles, { label, timezone });
+      const closing = closeSeason(plan, demands, grid, block, season, resolved, index, titles, { label, timezone, ceiling: follow.ceiling });
 
       // Last, because what the note should say depends on whether this batch
       // dates the row — a row left open for another poll keeps carrying its

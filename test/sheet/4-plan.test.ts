@@ -1173,12 +1173,15 @@ test('every row the plan waits on is a season the same pass demanded', () => {
 
 // --- following SIMKL --------------------------------------------------------
 
+/** A serial the guard accepts beside a recent watch, so the row's pair is consistent. */
+const TODAY_SERIAL = todaySerial(TZ);
+
 /**
  * A season the sheet already dated, watched recently enough to be in scope.
  * The dated row is the point: everything else the planner does stops at one,
  * and `Start` and `End` are what carry on past it.
  */
-const dated = (timestamps: string[], end: number | null = 44000) =>
+const dated = (timestamps: string[], end: number | null = TODAY_SERIAL) =>
   scenario({
     rows: [show('Fargo', 'Ended', 300), season(1, timestamps.length, end)],
     items: [{ id: 300, status: 'completed', seasons: { 1: timestamps }, watched: timestamps.length, total: timestamps.length }],
@@ -1268,7 +1271,9 @@ test('a dated row still takes no count, runtime or note', () => {
 test('an upstream date outside the writable range is skipped rather than planned', () => {
   // Through `isoOf`, because that is the width every stored timestamp keeps.
   const future = isoOf(Temporal.Now.instant().add({ hours: 24 * 5 }));
-  const { result } = dated([future]);
+  // An open row, so the range is the only thing wrong with the date: on a dated
+  // one the ordering rule would reach it first, for a different reason.
+  const { result } = dated([future], null);
   const { plan, observed } = result(baselineOf({ Start: daysAgo(30) }));
   assert.deepEqual(plan.edits, []);
   assert.match(skipMessages(plan), /outside the range this sync writes/);
@@ -1294,9 +1299,6 @@ test('every season in the library is recorded, including those no row covers', (
 });
 
 // --- following SIMKL, for anime ---------------------------------------------
-
-/** A serial the guard accepts beside a recent watch, so the pair is consistent. */
-const TODAY_SERIAL = todaySerial(TZ);
 
 /** Six watches whose first moves and whose last is held fixed. */
 const runFrom = (first: number): string[] => [daysAgo(first), ...Array.from({ length: 5 }, (_, i) => daysAgo(25 - i))];
@@ -1366,11 +1368,45 @@ test('a split cour keeps the key it had before the second half existed', () => {
  * discarded pass to decide what later passes see.
  */
 test('planning does not edit the seed it was handed', () => {
-  const { grid, index, titles } = dated(seen);
+  // An **open** row: on a dated one the `End` step replaces the entry before
+  // `Start` withdraws from it, so the sharing this guards is already broken and
+  // the assertion would hold whatever the withdrawal did.
+  const { grid, index, titles } = dated(seen, null);
   const starts = observeStarts(index);
   const before = JSON.stringify([...starts]);
 
   // A moved Start, so the withdrawal this guards actually runs.
   planSync(grid, index, titles, { timezone: TZ, baseline: baselineOf({ Start: daysAgo(30) }), starts });
   assert.equal(JSON.stringify([...starts]), before);
+});
+
+/**
+ * A row dated before SIMKL now says its first episode was watched — a date
+ * typed by hand, or one this sync wrote before the watch was corrected. The
+ * write is dropped for that row alone.
+ *
+ * The guard refuses such a pair, and refusal is whole-plan: left to it, one
+ * inconsistent row would stop every unrelated edit on every poll for as long as
+ * it sat inside the activity window, since a refused run records nothing and
+ * plans the same edit again.
+ */
+test('a start date that would fall after the row’s end is skipped, not planned', () => {
+  const { grid, result } = dated(seen, 44000);
+  const { plan } = result(baselineOf({ Start: daysAgo(30) }));
+  assert.deepEqual(plan.edits, []);
+  assert.match(skipMessages(plan), /would fall after the end date the row holds/);
+  assert.doesNotThrow(() => assertPlanSafe(plan, grid));
+});
+
+/**
+ * Both writers of `End` owe the same bound. A season completing with a
+ * timestamp outside the writable range is one row skipped, never a plan the
+ * guard refuses whole.
+ */
+test('an open season completing on an unusable timestamp is skipped, not planned', () => {
+  const future = isoOf(Temporal.Now.instant().add({ hours: 24 * 5 }));
+  const { grid, result } = dated([future], null);
+  const { plan } = result();
+  assert.deepEqual(plan.edits.filter((e) => e.field === 'End'), []);
+  assert.doesNotThrow(() => assertPlanSafe(plan, grid));
 });

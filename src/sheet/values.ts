@@ -143,12 +143,16 @@ export const plausibleRuntimeDays = (days: number | undefined): boolean =>
  * What it costs is a guard rule for the new field and an entry in the planner's
  * observation, not a change to the stored shape.
  */
-const TRACKED = ['Start', 'End'] as const;
+const TRACKED = ['End', 'Start'] as const;
 
 /** A column that follows SIMKL. The planner keys its table on this, so a field added here and not taught to the planner is a compile error rather than a guard that quietly stops refusing. */
 export type TrackedField = (typeof TRACKED)[number];
 
-/** Ordered, for the planner to walk; `isTracked` is the membership test the guard asks. */
+/**
+ * The order the planner walks them in, and it is load-bearing: `End` is decided
+ * before `Start`, so `Start`'s ordering check sees the end this batch plans.
+ * `isTracked` is the membership test the guard asks.
+ */
 export const TRACKED_FIELDS: readonly TrackedField[] = TRACKED;
 
 export const isTracked = (field: HeaderName): field is TrackedField => (TRACKED as readonly HeaderName[]).includes(field);
