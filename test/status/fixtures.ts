@@ -13,6 +13,7 @@
  */
 
 import type { SheetRunRecord } from '../../src/sheet/io/journal.ts';
+import type { BaselineSummary } from '../../src/sheet/io/baseline.ts';
 import type { RequestRecord } from '../../src/api/requests.ts';
 import type { Problem } from '../../src/health.ts';
 import type { SheetSyncStatus } from '../../src/sheet/sync.ts';
@@ -89,7 +90,7 @@ export interface InputOver {
   sheetUrl?: string | null;
   requests?: RequestRecord[];
   runs?: SheetRunRecord[];
-  baseline?: { seasons: number; at: string | null };
+  baseline?: BaselineSummary;
 
   startedAt?: string;
   polledAt?: string | null;

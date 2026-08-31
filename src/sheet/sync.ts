@@ -35,7 +35,7 @@ import { classify } from '../api/tvdb/client.ts';
 import { parseGrid, type Grid } from './2-grid.ts';
 import { indexLibrary, type TitleProgress } from './1-index.ts';
 import { CATALOGUE_MAX_AGE, CatalogueStore, needsLookup } from './3-catalogue.ts';
-import { describePlan, planRecord, planSync, type PlanRecord, type PlanResult, type SheetPlan } from './4-plan.ts';
+import { describePlan, observeStarts, planRecord, planSync, type PlanRecord, type PlanResult, type SheetPlan } from './4-plan.ts';
 import { assertPlanSafe, UnsafePlanError } from './5-guard.ts';
 import { applyPlan } from './io/apply.ts';
 import { appendSheetRun, loadSheetRuns } from './io/journal.ts';
@@ -110,7 +110,7 @@ export class SheetSync {
    * point, and `writing` may only be recorded once the write it belongs to
    * has landed.
    */
-  private pending: { observed: Baseline; writing: Baseline } | null = null;
+  private pending: Pick<PlanResult, 'observed' | 'writing'> | null = null;
 
   constructor({ logger = console as Logger }: { logger?: Logger } = {}) {
     this.log = logger;
@@ -122,11 +122,11 @@ export class SheetSync {
    * Never throws — an unreadable history is no history.
    */
   async hydrate(): Promise<void> {
-    await loadSheetRuns({ log: this.log });
-    // The one piece of state here that *decides* something. An unreadable one
-    // reads as nothing observed, so the next run records afresh and writes
-    // nothing — see `io/baseline.ts`.
-    await loadBaseline({ log: this.log });
+    // Two files, no shared state, on the path that blocks the first poll — so
+    // they overlap. The baseline is the one piece of state here that *decides*
+    // something; an unreadable one reads as nothing observed, so the next run
+    // records afresh and writes nothing. See `io/baseline.ts`.
+    await Promise.all([loadSheetRuns({ log: this.log }), loadBaseline({ log: this.log })]);
   }
 
   async run(library: Library | null, { signal }: { signal?: AbortSignal } = {}): Promise<SheetSyncResult> {
@@ -195,16 +195,24 @@ export class SheetSync {
     this.pending = null;
     if (!pending) return;
 
-    const seen = new Map(pending.observed);
+    // Merged into `observed` in place: `this.pending` is already detached and
+    // the map is unaliased, so a copy would buy no isolation and cost one pass
+    // over every season the library holds.
+    const { observed, writing } = pending;
     if (status === 'applied') {
-      for (const [key, entry] of pending.writing) seen.set(key, { ...seen.get(key), ...entry });
+      for (const [key, entry] of writing) observed.set(key, { ...observed.get(key), ...entry });
     }
-    await saveBaseline(seen, { log: this.log });
+    await saveBaseline(observed, { log: this.log });
   }
 
   private async cycle(library: Library | null, signal: AbortSignal | undefined): Promise<SheetSyncResult> {
     const index = indexLibrary(library);
     if (index.size === 0) return outcome('idle');
+
+    // Built once: it is a projection of the library alone, and the library
+    // cannot change while a run is in flight, so every planning pass after the
+    // first would rebuild a byte-identical map.
+    const starts = observeStarts(index);
 
     // Lookups already made this run. A FRESH re-plan or later planning pass
     // must not re-issue them — failed ones included, which stay unstamped in
@@ -219,7 +227,7 @@ export class SheetSync {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
       const snapshot = await readSnapshot({ signal });
       const grid = parseGrid(snapshot);
-      const { plan, observed, writing } = await this.planToFixpoint(grid, index, made, attempt, signal);
+      const { plan, observed, writing } = await this.planToFixpoint(grid, index, starts, made, attempt, signal);
       // Replaced per attempt, never merged: a FRESH re-read plans against a
       // different grid, and the observations of a pass whose plan was thrown
       // away describe rows this run is no longer acting on.
@@ -289,6 +297,7 @@ export class SheetSync {
   private async planToFixpoint(
     grid: Grid,
     index: Map<number, TitleProgress>,
+    starts: Baseline,
     made: RunLookups,
     attempt: number,
     signal: AbortSignal | undefined,
@@ -299,7 +308,7 @@ export class SheetSync {
     const now = Temporal.Now.instant();
 
     for (let pass = 1; ; pass += 1) {
-      const result = planSync(grid, index, this.store.titles, { now, baseline: baseline() });
+      const result = planSync(grid, index, this.store.titles, { now, baseline: baseline(), starts });
       const { demands } = result;
       if (pass > MAX_PASSES) {
         this.log.warn(`sheet sync: still demanding lookups after ${MAX_PASSES} planning passes; continuing with what is in hand`);

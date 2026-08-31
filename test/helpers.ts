@@ -9,13 +9,14 @@ import { join } from 'node:path';
 import { config, type Config } from '../src/shared/config.ts';
 import { clearSheetRuns } from '../src/sheet/io/journal.ts';
 import { clearBaseline } from '../src/sheet/io/baseline.ts';
+import { dateSerial } from '../src/sheet/values.ts';
 
 import type { Calendars } from '../src/feed/io/calendar.ts';
 import type { SheetSnapshot } from '../src/sheet/io/spreadsheet.ts';
 import type { CellData } from '../src/api/google/types.ts';
 import type { CalendarEntry, CalendarFile, LibraryItem, ShowMetadata, SyncType } from '../src/api/simkl/types.ts';
 import type { Library } from '../src/library.ts';
-import { isoOf } from '../src/shared/dates.ts';
+import { isoOf, plainDateIn } from '../src/shared/dates.ts';
 
 // Set here rather than per file: a file that forgets these reaches the real
 // API, or sleeps 15s per retry path.
@@ -119,6 +120,28 @@ export const withFreshJournal = async (fn: (dir: string) => Promise<void>): Prom
       clearSheetRuns();
     }
   });
+
+/**
+ * The same, for the baseline. `withConfig` already clears it for every test
+ * that runs a sync, but a test driving `io/baseline.ts` directly needs the temp
+ * dir too — and the isolation rule belongs beside its twin rather than private
+ * to one file, where the next `io/` test would copy it a third time.
+ */
+export const withFreshBaseline = async (fn: (dir: string) => Promise<void>): Promise<void> =>
+  withTempDataDir(async (dir) => {
+    clearBaseline();
+    try {
+      await fn(dir);
+    } finally {
+      clearBaseline();
+    }
+  });
+
+/**
+ * Today's serial in `zone` — the bound a recent watch must sit under, and the
+ * one `fixture.ts`'s UTC `TODAY` cannot give a suite running in another zone.
+ */
+export const todaySerial = (zone: string): number => dateSerial(plainDateIn(Temporal.Now.instant(), zone));
 
 export type FetchHandler = (url: string, init?: RequestInit) => Response | Promise<Response>;
 

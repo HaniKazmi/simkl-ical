@@ -143,7 +143,15 @@ export const plausibleRuntimeDays = (days: number | undefined): boolean =>
  * What it costs is a guard rule for the new field and an entry in the planner's
  * observation, not a change to the stored shape.
  */
-export const TRACKED_FIELDS: ReadonlySet<HeaderName> = new Set<HeaderName>(['Start', 'End']);
+const TRACKED = ['Start', 'End'] as const;
+
+/** A column that follows SIMKL. The planner keys its table on this, so a field added here and not taught to the planner is a compile error rather than a guard that quietly stops refusing. */
+export type TrackedField = (typeof TRACKED)[number];
+
+/** Ordered, for the planner to walk; `isTracked` is the membership test the guard asks. */
+export const TRACKED_FIELDS: readonly TrackedField[] = TRACKED;
+
+export const isTracked = (field: HeaderName): field is TrackedField => (TRACKED as readonly HeaderName[]).includes(field);
 
 /** What one season's recorded upstream values look like, keyed by column. */
 export type BaselineEntry = Partial<Record<HeaderName, string>>;

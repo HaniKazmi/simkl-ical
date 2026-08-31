@@ -2,14 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { assertPlanSafe } from '../../src/sheet/5-guard.ts';
 import { parseGrid } from '../../src/sheet/2-grid.ts';
-import { deriveStatus, planRecord, planSync, statusSource, type SheetPlan } from '../../src/sheet/4-plan.ts';
+import { deriveStatus, observeStarts, planRecord, planSync, statusSource, type SheetPlan } from '../../src/sheet/4-plan.ts';
 import { seasonShapes, type TitleCatalogue } from '../../src/sheet/3-catalogue.ts';
 import { indexLibrary } from '../../src/sheet/1-index.ts';
 import { dateSerial, seasonKey, type Baseline } from '../../src/sheet/values.ts';
 import { isoOf, plainDateIn } from '../../src/shared/dates.ts';
 import type { EpisodeDetail, ShowDetail } from '../../src/api/simkl/types.ts';
 import type { RowInsert } from '../../src/sheet/4-plan.ts';
-import { daysAgo, libraryOf, sheetSnapshot, SHEET_HEADERS, type CellSpec, type ItemSpec, seasonRow, showRow } from '../helpers.ts';
+import { daysAgo, libraryOf, sheetSnapshot, SHEET_HEADERS, todaySerial, type CellSpec, type ItemSpec, seasonRow, showRow } from '../helpers.ts';
 
 const H = SHEET_HEADERS;
 const TZ = 'Europe/London';
@@ -55,15 +55,16 @@ const scenario = ({ rows, items, episodes = {}, details = {}, tvdbIds = {}, runt
   for (const [id, seasons] of Object.entries(runtimes)) {
     for (const [n, minutes] of Object.entries(seasons)) entry(Number(id)).seasonRuntimes.set(Number(n), minutes);
   }
+  const result = (baseline?: Baseline) => planSync(grid, index, titles, { timezone: TZ, baseline });
   return {
     grid,
     index,
     titles,
-    plan: () => planSync(grid, index, titles, { timezone: TZ }).plan,
-    /** The whole result, for the suites that seed a baseline and read what was observed. */
-    result: (baseline?: Baseline) => planSync(grid, index, titles, { timezone: TZ, baseline }),
-    demands: () => planSync(grid, index, titles, { timezone: TZ }).demands,
-    runtimeDemands: () => planSync(grid, index, titles, { timezone: TZ }).demands.runtimes,
+    /** The whole result; the three below are the parts callers usually want. */
+    result,
+    plan: () => result().plan,
+    demands: () => result().demands,
+    runtimeDemands: () => result().demands.runtimes,
   };
 };
 
@@ -1252,8 +1253,8 @@ test('an open row’s end date is closed once, not followed', () => {
 
 /** Everything the row settled once stays settled; only the two upstream facts move. */
 test('a dated row still takes no count, runtime or note', () => {
-  const { grid, index, titles } = dated(seen);
-  const { plan } = planSync(grid, index, titles, { timezone: TZ, baseline: baselineOf({ Start: daysAgo(30), End: daysAgo(30) }) });
+  const { grid, result } = dated(seen);
+  const { plan } = result(baselineOf({ Start: daysAgo(30), End: daysAgo(30) }));
   assert.deepEqual([...new Set(plan.edits.map((e) => e.field))].sort(), ['End', 'Start']);
   assert.doesNotThrow(() => assertPlanSafe(plan, grid));
 });
@@ -1295,7 +1296,7 @@ test('every season in the library is recorded, including those no row covers', (
 // --- following SIMKL, for anime ---------------------------------------------
 
 /** A serial the guard accepts beside a recent watch, so the pair is consistent. */
-const TODAY_SERIAL = dateSerial(plainDateIn(Temporal.Now.instant(), TZ));
+const TODAY_SERIAL = todaySerial(TZ);
 
 /** Six watches whose first moves and whose last is held fixed. */
 const runFrom = (first: number): string[] => [daysAgo(first), ...Array.from({ length: 5 }, (_, i) => daysAgo(25 - i))];
@@ -1324,8 +1325,8 @@ test('an anime cour is recorded under SIMKL’s season number, not the sheet’s
 });
 
 test('an anime cour follows a start date that moved, on a row the sheet dated', () => {
-  const { grid, index, titles } = animeCour(31);
-  const { plan } = planSync(grid, index, titles, { timezone: TZ, baseline: new Map([[seasonKey(1500, 1), { Start: daysAgo(30) }]]) });
+  const { grid, result } = animeCour(31);
+  const { plan } = result(new Map([[seasonKey(1500, 1), { Start: daysAgo(30) }]]));
   assert.deepEqual(plan.edits.map((e) => [e.field, e.value?.numberValue]), [['Start', dateSerial(plainDateIn(Temporal.Instant.from(daysAgo(31)), TZ))]]);
   // The runtime write and the insert are live-action only; following SIMKL is
   // not, and the guard has to agree with the planner about that.
@@ -1355,4 +1356,21 @@ test('a split cour keeps the key it had before the second half existed', () => {
   const before = half.result(recorded).plan.edits.map((e) => [e.field, e.value?.numberValue]);
   const after = both.result(recorded).plan.edits.filter((e) => e.field === 'Start').map((e) => [e.field, e.value?.numberValue]);
   assert.deepEqual(after, before, 'the second id arriving does not move the key or the value');
+});
+
+/**
+ * The sync builds the seed once and hands the same map to every planning pass
+ * and every re-read, and `planSync` only shallow-copies it — so what makes that
+ * copy safe is that planning never edits an entry, it replaces it. Withdrawing a
+ * field by deleting it in place would strip it from the seed itself, leaving a
+ * discarded pass to decide what later passes see.
+ */
+test('planning does not edit the seed it was handed', () => {
+  const { grid, index, titles } = dated(seen);
+  const starts = observeStarts(index);
+  const before = JSON.stringify([...starts]);
+
+  // A moved Start, so the withdrawal this guards actually runs.
+  planSync(grid, index, titles, { timezone: TZ, baseline: baselineOf({ Start: daysAgo(30) }), starts });
+  assert.equal(JSON.stringify([...starts]), before);
 });

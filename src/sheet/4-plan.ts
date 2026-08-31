@@ -43,8 +43,8 @@ import {
   type ShowBlock,
 } from './2-grid.ts';
 import { courComplete, type SeasonProgress, type TitleProgress } from './1-index.ts';
-import { maxSerial, ownsNote, plausibleSerial, recordedSerial, runtimeDays, seasonKey, watchedNote, watchSerial } from './values.ts';
-import type { Baseline } from './values.ts';
+import { maxSerial, ownsNote, plausibleSerial, recordedSerial, runtimeDays, seasonKey, TRACKED_FIELDS, watchedNote, watchSerial } from './values.ts';
+import type { Baseline, TrackedField } from './values.ts';
 import { instantFrom, isoOf } from '../shared/dates.ts';
 import { seasonAired, seasonComplete, type SeasonShape, type TitleCatalogue } from './3-catalogue.ts';
 import type { RuntimeRequest } from './io/runtimes.ts';
@@ -166,6 +166,13 @@ export interface PlanOptions {
    * disagreement the sheet already holds.
    */
   baseline?: Baseline;
+  /**
+   * `observeStarts(index)`, hoisted. It is a projection of the library alone,
+   * and the library cannot change while a run is in flight — so the sync builds
+   * it once rather than paying for it on every pass of the plan-fetch fixpoint.
+   * Defaulted so the function stays self-sufficient.
+   */
+  starts?: Baseline;
 }
 
 const cellAt = (grid: Grid, row: number, column: number): CellData | undefined => grid.snapshot.rows[row]?.[column];
@@ -562,7 +569,7 @@ type ResolvedRow = Extract<RowResolution, { kind: 'resolved' }>;
  * triggered by a row being absent, never by this comparison, so a failed one
  * re-plans on the next poll whatever the record says.
  */
-const observeStarts = (index: Map<number, TitleProgress>): Baseline => {
+export const observeStarts = (index: Map<number, TitleProgress>): Baseline => {
   const observed: Baseline = new Map();
   for (const progress of index.values()) {
     for (const season of progress.seasons.values()) {
@@ -593,56 +600,81 @@ const observeStarts = (index: Map<number, TitleProgress>): Baseline => {
  * cell holding the older date. That is the same standing disagreement this is
  * deliberately not in the business of reconciling, and the next move corrects it.
  */
+/**
+ * Where each tracked field's current value comes from, and when the row is
+ * eligible for it. Keyed on `TrackedField`, so a column added to the set in
+ * `values.ts` and not taught to the planner fails to compile — the direction
+ * that matters, since the guard stops refusing that column on a dated row the
+ * moment the set names it.
+ *
+ * `End` is eligible only on a row already dated. An open row's end date belongs
+ * to `closeSeason`, which holds it back while the runtime question is open, and
+ * a row this batch dates would otherwise be planned two `End` edits.
+ */
+const TRACKED_SOURCE: Record<TrackedField, { of: (resolved: ResolvedRow) => Temporal.Instant | null; on: (season: SeasonRow, resolved: ResolvedRow) => boolean }> = {
+  Start: { of: (resolved) => resolved.firstWatchedAt, on: () => true },
+  End: { of: (resolved) => resolved.lastWatchedAt, on: (season, resolved) => season.closed && resolved.complete },
+};
+
 const followUpstream = (
-  plan: SheetPlan,
-  grid: Grid,
+  { plan, grid, timezone, ceiling, baseline, observed, writing }: FollowContext,
   season: SeasonRow,
   resolved: ResolvedRow,
-  { key, label, timezone, ceiling, baseline, observed, writing }: FollowContext,
+  label: string,
 ): void => {
-  const track = (field: 'Start' | 'End', at: Temporal.Instant | null): void => {
+  const key = resolved.key;
+  if (key === null) return;
+
+  for (const field of TRACKED_FIELDS) {
+    const source = TRACKED_SOURCE[field];
+    if (!source.on(season, resolved)) continue;
+
+    const at = source.of(resolved);
     const serial = watchSerial(at, timezone);
-    if (at === null || serial === null) return;
-    const record = (into: Baseline): void => void into.set(key, { ...into.get(key), [field]: isoOf(at) });
+    if (at === null || serial === null) continue;
 
     const was = recordedSerial(baseline.get(key)?.[field], timezone);
-    if (was === null || was === serial) {
-      record(observed);
-      return;
-    }
+    const moved = was !== null && was !== serial;
 
     // A restamp the guard would refuse is stopped here rather than passed on:
     // refusal is whole-plan, so one upstream timestamp outside the writable
     // range would hold up every unrelated edit for as long as its row sat
-    // inside the activity window. Recorded even so — the value is what SIMKL
-    // says, saying so keeps the skip from repeating every poll, and a later
-    // move back into range still reads as a move.
-    if (!plausibleSerial(serial, ceiling)) {
+    // inside the activity window.
+    if (moved && !plausibleSerial(serial, ceiling)) {
       plan.skips.push({ code: 'unusable-timestamp', message: `${label}: SIMKL's ${field} date is outside the range this sync writes, so that cell is left alone` });
-      record(observed);
-      return;
+    } else if (moved) {
+      const before = watchedNote(instantFrom(baseline.get(key)?.[field]), timezone);
+      plan.edits.push(edit(grid, season.row, field, num(serial), `${label}: ${field} moved from ${before} to ${watchedNote(at, timezone)}`));
+      // Into `writing`, and *withdrawn* from `observed`, which `observeStarts`
+      // has already seeded with this very value: recorded before its write
+      // lands, the next poll compares against it, finds nothing moved, and the
+      // change is lost. The withdrawal is what keeps the two maps disjoint.
+      //
+      // The withdrawal *replaces* the entry rather than deleting the field from
+      // it. `observed` is a shallow copy of a seed the run reuses across every
+      // planning pass and every re-read, so the entries are shared: deleting in
+      // place would strip the field from the seed itself, and the next pass
+      // would plan against a library the run had quietly edited.
+      writing.set(key, { ...writing.get(key), [field]: isoOf(at) });
+      const seeded = { ...observed.get(key) };
+      delete seeded[field];
+      observed.set(key, seeded);
+      continue;
     }
 
-    // Into `writing`, and *withdrawn* from `observed`, which `observeStarts`
-    // has already filled with this very value: a value recorded before its
-    // write lands is a change banked and never made, because the next poll
-    // compares against it and finds nothing moved. The withdrawal is what
-    // makes the two maps disjoint, and the seed is why it cannot be assumed.
-    const before = watchedNote(instantFrom(baseline.get(key)?.[field]), timezone);
-    plan.edits.push(edit(grid, season.row, field, num(serial), `${label}: ${field} moved from ${before} to ${watchedNote(at, timezone)}`));
-    record(writing);
-    const rest = { ...observed.get(key) };
-    delete rest[field];
-    observed.set(key, rest);
-  };
-
-  track('Start', resolved.firstWatchedAt);
-  if (season.closed && resolved.complete) track('End', resolved.lastWatchedAt);
+    // Everything not being written is observed, stated once: the disjointness
+    // the whole mechanism rests on reads off a single exit rather than being
+    // reconstructed from three. An unmoved value and a declined move are both
+    // recorded — the second keeps the skip from repeating every poll, and a
+    // later move back into range still reads as a move.
+    observed.set(key, { ...observed.get(key), [field]: isoOf(at) });
+  }
 };
 
+/** Everything `followUpstream` needs that does not vary between rows, built once per run. */
 interface FollowContext {
-  key: string;
-  label: string;
+  plan: SheetPlan;
+  grid: Grid;
   timezone: string;
   ceiling: number;
   baseline: Baseline;
@@ -792,16 +824,19 @@ export const planSync = (
   grid: Grid,
   index: Map<number, TitleProgress>,
   titles: Map<number, TitleCatalogue>,
-  { now = Temporal.Now.instant(), timezone = config.timezone, sinceDays = config.sheetSinceDays, baseline = new Map() }: PlanOptions = {},
+  { now = Temporal.Now.instant(), timezone = config.timezone, sinceDays = config.sheetSinceDays, baseline = new Map(), starts }: PlanOptions = {},
 ): PlanResult => {
   const plan = emptyPlan();
   const demands: PlanDemands = { catalogue: [], runtimes: [] };
   const cutoff = cutoffFrom(now, sinceDays);
   const duplicates = duplicateIds(grid.blocks);
   const seen = new Set<number>();
-  const observed = observeStarts(index);
+  // Copied, never used directly: a pass whose plan is discarded must not leave
+  // its withdrawals in the caller's seed. The entries themselves are never
+  // mutated in place — only replaced — so a shallow copy is enough.
+  const observed = new Map(starts ?? observeStarts(index));
   const writing: Baseline = new Map();
-  const ceiling = maxSerial(now, timezone);
+  const follow: FollowContext = { plan, grid, timezone, ceiling: maxSerial(now, timezone), baseline, observed, writing };
 
   for (const block of grid.blocks) {
     const ids = blockIds(block);
@@ -854,9 +889,7 @@ export const planSync = (
       // row with an end date is otherwise finished and left alone, but the
       // fields that follow SIMKL follow it on a dated row too. Everything
       // below writes a fact the row settled once.
-      if (resolved.key !== null) {
-        followUpstream(plan, grid, season, resolved, { key: resolved.key, label, timezone, ceiling, baseline, observed, writing });
-      }
+      followUpstream(follow, season, resolved, label);
       if (season.closed) continue;
 
       // A hand-typed count — "12 (rewatch)", "~8" — parses to null, so the

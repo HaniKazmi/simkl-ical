@@ -64,7 +64,12 @@ export const clearBaseline = (): void => {
 };
 
 /** What the status page shows: that the record exists, and how current it is. */
-export const baselineSummary = (): { seasons: number; at: string | null } => ({ seasons: seasons.size, at: movedAt });
+export interface BaselineSummary {
+  seasons: number;
+  at: string | null;
+}
+
+export const baselineSummary = (): BaselineSummary => ({ seasons: seasons.size, at: movedAt });
 
 /**
  * Enough that every later read is total. Values must be strings, because
@@ -133,11 +138,13 @@ export const saveBaseline = (observed: Baseline, { log }: { log?: Logger } = {})
   let moved = false;
   for (const [key, entry] of observed) {
     const before = seasons.get(key);
-    const after = { ...before, ...entry };
-    // Compared so an unchanged library does not restamp `at` on every poll,
-    // which would render as "just now" forever and say nothing.
-    if (before && Object.keys(after).length === Object.keys(before).length && Object.entries(after).every(([k, v]) => before[k as keyof BaselineEntry] === v)) continue;
-    seasons.set(key, after);
+    // Asked of the incoming fields rather than of the merge: since `after` is
+    // `before` plus `entry`, "did the merge change anything" is exactly "did
+    // every incoming field already match". Compared at all so an unchanged
+    // library does not restamp `at` on every poll, which would render as "just
+    // now" forever and say nothing.
+    if (before && Object.entries(entry).every(([field, value]) => before[field as keyof BaselineEntry] === value)) continue;
+    seasons.set(key, { ...before, ...entry });
     moved = true;
   }
   if (!moved) return Promise.resolve();

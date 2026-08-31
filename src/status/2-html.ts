@@ -352,7 +352,7 @@ const sheetBody = (model: StatusModel) => {
 const tracking = (model: StatusModel) => {
   const { seasons, movedAt } = model.sheet.baseline;
   if (seasons === 0) return html`<span class="dim">nothing tracked yet</span>`;
-  return html`tracking <b class="mono">${String(seasons)}</b> seasons, last moved ${time(movedAt)}`;
+  return html`tracking <b class="mono">${seasons}</b> seasons, last moved ${time(movedAt)}`;
 };
 
 /** The tab, linked when there is a spreadsheet id to link it to. */

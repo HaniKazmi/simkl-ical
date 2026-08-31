@@ -5,12 +5,11 @@ import { join } from 'node:path';
 import { SheetSync } from '../../src/sheet/sync.ts';
 import { clearTokenCache } from '../../src/api/google/auth.ts';
 import { clearTokenCache as clearTvdbTokenCache } from '../../src/api/tvdb/auth.ts';
-import { cellOf, daysAgo, jsonResponse, libraryOf, quiet, recorder, SHEET_HEADERS, withConfig, withFetch, withFreshJournal, type CellSpec, seasonRow, showRow } from '../helpers.ts';
-import { CREDENTIAL, fakeSheets, type FakeSheetsOptions } from './fake-sheets.ts';
+import { cellOf, daysAgo, jsonResponse, libraryOf, quiet, recorder, SHEET_HEADERS, todaySerial, withConfig, withFetch, withFreshJournal, type CellSpec, seasonRow, showRow } from '../helpers.ts';
+import { CREDENTIAL, DEFAULT_GRID, fakeSheets, type FakeSheetsOptions } from './fake-sheets.ts';
 import { sheetRuns } from '../../src/sheet/io/journal.ts';
 import type { Library } from '../../src/library.ts';
 import { plainDateIn } from '../../src/shared/dates.ts';
-import { dateSerial } from '../../src/sheet/values.ts';
 
 const H = SHEET_HEADERS;
 
@@ -856,26 +855,18 @@ const fargo = (first: number): Library =>
  * before — the guard refuses a start after the row's end, and rightly. Dated
  * today instead, so the row is closed and its dates are consistent.
  */
-const DATED = [
-  H,
-  show('Fargo', 'Watching', 3381),
-  season(1, 6, dateSerial(plainDateIn(Temporal.Now.instant(), 'Europe/London'))),
-  season(2, 3, null),
-];
+const DATED = DEFAULT_GRID.map((row, i) => (i === 2 ? season(1, 6, todaySerial('Europe/London')) : row));
 
 /** Where season 1's `Start` cell sits in that grid. */
 const S1_START = 'E3';
 
 test('a change is written only once the value before it has been observed', async () => {
-  clearTokenCache();
-  const sheet = server({ grid: DATED });
-  await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL, timezone: 'Europe/London' }, () =>
-    withFetch(sheet.handler, async () => {
-      const sync = new SheetSync({ logger: quiet });
-
+  await run(
+    'apply',
+    { grid: DATED },
+    async (first, _calls, _sheet, sync) => {
       // First sight of season 1: recorded, and nothing written about it —
       // whatever its Start cell already held.
-      const first = await sync.run(fargo(30));
       assert.deepEqual(first.record.edits.map((e) => e.field), ['Episode', 'Status']);
 
       // Now it moves, and the dated row takes the new date.
@@ -887,7 +878,8 @@ test('a change is written only once the value before it has been observed', asyn
       // a second time.
       const third = await sync.run(fargo(31));
       assert.deepEqual(third.record.edits, []);
-    }),
+    },
+    fargo(30),
   );
 });
 
@@ -898,19 +890,17 @@ test('a change is written only once the value before it has been observed', asyn
  * nothing moved ever after.
  */
 test('a run that wrote nothing leaves the change to be planned again', async () => {
-  clearTokenCache();
-  const sheet = server({ grid: DATED });
-  await withConfig({ sheetId: 'SID', sheetSyncMode: 'report', googleKeyBase64: CREDENTIAL, timezone: 'Europe/London' }, () =>
-    withFetch(sheet.handler, async () => {
-      const sync = new SheetSync({ logger: quiet });
-      await sync.run(fargo(30));
-
+  await run(
+    'report',
+    { grid: DATED },
+    async (_first, _calls, _sheet, sync) => {
       const reported = await sync.run(fargo(31));
       assert.equal(reported.status, 'reported');
       assert.ok(reported.record.edits.some((e) => e.address === S1_START));
 
       const again = await sync.run(fargo(31));
       assert.ok(again.record.edits.some((e) => e.address === S1_START), 'report mode wrote nothing, so the change is still pending');
-    }),
+    },
+    fargo(30),
   );
 });

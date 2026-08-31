@@ -19,6 +19,7 @@ import { pageHealthy, type Assessment } from '../health.ts';
 import type { LibraryMovement, PollOutcome, Snapshot } from '../orchestrator.ts';
 import type { RequestRecord } from '../api/requests.ts';
 import type { SheetRunRecord } from '../sheet/io/journal.ts';
+import type { BaselineSummary } from '../sheet/io/baseline.ts';
 import type { SheetSyncStatus } from '../sheet/sync.ts';
 
 export interface StatusInput {
@@ -54,7 +55,7 @@ export interface StatusInput {
    * this page renders verbatim and so the one to audit for the safe-HTML
    * brand; rendering a second one would make that true of two.
    */
-  baseline: { seasons: number; at: string | null };
+  baseline: BaselineSummary;
 }
 
 /** A moment, with the relative wording a reader actually wants. */

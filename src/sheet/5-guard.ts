@@ -16,7 +16,7 @@
 
 import { config } from '../shared/config.ts';
 import { isBlank, isFormula, numberOf, runtimeScopeOk, sameValue, type Grid, type HeaderName, type SeasonRow, type ShowBlock } from './2-grid.ts';
-import { maxSerial, ownsNote, plausibleRuntimeDays, plausibleSerial, TRACKED_FIELDS, watchedNoteSerial } from './values.ts';
+import { isTracked, maxSerial, ownsNote, plausibleRuntimeDays, plausibleSerial, watchedNoteSerial } from './values.ts';
 import type { CellEdit, RowInsert, SheetPlan } from './4-plan.ts';
 import type { ExtendedValue } from '../api/google/types.ts';
 
@@ -170,12 +170,15 @@ const checkWatchedNote = (where: string, value: ExtendedValue | undefined, ceili
 };
 
 /**
- * Whether this batch dates the row — the claim that makes every write a
- * closing row carries safe. One copy: the runtime and the note's removal both
- * ride that batch, and a rule that drifted in one would keep passing in the
- * other, silently.
+ * The `End` this batch writes to a row, if it writes one — which is the same
+ * question as "does this batch date the row", asked for its value instead of
+ * its answer. One definition for both readings: the runtime write, the note's
+ * removal and the date-ordering rule all turn on it, and a predicate that
+ * drifted from the lookup would keep passing while the other refused.
  */
-const closesRow = (plan: SheetPlan, row: number): boolean => plan.edits.some((e) => e.row === row && e.field === 'End');
+const plannedEnd = (plan: SheetPlan, row: number): CellEdit | undefined => plan.edits.find((e) => e.row === row && e.field === 'End');
+
+const closesRow = (plan: SheetPlan, row: number): boolean => plannedEnd(plan, row) !== undefined;
 
 const checkSeasonStatusEdit = (cell: CellEdit, where: string, plan: SheetPlan, season: SeasonRow, ctx: GuardContext): void => {
   // Overwriting text a human typed is the one way this write can destroy
@@ -212,7 +215,7 @@ const checkSeasonStatusEdit = (cell: CellEdit, where: string, plan: SheetPlan, s
 const checkStartEdit = (cell: CellEdit, where: string, plan: SheetPlan, ctx: GuardContext): void => {
   // The planned `End` where this batch writes one, so the pair is checked as
   // the row will hold it rather than as it holds it now.
-  const planned = plan.edits.find((e) => e.row === cell.row && e.field === 'End');
+  const planned = plannedEnd(plan, cell.row);
   const end = planned ? planned.value?.numberValue : numberOf(ctx.grid.snapshot.rows[cell.row]?.[ctx.grid.columns.End]);
   if (typeof end !== 'number') return;
 
@@ -314,7 +317,7 @@ const checkEdit = (cell: CellEdit, plan: SheetPlan, ctx: GuardContext): void => 
   // they hold is not the row's decision but SIMKL's, so freezing them would
   // not preserve a judgement, it would only keep a stale copy of an upstream
   // fact. The planner writes one solely when the recorded value moved.
-  if (season.closed && !TRACKED_FIELDS.has(cell.field)) refuse(`${where}: the season already has an end date.`);
+  if (season.closed && !isTracked(cell.field)) refuse(`${where}: the season already has an end date.`);
 
   if (cell.field === 'Status') checkSeasonStatusEdit(cell, where, plan, season, ctx);
   if (cell.field === 'Episodes') checkRuntimeEdit(cell, where, plan, season, block, ctx);
