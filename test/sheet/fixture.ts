@@ -26,6 +26,9 @@ export const H = SHEET_HEADERS;
  */
 export const TODAY = dateSerial(Temporal.Now.plainDateISO('UTC'));
 
+/** The same day as a season row's last-watched note. */
+export const TODAY_NOTE = Temporal.Now.plainDateISO('UTC').toString();
+
 export interface NamedRow {
   name: string | null;
   cells: CellSpec[];
@@ -42,7 +45,7 @@ export const season = (
   number: number,
   episode: number | null,
   end: number | null,
-  options: { id?: number | string | null; start?: number; episodes?: number | null } = {},
+  options: { id?: number | string | null; start?: number; episodes?: number | null; status?: string | null } = {},
 ): NamedRow => ({ name, cells: seasonRow(number, episode, end, options) });
 
 /** An arbitrary row, for shapes `show`/`season` cannot say. */
@@ -59,7 +62,7 @@ export interface GridFixture {
   /** One past the last row: where an insert at the end of the sheet lands. */
   end: number;
   /** An edit whose `previous` comes from the snapshot, the way the planner builds one. */
-  cell(row: string | number, field: HeaderName, value: ExtendedValue, previous?: ExtendedValue): CellEdit;
+  cell(row: string | number, field: HeaderName, value: ExtendedValue | undefined, previous?: ExtendedValue): CellEdit;
   /** A well-formed insert at a row index or just under a named row. */
   insertAt(row: string | number, season: number, options?: InsertOptions): RowInsert;
 }
@@ -68,6 +71,8 @@ export interface InsertOptions {
   title?: string;
   episodes?: number | null;
   end?: number | null;
+  /** The last-watched note a row inserted open carries. */
+  status?: string | null;
 }
 
 /** The header row is implicit: it is row 0 of every grid, never named. */
@@ -84,7 +89,7 @@ export const gridFixture = (...named: NamedRow[]): GridFixture => {
     return index;
   };
 
-  const cell = (row: string | number, field: HeaderName, value: ExtendedValue, previous?: ExtendedValue): CellEdit => {
+  const cell = (row: string | number, field: HeaderName, value: ExtendedValue | undefined, previous?: ExtendedValue): CellEdit => {
     const index = indexOf(row);
     const column = grid.columns[field];
     return {
@@ -99,11 +104,12 @@ export const gridFixture = (...named: NamedRow[]): GridFixture => {
   };
 
   /**
-   * The two options are the states `planInsert` produces: `episodes: null`
-   * omits the cell (a row left for its close to fill), `end` dates the row in
-   * the same fill (a season already over).
+   * The options are the states `planInsert` produces: `episodes: null` omits
+   * the cell (a row left for its close to fill), `end` dates the row in the
+   * same fill (a season already over), `status` is the note a row inserted
+   * open carries.
    */
-  const insertAt = (row: string | number, season: number, { title = 'Fargo', episodes = 0.0153, end = null }: InsertOptions = {}): RowInsert => {
+  const insertAt = (row: string | number, season: number, { title = 'Fargo', episodes = 0.0153, end = null, status = null }: InsertOptions = {}): RowInsert => {
     const index = indexOf(row);
     return {
       row: index,
@@ -112,6 +118,7 @@ export const gridFixture = (...named: NamedRow[]): GridFixture => {
       fill: (
         [
           ['Season', { numberValue: season }],
+          ...(status === null ? [] : [['Status', { stringValue: status }] as [HeaderName, ExtendedValue]]),
           ['Episode', { numberValue: 4 }],
           ['Start', { numberValue: TODAY - 10 }],
           ...(episodes === null ? [] : [['Episodes', { numberValue: episodes }] as [HeaderName, ExtendedValue]]),

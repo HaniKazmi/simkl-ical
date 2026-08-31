@@ -15,8 +15,11 @@ const H = SHEET_HEADERS;
 const TZ = 'Europe/London';
 
 const show = showRow;
-const season = (n: number, episodes: number | null, end: number | null, id: number | string | null = null): CellSpec[] =>
-  seasonRow(n, episodes, end, { id });
+const season = (n: number, episodes: number | null, end: number | null, id: number | string | null = null, status: string | null = null): CellSpec[] =>
+  seasonRow(n, episodes, end, { id, status });
+
+/** The last-watched note a row watched at these timestamps should carry. */
+const note = (timestamps: string[]): string => plainDateIn(Temporal.Instant.from(timestamps.at(-1) as string), TZ).toString();
 
 /** `n` episodes of which `aired` have aired, all in one season. */
 const eps = (number: number, total: number, aired = total): EpisodeDetail[] =>
@@ -67,16 +70,20 @@ const skipMessages = (plan: SheetPlan): string => plan.skips.map((s) => s.messag
 // --- the core case ---------------------------------------------------------
 
 // The shape of nearly every edit: a count advancing on an open season, with
-// nothing on the show row.
-test('a part-watched open season advances its count and touches nothing else', () => {
+// its last watch noted beside it and nothing on the show row.
+test('a part-watched open season advances its count and notes when it was last watched', () => {
+  const seen = watched(7);
   const { plan } = scenario({
     rows: [show('Malcolm in the Middle', 'Watching', 100), season(6, 22, 44000), season(7, 1, null)],
-    items: [{ id: 100, status: 'completed', seasons: { 6: watched(22, 400), 7: watched(7) }, watched: 29, total: 44 }],
+    items: [{ id: 100, status: 'completed', seasons: { 6: watched(22, 400), 7: seen }, watched: 29, total: 44 }],
     episodes: { 100: [...eps(6, 22), ...eps(7, 22)] },
     details: { 100: { status: 'ended', runtime: 22 } },
   });
   const result = plan();
-  assert.deepEqual(result.edits.map((e) => [e.address, e.field, e.value.numberValue ?? e.value.stringValue]), [['D4', 'Episode', 7]]);
+  assert.deepEqual(result.edits.map((e) => [e.address, e.field, e.value?.numberValue ?? e.value?.stringValue]), [
+    ['D4', 'Episode', 7],
+    ['B4', 'Status', note(seen)],
+  ]);
   assert.equal(result.insert, null);
 });
 
@@ -136,7 +143,7 @@ test('a season still airing is never dated, however much of it has been watched'
   });
   const result = plan();
   assert.deepEqual(result.edits.filter((e) => e.field === 'End'), []);
-  assert.deepEqual(result.edits.filter((e) => e.field === 'Episode').map((e) => e.value.numberValue), [7]);
+  assert.deepEqual(result.edits.filter((e) => e.field === 'Episode').map((e) => e.value?.numberValue), [7]);
 });
 
 test('a fully aired, fully watched season is dated on its last watch', () => {
@@ -148,7 +155,130 @@ test('a fully aired, fully watched season is dated on its last watch', () => {
     details: { 400: { status: 'airing' } },
   });
   const end = plan().edits.find((e) => e.field === 'End');
-  assert.equal(end?.value.numberValue, dateSerial(plainDateIn(Temporal.Instant.from(last), TZ)));
+  assert.equal(end?.value?.numberValue, dateSerial(plainDateIn(Temporal.Instant.from(last), TZ)));
+});
+
+// --- the last-watched note --------------------------------------------------
+
+/** A season one episode short of over, so the row stays open across variants. */
+const noting = (status: string | null, { episode = 3, ...over }: Partial<Scenario> & { episode?: number } = {}) =>
+  scenario({
+    rows: [show('Silo', 'Watching', 900), season(1, episode, null, null, status)],
+    items: [{ id: 900, status: 'watching', seasons: { 1: watched(5) }, watched: 5, total: 10, notAired: 5 }],
+    episodes: { 900: eps(1, 10, 5) },
+    details: { 900: { status: 'airing' } },
+    ...over,
+  });
+
+/** What `noting`'s season needs to be over rather than still running. */
+const FINISHED: Partial<Scenario> = {
+  items: [{ id: 900, status: 'completed', seasons: { 1: watched(10) }, watched: 10, total: 10, notAired: 0 }],
+  episodes: { 900: eps(1, 10) },
+  details: { 900: { status: 'ended' } },
+};
+
+const statusEdit = (plan: SheetPlan) => plan.edits.find((e) => e.field === 'Status' && e.row === 2);
+
+// The note moves with the watching, so the same row re-planned after another
+// episode says the later date rather than being left alone.
+test('a note already in place is advanced, and an identical one is not rewritten', () => {
+  const seen = watched(5);
+  assert.equal(statusEdit(noting('2019-01-01').plan())?.value?.stringValue, note(seen));
+  assert.equal(statusEdit(noting(note(seen)).plan()), undefined, 'nothing to say twice');
+});
+
+// `End` says the same thing, more precisely, and a row nothing revisits should
+// not keep a running note.
+test('the batch that dates a row takes its note away', () => {
+  const done = noting('2019-01-01', FINISHED);
+  const plan = done.plan();
+  assert.ok(plan.edits.some((e) => e.field === 'End'), 'the row closes');
+  const cleared = statusEdit(plan);
+  // Both halves: `cleared?.value` alone reads the same whether the clear was
+  // planned or no Status edit was planned at all.
+  assert.ok(cleared, 'the note is written off');
+  assert.equal(cleared.value, undefined, 'by emptying the cell, not by writing into it');
+  assert.doesNotThrow(() => assertPlanSafe(plan, done.grid, { timezone: TZ }));
+});
+
+// A row held open for another poll is still a row being watched, so the note
+// it carries has to stay true.
+test('a row left open on an outstanding runtime keeps its note', () => {
+  const seen = watched(10);
+  const waiting = scenario({
+    // A blank runtime cell, so the close has something to wait for.
+    rows: [show('Silo', 'Watching', 900), seasonRow(1, 3, null, { episodes: null })],
+    items: [{ id: 900, status: 'completed', seasons: { 1: seen }, watched: 10, total: 10, notAired: 0 }],
+    episodes: { 900: eps(1, 10) },
+    // No detail: `/tv/{id}` has not answered, so the close waits.
+    details: {},
+  });
+  const plan = waiting.plan();
+  assert.deepEqual(plan.edits.filter((e) => e.field === 'End'), []);
+  assert.equal(statusEdit(plan)?.value?.stringValue, note(seen));
+});
+
+// `season.status` is the cell's *result*, so a formula rendering a date reads
+// as this sync's own note. The guard refuses a formula target unconditionally
+// and refusal is whole-plan, so planning over one would stop every unrelated
+// edit for as long as the row stays in the window.
+test('a formula rendering a date is left alone, and takes nothing else down with it', () => {
+  const rendered: CellSpec[] = [null, { formula: '=TEXT(E3,"yyyy-mm-dd")', value: '2019-01-01' }, 1, 1, 45000, null, 0.0153, { formula: '=G3*D3' }, null, null];
+  const formula = scenario({
+    rows: [show('Silo', 'Watching', 900), rendered],
+    items: [{ id: 900, status: 'watching', seasons: { 1: watched(5) }, watched: 5, total: 10, notAired: 5 }],
+    episodes: { 900: eps(1, 10, 5) },
+    details: { 900: { status: 'airing' } },
+  });
+  const plan = formula.plan();
+  assert.equal(statusEdit(plan), undefined);
+  assert.deepEqual(plan.edits.filter((e) => e.field === 'Episode').map((e) => e.value?.numberValue), [5], 'the count still advances');
+  assert.doesNotThrow(() => assertPlanSafe(plan, formula.grid, { timezone: TZ }));
+});
+
+// The note dates the count beside it. A row whose count this run leaves alone
+// is left alone whole — `lastWatchedAt` drifts for reasons the count does not
+// see, and a fresh date on an unmoved row would claim something happened.
+test('a row whose count does not move keeps the note it has', () => {
+  const settled = noting('2019-01-01', { episode: 5 });
+  assert.deepEqual(settled.plan().edits.filter((e) => e.row === 2), [], 'the row is left alone whole');
+});
+
+// Every note therefore lands on a row the plan already edits: it costs an edit
+// and never a distinct row, and the rows it can appear on are the ones that
+// moved rather than every row watched inside the window. That is what keeps a
+// budget the guard enforces by refusing *everything* out of reach.
+test('a note only ever lands on a row the run is already editing', () => {
+  const seen = watched(5);
+  const rows: CellSpec[][] = [];
+  const items: ItemSpec[] = [];
+  for (let i = 0; i < 6; i += 1) {
+    // Three rows behind SIMKL, three already level with it.
+    rows.push(show(`Show ${i}`, 'Watching', 900 + i), season(1, i < 3 ? 2 : 5, null));
+    items.push({ id: 900 + i, status: 'watching', seasons: { 1: seen }, watched: 5, total: 10, notAired: 5 });
+  }
+  const many = scenario({
+    rows,
+    items,
+    episodes: Object.fromEntries(items.map((i) => [i.id, eps(1, 10, 5)])),
+    details: Object.fromEntries(items.map((i) => [i.id, { status: 'airing' }])),
+  });
+
+  const plan = many.plan();
+  const notes = plan.edits.filter((e) => e.field === 'Status' && e.value?.stringValue === note(seen));
+  const counts = new Set(plan.edits.filter((e) => e.field === 'Episode').map((e) => e.row));
+  assert.equal(notes.length, 3, 'one per row that moved, and none for the three that did not');
+  assert.ok(notes.every((n) => counts.has(n.row)));
+  assert.doesNotThrow(() => assertPlanSafe(plan, many.grid, { timezone: TZ }));
+});
+
+// The column is otherwise free space. What a reader typed there is not
+// reconstructible, and the row still closes — around the note, not through it.
+test('text the sync did not write is left where it is, closing row included', () => {
+  assert.equal(statusEdit(noting('rewatching with Sam').plan()), undefined);
+  const closing = noting('rewatching with Sam', FINISHED).plan();
+  assert.ok(closing.edits.some((e) => e.field === 'End'), 'the row still closes');
+  assert.equal(statusEdit(closing), undefined);
 });
 
 // A date records the user's decision, and a wrong one could never be
@@ -190,7 +320,7 @@ test('a season still running is inserted with a blank Episodes cell, for its clo
   const { plan, runtimeDemands } = adding({ aired: 6 });
   const insert = plan().insert;
   assert.equal(insert?.season, 2);
-  assert.deepEqual(fields(insert), ['Episode', 'Length', 'Season', 'Start']);
+  assert.deepEqual(fields(insert), ['Episode', 'Length', 'Season', 'Start', 'Status']);
   assert.equal(cellIn(insert, 'Episodes'), undefined, 'left for the season average');
   assert.equal(cellIn(insert, 'End'), undefined, 'and not dated, because it is still running');
   // Stops a settled null landing while SIMKL's episode count is still moving.
@@ -209,7 +339,7 @@ test('a season already over is inserted dated, carrying its own average', () => 
 test('a season over but whose runtimes have not come back is inserted open', () => {
   const { plan } = adding();
   const insert = plan().insert;
-  assert.deepEqual(fields(insert), ['Episode', 'Length', 'Season', 'Start']);
+  assert.deepEqual(fields(insert), ['Episode', 'Length', 'Season', 'Start', 'Status']);
   assert.equal(cellIn(insert, 'End'), undefined, 'not dated, so the next poll can still fill the cell');
   assert.match(insert?.note ?? '', /have not come back/);
 });
@@ -268,7 +398,7 @@ const started = (over: Partial<Scenario> = {}) =>
 test('a finished season just started is asked about, and carries its average undated', () => {
   const { plan, runtimeDemands } = started({ runtimes: { 800: { 2: 49 } } });
   const insert = plan().insert;
-  assert.deepEqual(fields(insert), ['Episode', 'Episodes', 'Length', 'Season', 'Start']);
+  assert.deepEqual(fields(insert), ['Episode', 'Episodes', 'Length', 'Season', 'Start', 'Status']);
   assert.ok(Math.abs((cellIn(insert, 'Episodes')?.numberValue ?? 0) - 49 / 1440) < 1e-9, 'the season average, though only one episode is watched');
   assert.equal(cellIn(insert, 'End'), undefined, 'and nowhere near dated');
   assert.deepEqual(started().runtimeDemands(), [{ id: 800, tvdbId: 403245, season: 2 }], 'demanded on the run that adds the row');
@@ -279,7 +409,7 @@ test('a finished season just started is asked about, and carries its average und
 // reason, and the close fills the cell either way.
 test('a finished season just started, with no answer yet, is added blank and undated', () => {
   const insert = started().plan().insert;
-  assert.deepEqual(fields(insert), ['Episode', 'Length', 'Season', 'Start']);
+  assert.deepEqual(fields(insert), ['Episode', 'Length', 'Season', 'Start', 'Status']);
 });
 
 /**
@@ -374,7 +504,7 @@ test('Cancelled is never produced, and is overwritten when activity resumes', ()
     episodes: { 600: eps(1, 14) },
     details: { 600: { status: 'ended' } },
   });
-  assert.deepEqual(plan().edits.map((e) => [e.field, e.value.stringValue]), [['Status', 'Ended']]);
+  assert.deepEqual(plan().edits.map((e) => [e.field, e.value?.stringValue]), [['Status', 'Ended']]);
 });
 
 // Abandoned reads item.status. A show the sheet calls Ended, still being
@@ -424,7 +554,7 @@ const splitCour = (overrides: Partial<Record<'aEnd' | 'bEnd', boolean>> = {}) =>
 
 test("a split cour's count is summed across every id", () => {
   const episode = splitCour().plan().edits.find((e) => e.field === 'Episode');
-  assert.equal(episode?.value.numberValue, 26);
+  assert.equal(episode?.value?.numberValue, 26);
 });
 
 test("a split cour ends on the last id's timestamp, and only once every id is complete", () => {
@@ -502,9 +632,9 @@ test('a newly started season is inserted after the last season row, not at the s
   // inheritFromBefore picks up the wrong formats.
   assert.equal(insert?.row, 4);
   assert.notEqual(insert?.row, grid.blocks[0]?.row);
-  assert.deepEqual(insert?.fill.map((f) => f.field).sort(), ['Episode', 'Episodes', 'Length', 'Season', 'Start']);
-  assert.equal(insert?.fill.find((f) => f.field === 'Length')?.value.formulaValue, '=G5*D5');
-  assert.ok(Math.abs((insert?.fill.find((f) => f.field === 'Episodes')?.value.numberValue ?? 0) - 22 / 1440) < 1e-9);
+  assert.deepEqual(insert?.fill.map((f) => f.field).sort(), ['Episode', 'Episodes', 'Length', 'Season', 'Start', 'Status']);
+  assert.equal(insert?.fill.find((f) => f.field === 'Length')?.value?.formulaValue, '=G5*D5');
+  assert.ok(Math.abs((insert?.fill.find((f) => f.field === 'Episodes')?.value?.numberValue ?? 0) - 22 / 1440) < 1e-9);
 });
 
 test('an inserted row lands where it keeps Season ascending', () => {
@@ -558,17 +688,18 @@ test('SIMKL season 0 is never inserted — specials are maintained by hand', () 
 // The job re-plans the whole sheet every run; a second run over the applied
 // result is the cheapest proof it converges.
 test('running again over the applied result produces nothing', () => {
-  const items: ItemSpec[] = [{ id: 100, status: 'completed', seasons: { 7: watched(7) }, watched: 7, total: 22, notAired: 0 }];
+  const seen = watched(7);
+  const items: ItemSpec[] = [{ id: 100, status: 'completed', seasons: { 7: seen }, watched: 7, total: 22, notAired: 0 }];
   const before = scenario({
     rows: [show('Malcolm in the Middle', 'Watching', 100), season(6, 22, 44000), season(7, 1, null)],
     items,
     episodes: { 100: [...eps(6, 22), ...eps(7, 22)] },
     details: { 100: { status: 'ended', runtime: 22 } },
   });
-  assert.equal(before.plan().edits.length, 1);
+  assert.equal(before.plan().edits.length, 2);
 
   const after = scenario({
-    rows: [show('Malcolm in the Middle', 'Watching', 100), season(6, 22, 44000), season(7, 7, null)],
+    rows: [show('Malcolm in the Middle', 'Watching', 100), season(6, 22, 44000), season(7, 7, null, null, note(seen))],
     items,
     episodes: { 100: [...eps(6, 22), ...eps(7, 22)] },
     details: { 100: { status: 'ended', runtime: 22 } },
@@ -635,7 +766,7 @@ test('a live-action show whose episode list did not arrive gets no Status', () =
     details: { 300: { status: 'ended' } },
   });
   const result = plan();
-  assert.deepEqual(result.edits.filter((e) => e.field === 'Status'), []);
+  assert.deepEqual(result.edits.filter((e) => e.field === 'Status' && e.row === 1), [], 'nothing on the show row');
   const skip = result.skips.find((s) => s.code === 'no-episode-list');
   assert.match(skip?.message ?? '', /Silo: no episode list came back, so Status is left alone/);
 
@@ -647,7 +778,7 @@ test('a live-action show whose episode list did not arrive gets no Status', () =
     episodes: { 300: eps(1, 10) },
     details: { 300: { status: 'airing' } },
   });
-  assert.deepEqual(withList.plan().edits.filter((e) => e.field === 'Status').map((e) => e.value.stringValue), ['Up To Date']);
+  assert.deepEqual(withList.plan().edits.filter((e) => e.field === 'Status' && e.row === 1).map((e) => e.value?.stringValue), ['Up To Date']);
 });
 
 // Anime legitimately has no episode list — one entry is one cour — so Status
@@ -658,7 +789,7 @@ test('an anime block still gets a Status without any episode list', () => {
     items: [{ id: 1500, status: 'completed', seasons: { 1: watched(11, 3) }, watched: 11, total: 11, notAired: 0 }],
     details: { 1500: { status: 'ended' } },
   });
-  assert.deepEqual(plan().edits.filter((e) => e.field === 'Status').map((e) => e.value.stringValue), ['Ended']);
+  assert.deepEqual(plan().edits.filter((e) => e.field === 'Status' && e.row === 1).map((e) => e.value?.stringValue), ['Ended']);
 });
 
 // --- more pending inserts than one run may make -----------------------------
@@ -871,7 +1002,7 @@ test('a season closing with a blank runtime cell gets its average, in the same b
   assert.ok(episodes, 'and carries its runtime');
   assert.equal(episodes.row, end.row, 'onto the row that is closing');
   // 49 minutes as the day fraction the Episodes column holds.
-  assert.equal(episodes.value.numberValue, 49 / 1440);
+  assert.equal(episodes.value?.numberValue, 49 / 1440);
   assert.match(episodes.note, /49 min average/);
 });
 
@@ -903,7 +1034,7 @@ test('a settled null closes the season on the show-wide runtime', () => {
   const plan = closing({ runtimes: { 800: { 1: null } } }).plan();
   assert.ok(has(plan, 'End'), 'the season is dated');
   const cell = plan.edits.find((e) => e.field === 'Episodes');
-  assert.ok(Math.abs((cell?.value.numberValue ?? 0) - 43 / 1440) < 1e-9, 'and carries the show-wide length');
+  assert.ok(Math.abs((cell?.value?.numberValue ?? 0) - 43 / 1440) < 1e-9, 'and carries the show-wide length');
 });
 
 test('a season with neither an average nor a show-wide length closes blank, and says so', () => {
@@ -922,7 +1053,7 @@ test('a row with no tvdb id closes on the show-wide runtime', () => {
   const plan = bare.plan();
   assert.ok(has(plan, 'End'), 'the season is dated');
   const cell = plan.edits.find((e) => e.field === 'Episodes');
-  assert.ok(Math.abs((cell?.value.numberValue ?? 0) - 43 / 1440) < 1e-9, 'and carries the show-wide length');
+  assert.ok(Math.abs((cell?.value?.numberValue ?? 0) - 43 / 1440) < 1e-9, 'and carries the show-wide length');
   assert.deepEqual(plan.skips, [], 'never held open — no answer is coming');
   assert.deepEqual(bare.runtimeDemands(), [], 'and nothing is asked of TVDB');
 });
@@ -931,8 +1062,8 @@ test('a row with no tvdb id closes on the show-wide runtime', () => {
 // this run created the row or closed one already there, or two
 // identical-looking rows differ for a reason no reader of the sheet could see.
 test('a season with no tvdb id gets the same cell closed as it would inserted', () => {
-  const closed = closing({ tvdbIds: {} }).plan().edits.find((e) => e.field === 'Episodes')?.value.numberValue;
-  const inserted = adding({ tvdbIds: {}, aired: 6 }).plan().insert?.fill.find((f) => f.field === 'Episodes')?.value.numberValue;
+  const closed = closing({ tvdbIds: {} }).plan().edits.find((e) => e.field === 'Episodes')?.value?.numberValue;
+  const inserted = adding({ tvdbIds: {}, aired: 6 }).plan().insert?.fill.find((f) => f.field === 'Episodes')?.value?.numberValue;
   assert.ok(closed, 'the closing row carries a runtime');
   assert.equal(closed, inserted, 'and it is the one the insert would have written');
 });

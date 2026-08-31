@@ -56,9 +56,23 @@ export const isFormula = (cell: CellData | undefined): boolean => isFormulaValue
  * verifier then reverts.
  */
 export const sameValue = (a: ExtendedValue | undefined, b: ExtendedValue | undefined): boolean => {
-  if (a === undefined || b === undefined) return a === b;
-  return a.numberValue === b.numberValue && a.stringValue === b.stringValue && a.boolValue === b.boolValue && a.formulaValue === b.formulaValue;
+  const [x, y] = [present(a), present(b)];
+  if (x === undefined || y === undefined) return x === y;
+  return x.numberValue === y.numberValue && x.stringValue === y.stringValue && x.boolValue === y.boolValue && x.formulaValue === y.formulaValue;
 };
+
+/**
+ * A value with something in it. A cell holding nothing can arrive as an absent
+ * `userEnteredValue` or as an empty one, and the two mean the same thing —
+ * `isBlank` already reads them the same way.
+ *
+ * It matters for the one write that *removes* a value: read strictly, a cell
+ * the sync emptied could come back looking like a write that did not land,
+ * which rolls a correct batch back and plans the identical clear again on the
+ * next poll.
+ */
+const present = (value: ExtendedValue | undefined): ExtendedValue | undefined =>
+  value !== undefined && Object.keys(value).length > 0 ? value : undefined;
 
 /**
  * The computed value: a formula's result, or a literal's own value. Date
@@ -160,6 +174,13 @@ export interface SeasonRow {
   /** Episodes *watched* — a count, not the highest episode number. */
   episode: number | null;
   /**
+   * The `Status` cell's text. On a season row this carries the last watch
+   * date, which the row's closing batch clears — so the planner needs to see
+   * both what is there and that it is text, since only text it wrote itself
+   * may be overwritten or removed.
+   */
+  status: string | null;
+  /**
    * Whether the row has an end date, which freezes it forever.
    *
    * A flag rather than the serial: the serial is never read, and `end !== null`
@@ -260,6 +281,7 @@ export const parseGrid = (snapshot: SheetSnapshot): Grid => {
       row,
       season: numberOf(cells[columns.Season]),
       episode: numberOf(cells[columns.Episode]),
+      status: textOf(cells[columns.Status]),
       closed: !isBlank(cells[columns.End]),
       ids: parseIds(cells[columns.id]),
     });

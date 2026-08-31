@@ -131,6 +131,36 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
 - **Never write a formula cell, and never write a show row except `Status`.** Every derived cell on
   a show row rolls up from the season rows beneath it. Writing one replaces a live roll-up with a
   frozen number, and nothing would ever notice.
+- **`Status` means one thing on a show row and another on a season row** — the derived state above,
+  the date the season was last watched below — so which row a write landed on picks the rule, in
+  `4-plan.ts` and `5-guard.ts` both. The note is written and moved on while the row is open, and the
+  batch that dates the row takes it away: `End` says the same thing, and a row nothing revisits must
+  not keep a running one. **Only a cell `ownsNote` accepts may be written into or cleared** — blank,
+  or holding a note of the sync's own shape. The column is otherwise free space and what a reader
+  typed there is not reconstructible, so the row closes around a hand-typed note rather than through
+  it; and a formula is declined by the same predicate, because `season.status` is the cell's *result*
+  and one rendering a date would read as the sync's own note, against a formula refusal that is
+  unconditional and whole-plan. One copy for planner and guard, in `values.ts` with the bounds.
+- **The note dates the count beside it, so it moves only when that count does** — written when a
+  season row's `Episode` advances and when a row is inserted open, and never on a row this run
+  leaves alone. `lastWatchedAt` drifts for reasons the count cannot see (a scrobbler restamping an
+  episode, a delta re-reporting the same watch), so a fresh date on an unmoved row claims something
+  happened. It also keeps the note out of the budget's way: every note lands on a row the plan
+  already edits, so it costs an edit and never a distinct row, and the rows it can appear on are the
+  ones that moved rather than every row watched inside the window — `checkBudgets` refuses
+  *everything* over budget, and a note set that did not drain would stop the counts being written
+  until enough rows aged out. The **clear** is not conditioned on the count: a stale note on a
+  closing row goes whether or not that batch advanced anything.
+- **An absent `CellEdit.value` empties a cell, and only a season's `Status` is ever emptied.** It is
+  the encoding `writeCell` already uses to undo an inserted value, and the only one that leaves a
+  cell a later read calls blank. Writing an empty string instead makes VERIFY's recognition of its
+  own edit depend on how Sheets echoes such a write. Two consequences: `7-verify.ts` asks its
+  expected map `has`, never `get`, because a planned clear carries no value and truthiness would
+  read the emptied cell as a concurrent hand and roll a correct write back; and `sameValue` reads an
+  empty `ExtendedValue` and an absent one as the same nothing, the way `isBlank` already does, so a
+  read that spells an emptied cell either way still recognises the write. Which fields may be
+  emptied is a whitelist of its own in `5-guard.ts` — `EMPTIABLE_EDITS`, and nothing on an insert,
+  which fills a row rather than clearing one.
 - **Ask the plan, not the grid.** Whether a write landed and which rows a rollback may delete are
   both answered from the planned writes. Row growth answers neither: `batchUpdate` is atomic, and an
   insert whose batch failed leaves the count unchanged. Reading growth as "it landed" freezes the
@@ -222,7 +252,7 @@ the process, and the rest carries its pipeline position in the filename, so `ls`
 | GUARD | `5-guard.ts` — a checklist of named rules; refuses a plan that does not re-derive |
 | BUILD | `6-requests.ts` — a plan → one ordered batch, plus the rollback request builders |
 | VERIFY | `7-verify.ts` — did the write do exactly what was planned |
-| — | `values.ts` — the sheet's value conventions (serials, runtime bounds), one copy for planner and guard |
+| — | `values.ts` — the sheet's value conventions (serials, runtime bounds, the watch note's shape), one copy for planner and guard |
 | io | `io/spreadsheet.ts` (read/apply/list), `io/catalogue.ts` and `io/runtimes.ts` (fetch only), `io/apply.ts` (the write-and-recover protocol), `io/backups.ts` (the snapshot tab's whole life), `io/journal.ts` (the run history) |
 | — | `sync.ts` — the driver: run states, the freshness loop, the plan-fetch fixpoint, the journal choke point |
 

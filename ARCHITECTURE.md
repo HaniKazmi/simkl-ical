@@ -48,11 +48,12 @@ separate SIMKL type rather than a genre, and carries no season number.
 
 ### The sheet sync — INDEX → READ/PARSE → (PLAN ⇄ FETCH) → GUARD → BUILD → APPLY → VERIFY → ROLLBACK
 
-Inert unless `SHEET_ID` **and** a Google credential are both set. It writes exactly four things —
+Inert unless `SHEET_ID` **and** a Google credential are both set. It writes exactly five things —
 a season row's `Episode` count, a season row's `End` date, a season row's `Episodes` runtime *into a
-blank cell only*, and a show row's `Status` — and inserts a season row when a new season is started.
-Nothing else, ever. The runtime additionally needs `TVDB_API_KEY`; without it the other three behave
-exactly as they do with it.
+blank cell only*, a show row's `Status`, and a season row's `Status`, which dates that `Episode`
+count and moves only when it does, until `End` arrives to say it better — and inserts a season row
+when a new season is started. Nothing else, ever. The runtime additionally needs `TVDB_API_KEY`;
+without it the other four behave exactly as they do with it.
 
 | Step | What happens | Upstream calls |
 | --- | --- | --- |

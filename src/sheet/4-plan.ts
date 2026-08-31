@@ -11,9 +11,11 @@
  * gap strands a row — demanded and never written, or waiting on a lookup
  * nothing requests.
  *
- * The write surface is three fields — a season's `Episode`, a season's `End`,
- * a show's `Status` — plus inserting a season row. Everything else is
- * hand-maintained or a formula that rolls up by itself.
+ * The write surface is four columns — a season's `Episode`, a season's `End`, a
+ * season's runtime, and `Status`, which means one thing on a show row (the
+ * derived state) and another on a season row (when it was last watched) —
+ * plus inserting a season row. Everything else is hand-maintained or a formula
+ * that rolls up by itself.
  */
 
 import { config } from '../shared/config.ts';
@@ -33,7 +35,7 @@ import {
   type ShowBlock,
 } from './2-grid.ts';
 import { courComplete, type SeasonProgress, type TitleProgress } from './1-index.ts';
-import { runtimeDays, watchSerial } from './values.ts';
+import { ownsNote, runtimeDays, watchedNote, watchSerial } from './values.ts';
 import { seasonAired, seasonComplete, type SeasonShape, type TitleCatalogue } from './3-catalogue.ts';
 import type { RuntimeRequest } from './io/runtimes.ts';
 import type { CatalogueRequest } from './io/catalogue.ts';
@@ -48,7 +50,14 @@ export interface CellEdit {
   field: HeaderName;
   /** The snapshot's `userEnteredValue`, for the guard and the rollback. */
   previous: ExtendedValue | undefined;
-  value: ExtendedValue;
+  /**
+   * Absent empties the cell — the same encoding `writeCell` already uses to
+   * undo an inserted value, and the only one that leaves a cell a later read
+   * calls blank. Writing an empty string instead would leave the cell holding
+   * something, and how Sheets echoes such a write decides whether VERIFY
+   * recognises its own edit.
+   */
+  value: ExtendedValue | undefined;
   /** A1 for the report. Never sent — writes are index-based. */
   address: string;
   note: string;
@@ -129,7 +138,7 @@ const cellAt = (grid: Grid, row: number, column: number): CellData | undefined =
 const num = (numberValue: number): ExtendedValue => ({ numberValue });
 const str = (stringValue: string): ExtendedValue => ({ stringValue });
 
-const edit = (grid: Grid, row: number, field: HeaderName, value: ExtendedValue, note: string): CellEdit => {
+const edit = (grid: Grid, row: number, field: HeaderName, value: ExtendedValue | undefined, note: string): CellEdit => {
   const column = grid.columns[field];
   return { row, column, field, previous: cellAt(grid, row, column)?.userEnteredValue, value, address: a1(row, column), note };
 };
@@ -466,6 +475,136 @@ const runtimeAnswer = (
   return { state: 'target', id, request: { id, tvdbId, season: season.season } };
 };
 
+// --- Closing a row ----------------------------------------------------------
+
+type ResolvedRow = Extract<RowResolution, { kind: 'resolved' }>;
+
+/**
+ * The `End` date and the runtime that rides with it, for a row that resolved
+ * and is not already dated.
+ *
+ * `End` closes the row for good — the guard refuses every later edit to a
+ * dated row — so a row whose runtime question is still open waits rather than
+ * closing blind. The date is not lost by waiting: it comes from the watch
+ * timestamp, so a row deferred three polls gets the identical serial three
+ * polls later.
+ *
+ * Accumulates into the plan the way the rest of the walk does, and returns the
+ * one thing the caller branches on: whether this batch dates the row, which is
+ * what decides the fate of the watch note beside it.
+ */
+const closeSeason = (
+  plan: SheetPlan,
+  demands: PlanDemands,
+  grid: Grid,
+  block: ShowBlock,
+  season: SeasonRow,
+  resolved: ResolvedRow,
+  index: Map<number, TitleProgress>,
+  titles: Map<number, TitleCatalogue>,
+  { label, timezone }: { label: string; timezone: string },
+): boolean => {
+  if (!resolved.complete) return false;
+
+  const serial = watchSerial(resolved.lastWatchedAt, timezone);
+  if (serial === null) {
+    plan.skips.push({ code: 'unusable-timestamp', message: `${label}: complete, but its last watch timestamp is unusable` });
+    return false;
+  }
+
+  const runtime = runtimeAnswer(grid, block, season, index, titles);
+  if (runtime.state === 'pending') {
+    // Nothing to demand: without the detail there is no key to ask TVDB with,
+    // and the block's catalogue demand already asks for it.
+    plan.skips.push({ code: 'awaiting-runtimes', message: `${label}: complete, but its catalogue detail has not come back — left open for the next poll` });
+    return false;
+  }
+  // One map read answers the whole state machine: `undefined` is unanswered,
+  // `null` settled with nothing usable, a number the answer.
+  const minutes = runtime.state === 'target' ? titles.get(runtime.id)?.seasonRuntimes.get(runtime.request.season) : null;
+  if (runtime.state === 'target' && minutes === undefined) {
+    demands.runtimes.push(runtime.request);
+    plan.skips.push({ code: 'awaiting-runtimes', message: `${label}: complete, but its episode runtimes have not come back — left open for the next poll` });
+    return false;
+  }
+
+  plan.edits.push(edit(grid, season.row, 'End', num(serial), `${label}: ended`));
+  if (runtime.state === 'ineligible') return true;
+
+  // Settled-with-nothing falls back to the show-wide runtime, same as a row
+  // being created. This batch dates the row either way, so the choice is
+  // between an approximate number and a cell nothing can ever fill — and it
+  // must not depend on which run first saw the season, or two identical-looking
+  // rows differ for a reason no reader could see. A title with no TVDB key at
+  // all is that same case: no average is coming, so the show-wide length is
+  // what the cell gets.
+  const days = runtimeDays(minutes) ?? runtimeDays(titles.get(runtime.id)?.runtime);
+  if (days === null) {
+    plan.notes.push(`${label}: ended with no usable episode runtimes, so its Episodes cell is left blank`);
+  } else {
+    // The season's own average where TVDB answered, the show's usual episode
+    // length where it did not.
+    const measured = minutes === null ? "SIMKL's show-wide episode runtime" : `${minutes} min average episode runtime`;
+    plan.edits.push(edit(grid, season.row, 'Episodes', num(days), `${label}: ${measured}`));
+  }
+  return true;
+};
+
+/**
+ * The `Status` cell on a season row: when the season was last watched, and
+ * nothing once the row is dated — the `End` column says the same thing more
+ * precisely, and a row that never changes again should not keep a running note.
+ *
+ * **The note dates the count beside it, so it moves only when that count
+ * does.** An open row whose `Episode` cell this run leaves alone is left alone
+ * whole: nothing about it moved, so a fresh date would claim otherwise, and
+ * `lastWatchedAt` drifts for reasons the count does not see — a scrobbler
+ * restamping an episode, or a delta re-reporting the same watch. It also keeps
+ * the note out of the run's budget in the way that matters: every note lands on
+ * a row the plan already edits, so it costs an edit and never a row, and the
+ * set of rows it can appear on is the set that moved rather than every row
+ * watched inside the window. The insert path applies the same rule from the
+ * other side — a row created open carries the date its first count is made of.
+ *
+ * The clear is not conditioned on it: a stale note on a closing row has to go
+ * whether or not that same batch advanced the count.
+ *
+ * **Only ever this sync's own note**, which is what `ownsNote` decides: a blank
+ * cell may be written into and a cell holding a date of exactly the shape
+ * `watchedNote` produces may be moved on or taken away. Anything else in that
+ * column a human typed, and the row closes around it rather than through it.
+ * The guard re-derives the same predicate, one copy in `values.ts`.
+ *
+ * A formula is declined by that predicate too, and it has to be: `season.status`
+ * is the cell's *result*, so a formula rendering a date reads as this sync's own
+ * note and would be planned over. The guard refuses a formula target
+ * unconditionally and refusal is whole-plan, so one such cell would stop every
+ * unrelated edit for as long as its row sits inside the activity window.
+ * Declined here so the guard stays the backstop.
+ *
+ * No scope test beyond the row resolving: the date comes from a watch
+ * timestamp, so a cour row's number never has to address anything upstream —
+ * unlike the runtime beside it.
+ */
+const statusNote = (
+  grid: Grid,
+  season: SeasonRow,
+  lastWatchedAt: Temporal.Instant | null,
+  { advanced, closing, label, timezone }: { advanced: boolean; closing: boolean; label: string; timezone: string },
+): CellEdit | null => {
+  const cell = cellAt(grid, season.row, grid.columns.Status);
+  if (!ownsNote(cell, season.status)) return null;
+
+  if (closing) {
+    // Nothing of ours in a blank cell to take away.
+    return isBlank(cell) ? null : edit(grid, season.row, 'Status', undefined, `${label}: dated, so its last-watched note is cleared`);
+  }
+  if (!advanced) return null;
+  const text = watchedNote(lastWatchedAt, timezone);
+  if (text === null || text === season.status) return null;
+  return edit(grid, season.row, 'Status', str(text), `${label}: last watched ${text}`);
+};
+
 // --- The plan --------------------------------------------------------------
 
 /**
@@ -551,59 +690,18 @@ export const planSync = (
         plan.skips.push({ code: 'non-numeric-count', message: `${label}: the Episode cell holds something that is not a number, so the row is left alone` });
         continue;
       }
-      if (resolved.watched > (season.episode ?? 0)) {
+      const advanced = resolved.watched > (season.episode ?? 0);
+      if (advanced) {
         plan.edits.push(edit(grid, season.row, 'Episode', num(resolved.watched), `${label}: ${season.episode ?? 0} -> ${resolved.watched} episodes`));
       }
 
-      if (!resolved.complete) continue;
+      const closing = closeSeason(plan, demands, grid, block, season, resolved, index, titles, { label, timezone });
 
-      const serial = watchSerial(resolved.lastWatchedAt, timezone);
-      if (serial === null) {
-        plan.skips.push({ code: 'unusable-timestamp', message: `${label}: complete, but its last watch timestamp is unusable` });
-        continue;
-      }
-
-      // Decided before anything is written: `End` closes the row for good —
-      // the guard refuses every later edit to a dated row — so a row whose
-      // runtime question is open must wait rather than close blind. The date
-      // is not lost by waiting: it comes from the watch timestamp, so a row
-      // deferred three polls gets the identical serial three polls later.
-      const runtime = runtimeAnswer(grid, block, season, index, titles);
-      if (runtime.state === 'pending') {
-        // Nothing to demand: without the detail there is no key to ask TVDB
-        // with, and the catalogue demand above already asks for it.
-        plan.skips.push({ code: 'awaiting-runtimes', message: `${label}: complete, but its catalogue detail has not come back — left open for the next poll` });
-        continue;
-      }
-      // One map read answers the whole state machine: `undefined` is
-      // unanswered, `null` settled with nothing usable, a number the answer.
-      const minutes = runtime.state === 'target' ? titles.get(runtime.id)?.seasonRuntimes.get(runtime.request.season) : null;
-      if (runtime.state === 'target' && minutes === undefined) {
-        demands.runtimes.push(runtime.request);
-        plan.skips.push({ code: 'awaiting-runtimes', message: `${label}: complete, but its episode runtimes have not come back — left open for the next poll` });
-        continue;
-      }
-
-      plan.edits.push(edit(grid, season.row, 'End', num(serial), `${label}: ended`));
-
-      if (runtime.state !== 'ineligible') {
-        // Settled-with-nothing falls back to the show-wide runtime, same as a
-        // row being created. This batch dates the row either way, so the
-        // choice is between an approximate number and a cell nothing can ever
-        // fill — and it must not depend on which run first saw the season, or
-        // two identical-looking rows differ for a reason no reader could see.
-        // A title with no TVDB key at all is that same case: no average is
-        // coming, so the show-wide length is what the cell gets.
-        const days = runtimeDays(minutes) ?? runtimeDays(titles.get(runtime.id)?.runtime);
-        if (days === null) {
-          plan.notes.push(`${label}: ended with no usable episode runtimes, so its Episodes cell is left blank`);
-        } else {
-          // The season's own average where TVDB answered, the show's usual
-          // episode length where it did not.
-          const measured = minutes === null ? "SIMKL's show-wide episode runtime" : `${minutes} min average episode runtime`;
-          plan.edits.push(edit(grid, season.row, 'Episodes', num(days), `${label}: ${measured}`));
-        }
-      }
+      // Last, because what the note should say depends on whether this batch
+      // dates the row — a row left open for another poll keeps carrying its
+      // date, a row being closed hands the fact over to `End`.
+      const note = statusNote(grid, season, resolved.lastWatchedAt, { advanced, closing, label, timezone });
+      if (note) plan.edits.push(note);
     }
 
     // --- Status, and the season-row insert
@@ -746,11 +844,16 @@ const planInsert = (
   // distinction `runtimeAnswer` draws for an existing row.
   const waiting = !detailed || (target !== null && minutes === undefined);
   const end = complete && !waiting ? watchSerial(candidate.lastWatchedAt, timezone) : null;
+  // The same rule the per-row path applies, so a row is never created in a
+  // state that path would immediately have to correct: an open row carries its
+  // last-watched date, a dated one leaves `End` to say it.
+  const note = end === null ? watchedNote(candidate.lastWatchedAt, timezone) : null;
 
   const cells: Array<{ field: HeaderName; value: ExtendedValue }> = [
     { field: 'Season', value: num(candidate.number) },
     { field: 'Episode', value: num(candidate.watched) },
     { field: 'Start', value: num(start) },
+    ...(note === null ? [] : [{ field: 'Status' as const, value: str(note) }]),
     ...(runtime === null ? [] : [{ field: 'Episodes' as const, value: num(runtime) }]),
     {
       field: 'Length',

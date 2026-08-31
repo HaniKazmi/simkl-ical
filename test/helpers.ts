@@ -213,8 +213,8 @@ export const seasonRow = (
   season: number,
   episode: number | null,
   end: number | null,
-  { id = null, start = 45000, episodes = 0.0153 }: { id?: number | string | null; start?: number; episodes?: number | null } = {},
-): CellSpec[] => [null, null, season, episode, start, end, episodes, { formula: '=G*F' }, id, null];
+  { id = null, start = 45000, episodes = 0.0153, status = null }: { id?: number | string | null; start?: number; episodes?: number | null; status?: string | null } = {},
+): CellSpec[] => [null, status, season, episode, start, end, episodes, { formula: '=G*F' }, id, null];
 
 /** An ISO instant `days` in the past — the cut-off is the gate on everything. */
 export const daysAgo = (days: number): string => ago(Temporal.Duration.from({ days }).total('milliseconds'));

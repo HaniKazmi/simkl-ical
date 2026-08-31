@@ -141,7 +141,10 @@ export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Ver
     return { ok: false, problems, landed, deleteRows: created };
   }
 
-  const expected = new Map<string, ExtendedValue>();
+  // Keyed presence, never the value's truthiness: a planned *clear* carries no
+  // value, and a `get` that answers undefined for it would read the emptied
+  // cell as an unplanned change and roll a correct write back.
+  const expected = new Map<string, ExtendedValue | undefined>();
   for (const edit of plan.edits) expected.set(`${shiftRow(edit.row, insertRows)}:${edit.column}`, edit.value);
   for (const insert of inserts) {
     for (const fill of insert.fill) expected.set(`${insert.row}:${fill.column}`, fill.value);
@@ -160,7 +163,6 @@ export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Ver
       const was = entered(before.snapshot, row, column);
       const now = entered(after, target, column);
       const key = `${target}:${column}`;
-      const plannedValue = expected.get(key);
 
       // The join key is never written by design, so any change means the rows
       // are not the rows we think. No formula exemption — nothing to exempt:
@@ -172,8 +174,8 @@ export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Ver
       }
       if (!inspected.has(column)) continue;
 
-      if (plannedValue) {
-        if (!sameValue(now, plannedValue)) problems.push(`${a1(target, column)}: the planned write did not land`);
+      if (expected.has(key)) {
+        if (!sameValue(now, expected.get(key))) problems.push(`${a1(target, column)}: the planned write did not land`);
         expected.delete(key);
         continue;
       }
@@ -187,9 +189,8 @@ export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Ver
     for (const column of columns) {
       const now = entered(after, row, column);
       const key = `${row}:${column}`;
-      const plannedValue = expected.get(key);
-      if (plannedValue) {
-        if (!sameValue(now, plannedValue)) problems.push(`${a1(row, column)}: the planned write did not land`);
+      if (expected.has(key)) {
+        if (!sameValue(now, expected.get(key))) problems.push(`${a1(row, column)}: the planned write did not land`);
         expected.delete(key);
         continue;
       }

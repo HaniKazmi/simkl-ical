@@ -7,7 +7,9 @@
  * the activity window. One copy of each bound makes that gap unrepresentable.
  */
 
+import { isBlank, isFormula } from './2-grid.ts';
 import { plainDateFrom, plainDateIn } from '../shared/dates.ts';
+import type { CellData } from '../api/google/types.ts';
 
 /** Sheets counts days from 1899-12-30. */
 const SHEET_EPOCH = Temporal.PlainDate.from('1899-12-30');
@@ -28,6 +30,66 @@ export const watchSerial = (at: Temporal.Instant | null | undefined, timezone: s
 
 /** No serial the sync writes is plausibly before this. */
 export const MIN_SERIAL = dateSerial(plainDateFrom('2000-01-01'));
+
+/**
+ * Whether a serial is one the sync could have meant, between the floor above
+ * and a ceiling the caller computes with `maxSerial`. Every date the sync
+ * writes is checked against this pair, whichever column it lands in.
+ */
+export const plausibleSerial = (serial: number | null | undefined, ceiling: number): boolean =>
+  typeof serial === 'number' && serial >= MIN_SERIAL && serial <= ceiling;
+
+/**
+ * A season row's `Status` note: when it was last watched, as text.
+ *
+ * Text rather than a serial, because `Status` is a text column — a serial there
+ * renders as `46265`, and giving the write a number format would mean sending
+ * `fields` beyond `userEnteredValue`, which is what keeps every hand-set format
+ * on the sheet intact.
+ */
+export const watchedNote = (at: Temporal.Instant | null | undefined, timezone: string): string | null =>
+  at ? plainDateIn(at, timezone).toString() : null;
+
+/** Exactly what `watchedNote` produces, and nothing a hand types loosely. */
+const WATCHED_NOTE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * The serial a `Status` cell's text stands for, or null where the cell holds
+ * anything else.
+ *
+ * This is what separates the sync's own note from a hand-typed one, and both
+ * the planner and the guard ask it before overwriting or clearing the cell: a
+ * note the user typed is theirs, and the row closes around it rather than
+ * through it.
+ */
+export const watchedNoteSerial = (text: string | null | undefined): number | null => {
+  if (!text || !WATCHED_NOTE.test(text)) return null;
+  try {
+    return dateSerial(plainDateFrom(text));
+  } catch {
+    // A well-shaped string can still name no date — `2025-02-31`.
+    return null;
+  }
+};
+
+/**
+ * Whether the sync may put its note in this cell: **blank, or holding a note of
+ * its own**. The `Status` column on a season row is otherwise free space, and
+ * what a reader typed there is not reconstructible, so the row closes around a
+ * hand-typed note rather than through it.
+ *
+ * A formula is declined by the same predicate: `text` is the cell's *result*,
+ * so a formula rendering a date would read as the sync's own note. The guard
+ * refuses a formula target unconditionally and refusal is whole-plan, so one
+ * such cell would stop every unrelated edit for as long as its row sits inside
+ * the activity window.
+ *
+ * One copy for planner and guard, like the bounds above: a planner that widened
+ * what counts as its own and a guard that did not would refuse whole plans over
+ * rows the planner thought were fine.
+ */
+export const ownsNote = (cell: CellData | undefined, text: string | null | undefined): boolean =>
+  !isFormula(cell) && (isBlank(cell) || watchedNoteSerial(text) !== null);
 
 /**
  * The guard's ceiling on a date serial: tomorrow, in the viewer's zone.
