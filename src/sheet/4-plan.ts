@@ -11,11 +11,19 @@
  * gap strands a row — demanded and never written, or waiting on a lookup
  * nothing requests.
  *
- * The write surface is four columns — a season's `Episode`, a season's `End`, a
- * season's runtime, and `Status`, which means one thing on a show row (the
- * derived state) and another on a season row (when it was last watched) —
+ * The write surface is five columns — a season's `Episode`, its `Start` and
+ * `End` dates, its runtime, and `Status`, which means one thing on a show row
+ * (the derived state) and another on a season row (when it was last watched) —
  * plus inserting a season row. Everything else is hand-maintained or a formula
  * that rolls up by itself.
+ *
+ * `Start` and `End` are the two that **follow SIMKL**: written whenever what
+ * SIMKL says has moved away from what the baseline recorded, on a dated row as
+ * well as an open one. Every other write compares against the sheet cell, which
+ * is the right comparison for it — a count and a watch note are facts about
+ * their own row, while a start and an end date are facts about SIMKL, and only
+ * a record of what SIMKL last said can tell a change from a standing
+ * disagreement. See `followUpstream`.
  */
 
 import { config } from '../shared/config.ts';
@@ -35,7 +43,9 @@ import {
   type ShowBlock,
 } from './2-grid.ts';
 import { courComplete, type SeasonProgress, type TitleProgress } from './1-index.ts';
-import { ownsNote, runtimeDays, watchedNote, watchSerial } from './values.ts';
+import { maxSerial, ownsNote, plausibleSerial, recordedSerial, runtimeDays, seasonKey, TRACKED_FIELDS, watchedNote, watchSerial } from './values.ts';
+import type { Baseline, TrackedField } from './values.ts';
+import { instantFrom, isoOf } from '../shared/dates.ts';
 import { seasonAired, seasonComplete, type SeasonShape, type TitleCatalogue } from './3-catalogue.ts';
 import type { RuntimeRequest } from './io/runtimes.ts';
 import type { CatalogueRequest } from './io/catalogue.ts';
@@ -125,12 +135,44 @@ export interface PlanDemands {
 export interface PlanResult {
   plan: SheetPlan;
   demands: PlanDemands;
+  /**
+   * Tracked values this pass saw that it is **not** writing: first sightings,
+   * unmoved values, and moves it declined. Safe to record whatever becomes of
+   * the run, because recording them changes nothing that was going to happen.
+   */
+  observed: Baseline;
+  /**
+   * Tracked values this pass planned an edit for, recordable only once that
+   * edit lands.
+   *
+   * Kept apart from `observed` rather than filtered out of it afterwards,
+   * because the two are decided together in one place and so cannot come to
+   * disagree. Recording one of these early is the failure this whole mechanism
+   * has to avoid: the next poll would compare against the new value, find
+   * nothing moved, and the change would be lost for good — the same reason the
+   * library watermark advances only after the call that consumed it returns.
+   */
+  writing: Baseline;
 }
 
 export interface PlanOptions {
   now?: Temporal.Instant;
   timezone?: string;
   sinceDays?: number;
+  /**
+   * What SIMKL last said, from `io/baseline.ts`. Absent for a key means it has
+   * not been observed, so it is recorded and nothing is written — which is what
+   * confines this to changes from now on rather than a reconciliation of every
+   * disagreement the sheet already holds.
+   */
+  baseline?: Baseline;
+  /**
+   * `observeStarts(index)`, hoisted. It is a projection of the library alone,
+   * and the library cannot change while a run is in flight — so the sync builds
+   * it once rather than paying for it on every pass of the plan-fetch fixpoint.
+   * Defaulted so the function stays self-sufficient.
+   */
+  starts?: Baseline;
 }
 
 const cellAt = (grid: Grid, row: number, column: number): CellData | undefined => grid.snapshot.rows[row]?.[column];
@@ -189,7 +231,21 @@ const isRecent = (ids: number[], index: Map<number, TitleProgress>, cutoff: Temp
 type RowResolution =
   | { kind: 'nothing' }
   | { kind: 'skip'; skip: Skip }
-  | { kind: 'resolved'; watched: number; complete: boolean; lastWatchedAt: Temporal.Instant | null };
+  | {
+      kind: 'resolved';
+      watched: number;
+      complete: boolean;
+      lastWatchedAt: Temporal.Instant | null;
+      firstWatchedAt: Temporal.Instant | null;
+      /**
+       * How the baseline names this row, or null where nothing can: `(SIMKL
+       * id, SIMKL season)`, which is what the index keys the same season under
+       * so the two agree. Derived here because only this function knows which
+       * branch a row took, and a second derivation elsewhere is how a record
+       * comes to describe a different season than the row it was read for.
+       */
+      key: string | null;
+    };
 
 const nothing: RowResolution = { kind: 'nothing' };
 const skipped = (code: SkipCode, message: string): RowResolution => ({ kind: 'skip', skip: { code, message } });
@@ -234,12 +290,23 @@ const resolveRow = (
         `${label}: SIMKL entry ${multi.map((p) => p.id).join(', ')} covers ${multi.map((p) => numberedSeasons(p).length).join(', ')} seasons, so the row is ambiguous`,
       );
     }
+    // The row's identity, and the one thing about it that must not move as the
+    // row grows: a split cour gains its second id only once the first is
+    // finished, so the *first* id is the one that was there from the start. A
+    // key on the last would change the day a cour was added, orphaning what was
+    // recorded and re-reading the whole row as never observed.
+    const first = resolved[0] as TitleProgress;
+    const number = numberedSeasons(first)[0];
+
     return {
       kind: 'resolved',
       // Summed across all ids: a split cour is one row.
       watched: resolved.reduce((total, p) => total + watchedIn(p), 0),
       // Only once *every* id is complete.
       complete: resolved.every((p) => courComplete(p)),
+      // The first cour starts the row, as the last one ends it below.
+      firstWatchedAt: number === undefined ? null : (first.seasons.get(number)?.firstWatchedAt ?? null),
+      key: number === undefined ? null : seasonKey(first.id, number),
       // The last id ends the row and dates it. It is also the right *recency*
       // signal: ids go in release order, and a second is only added once the
       // first is finished, so the last id is always the active one —
@@ -259,6 +326,8 @@ const resolveRow = (
     watched: watched.watched,
     complete: seasonComplete(titles.get(progress.id)?.shapes.get(season.season), watched.watched),
     lastWatchedAt: watched.lastWatchedAt,
+    firstWatchedAt: watched.firstWatchedAt,
+    key: seasonKey(progress.id, season.season),
   };
 };
 
@@ -479,6 +548,171 @@ const runtimeAnswer = (
 
 type ResolvedRow = Extract<RowResolution, { kind: 'resolved' }>;
 
+// --- Following SIMKL --------------------------------------------------------
+
+/**
+ * Every season's first watch, keyed the way the record keys it.
+ *
+ * The whole library, not only the rows a pass reaches. Recording is not a write
+ * and costs nothing, while the gap it closes is the one that matters: a first
+ * sighting is silent by design, so a season observed for the first time on the
+ * very run that first reaches it has its move swallowed — and a move is usually
+ * what brought the row into the activity window in the first place. Recording
+ * wide means every later move is a real move.
+ *
+ * `End` cannot be recorded this way. It exists only once a season is known
+ * complete, which takes a catalogue lookup, which is only asked for blocks
+ * already in the window.
+ *
+ * An inserted row is recorded on the same run that writes it, which looks like
+ * the banking this file is otherwise careful about and is not: an insert is
+ * triggered by a row being absent, never by this comparison, so a failed one
+ * re-plans on the next poll whatever the record says.
+ */
+export const observeStarts = (index: Map<number, TitleProgress>): Baseline => {
+  const observed: Baseline = new Map();
+  for (const progress of index.values()) {
+    for (const season of progress.seasons.values()) {
+      if (season.firstWatchedAt === null) continue;
+      observed.set(seasonKey(progress.id, season.number), { Start: isoOf(season.firstWatchedAt) });
+    }
+  }
+  return observed;
+};
+
+/**
+ * Where each tracked field's current value comes from, and when the row is
+ * eligible for it. Keyed on `TrackedField`, so a column added to the set in
+ * `values.ts` and not taught to the planner fails to compile — the direction
+ * that matters, since the guard stops refusing that column on a dated row the
+ * moment the set names it.
+ *
+ * `End` is eligible only on a row already dated. An open row's end date belongs
+ * to `closeSeason`, which holds it back while the runtime question is open, and
+ * a row this batch dates would otherwise be planned two `End` edits.
+ */
+const TRACKED_SOURCE: Record<TrackedField, { of: (resolved: ResolvedRow) => Temporal.Instant | null; on: (season: SeasonRow, resolved: ResolvedRow) => boolean }> = {
+  Start: { of: (resolved) => resolved.firstWatchedAt, on: () => true },
+  End: { of: (resolved) => resolved.lastWatchedAt, on: (season, resolved) => season.closed && resolved.complete },
+};
+
+/**
+ * The end date this row will hold once the batch lands: the one being written
+ * where the batch writes one, else what the cell holds now. Non-numeric reads
+ * as no ordering to check — a hand-typed `TBD` names no day to be after.
+ */
+/**
+ * What one tracked field would become: the value, the serial it renders to, and
+ * whether that differs from what was recorded.
+ */
+interface Candidate {
+  field: TrackedField;
+  at: Temporal.Instant;
+  serial: number;
+  moved: boolean;
+}
+
+/**
+ * The serial a row will hold for a field once the batch lands: the candidate
+ * where one is moving, else what the cell holds now. Non-numeric reads as
+ * nothing to compare — a hand-typed `TBD` names no day.
+ */
+const resulting = (candidates: Candidate[], field: TrackedField, grid: Grid, row: number): number | null => {
+  const moving = candidates.find((c) => c.field === field && c.moved);
+  if (moving) return moving.serial;
+  const held = numberOf(cellAt(grid, row, grid.columns[field]));
+  return typeof held === 'number' ? held : null;
+};
+
+const followUpstream = (
+  { plan, grid, timezone, ceiling, baseline, observed, writing }: FollowContext,
+  season: SeasonRow,
+  resolved: ResolvedRow,
+  label: string,
+): void => {
+  const key = resolved.key;
+  if (key === null) return;
+
+  // Decided before any of it is emitted, because the one rule these two fields
+  // have between them is about the *pair*: a start cannot fall after the end.
+  // Checked per field as each was planned, the answer would depend on which was
+  // considered first — and on a row where both move, on a value about to be
+  // replaced.
+  const candidates: Candidate[] = [];
+  for (const field of TRACKED_FIELDS) {
+    const source = TRACKED_SOURCE[field];
+    if (!source.on(season, resolved)) continue;
+    const at = source.of(resolved);
+    const serial = watchSerial(at, timezone);
+    if (at === null || serial === null) continue;
+    const was = recordedSerial(baseline.get(key)?.[field], timezone);
+    candidates.push({ field, at, serial, moved: was !== null && was !== serial });
+  }
+
+  const start = resulting(candidates, 'Start', grid, season.row);
+  const end = resulting(candidates, 'End', grid, season.row);
+  const inverted = start !== null && end !== null && start > end;
+
+  for (const { field, at, serial, moved } of candidates) {
+    const record = (into: Baseline): void => void into.set(key, { ...into.get(key), [field]: isoOf(at) });
+
+    // Two reasons to decline a move, both leaving the value recorded. Declining
+    // in the planner rather than at the guard is the point: refusal there is
+    // whole-plan, so one bad row would hold up every unrelated edit on every
+    // poll for as long as it sat in scope.
+    //
+    // Out of range is SIMKL's fault. Inverted is usually the sheet's — a row
+    // holding a date typed by hand, or one written here before the watch it
+    // came from was corrected — and writing anyway would leave the row saying
+    // it ended before it began.
+    const why = !plausibleSerial(serial, ceiling)
+      ? 'is outside the range this sync writes'
+      : inverted
+        ? 'would leave the row starting after it ended'
+        : null;
+
+    if (moved && why !== null) {
+      plan.skips.push({ code: 'unusable-timestamp', message: `${label}: SIMKL's ${field} date ${why}, so that cell is left alone` });
+      record(observed);
+      continue;
+    }
+
+    if (!moved) {
+      // Everything not being written is observed, stated once so the
+      // disjointness the mechanism rests on reads off one exit.
+      record(observed);
+      continue;
+    }
+
+    const before = watchedNote(instantFrom(baseline.get(key)?.[field]), timezone);
+    plan.edits.push(edit(grid, season.row, field, num(serial), `${label}: ${field} moved from ${before} to ${watchedNote(at, timezone)}`));
+    // Into `writing`, and *withdrawn* from `observed`, which `observeStarts`
+    // has already seeded with this very value: recorded before its write lands,
+    // the next poll compares against it, finds nothing moved, and the change is
+    // lost. The withdrawal is what keeps the two maps disjoint.
+    //
+    // It *replaces* the entry rather than deleting the field from it. `observed`
+    // is a shallow copy of a seed the run reuses across every planning pass and
+    // every re-read, so the entries are shared: deleting in place would strip
+    // the field from the seed itself.
+    record(writing);
+    const seeded = { ...observed.get(key) };
+    delete seeded[field];
+    observed.set(key, seeded);
+  }
+};
+
+/** Everything `followUpstream` needs that does not vary between rows, built once per run. */
+interface FollowContext {
+  plan: SheetPlan;
+  grid: Grid;
+  timezone: string;
+  ceiling: number;
+  baseline: Baseline;
+  observed: Baseline;
+  writing: Baseline;
+}
+
 /**
  * The `End` date and the runtime that rides with it, for a row that resolved
  * and is not already dated.
@@ -502,12 +736,16 @@ const closeSeason = (
   resolved: ResolvedRow,
   index: Map<number, TitleProgress>,
   titles: Map<number, TitleCatalogue>,
-  { label, timezone }: { label: string; timezone: string },
+  { label, timezone, ceiling, writing }: { label: string; timezone: string; ceiling: number; writing: Baseline },
 ): boolean => {
   if (!resolved.complete) return false;
 
   const serial = watchSerial(resolved.lastWatchedAt, timezone);
-  if (serial === null) {
+  // Bounded here, not only in the guard, for the reason `followUpstream` gives:
+  // refusal is whole-plan, so a single upstream timestamp outside the writable
+  // range would hold up every unrelated edit for as long as its row sat inside
+  // the activity window. Both writers of `End` owe the same skip.
+  if (serial === null || !plausibleSerial(serial, ceiling)) {
     plan.skips.push({ code: 'unusable-timestamp', message: `${label}: complete, but its last watch timestamp is unusable` });
     return false;
   }
@@ -529,6 +767,13 @@ const closeSeason = (
   }
 
   plan.edits.push(edit(grid, season.row, 'End', num(serial), `${label}: ended`));
+  // Recorded like any other tracked write, and only once it lands. Without
+  // this the closing run banks nothing, the next poll sees `End` for the first
+  // time and records it silently, and a correction landing in between is lost
+  // for good — the gap this whole mechanism exists to close.
+  if (resolved.key !== null && resolved.lastWatchedAt !== null) {
+    writing.set(resolved.key, { ...writing.get(resolved.key), End: isoOf(resolved.lastWatchedAt) });
+  }
   if (runtime.state === 'ineligible') return true;
 
   // Settled-with-nothing falls back to the show-wide runtime, same as a row
@@ -621,29 +866,43 @@ export const planSync = (
   grid: Grid,
   index: Map<number, TitleProgress>,
   titles: Map<number, TitleCatalogue>,
-  { now = Temporal.Now.instant(), timezone = config.timezone, sinceDays = config.sheetSinceDays }: PlanOptions = {},
+  { now = Temporal.Now.instant(), timezone = config.timezone, sinceDays = config.sheetSinceDays, baseline = new Map(), starts }: PlanOptions = {},
 ): PlanResult => {
   const plan = emptyPlan();
   const demands: PlanDemands = { catalogue: [], runtimes: [] };
   const cutoff = cutoffFrom(now, sinceDays);
   const duplicates = duplicateIds(grid.blocks);
   const seen = new Set<number>();
+  // Copied, never used directly: a pass whose plan is discarded must not leave
+  // its withdrawals in the caller's seed. The entries themselves are never
+  // mutated in place — only replaced — so a shallow copy is enough.
+  const observed = new Map(starts ?? observeStarts(index));
+  const writing: Baseline = new Map();
+  const follow: FollowContext = { plan, grid, timezone, ceiling: maxSerial(now, timezone), baseline, observed, writing };
 
   for (const block of grid.blocks) {
     const ids = blockIds(block);
     for (const id of ids) seen.add(id);
 
-    if (!isRecent(ids, index, cutoff)) continue;
+    // Recency gates the *expensive* half — the catalogue lookups, and every
+    // write that reads the sheet cell rather than the record. The fields that
+    // follow SIMKL are not gated on it at all: what makes them safe on a
+    // dormant sheet is the baseline, which writes nothing it has not seen move,
+    // and that is a better gate than a watch timestamp. It is also the only one
+    // that answers the question actually being asked — a date corrected today
+    // is a recent *change*, whatever day it was corrected to, and the watch
+    // timestamp it moves may be years old and may not move at all.
+    const recent = isRecent(ids, index, cutoff);
     const anime = usesCourModel(block);
 
     // The block's catalogue lookups. The episode list cannot be gated on "a
     // season ended" — it is what discovers that. Anime needs none: one entry
     // is one cour, so its own counters describe the season.
-    if (!anime) {
+    if (recent && !anime) {
       for (const id of block.ids) demands.catalogue.push({ id, episodes: true, detail: true });
     }
     const sourceId = statusSource(block);
-    if (sourceId !== null) demands.catalogue.push({ id: sourceId, anime, detail: true });
+    if (recent && sourceId !== null) demands.catalogue.push({ id: sourceId, anime, detail: true });
 
     // Two rows describing the same season of the same title: both would be
     // planned the same count, silently, and only one rolls up into the show
@@ -663,22 +922,36 @@ export const planSync = (
       const resolution = resolveRow(block, season, index, titles, duplicates);
       if (resolution.kind === 'nothing') continue;
       if (resolution.kind === 'skip') {
-        plan.skips.push(resolution.skip);
+        // Reported only for a block in scope. Every row now reaches
+        // `resolveRow`, so without this a sheet holding one title SIMKL no
+        // longer lists would name it on every poll for the life of the sheet —
+        // and a row that cannot be resolved has no tracked field to follow, so
+        // the reach-back gains nothing by saying so.
+        if (recent) plan.skips.push(resolution.skip);
         continue;
       }
       const resolved = resolution;
 
-      // A season row with an end date is finished, by the user's decision,
-      // and never revisited — so a wrongly-stamped end date could never be
-      // corrected, which is why `End` is so conservative.
-      if (season.closed) continue;
-      if (!within(resolved.lastWatchedAt, cutoff)) continue;
-
       const label = `${block.title} S${season.season ?? '?'}`;
       if (season.season !== null && idsFor(block, season).some((id) => (claims.get(`${id}:${season.season}`) ?? 0) > 1)) {
-        plan.skips.push({ code: 'duplicate-season', message: `${label}: more than one row describes this season, so neither is written` });
+        if (recent) plan.skips.push({ code: 'duplicate-season', message: `${label}: more than one row describes this season, so neither is written` });
         continue;
       }
+
+      // Before both the recency test and the dated-row test, and the only
+      // thing that is: a row with an end date is otherwise finished, and a row
+      // outside the activity window is otherwise untouched, but the fields that
+      // follow SIMKL follow it through either. Neither costs an upstream call:
+      // `Start` comes off the library, and `End` needs a completeness answer
+      // that live-action can only get from a catalogue lookup nobody makes out
+      // here — so for a show it is `Start` alone that reaches back, while an
+      // anime cour, whose own counters settle completeness, reaches back with
+      // both.
+      followUpstream(follow, season, resolved, label);
+
+      if (!recent || !within(resolved.lastWatchedAt, cutoff)) continue;
+      if (season.closed) continue;
+
       // A hand-typed count — "12 (rewatch)", "~8" — parses to null, so the
       // comparison below would read it as 0 and plan an edit the guard
       // refuses unconditionally. Refusal is whole-plan, so one such cell
@@ -695,7 +968,7 @@ export const planSync = (
         plan.edits.push(edit(grid, season.row, 'Episode', num(resolved.watched), `${label}: ${season.episode ?? 0} -> ${resolved.watched} episodes`));
       }
 
-      const closing = closeSeason(plan, demands, grid, block, season, resolved, index, titles, { label, timezone });
+      const closing = closeSeason(plan, demands, grid, block, season, resolved, index, titles, { label, timezone, ceiling: follow.ceiling, writing });
 
       // Last, because what the note should say depends on whether this batch
       // dates the row — a row left open for another poll keeps carrying its
@@ -703,6 +976,8 @@ export const planSync = (
       const note = statusNote(grid, season, resolved.lastWatchedAt, { advanced, closing, label, timezone });
       if (note) plan.edits.push(note);
     }
+
+    if (!recent) continue;
 
     // --- Status, and the season-row insert
     //
@@ -775,7 +1050,7 @@ export const planSync = (
     plan.notes.push(`${progress.title} (simkl ${progress.id}) has recent activity and no row — add it by hand if you want it tracked`);
   }
 
-  return { plan, demands };
+  return { plan, demands, observed, writing };
 };
 
 /**

@@ -2,14 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { assertPlanSafe } from '../../src/sheet/5-guard.ts';
 import { parseGrid } from '../../src/sheet/2-grid.ts';
-import { deriveStatus, planRecord, planSync, statusSource, type SheetPlan } from '../../src/sheet/4-plan.ts';
+import { deriveStatus, observeStarts, planRecord, planSync, statusSource, type SheetPlan } from '../../src/sheet/4-plan.ts';
 import { seasonShapes, type TitleCatalogue } from '../../src/sheet/3-catalogue.ts';
 import { indexLibrary } from '../../src/sheet/1-index.ts';
-import { dateSerial } from '../../src/sheet/values.ts';
-import { plainDateIn } from '../../src/shared/dates.ts';
+import { dateSerial, seasonKey, type Baseline } from '../../src/sheet/values.ts';
+import { isoOf, plainDateIn } from '../../src/shared/dates.ts';
 import type { EpisodeDetail, ShowDetail } from '../../src/api/simkl/types.ts';
 import type { RowInsert } from '../../src/sheet/4-plan.ts';
-import { daysAgo, libraryOf, sheetSnapshot, SHEET_HEADERS, type CellSpec, type ItemSpec, seasonRow, showRow } from '../helpers.ts';
+import { daysAgo, libraryOf, sheetSnapshot, SHEET_HEADERS, todaySerial, type CellSpec, type ItemSpec, seasonRow, showRow } from '../helpers.ts';
 
 const H = SHEET_HEADERS;
 const TZ = 'Europe/London';
@@ -55,13 +55,16 @@ const scenario = ({ rows, items, episodes = {}, details = {}, tvdbIds = {}, runt
   for (const [id, seasons] of Object.entries(runtimes)) {
     for (const [n, minutes] of Object.entries(seasons)) entry(Number(id)).seasonRuntimes.set(Number(n), minutes);
   }
+  const result = (baseline?: Baseline) => planSync(grid, index, titles, { timezone: TZ, baseline });
   return {
     grid,
     index,
     titles,
-    plan: () => planSync(grid, index, titles, { timezone: TZ }).plan,
-    demands: () => planSync(grid, index, titles, { timezone: TZ }).demands,
-    runtimeDemands: () => planSync(grid, index, titles, { timezone: TZ }).demands.runtimes,
+    /** The whole result; the three below are the parts callers usually want. */
+    result,
+    plan: () => result().plan,
+    demands: () => result().demands,
+    runtimeDemands: () => result().demands.runtimes,
   };
 };
 
@@ -1166,4 +1169,337 @@ test('every row the plan waits on is a season the same pass demanded', () => {
       assert.ok(asked.has(season), `case ${i}: waiting on S${season} that was never demanded — it would defer for ever\n  ${skip.message}`);
     }
   }
+});
+
+// --- following SIMKL --------------------------------------------------------
+
+/** A serial the guard accepts beside a recent watch, so the row's pair is consistent. */
+const TODAY_SERIAL = todaySerial(TZ);
+
+/**
+ * A season the sheet already dated, watched recently enough to be in scope.
+ * The dated row is the point: everything else the planner does stops at one,
+ * and `Start` and `End` are what carry on past it.
+ */
+const dated = (timestamps: string[], end: number | null = TODAY_SERIAL) =>
+  scenario({
+    rows: [show('Fargo', 'Ended', 300), season(1, timestamps.length, end)],
+    items: [{ id: 300, status: 'completed', seasons: { 1: timestamps }, watched: timestamps.length, total: timestamps.length }],
+    episodes: { 300: eps(1, timestamps.length) },
+    details: { 300: { status: 'ended', runtime: 45 } },
+  });
+
+const KEY = seasonKey(300, 1);
+const seen = watched(6, 5);
+const FIRST = seen[0] as string;
+const LAST = seen.at(-1) as string;
+
+/** Noon UTC on the same London day: an instant that moved without the date moving. */
+const sameDay = (iso: string): string => `${plainDateIn(Temporal.Instant.from(iso), TZ).toString()}T12:00:00Z`;
+
+const baselineOf = (entry: Record<string, string>): Baseline => new Map([[KEY, entry]]);
+
+/**
+ * The whole basis of "from now on". A value never observed is indistinguishable
+ * from one that never moved, so the first sighting records and writes nothing —
+ * whatever the cell happens to hold. Reconciling that disagreement is the thing
+ * this deliberately does not do.
+ */
+test('a first sighting is recorded and never written, however far the cell disagrees', () => {
+  const { result } = dated(seen);
+  const { plan, observed } = result();
+  assert.deepEqual(plan.edits, []);
+  assert.equal(observed.get(KEY)?.Start, FIRST);
+});
+
+test('a start date that moved is written onto a row the sheet already dated', () => {
+  const { result } = dated(seen);
+  const { plan, observed, writing } = result(baselineOf({ Start: daysAgo(30) }));
+  assert.deepEqual(plan.edits.map((e) => [e.field, e.value?.numberValue]), [['Start', dateSerial(plainDateIn(Temporal.Instant.from(FIRST), TZ))]]);
+  // The value it is writing is held apart from what it merely saw: recorded
+  // before the write lands, the next poll finds nothing moved and the change
+  // is lost for good.
+  assert.equal(writing.get(KEY)?.Start, FIRST);
+  assert.equal(observed.get(KEY)?.Start, undefined);
+});
+
+test('a start date that did not move is written nowhere', () => {
+  const { plan } = dated(seen).result(baselineOf({ Start: FIRST }));
+  assert.deepEqual(plan.edits, []);
+});
+
+/**
+ * A scrobbler restamping an episode moves the timestamp by seconds and moves
+ * nothing the sheet can show. Comparing instants rather than the days they
+ * render as would plan this same write on every poll.
+ */
+test('a restamp within the same day is not a change', () => {
+  const { plan, observed } = dated(seen).result(baselineOf({ Start: sameDay(FIRST) }));
+  assert.deepEqual(plan.edits, []);
+  assert.equal(observed.get(KEY)?.Start, FIRST);
+});
+
+test('an end date that moved is written onto a dated row', () => {
+  const { plan } = dated(seen).result(baselineOf({ Start: FIRST, End: daysAgo(30) }));
+  assert.deepEqual(plan.edits.map((e) => [e.field, e.value?.numberValue]), [['End', dateSerial(plainDateIn(Temporal.Instant.from(LAST), TZ))]]);
+});
+
+/**
+ * An open row's end date belongs to `closeSeason`, which holds it back while
+ * the runtime question is open. Following it here as well would plan the same
+ * cell twice in one batch.
+ */
+test('an open row’s end date is closed once, not followed', () => {
+  const { plan } = dated(seen, null).result(baselineOf({ Start: FIRST, End: daysAgo(30) }));
+  assert.deepEqual(plan.edits.filter((e) => e.field === 'End').length, 1);
+});
+
+/** Everything the row settled once stays settled; only the two upstream facts move. */
+test('a dated row still takes no count, runtime or note', () => {
+  const { grid, result } = dated(seen);
+  const { plan } = result(baselineOf({ Start: daysAgo(30), End: daysAgo(30) }));
+  assert.deepEqual([...new Set(plan.edits.map((e) => e.field))].sort(), ['End', 'Start']);
+  assert.doesNotThrow(() => assertPlanSafe(plan, grid));
+});
+
+/**
+ * The guard refuses a whole plan, so a single upstream timestamp outside the
+ * writable range would hold up every unrelated edit for as long as its row sat
+ * in the activity window. Stopped in the planner, and recorded even so, or the
+ * skip repeats on every poll.
+ */
+test('an upstream date outside the writable range is skipped rather than planned', () => {
+  // Through `isoOf`, because that is the width every stored timestamp keeps.
+  const future = isoOf(Temporal.Now.instant().add({ hours: 24 * 5 }));
+  // An open row, so the range is the only thing wrong with the date: on a dated
+  // one the ordering rule would reach it first, for a different reason.
+  const { result } = dated([future], null);
+  const { plan, observed } = result(baselineOf({ Start: daysAgo(30) }));
+  assert.deepEqual(plan.edits, []);
+  assert.match(skipMessages(plan), /outside the range this sync writes/);
+  assert.equal(observed.get(KEY)?.Start, future);
+});
+
+/**
+ * Recorded for the whole library, not only the rows a pass reaches. A season
+ * first observed on the very run that first reaches it would have its move
+ * swallowed — and a move is usually what brought the row into scope.
+ */
+test('every season in the library is recorded, including those no row covers', () => {
+  const { result } = scenario({
+    rows: [show('Fargo', 'Ended', 300), season(1, 6, 44000)],
+    items: [
+      { id: 300, status: 'completed', seasons: { 1: seen }, watched: 6, total: 6 },
+      { id: 999, status: 'completed', seasons: { 4: watched(3, 900) }, watched: 3, total: 3 },
+    ],
+    episodes: { 300: eps(1, 6) },
+  });
+  const { observed } = result();
+  assert.equal(observed.has(seasonKey(999, 4)), true);
+});
+
+// --- following SIMKL, for anime ---------------------------------------------
+
+/** Six watches whose first moves and whose last is held fixed. */
+const runFrom = (first: number): string[] => [daysAgo(first), ...Array.from({ length: 5 }, (_, i) => daysAgo(25 - i))];
+
+/**
+ * An anime block: no id on the show row, each cour carrying its own. The sheet
+ * numbers cours in sequence, so this row says season 2 — while the SIMKL entry
+ * behind it numbers its only season 1.
+ */
+const animeCour = (first: number) =>
+  scenario({
+    rows: [show('Frieren', 'Ended', null, 'anime'), season(2, 6, TODAY_SERIAL, 1500)],
+    items: [{ id: 1500, status: 'completed', seasons: { 1: runFrom(first) }, watched: 6, total: 6 }],
+  });
+
+/**
+ * The key is `(SIMKL id, SIMKL season)`, so it agrees with what `observeStarts`
+ * records off the index. Keyed on the *sheet's* season number instead, an anime
+ * row would look up `1500:2`, find nothing there ever, and re-record itself on
+ * every poll — never writing, and never saying why.
+ */
+test('an anime cour is recorded under SIMKL’s season number, not the sheet’s', () => {
+  const { observed } = animeCour(30).result();
+  assert.equal(observed.has(seasonKey(1500, 1)), true);
+  assert.equal(observed.has(seasonKey(1500, 2)), false);
+});
+
+test('an anime cour follows a start date that moved, on a row the sheet dated', () => {
+  const { grid, result } = animeCour(31);
+  const { plan } = result(new Map([[seasonKey(1500, 1), { Start: daysAgo(30) }]]));
+  assert.deepEqual(plan.edits.map((e) => [e.field, e.value?.numberValue]), [['Start', dateSerial(plainDateIn(Temporal.Instant.from(daysAgo(31)), TZ))]]);
+  // The runtime write and the insert are live-action only; following SIMKL is
+  // not, and the guard has to agree with the planner about that.
+  assert.doesNotThrow(() => assertPlanSafe(plan, grid));
+});
+
+/**
+ * A split cour gains its second id only once the first has finished, so keying
+ * on the last id would change the key on the day a cour was added — orphaning
+ * everything recorded and reading the whole row as never observed. The first id
+ * is the one that was there from the start.
+ */
+test('a split cour keeps the key it had before the second half existed', () => {
+  const half = scenario({
+    rows: [show('Ajin: Demi-Human', 'Ended', null, 'anime'), season(1, 13, TODAY_SERIAL, 522882)],
+    items: [{ id: 522882, status: 'completed', seasons: { 1: runFrom(31) }, watched: 13, total: 13 }],
+  });
+  const both = scenario({
+    rows: [show('Ajin: Demi-Human', 'Ended', null, 'anime'), season(1, 26, TODAY_SERIAL, '522882,581835')],
+    items: [
+      { id: 522882, status: 'completed', seasons: { 1: runFrom(31) }, watched: 13, total: 13 },
+      { id: 581835, status: 'completed', seasons: { 1: watched(13, 3) }, watched: 13, total: 13 },
+    ],
+  });
+
+  const recorded = new Map([[seasonKey(522882, 1), { Start: daysAgo(30) }]]);
+  const before = half.result(recorded).plan.edits.map((e) => [e.field, e.value?.numberValue]);
+  const after = both.result(recorded).plan.edits.filter((e) => e.field === 'Start').map((e) => [e.field, e.value?.numberValue]);
+  assert.deepEqual(after, before, 'the second id arriving does not move the key or the value');
+});
+
+/**
+ * The sync builds the seed once and hands the same map to every planning pass
+ * and every re-read, and `planSync` only shallow-copies it — so what makes that
+ * copy safe is that planning never edits an entry, it replaces it. Withdrawing a
+ * field by deleting it in place would strip it from the seed itself, leaving a
+ * discarded pass to decide what later passes see.
+ */
+test('planning does not edit the seed it was handed', () => {
+  // An **open** row: on a dated one the `End` step replaces the entry before
+  // `Start` withdraws from it, so the sharing this guards is already broken and
+  // the assertion would hold whatever the withdrawal did.
+  const { grid, index, titles } = dated(seen, null);
+  const starts = observeStarts(index);
+  const before = JSON.stringify([...starts]);
+
+  // A moved Start, so the withdrawal this guards actually runs.
+  planSync(grid, index, titles, { timezone: TZ, baseline: baselineOf({ Start: daysAgo(30) }), starts });
+  assert.equal(JSON.stringify([...starts]), before);
+});
+
+/**
+ * A row dated before SIMKL now says its first episode was watched — a date
+ * typed by hand, or one this sync wrote before the watch was corrected. The
+ * write is dropped for that row alone.
+ *
+ * The guard refuses such a pair, and refusal is whole-plan: left to it, one
+ * inconsistent row would stop every unrelated edit on every poll for as long as
+ * it sat inside the activity window, since a refused run records nothing and
+ * plans the same edit again.
+ */
+test('a start date that would fall after the row’s end is skipped, not planned', () => {
+  const { grid, result } = dated(seen, 44000);
+  const { plan } = result(baselineOf({ Start: daysAgo(30) }));
+  assert.deepEqual(plan.edits, []);
+  assert.match(skipMessages(plan), /starting after it ended/);
+  assert.doesNotThrow(() => assertPlanSafe(plan, grid));
+});
+
+/**
+ * Both writers of `End` owe the same bound. A season completing with a
+ * timestamp outside the writable range is one row skipped, never a plan the
+ * guard refuses whole.
+ */
+test('an open season completing on an unusable timestamp is skipped, not planned', () => {
+  const future = isoOf(Temporal.Now.instant().add({ hours: 24 * 5 }));
+  const { grid, result } = dated([future], null);
+  const { plan } = result();
+  assert.deepEqual(plan.edits.filter((e) => e.field === 'End'), []);
+  assert.doesNotThrow(() => assertPlanSafe(plan, grid));
+});
+
+/**
+ * The question the activity window answers is "has this been watched lately",
+ * which is not the question a corrected date asks. Fixing the date you started
+ * a season in 2018 is a change made *today*; it moves no watch timestamp, and
+ * the season it belongs to may never be watched again.
+ *
+ * What keeps this safe on a dormant sheet is the baseline, not the window: a
+ * value never seen move is never written, so a sheet nobody touches still plans
+ * nothing. `Start` costs no lookup, so reaching back adds no upstream call.
+ */
+test('a start date that moved is written however long ago the season was watched', () => {
+  const old = watched(6, 900);
+  const { grid, result } = scenario({
+    rows: [show('Fargo', 'Ended', 300), season(1, 6, TODAY_SERIAL)],
+    items: [{ id: 300, status: 'completed', seasons: { 1: old }, watched: 6, total: 6 }],
+  });
+  const { plan, demands } = result(new Map([[seasonKey(300, 1), { Start: daysAgo(1200) }]]));
+
+  assert.deepEqual(plan.edits.map((e) => e.field), ['Start']);
+  assert.doesNotThrow(() => assertPlanSafe(plan, grid));
+  // The window still gates everything that costs a call: a block nobody has
+  // watched lately is not looked up just to compare a date already in hand.
+  assert.deepEqual(demands.catalogue, []);
+});
+
+/** The counterpart: nothing else reaches back with it. */
+test('an out-of-window row still takes no count, note or status', () => {
+  const old = watched(6, 900);
+  const { plan } = scenario({
+    rows: [show('Fargo', 'Watching', 300), season(1, 2, null)],
+    items: [{ id: 300, status: 'completed', seasons: { 1: old }, watched: 6, total: 6 }],
+  }).result();
+  assert.deepEqual(plan.edits, []);
+  assert.equal(plan.insert, null);
+});
+
+/**
+ * The mirror of the start rule, and the reason the pair is decided before
+ * either half is emitted: an end date that moves *below* the start the row
+ * holds inverts it just as surely, and a check attached to `Start` alone never
+ * runs on a batch that only moves `End`.
+ */
+test('an end date that would fall before the row’s start is skipped, not planned', () => {
+  const { grid, result } = scenario({
+    rows: [show('Fargo', 'Ended', 300), season(1, 2, TODAY_SERIAL, null, null)],
+    items: [{ id: 300, status: 'completed', seasons: { 1: [daysAgo(3000), daysAgo(2999)] }, watched: 2, total: 2 }],
+    episodes: { 300: eps(1, 2) },
+  });
+  const { plan } = result(new Map([[seasonKey(300, 1), { Start: daysAgo(3000), End: daysAgo(1) }]]));
+  assert.deepEqual(plan.edits, []);
+  assert.match(skipMessages(plan), /End date would leave the row starting after it ended/);
+  assert.doesNotThrow(() => assertPlanSafe(plan, grid));
+});
+
+/**
+ * Every row now reaches `resolveRow`, including blocks far outside the activity
+ * window. A sheet holding one title SIMKL no longer lists would otherwise name
+ * it on every poll for the life of the sheet — and an unresolvable row has no
+ * tracked field to follow, so saying so buys nothing.
+ */
+test('a row that cannot be resolved is reported only while its block is in scope', () => {
+  const gone = (watchedDaysAgo: number) =>
+    scenario({
+      rows: [show('Gone Show', 'Ended', 999999), season(1, 6, TODAY_SERIAL)],
+      items: [{ id: 300, status: 'completed', seasons: { 1: [daysAgo(watchedDaysAgo)] }, watched: 1, total: 1 }],
+    }).plan();
+
+  assert.deepEqual(gone(900).skips, [], 'nothing recent in the block, so nothing to say about it');
+  // The same unresolvable row inside the window is still worth naming: there,
+  // the sync would otherwise be expected to write to it.
+  const inScope = scenario({
+    rows: [show('Gone Show', 'Ended', 999999), season(1, 6, TODAY_SERIAL, 999999)],
+    items: [{ id: 999999, status: 'completed', seasons: { 1: [daysAgo(3)] }, watched: 1, total: 1 }],
+  });
+  assert.doesNotThrow(() => assertPlanSafe(inScope.plan(), inScope.grid));
+});
+
+/**
+ * The run that closes a season records the date it wrote, like any other
+ * tracked write. Without it the closing run banks nothing, the next poll sees
+ * `End` for the first time and records it silently, and a correction landing in
+ * between is lost for good.
+ */
+test('the batch that dates a row records the date it wrote', () => {
+  const { result } = dated(seen, null);
+  const { plan, writing } = result();
+  assert.ok(plan.edits.some((e) => e.field === 'End'), 'the row is closed by this batch');
+  assert.equal(writing.get(KEY)?.End, LAST);
+  // In `writing`, never `observed`: a value recorded before its write lands is
+  // a change banked and never made.
+  assert.equal(result().observed.get(KEY)?.End, undefined);
 });

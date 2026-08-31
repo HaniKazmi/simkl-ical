@@ -8,13 +8,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { config, type Config } from '../src/shared/config.ts';
 import { clearSheetRuns } from '../src/sheet/io/journal.ts';
+import { clearBaseline } from '../src/sheet/io/baseline.ts';
+import { dateSerial } from '../src/sheet/values.ts';
 
 import type { Calendars } from '../src/feed/io/calendar.ts';
 import type { SheetSnapshot } from '../src/sheet/io/spreadsheet.ts';
 import type { CellData } from '../src/api/google/types.ts';
 import type { CalendarEntry, CalendarFile, LibraryItem, ShowMetadata, SyncType } from '../src/api/simkl/types.ts';
 import type { Library } from '../src/library.ts';
-import { isoOf } from '../src/shared/dates.ts';
+import { isoOf, plainDateIn } from '../src/shared/dates.ts';
 
 // Set here rather than per file: a file that forgets these reaches the real
 // API, or sleeps 15s per retry path.
@@ -57,15 +59,23 @@ export const recorder = () => {
 /**
  * Override config for the duration of `fn`, then restore. config is a
  * process-wide singleton; a missed restore changes behaviour elsewhere.
+ *
+ * The sheet baseline is emptied here for the same reason, and automatically
+ * rather than by invitation: it is a module-level singleton that *decides*
+ * whether cells get written, so a run that inherits the last test's
+ * observations plans edits against values this test never set up. A test that
+ * wants a baseline seeds it inside `fn`, where this has already cleared it.
  */
 export const withConfig = async (overrides: Partial<Config>, fn: () => void | Promise<void>): Promise<void> => {
   const keys = Object.keys(overrides) as Array<keyof Config>;
   const previous = Object.fromEntries(keys.map((k) => [k, config[k]])) as Partial<Config>;
   Object.assign(config, overrides);
+  clearBaseline();
   try {
     await fn();
   } finally {
     Object.assign(config, previous);
+    clearBaseline();
   }
 };
 
@@ -110,6 +120,28 @@ export const withFreshJournal = async (fn: (dir: string) => Promise<void>): Prom
       clearSheetRuns();
     }
   });
+
+/**
+ * The same, for the baseline. `withConfig` already clears it for every test
+ * that runs a sync, but a test driving `io/baseline.ts` directly needs the temp
+ * dir too — and the isolation rule belongs beside its twin rather than private
+ * to one file, where the next `io/` test would copy it a third time.
+ */
+export const withFreshBaseline = async (fn: (dir: string) => Promise<void>): Promise<void> =>
+  withTempDataDir(async (dir) => {
+    clearBaseline();
+    try {
+      await fn(dir);
+    } finally {
+      clearBaseline();
+    }
+  });
+
+/**
+ * Today's serial in `zone` — the bound a recent watch must sit under, and the
+ * one `fixture.ts`'s UTC `TODAY` cannot give a suite running in another zone.
+ */
+export const todaySerial = (zone: string): number => dateSerial(plainDateIn(Temporal.Now.instant(), zone));
 
 export type FetchHandler = (url: string, init?: RequestInit) => Response | Promise<Response>;
 

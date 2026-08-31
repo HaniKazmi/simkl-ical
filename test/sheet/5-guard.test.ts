@@ -100,15 +100,50 @@ test('a watch note is bounded like the end date it becomes', () => {
 });
 
 test('a field outside the whitelist is refused however plausible', () => {
-  refuses(planOf([fx.cell('fargoS2', 'Start', { numberValue: TODAY })]), /not a field this sync may write/);
   refuses(planOf([fx.cell('fargoS2', 'Season', { numberValue: 3 })]), /not a field this sync may write/);
   refuses(planOf([fx.cell('fargo', 'Show', { stringValue: 'Renamed' })]), /not a field this sync may write/);
   refuses(planOf([fx.cell('fargoS2', 'id', { numberValue: 7 })]), /not a field this sync may write/);
+  refuses(planOf([fx.cell('fargo', 'Type', { stringValue: 'anime' })]), /not a field this sync may write/);
 });
 
-test('a closed season is never touched, whatever the field', () => {
+/**
+ * A dated row settles every fact it settles once — except the two that are not
+ * its own to settle. `Start` and `End` say what SIMKL says, so freezing them
+ * would keep a stale copy rather than preserve a decision.
+ */
+test('a closed season is touched only by the fields that follow SIMKL', () => {
   refuses(planOf([blank.cell('fargoS1', 'Episode', { numberValue: 9 })]), /already has an end date/, blank.grid);
-  refuses(planOf([blank.cell('fargoS1', 'End', { numberValue: TODAY })]), /already has an end date/, blank.grid);
+  refuses(planOf([blank.cell('fargoS1', 'Episodes', { numberValue: 45 / 1440 })]), /already has an end date/, blank.grid);
+  refuses(planOf([blank.cell('fargoS1', 'Status', { stringValue: TODAY_NOTE })]), /already has an end date/, blank.grid);
+
+  assert.doesNotThrow(() => assertPlanSafe(planOf([blank.cell('fargoS1', 'End', { numberValue: TODAY })]), blank.grid));
+  assert.doesNotThrow(() => assertPlanSafe(planOf([blank.cell('fargoS1', 'Start', { numberValue: 43000 })]), blank.grid));
+});
+
+// The one thing the pair can say between them that neither says alone. The
+// existing end date is read off the snapshot, since `SeasonRow` keeps only
+// whether the row is closed.
+test('a start date may not fall after the row’s end date', () => {
+  refuses(planOf([blank.cell('fargoS1', 'Start', { numberValue: 44001 })]), /would fall after the row's end/, blank.grid);
+  assert.doesNotThrow(() => assertPlanSafe(planOf([blank.cell('fargoS1', 'Start', { numberValue: 44000 })]), blank.grid));
+
+  // Against the End this same batch writes, not the one the row holds now: a
+  // row being closed and re-dated in one plan must be checked as it will read.
+  const plan = planOf([blank.cell('fargoS2', 'Start', { numberValue: TODAY }), blank.cell('fargoS2', 'End', { numberValue: TODAY })]);
+  assert.doesNotThrow(() => assertPlanSafe(plan, blank.grid));
+  refuses(planOf([blank.cell('fargoS2', 'Start', { numberValue: TODAY }), blank.cell('fargoS2', 'End', { numberValue: 44000 })]), /would fall after the row's end/, blank.grid);
+});
+
+// A blank or hand-typed End names no day to be after, so there is nothing to
+// compare — refusing there would refuse the whole plan over a cell the sync is
+// not writing.
+test('a start date is unbounded above where the end cell names no day', () => {
+  assert.doesNotThrow(() => assertPlanSafe(planOf([blank.cell('fargoS2', 'Start', { numberValue: TODAY })]), blank.grid));
+
+  const tbd = gridFixture(show('fargo', 'Fargo'), season('fargoS1', 1, 6, null, { status: null }));
+  const held = gridFixture(show('fargo', 'Fargo'), raw('fargoS1', [null, null, 1, 6, 43000, 'TBD', null, null, null, null]));
+  assert.doesNotThrow(() => assertPlanSafe(planOf([tbd.cell('fargoS1', 'Start', { numberValue: TODAY })]), tbd.grid));
+  assert.doesNotThrow(() => assertPlanSafe(planOf([held.cell('fargoS1', 'Start', { numberValue: TODAY })]), held.grid));
 });
 
 // Why a wrong-but-larger number is the dangerous failure: a smaller one is

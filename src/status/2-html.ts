@@ -338,6 +338,23 @@ const sheetBody = (model: StatusModel) => {
     ${sheet.runs.length ? runs(model) : html`<p class="dim">Nothing written yet.</p>`}`;
 };
 
+/**
+ * What the sync has recorded SIMKL as saying, and when that last moved.
+ *
+ * Here because nothing else on the page can say it. A first run records every
+ * tracked field and writes nothing by design, which reaches the history as an
+ * `idle` run with no edits — the same thing a sync that never armed produces.
+ * A count separates them.
+ *
+ * A count and a time, never anything read out of the file: the run log is the
+ * one thing here rendered verbatim, and it should stay the only one.
+ */
+const tracking = (model: StatusModel) => {
+  const { seasons, movedAt } = model.sheet.baseline;
+  if (seasons === 0) return html`<span class="dim">nothing tracked yet</span>`;
+  return html`tracking <b class="mono">${seasons}</b> seasons, last moved ${time(movedAt)}`;
+};
+
 /** The tab, linked when there is a spreadsheet id to link it to. */
 const sheetTab = (model: StatusModel) =>
   model.sheet.url === null
@@ -410,7 +427,7 @@ ${model.problems.length === 0 ? null : html`<div class="problems"><ul>${model.pr
     <h2 class="name">Sheet</h2>
     <span class="pill ${model.sheet.state}">${model.sheet.status}</span>
     <span class="sum">${model.sheet.configured
-      ? html`${model.sheet.mode} mode · ${sheetTab(model)} · ${time(model.sheet.lastRun)}${model.sheet.runtimes ? null : ' · runtimes off'}`
+      ? html`${model.sheet.mode} mode · ${sheetTab(model)} · ${time(model.sheet.lastRun)}${model.sheet.runtimes ? null : ' · runtimes off'} · ${tracking(model)}`
       : 'off'}</span>
   </div>
   ${sheetBody(model)}

@@ -8,7 +8,8 @@
  */
 
 import { isBlank, isFormula } from './2-grid.ts';
-import { plainDateFrom, plainDateIn } from '../shared/dates.ts';
+import { instantFrom, plainDateFrom, plainDateIn } from '../shared/dates.ts';
+import type { HeaderName } from './2-grid.ts';
 import type { CellData } from '../api/google/types.ts';
 
 /** Sheets counts days from 1899-12-30. */
@@ -122,3 +123,66 @@ export const runtimeDays = (minutes: number | null | undefined): number | null =
  */
 export const plausibleRuntimeDays = (days: number | undefined): boolean =>
   days !== undefined && days >= MIN_RUNTIME_MINUTES / MAX_RUNTIME_MINUTES && days < 1;
+
+// --- Following SIMKL --------------------------------------------------------
+
+/**
+ * The fields that follow SIMKL: written whenever the value the sync last
+ * recorded has moved, on an open row or a dated one alike.
+ *
+ * One set rather than a policy enum, because there is exactly one question a
+ * caller asks — **may this field be written on a row that already has an end
+ * date**. "Never written" and "written once into a blank cell" are not two
+ * further states of that question but the absence of it, and the rules that
+ * separate them already exist in the shape they need: a field the sync may not
+ * write is absent from the guard's `EDIT_FIELDS`, and write-once *is* the blank
+ * check in `checkRuntimeEdit`. Re-encoding either here would put a second copy
+ * of it in the file whose whole purpose is that there is one.
+ *
+ * Widening this set is the intended way to make another field follow SIMKL.
+ * What it costs is a guard rule for the new field and an entry in the planner's
+ * observation, not a change to the stored shape.
+ */
+const TRACKED = ['Start', 'End'] as const;
+
+/** A column that follows SIMKL. The planner keys its table on this, so a field added here and not taught to the planner is a compile error rather than a guard that quietly stops refusing. */
+export type TrackedField = (typeof TRACKED)[number];
+
+/** What the planner walks; `isTracked` is the membership test the guard asks. */
+export const TRACKED_FIELDS: readonly TrackedField[] = TRACKED;
+
+export const isTracked = (field: HeaderName): field is TrackedField => (TRACKED as readonly HeaderName[]).includes(field);
+
+/** What one season's recorded upstream values look like, keyed by column. */
+export type BaselineEntry = Partial<Record<HeaderName, string>>;
+
+/**
+ * What SIMKL last said, per season. Keyed by identity rather than by row: rows
+ * shift under an insert, and a key that moved would compare one season against
+ * another's history.
+ */
+export type Baseline = Map<string, BaselineEntry>;
+
+/** The key both the planner and the store use. */
+export const seasonKey = (id: number, season: number): string => `${id}:${season}`;
+
+/**
+ * The serial a recorded value stands for — the stored ISO instant, rendered in
+ * the viewer's zone exactly as the current one is.
+ *
+ * Rendering *both* sides is what makes the comparison mean "would the cell
+ * change", which is the only question worth writing for. A scrobbler restamping
+ * an episode moves `lastWatchedAt` by seconds and moves nothing the sheet can
+ * show, so comparing instants would plan a write on every poll. It also keeps a
+ * `TZ` change silent, because the recorded instant re-renders in the new zone
+ * beside the current one — where storing the rendered day instead would make
+ * every row whose watch crosses midnight there differ at once, and there is no
+ * adopt-on-differ path to absorb them.
+ *
+ * Null for absent, and for a stored value that no longer parses. Both mean the
+ * same thing to a caller — nothing to compare against, so record and write
+ * nothing — and a corrupt entry costing one silent re-adopt is the right
+ * direction for a file that decides whether cells get written.
+ */
+export const recordedSerial = (recorded: string | null | undefined, timezone: string): number | null =>
+  watchSerial(instantFrom(recorded), timezone);

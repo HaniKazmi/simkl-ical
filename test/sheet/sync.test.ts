@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import { SheetSync } from '../../src/sheet/sync.ts';
 import { clearTokenCache } from '../../src/api/google/auth.ts';
 import { clearTokenCache as clearTvdbTokenCache } from '../../src/api/tvdb/auth.ts';
-import { cellOf, daysAgo, jsonResponse, libraryOf, quiet, recorder, SHEET_HEADERS, withConfig, withFetch, withFreshJournal, type CellSpec, seasonRow, showRow } from '../helpers.ts';
-import { CREDENTIAL, fakeSheets, type FakeSheetsOptions } from './fake-sheets.ts';
+import { cellOf, daysAgo, jsonResponse, libraryOf, quiet, recorder, SHEET_HEADERS, todaySerial, withConfig, withFetch, withFreshJournal, type CellSpec, seasonRow, showRow } from '../helpers.ts';
+import { CREDENTIAL, DEFAULT_GRID, fakeSheets, type FakeSheetsOptions } from './fake-sheets.ts';
 import { sheetRuns } from '../../src/sheet/io/journal.ts';
 import type { Library } from '../../src/library.ts';
 import { plainDateIn } from '../../src/shared/dates.ts';
@@ -826,5 +826,81 @@ test('with no TVDB key a new row keeps SIMKL’s show-wide runtime', async () =>
       assert.equal(addedRow(sheet)[H.indexOf('Episodes')]?.userEnteredValue?.numberValue, 48 / 1440);
       assert.equal(calls.filter((c) => c.includes('thetvdb.com')).length, 0);
     }),
+  );
+});
+
+// --- following SIMKL, across runs -------------------------------------------
+
+/**
+ * Season 1 is dated in the default grid, so nothing else the planner does can
+ * reach it. Its *last* watch is held fixed and only its first moves, so a
+ * change is one field wide and the assertions name it exactly.
+ */
+const fargo = (first: number): Library =>
+  libraryOf({
+    id: 3381,
+    title: 'Fargo',
+    status: 'watching',
+    seasons: {
+      1: [daysAgo(first), ...Array.from({ length: 5 }, (_, i) => daysAgo(25 - i))],
+      2: Array.from({ length: 5 }, (_, i) => daysAgo(10 - i)),
+    },
+    watched: 11,
+    total: 16,
+    notAired: 5,
+  });
+
+/**
+ * The default grid dates season 1 in 2020, which no recent watch can sit
+ * before — the guard refuses a start after the row's end, and rightly. Dated
+ * today instead, so the row is closed and its dates are consistent.
+ */
+const DATED = DEFAULT_GRID.map((row, i) => (i === 2 ? season(1, 6, todaySerial('Europe/London')) : row));
+
+/** Where season 1's `Start` cell sits in that grid. */
+const S1_START = 'E3';
+
+test('a change is written only once the value before it has been observed', async () => {
+  await run(
+    'apply',
+    { grid: DATED },
+    async (first, _calls, _sheet, sync) => {
+      // First sight of season 1: recorded, and nothing written about it —
+      // whatever its Start cell already held.
+      assert.deepEqual(first.record.edits.map((e) => e.field), ['Episode', 'Status']);
+
+      // Now it moves, and the dated row takes the new date.
+      const second = await sync.run(fargo(31));
+      assert.equal(second.status, 'applied');
+      assert.deepEqual(second.record.edits.map((e) => [e.address, e.field]), [[S1_START, 'Start']]);
+
+      // Applied, so the new value is recorded and the same edit is not planned
+      // a second time.
+      const third = await sync.run(fargo(31));
+      assert.deepEqual(third.record.edits, []);
+    },
+    fargo(30),
+  );
+});
+
+/**
+ * The asymmetry the whole mechanism rests on. A value is recorded only once the
+ * write carrying it has landed — so a run that wrote nothing plans the same
+ * edit again, rather than banking a change the sheet never received and finding
+ * nothing moved ever after.
+ */
+test('a run that wrote nothing leaves the change to be planned again', async () => {
+  await run(
+    'report',
+    { grid: DATED },
+    async (_first, _calls, _sheet, sync) => {
+      const reported = await sync.run(fargo(31));
+      assert.equal(reported.status, 'reported');
+      assert.ok(reported.record.edits.some((e) => e.address === S1_START));
+
+      const again = await sync.run(fargo(31));
+      assert.ok(again.record.edits.some((e) => e.address === S1_START), 'report mode wrote nothing, so the change is still pending');
+    },
+    fargo(30),
   );
 });

@@ -105,12 +105,44 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   and `/tv/episodes/{id}` return byte-identical responses with and without it. On `/sync/all-items`
   it is the gatekeeper: `extended=full` alone turns on `seasons[]`, and `episode_watched_at=yes` and
   `include_all_episodes=yes` are no-ops without it. `ids.simkl` needs none of them.
-- **A dated season row is never revisited**, so every cell it will ever carry has to be right in the
-  one batch that closes it. That is the fact behind most of the planner's conservatism: a season
-  holds its `End` open rather than closing blank whenever its runtime question is still open (the
-  date comes from the watch timestamp, so waiting a poll costs nothing), and an inserted row leaves
-  its runtime cell blank while the season is still airing. The runtime follows *airing* and the
-  `End` date follows *watching* — `seasonAired` versus `seasonComplete` in `3-catalogue.ts`.
+- **A dated season row is revisited only by the fields that follow SIMKL** — `Start` and `End`,
+  named in `TRACKED_FIELDS`. Every other cell it will ever carry has to be right in the one batch
+  that closes it, which is the fact behind most of the planner's conservatism: a season holds its
+  `End` open rather than closing blank whenever its runtime question is still open (the date comes
+  from the watch timestamp, so waiting a poll costs nothing), and an inserted row leaves its runtime
+  cell blank while the season is still airing. The runtime follows *airing* and the `End` date
+  follows *watching* — `seasonAired` versus `seasonComplete` in `3-catalogue.ts`. The two tracked
+  fields are exempt because what they hold is not the row's decision but SIMKL's: freezing them
+  would preserve no judgement, only a stale copy of an upstream fact.
+- **The fields that follow SIMKL ignore the activity window; everything else obeys it.** The window
+  asks "has this been watched lately", which is not the question a corrected date asks — fixing the
+  day you started a season in 2018 is a change made today, moves no watch timestamp, and may belong
+  to a season never watched again. What keeps a dormant sheet quiet is the baseline, not the window:
+  a value never seen to move is never written, which is a strictly better gate. `recent` in
+  `planSync` therefore gates the catalogue demands and every write that reads the cell, while
+  `followUpstream` runs above it. This costs no upstream call, because `Start` comes off the library
+  and `End` needs a completeness answer that no lookup supplies outside the window — so in practice
+  it is `Start` that reaches back.
+- **A change is measured against what was last observed, never against the cell.** SIMKL has no
+  per-field revision and a disagreeing cell may have disagreed since before the sync first ran, so
+  the only thing "changed" can mean is *different from what this service recorded* —
+  `data/sheet-baseline.json`, via `io/baseline.ts`. A key with no record is a first sighting:
+  recorded, and nothing written. That is what keeps this to changes from here on rather than a
+  reconciliation of every standing mismatch. When a move does happen the new value goes in over
+  whatever the cell holds.
+- **A value is recorded only once the write carrying it has landed.** `PlanResult` splits what a
+  pass saw into `observed` — first sightings, unmoved values, declined moves — and `writing`, the
+  values it planned an edit for; `sync.ts` persists the second only on `applied`. Recorded early,
+  the next poll compares against a value the sheet never received, finds nothing moved, and the
+  change is lost for good. Same discipline as the library watermark, which advances only after the
+  call that consumed it returns. `observeStarts` seeds `observed` library-wide, so `followUpstream`
+  has to *withdraw* a field from it when it moves that field to `writing`.
+- **Compare the days, not the instants.** `recordedSerial` renders the stored instant in the
+  viewer's zone exactly as the current one is rendered, because a scrobbler restamping an episode
+  moves `lastWatchedAt` by seconds and moves nothing the sheet can show. Storing the rendered day
+  instead would be worse than it looks: a `TZ` change would make every row whose watch crosses
+  midnight there differ at once — the same ~19% — and there is no adopt-on-differ path to absorb
+  them, so it would be one library-wide edit set refused whole on budget, every poll.
 - **Absent is not null, for `tvdbId` and for a season runtime alike.** Absent means the lookup has
   not answered; null means it answered that nothing is obtainable. Only null may date a row.
   Reading absent as null closes rows on a transient 503 and forfeits their cells for good, so
@@ -204,7 +236,11 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   live OAuth token, and `.env` holds a live `SHEET_ID`. The helpers module forces `sheetId` to
   undefined, `sheetSyncMode` to `off`, and `dataDir` to a throwaway path on import for exactly that
   reason. `clearSheetRuns()` from `sheet/io/journal.ts` belongs in any test that touches the
-  history, the same way `clearCache()` does for the CDN.
+  history, the same way `clearCache()` does for the CDN. The baseline is the same hazard with worse
+  consequences — it decides whether cells get written, so a run inheriting the last test's
+  observations plans edits against values that test never set up — and `withConfig` therefore calls
+  `clearBaseline()` itself rather than leaving it to be remembered. A test wanting a baseline seeds
+  it inside the block.
 
 ## Where things live
 
@@ -248,12 +284,12 @@ the process, and the rest carries its pipeline position in the filename, so `ls`
 | INDEX | `1-index.ts` — library → what was watched, and the early-out that decides whether to read the grid at all |
 | PARSE | `2-grid.ts` — snapshot → blocks, plus the two block predicates (`usesCourModel`, `runtimeScopeOk`) |
 | FOLD | `3-catalogue.ts` — what the upstreams said, reduced and retained across polls: the `CatalogueStore`, the stamping discipline, and the reductions of both payloads |
-| PLAN | `4-plan.ts` — grid + library + catalogue → `{ plan, demands }`; the sync re-plans until nothing new is demanded |
+| PLAN | `4-plan.ts` — grid + library + catalogue + baseline → `{ plan, demands, observed, writing }`; the sync re-plans until nothing new is demanded, and records `writing` only once the write lands |
 | GUARD | `5-guard.ts` — a checklist of named rules; refuses a plan that does not re-derive |
 | BUILD | `6-requests.ts` — a plan → one ordered batch, plus the rollback request builders |
 | VERIFY | `7-verify.ts` — did the write do exactly what was planned |
 | — | `values.ts` — the sheet's value conventions (serials, runtime bounds, the watch note's shape), one copy for planner and guard |
-| io | `io/spreadsheet.ts` (read/apply/list), `io/catalogue.ts` and `io/runtimes.ts` (fetch only), `io/apply.ts` (the write-and-recover protocol), `io/backups.ts` (the snapshot tab's whole life), `io/journal.ts` (the run history) |
+| io | `io/spreadsheet.ts` (read/apply/list), `io/catalogue.ts` and `io/runtimes.ts` (fetch only), `io/apply.ts` (the write-and-recover protocol), `io/backups.ts` (the snapshot tab's whole life), `io/journal.ts` (the run history), `io/baseline.ts` (what SIMKL last said — the one file here that *decides* something) |
 | — | `sync.ts` — the driver: run states, the freshness loop, the plan-fetch fixpoint, the journal choke point |
 
 `src/status/` — MODEL → RENDER
@@ -326,7 +362,9 @@ the image. 26.0.0 is the real floor — it is the release Temporal shipped in, a
 *build-time* option rather than a runtime flag, so code using it typechecks green against
 `@types/node` and then throws `ReferenceError` on a build without it. Homebrew's `node` is such a
 build; the nodejs.org binaries and `node:26-alpine` are not. That is why the matrix pins the floor
-rather than testing only `lts`, and why `index.ts` asserts the global at boot.
+rather than testing only `lts`, and why `shared/config.ts` asserts the global at module scope,
+before the first `Temporal` value it builds. It cannot sit in `index.ts`: imports are hoisted, so
+config fully evaluates before any statement there runs.
 
 The smoke test runs the built image and asserts `/healthz` answers with parseable JSON, that a wrong
 feed token gets a 404 and the right one returns something starting `BEGIN:VCALENDAR`, and the same

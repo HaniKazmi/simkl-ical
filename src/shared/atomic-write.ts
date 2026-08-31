@@ -31,3 +31,45 @@ export const writeFileAtomic = async (
     throw err;
   }
 };
+
+/**
+ * Per-path serialisation of the writes above.
+ *
+ * `writeFileAtomic` stops two writers corrupting each other; it does not stop
+ * them finishing out of order, and a write landing second with older content
+ * persists a file already moved past. Every caller that can be entered twice
+ * before the first finishes needs this — the feed's two refresh timers coincide
+ * every six hours, and the sheet's run log and baseline are both written from a
+ * poll that can overlap the next.
+ *
+ * **Queued per path, never globally.** One queue would make a slow multi-hundred
+ * -kilobyte feed write delay a baseline write that shares nothing with it.
+ *
+ * A failed write breaks nothing for the next: the stored link is normalised so
+ * the chain continues, while the caller still receives the real outcome. Each
+ * path's entry is dropped once it settles with nothing queued behind it, so the
+ * map holds an entry per *in-flight* write rather than per path ever written.
+ */
+const queues = new Map<string, Promise<void>>();
+
+export const writeFileQueued = (
+  path: string,
+  data: string,
+  options?: { mode?: number; dirMode?: number },
+): Promise<void> => {
+  const write = (): Promise<void> => writeFileAtomic(path, data, options);
+  const previous = queues.get(path);
+  // One arm suffices because what is stored is `link`, which never rejects —
+  // that is what makes a failed write break nothing for the next.
+  const next = previous ? previous.then(write) : write();
+
+  const link = next.then(
+    () => {},
+    () => {},
+  );
+  queues.set(path, link);
+  void link.then(() => {
+    if (queues.get(path) === link) queues.delete(path);
+  });
+  return next;
+};

@@ -15,6 +15,7 @@ import { config, tvdbConfigured } from '../shared/config.ts';
 import { recentRequests } from '../api/requests.ts';
 import { assess } from '../health.ts';
 import { sheetRuns } from '../sheet/io/journal.ts';
+import { baselineSummary } from '../sheet/io/baseline.ts';
 import type { Orchestrator } from '../orchestrator.ts';
 import { buildModel } from './1-model.ts';
 import { renderPage } from './2-html.ts';
@@ -68,6 +69,8 @@ export const renderStatus = (
       sheetUrl: spreadsheetUrl(),
       requests: recentRequests(),
       runs: sheetRuns(),
+      // In memory like the journal, so a hard refresh still touches no disk.
+      baseline: baselineSummary(),
     }),
   );
 };

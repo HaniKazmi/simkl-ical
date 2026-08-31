@@ -164,7 +164,7 @@ for the library: the watch detail rides along on the fetch the feed already make
 | `GOOGLE_SA_KEY_B64`              | —          | **Secret.** Base64 of the service-account JSON: `base64 -w0 sa.json` |
 | `GOOGLE_APPLICATION_CREDENTIALS` | —          | Path to that JSON instead, for local dev                        |
 | `SHEET_SYNC_MODE`                | `report`   | `off` / `report` / `apply`. Anything unrecognised clamps to `report` |
-| `SHEET_SINCE_DAYS`               | `90`       | Nothing is touched without watch activity this recent           |
+| `SHEET_SINCE_DAYS`               | `90`       | Counts and statuses need watch activity this recent; dates do not |
 | `SHEET_MAX_EDITS`                | `30`       | Over budget refuses the whole plan rather than trimming it      |
 | `SHEET_MAX_ROWS`                 | `20`       | Distinct rows in one run                                        |
 | `TVDB_API_KEY`                   | —          | **Secret.** Gets each season's *own* average runtime. Unset, the cell falls back to SIMKL's show-wide runtime |
@@ -184,17 +184,35 @@ shows what each run actually wrote, and survives a restart.
 
 ### What it does
 
-It writes exactly four things — a season row's episode count, its end date, its average episode
-runtime *into a blank cell only*, and a show row's status — and inserts a season row when you
-start a new season. It never adds a show, never touches a season that already has an end date,
-never moves a count backwards, and never writes a formula.
+It writes exactly five things — a season row's episode count, its start and end dates, its
+average episode runtime *into a blank cell only*, and a show row's status — and inserts a season
+row when you start a new season. It never adds a show, never moves a count backwards, and never
+writes a formula.
+
+The start and end dates are the two that **keep following SIMKL** after the row is finished: if a
+date changes upstream — you correct a watch date, or rewatch the last episode — the cell is
+updated to match, even on a season that already has an end date. Nothing else on a dated row is
+ever touched again.
+
+They also ignore `SHEET_SINCE_DAYS`. Correcting the date you started a season in 2018 is a change
+made *today*, but it moves no watch timestamp, so a recency window would never see it. What keeps
+this safe on a sheet nobody touches is the record described below, not the window: a value never
+seen to move is never written. Everything else — counts, statuses, runtimes, new rows — still needs
+recent watch activity.
+
+This only ever acts on changes made *from the point you switch it on*. It records what SIMKL says
+the first time it sees each season and writes nothing that run, so dates your sheet and SIMKL have
+always disagreed about are left exactly as they are; only a genuine change upstream produces a
+write. That record lives in `data/sheet-baseline.json` — keep it on the same volume as your token,
+since losing it means one silent run that re-records everything and any change made in the meantime
+goes unnoticed.
 
 The runtime is the one part that uses `TVDB_API_KEY`, and it buys accuracy rather than the
 feature: with a key the cell gets that season's own average episode length, and without one it
 gets SIMKL's show-wide runtime for the series. Only a title SIMKL has no runtime for at all
-leaves the cell blank. It is written in the same batch that dates the row, because a dated row
-is never revisited — so a season still airing gets its row added with the cell blank, waiting
-for the close to fill it.
+leaves the cell blank. It is written in the same batch that dates the row, because the runtime
+cell is never revisited once the row is closed — so a season still airing gets its row added with
+the cell blank, waiting for the close to fill it.
 
 `TVDB_PIN` is needed only for a user-supported TVDB key; a licensed key logs in with the key
 alone, and the pin is irrelevant when no key is set.
