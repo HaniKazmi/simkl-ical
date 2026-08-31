@@ -16,12 +16,22 @@
 
 import { config } from '../shared/config.ts';
 import { isBlank, isFormula, numberOf, runtimeScopeOk, sameValue, type Grid, type HeaderName, type SeasonRow, type ShowBlock } from './2-grid.ts';
-import { maxSerial, MIN_SERIAL, plausibleRuntimeDays } from './values.ts';
+import { maxSerial, ownsNote, plausibleRuntimeDays, plausibleSerial, watchedNoteSerial } from './values.ts';
 import type { CellEdit, RowInsert, SheetPlan } from './4-plan.ts';
 import type { ExtendedValue } from '../api/google/types.ts';
 
 /** What the sync may write to a row that already exists. */
 const EDIT_FIELDS = new Set<HeaderName>(['Status', 'Episode', 'End', 'Episodes']);
+
+/**
+ * What may be *emptied* rather than replaced, per whitelist. Its own axis for
+ * the same reason the whitelists are two: a new row is filled, never cleared,
+ * so an absent value there is a planner that lost one — and a set keeps the
+ * rule beside the fields it qualifies, rather than as a field name spelled into
+ * the shape check both whitelists share.
+ */
+const EMPTIABLE_EDITS = new Set<HeaderName>(['Status']);
+const EMPTIABLE_INSERTS = new Set<HeaderName>();
 
 /**
  * What it may write into a row it is creating. A *separate* whitelist: an
@@ -30,7 +40,7 @@ const EDIT_FIELDS = new Set<HeaderName>(['Status', 'Episode', 'End', 'Episodes']
  * guard's own spec, never derived from what the planner emits — derived, one
  * bad emission would widen both at once.
  */
-const INSERT_FIELDS = new Set<HeaderName>(['Season', 'Episode', 'Start', 'End', 'Episodes', 'Length']);
+const INSERT_FIELDS = new Set<HeaderName>(['Season', 'Status', 'Episode', 'Start', 'End', 'Episodes', 'Length']);
 
 export class UnsafePlanError extends Error {
   constructor(message: string) {
@@ -46,8 +56,8 @@ const refuse: (message: string) => never = (message) => {
   throw new UnsafePlanError(message);
 };
 
-const describeValue = (value: ExtendedValue): string =>
-  value.formulaValue ?? value.stringValue ?? (value.numberValue !== undefined ? String(value.numberValue) : JSON.stringify(value));
+const describeValue = (value: ExtendedValue | undefined): string =>
+  value === undefined ? '(empty)' : (value.formulaValue ?? value.stringValue ?? (value.numberValue !== undefined ? String(value.numberValue) : JSON.stringify(value)));
 
 export interface SafetyLimits {
   maxEdits?: number;
@@ -94,7 +104,7 @@ const checkBudgets = (plan: SheetPlan, maxEdits: number, maxRows: number): void 
  * One cell write's shape, existing row or not: a whitelisted field, at the
  * column the header map resolves, holding a plausible value.
  */
-const checkCellShape = (cell: CellEdit, allowed: Set<HeaderName>, { grid, serialCeiling }: GuardContext): void => {
+const checkCellShape = (cell: CellEdit, allowed: Set<HeaderName>, emptiable: Set<HeaderName>, { grid, serialCeiling }: GuardContext): void => {
   const where = `${cell.address} (${cell.field})`;
 
   if (!allowed.has(cell.field)) refuse(`${where}: not a field this sync may write.`);
@@ -103,12 +113,15 @@ const checkCellShape = (cell: CellEdit, allowed: Set<HeaderName>, { grid, serial
   }
 
   const value = cell.value;
+  // Absent empties the cell — nothing else does, so an absent value outside the
+  // emptiable set is a planner that lost one.
+  if (value === undefined) {
+    if (!emptiable.has(cell.field)) refuse(`${where}: not a field this sync may empty.`);
+    return;
+  }
   if (value.numberValue !== undefined && !Number.isFinite(value.numberValue)) refuse(`${where}: not a finite number.`);
-  if (cell.field === 'End' || cell.field === 'Start') {
-    const serial = value.numberValue;
-    if (serial === undefined || serial < MIN_SERIAL || serial > serialCeiling) {
-      refuse(`${where}: ${describeValue(value)} is not a plausible date serial.`);
-    }
+  if ((cell.field === 'End' || cell.field === 'Start') && !plausibleSerial(value.numberValue, serialCeiling)) {
+    refuse(`${where}: ${describeValue(value)} is not a plausible date serial.`);
   }
 };
 
@@ -134,13 +147,58 @@ const checkCellAlignment = (cell: CellEdit, { grid }: GuardContext): void => {
 
 // --- Per-field rules for edits ----------------------------------------------
 
-const checkStatusEdit = (cell: CellEdit, where: string, ctx: GuardContext): void => {
-  if (!ctx.showRows.has(cell.row)) refuse(`${where}: Status may only be written on a show row.`);
-  if (typeof cell.value.stringValue !== 'string' || !cell.value.stringValue) refuse(`${where}: Status must be non-empty text.`);
+/**
+ * On a show row `Status` is the derived state — text, and never emptied.
+ *
+ * A last-watched date is refused here rather than accepted as text: the column
+ * carries two different facts, and the only way the season row's fact reaches
+ * a show row is a planner that lost track of which row it was writing.
+ */
+const checkShowStatusEdit = (cell: CellEdit, where: string): void => {
+  if (typeof cell.value?.stringValue !== 'string' || !cell.value.stringValue) refuse(`${where}: Status must be non-empty text.`);
+  if (watchedNoteSerial(cell.value.stringValue) !== null) refuse(`${where}: a show row's Status is a state, not a watch date.`);
+};
+
+/**
+ * On a season row `Status` is the last-watched date, so the value is bounded
+ * exactly as `End` is — the same fact, one column earlier in the row's life.
+ */
+const checkWatchedNote = (where: string, value: ExtendedValue | undefined, ceiling: number): void => {
+  if (!plausibleSerial(watchedNoteSerial(value?.stringValue), ceiling)) {
+    refuse(`${where}: ${describeValue(value)} is not a plausible last-watched date.`);
+  }
+};
+
+/**
+ * Whether this batch dates the row — the claim that makes every write a
+ * closing row carries safe. One copy: the runtime and the note's removal both
+ * ride that batch, and a rule that drifted in one would keep passing in the
+ * other, silently.
+ */
+const closesRow = (plan: SheetPlan, row: number): boolean => plan.edits.some((e) => e.row === row && e.field === 'End');
+
+const checkSeasonStatusEdit = (cell: CellEdit, where: string, plan: SheetPlan, season: SeasonRow, ctx: GuardContext): void => {
+  // Overwriting text a human typed is the one way this write can destroy
+  // something nothing can reconstruct. `ownsNote` is the predicate the planner
+  // declines on, re-derived here against the snapshot.
+  if (!ownsNote(ctx.grid.snapshot.rows[cell.row]?.[cell.column], season.status)) {
+    refuse(`${where}: the cell holds something this sync did not write.`);
+  }
+
+  if (cell.value === undefined) {
+    // Emptying rides the batch that dates the row, the same way the runtime
+    // write does: `End` is what makes the note redundant, so a plan that
+    // removed it while leaving the row open would just lose the date.
+    if (!closesRow(plan, cell.row)) {
+      refuse(`${where}: a season's Status may only be cleared on the row that is being closed.`);
+    }
+    return;
+  }
+  checkWatchedNote(where, cell.value, ctx.serialCeiling);
 };
 
 const checkEpisodeEdit = (cell: CellEdit, where: string, season: SeasonRow, ctx: GuardContext): void => {
-  const next = cell.value.numberValue;
+  const next = cell.value?.numberValue;
   if (next === undefined || !Number.isInteger(next) || next < 1) refuse(`${where}: an episode count must be a positive whole number.`);
   // A count typed as text carries only `stringValue`, so it parses to no
   // count — the never-backwards rule below would then compare against 0 and
@@ -170,12 +228,12 @@ const checkRuntimeScope = (where: string, block: ShowBlock): void => {
   }
 };
 
-const checkRuntimeDays = (where: string, value: ExtendedValue): void => {
+const checkRuntimeDays = (where: string, value: ExtendedValue | undefined): void => {
   // Bounds live in `values.ts` beside `runtimeDays`, the conversion that
   // produces every value this checks. At or above 1 the number is minutes
   // where a day fraction belongs, multiplying every `Length` in the block by
   // 1440.
-  if (!plausibleRuntimeDays(value.numberValue)) {
+  if (!plausibleRuntimeDays(value?.numberValue)) {
     refuse(`${where}: ${describeValue(value)} is not a plausible per-episode day fraction.`);
   }
 };
@@ -202,29 +260,32 @@ const checkRuntimeEdit = (cell: CellEdit, where: string, plan: SheetPlan, season
   // no contradiction — its snapshot is from before the write. Without this
   // check, a plan writing a runtime onto a row it left open would pass, and
   // the cell would be filled with nothing to freeze it.
-  if (!plan.edits.some((e) => e.row === cell.row && e.field === 'End')) {
+  if (!closesRow(plan, cell.row)) {
     refuse(`${where}: a runtime may only be written on the row that is being closed.`);
   }
 };
 
 const checkEdit = (cell: CellEdit, plan: SheetPlan, ctx: GuardContext): void => {
-  checkCellShape(cell, EDIT_FIELDS, ctx);
+  checkCellShape(cell, EDIT_FIELDS, EMPTIABLE_EDITS, ctx);
   checkCellAlignment(cell, ctx);
   const where = `${cell.address} (${cell.field})`;
 
-  if (cell.field === 'Status') {
-    checkStatusEdit(cell, where, ctx);
+  // `Status` is the one field with a meaning per row kind, so which row it
+  // landed on picks the rule rather than being a rule itself.
+  if (cell.field === 'Status' && ctx.showRows.has(cell.row)) {
+    checkShowStatusEdit(cell, where);
     return;
   }
 
   const found = ctx.seasonRows.get(cell.row);
   if (!found) refuse(`${where}: ${cell.field} may only be written on a season row.`);
   const { season, block } = found;
-  // A dated season is closed by the user's decision and never revisited. The
-  // runtime write is no exception: it rides the batch that closes the row,
-  // which `checkRuntimeEdit` enforces.
+  // A dated season is closed by the user's decision and never revisited.
+  // Neither the runtime write nor clearing the watch note is an exception:
+  // both ride the batch that closes the row, against a snapshot from before it.
   if (season.closed) refuse(`${where}: the season already has an end date.`);
 
+  if (cell.field === 'Status') checkSeasonStatusEdit(cell, where, plan, season, ctx);
   if (cell.field === 'Episodes') checkRuntimeEdit(cell, where, plan, season, block, ctx);
   if (cell.field === 'Episode') checkEpisodeEdit(cell, where, season, ctx);
 };
@@ -252,6 +313,17 @@ const checkInsert = (insert: RowInsert, ctx: GuardContext): void => {
   const where = `row ${insert.row + 1} (${insert.title} S${insert.season})`;
   const block = checkInsertPlacement(insert, where, ctx);
 
+  // Shape first, so the field-specific rules below run against a cell whose
+  // field, column and emptiability the whitelists have already settled.
+  for (const cell of insert.fill) {
+    if (cell.row !== insert.row) refuse(`${cell.address}: an insert may only fill the row it creates.`);
+    if (cell.previous !== undefined) refuse(`${cell.address}: a new row cannot have a previous value.`);
+    // No alignment: the row does not exist in the snapshot, so there is nothing
+    // to compare. `checkInsertPlacement` pinning the row to its block covers
+    // the bounds an alignment check would add.
+    checkCellShape(cell, INSERT_FIELDS, EMPTIABLE_INSERTS, ctx);
+  }
+
   // A runtime carried by an insert needs *more* care than one on an edit: the
   // same fill creates the row and dates it, so neither the blank-cell rule
   // nor the closed-row rule stands between this number and the sheet, and
@@ -265,13 +337,17 @@ const checkInsert = (insert: RowInsert, ctx: GuardContext): void => {
     checkRuntimeScope(`${runtime.address} (Episodes)`, block);
     checkRuntimeDays(`${runtime.address} (Episodes)`, runtime.value);
   }
-  for (const cell of insert.fill) {
-    if (cell.row !== insert.row) refuse(`${cell.address}: an insert may only fill the row it creates.`);
-    if (cell.previous !== undefined) refuse(`${cell.address}: a new row cannot have a previous value.`);
-    // Shape only — no alignment: the row does not exist in the snapshot, so
-    // there is nothing to compare. `checkInsertPlacement` pinning the row to
-    // its block covers the bounds an alignment check would add.
-    checkCellShape(cell, INSERT_FIELDS, ctx);
+
+  // The same bound an edit's note gets, plus the rule the edit path gets from
+  // the closed-row refusal: a dated row is never revisited, so a note created
+  // beside an `End` date is one nothing can ever remove — the exact state the
+  // clear exists to prevent. Nothing else stands between the value and the
+  // sheet here: the row has no cell to be blank and no note of its own to
+  // recognise.
+  const dated = insert.fill.some((cell) => cell.field === 'End');
+  for (const note of insert.fill.filter((cell) => cell.field === 'Status')) {
+    if (dated) refuse(`${note.address} (Status): a row created with an end date may not also carry a watch note.`);
+    checkWatchedNote(`${note.address} (Status)`, note.value, ctx.serialCeiling);
   }
 };
 

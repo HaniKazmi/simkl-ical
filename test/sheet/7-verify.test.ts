@@ -32,6 +32,28 @@ test('the planned write, and only the planned write, verifies', () => {
   assert.equal(result.landed, true);
 });
 
+// The one write that removes a value instead of replacing one. Sheets may
+// echo an emptied cell as an absent `userEnteredValue` or as an empty one, and
+// `sameValue` calls those two different — read strictly, a correct clear looks
+// like a write that did not land, and the batch is rolled back and re-planned
+// identically on the next poll, for ever.
+test('a cleared cell verifies however the read spells "nothing"', () => {
+  const noted = sheetSnapshot(fx.rows.map((r, i) => (i === fx.at.fargoS2 ? r.map((c, j) => (j === before.columns.Status ? '2024-01-01' : c)) : [...r])));
+  const grid = parseGrid(noted);
+  const clear: CellEdit = { ...fx.cell('fargoS2', 'Status', undefined), previous: { stringValue: '2024-01-01' } };
+
+  for (const [spelling, cell] of [
+    ['omitted', {}],
+    ['an empty value', { userEnteredValue: {} }],
+  ] as const) {
+    const after = noted.rows.map((r) => [...r]);
+    after[fx.at.fargoS2!]![before.columns.Status] = cell;
+    const result = verify(grid, { ...noted, rows: after }, planOf([clear]));
+    assert.equal(result.ok, true, `${spelling}: ${result.problems.join('; ')}`);
+    assert.equal(result.landed, true, `${spelling}: the emptied cell is the write, and it is there`);
+  }
+});
+
 // Why the diff is on userEnteredValue, never effectiveValue: writing a
 // season's Episode recalculates five formulas on the show row above it.
 test('a formula recalculating is not a change', () => {

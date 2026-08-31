@@ -4,7 +4,7 @@ import { assertPlanSafe, UnsafePlanError } from '../../src/sheet/5-guard.ts';
 import { a1, type Grid } from '../../src/sheet/2-grid.ts';
 import type { SheetPlan } from '../../src/sheet/4-plan.ts';
 import type { HeaderName } from '../../src/sheet/2-grid.ts';
-import { fx, gridFixture, H, planOf, raw, season, show, TODAY } from './fixture.ts';
+import { fx, gridFixture, H, planOf, raw, season, show, TODAY, TODAY_NOTE } from './fixture.ts';
 import { dateSerial } from '../../src/sheet/values.ts';
 import { plainDateIn } from '../../src/shared/dates.ts';
 
@@ -24,8 +24,14 @@ test('a formula target is refused unconditionally', () => {
   refuses(planOf([fx.cell('fargoS2', 'Length', { numberValue: 1 })]), /not a field this sync may write/);
 });
 
-test('Status may only be written on a show row, and the other two only on season rows', () => {
-  refuses(planOf([fx.cell('fargoS2', 'Status', { stringValue: 'Ended' })]), /only be written on a show row/);
+// The one field whose meaning depends on the row it lands on: the derived
+// state above, when the season was last watched below. Neither value is
+// writable where the other belongs.
+test('Status is the derived state on a show row and a watch date on a season row', () => {
+  assert.doesNotThrow(() => assertPlanSafe(planOf([fx.cell('fargo', 'Status', { stringValue: 'Ended' })]), fx.grid));
+  assert.doesNotThrow(() => assertPlanSafe(planOf([fx.cell('fargoS2', 'Status', { stringValue: TODAY_NOTE })]), fx.grid));
+  refuses(planOf([fx.cell('fargoS2', 'Status', { stringValue: 'Ended' })]), /not a plausible last-watched date/);
+  refuses(planOf([fx.cell('fargo', 'Status', { stringValue: TODAY_NOTE })]), /a state, not a watch date/);
 
   // A show row whose derived cells are literals, not formulas. The formula
   // guard cannot fire here, so the row-kind guard stands on its own.
@@ -34,6 +40,63 @@ test('Status may only be written on a show row, and the other two only on season
     () => assertPlanSafe(planOf([{ ...literal.cell('fargo', 'End', { numberValue: TODAY }), previous: { numberValue: 44000 } }]), literal.grid),
     /only be written on a season row/,
   );
+});
+
+// The insert path's version of the closed-row refusal. A row created dated is
+// closed from its first read, so every later edit to it is refused — a note
+// put there in the same fill is one nothing can ever take away, the exact
+// state the clear exists to prevent.
+test('a row created with an end date may not also be given a note', () => {
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], fx.insertAt(fx.end, 3, { status: TODAY_NOTE })), fx.grid));
+  refuses(planOf([], fx.insertAt(fx.end, 3, { end: TODAY, status: TODAY_NOTE })), /may not also carry a watch note/);
+});
+
+// A note left behind on an open row is a date that stops being true; a note
+// taken away from an open row is one nothing puts back this poll. Only `End`
+// arriving makes it redundant, so only that batch may remove it.
+test('a season’s watch note is only cleared by the batch that dates the row', () => {
+  const noted = gridFixture(show('fargo', 'Fargo'), season('fargoS1', 1, 6, 44000), season('fargoS2', 2, 3, null, { status: TODAY_NOTE }));
+  const clear = noted.cell('fargoS2', 'Status', undefined);
+  refuses(planOf([clear]), /only be cleared on the row that is being closed/, noted.grid);
+  assert.doesNotThrow(() => assertPlanSafe(planOf([noted.cell('fargoS2', 'End', { numberValue: TODAY }), clear]), noted.grid));
+});
+
+// The Status column on a season row is otherwise free space, and what a reader
+// types there is not reconstructible. The row still closes — around the note,
+// not through it.
+test('text the sync did not write is neither overwritten nor cleared', () => {
+  const typed = gridFixture(show('fargo', 'Fargo'), season('fargoS1', 1, 6, 44000), season('fargoS2', 2, 3, null, { status: 'rewatching with Sam' }));
+  refuses(planOf([typed.cell('fargoS2', 'Status', { stringValue: TODAY_NOTE })]), /this sync did not write/, typed.grid);
+  refuses(
+    planOf([typed.cell('fargoS2', 'End', { numberValue: TODAY }), typed.cell('fargoS2', 'Status', undefined)]),
+    /this sync did not write/,
+    typed.grid,
+  );
+});
+
+// Emptying a cell is how a note is removed, and the only thing that is ever
+// removed: everywhere else an absent value is a planner that lost one.
+test('no field but Status may be emptied', () => {
+  refuses(planOf([fx.cell('fargoS2', 'Episode', undefined)]), /not a field this sync may empty/);
+  refuses(planOf([fx.cell('fargoS2', 'End', undefined)]), /not a field this sync may empty/);
+  // An insert fills a row; nothing there was ever a value to remove. Checked on
+  // `Status` too, the one field an edit may empty: the whitelist has to be what
+  // refuses it, not the value-shaped rule that would otherwise reach it first
+  // and report an implausible date.
+  const emptied = (insert: ReturnType<typeof fx.insertAt>, field: HeaderName) => ({
+    ...insert,
+    fill: insert.fill.map((f) => (f.field === field ? { ...f, value: undefined } : f)),
+  });
+  refuses(planOf([], emptied(fx.insertAt(fx.end, 3), 'Season')), /not a field this sync may empty/);
+  refuses(planOf([], emptied(fx.insertAt(fx.end, 3, { status: TODAY_NOTE }), 'Status')), /not a field this sync may empty/);
+});
+
+// The same bound `End` gets, on the same fact one column earlier.
+test('a watch note is bounded like the end date it becomes', () => {
+  const soon = Temporal.Now.plainDateISO('UTC').add({ days: 3 }).toString();
+  refuses(planOf([fx.cell('fargoS2', 'Status', { stringValue: soon })]), /not a plausible last-watched date/);
+  refuses(planOf([fx.cell('fargoS2', 'Status', { stringValue: '1998-04-02' })]), /not a plausible last-watched date/);
+  refuses(planOf([fx.cell('fargoS2', 'Status', { numberValue: TODAY })]), /not a plausible last-watched date/);
 });
 
 test('a field outside the whitelist is refused however plausible', () => {
@@ -124,7 +187,7 @@ test('a fractional or season-zero row is never inserted', () => {
 // shared list would either forbid it or widen ordinary edits.
 test('an insert may only fill its own whitelist, and only its own row', () => {
   const insert = fx.insertAt(fx.end, 3);
-  const strayField = { ...insert, fill: [...insert.fill, { ...insert.fill[0]!, field: 'Status' as HeaderName, column: fx.grid.columns.Status, address: a1(fx.end, fx.grid.columns.Status) }] };
+  const strayField = { ...insert, fill: [...insert.fill, { ...insert.fill[0]!, field: 'id' as HeaderName, column: fx.grid.columns.id, address: a1(fx.end, fx.grid.columns.id) }] };
   refuses(planOf([], strayField), /not a field this sync may write/);
 
   const strayRow = { ...insert, fill: insert.fill.map((f, i) => (i === 0 ? { ...f, row: fx.at.fargoS2!, address: a1(fx.at.fargoS2!, f.column) } : f)) };

@@ -8,6 +8,8 @@ import { clearTokenCache as clearTvdbTokenCache } from '../../src/api/tvdb/auth.
 import { cellOf, daysAgo, jsonResponse, libraryOf, quiet, recorder, SHEET_HEADERS, withConfig, withFetch, withFreshJournal, type CellSpec, seasonRow, showRow } from '../helpers.ts';
 import { CREDENTIAL, fakeSheets, type FakeSheetsOptions } from './fake-sheets.ts';
 import { sheetRuns } from '../../src/sheet/io/journal.ts';
+import type { Library } from '../../src/library.ts';
+import { plainDateIn } from '../../src/shared/dates.ts';
 
 const H = SHEET_HEADERS;
 
@@ -15,6 +17,9 @@ const show = showRow;
 const season = seasonRow;
 
 const server = fakeSheets;
+
+/** The day `LIBRARY`'s season 2 was last watched, as its Status note reads. */
+const LAST_WATCHED = plainDateIn(Temporal.Instant.from(daysAgo(6)), 'Europe/London').toString();
 
 const LIBRARY = libraryOf({
   id: 3381,
@@ -27,14 +32,19 @@ const LIBRARY = libraryOf({
   notAired: 5,
 });
 
-const run = async (mode: 'report' | 'apply', options: FakeSheetsOptions, assertions: (result: Awaited<ReturnType<SheetSync['run']>>, calls: string[], sheet: ReturnType<typeof server>, sync: SheetSync, log: ReturnType<typeof recorder>) => void | Promise<void>) => {
+const run = async (
+  mode: 'report' | 'apply',
+  options: FakeSheetsOptions,
+  assertions: (result: Awaited<ReturnType<SheetSync['run']>>, calls: string[], sheet: ReturnType<typeof server>, sync: SheetSync, log: ReturnType<typeof recorder>) => void | Promise<void>,
+  library: Library = LIBRARY,
+) => {
   clearTokenCache();
   const sheet = server(options);
   const log = recorder();
   await withConfig({ sheetId: 'SID', sheetSyncMode: mode, googleKeyBase64: CREDENTIAL, timezone: 'Europe/London' }, () =>
     withFetch(sheet.handler, async (calls) => {
       const sync = new SheetSync({ logger: log });
-      const result = await sync.run(LIBRARY);
+      const result = await sync.run(library);
       await assertions(result, calls, sheet, sync, log);
     }),
   );
@@ -45,7 +55,8 @@ const run = async (mode: 'report' | 'apply', options: FakeSheetsOptions, asserti
 test('report mode plans in full and makes no mutating request', async () => {
   await run('report', {}, (result, calls, _sheet, _sync, log) => {
     assert.equal(result.status, 'reported');
-    assert.equal(result.record.edits.length, 1);
+    // The count, and the note of when the season was last watched.
+    assert.deepEqual(result.record.edits.map((e) => e.field), ['Episode', 'Status']);
     assert.ok(log.lines.some((l) => /Fargo S2: 3 -> 5 episodes/.test(l)), 'the report itself is logged');
     assert.deepEqual(calls.filter((c) => c.includes(':batchUpdate')), []);
   });
@@ -56,9 +67,10 @@ test('apply mode writes exactly what it planned and verifies it', async () => {
     assert.equal(result.status, 'applied', result.error ?? '');
     assert.equal(result.error, null);
     assert.equal(sheet.state[3]?.[3]?.userEnteredValue?.numberValue, 5);
+    assert.equal(sheet.state[3]?.[1]?.userEnteredValue?.stringValue, LAST_WATCHED, 'and the row says when it was last watched');
     // Snapshot and write in one atomic batch, a verify read, then the snapshot
     // is dropped.
-    assert.deepEqual(sheet.batches, [['duplicateSheet', 'updateCells'], ['deleteSheet']]);
+    assert.deepEqual(sheet.batches, [['duplicateSheet', 'updateCells', 'updateCells'], ['deleteSheet']]);
     const sheets = calls.filter((c) => c.startsWith('https://sheets.googleapis.com/v4/spreadsheets/'));
     assert.deepEqual(sheets.map((c) => (c.includes(':batchUpdate') ? 'write' : 'read')), ['read', 'write', 'read', 'read', 'write']);
     // `new URL('SID:batchUpdate', base)` reads `SID:` as a scheme and silently
@@ -74,14 +86,15 @@ test('a write that does not verify is rolled back exactly once', async () => {
     assert.equal(result.status, 'rolled-back');
     assert.match(result.error ?? '', /changed without being planned/);
     // The undone run reports what it planned rather than nothing.
-    assert.equal(result.record.edits.length, 1);
+    assert.equal(result.record.edits.length, 2);
     assert.match(result.record.edits[0]?.note ?? '', /Fargo S2: 3 -> 5 episodes/);
     // One wholesale paste from the snapshot, not a cell-by-cell repair.
-    assert.deepEqual(sheet.batches, [['duplicateSheet', 'updateCells'], ['copyPaste'], ['deleteSheet']]);
+    assert.deepEqual(sheet.batches, [['duplicateSheet', 'updateCells', 'updateCells'], ['copyPaste'], ['deleteSheet']]);
     // The restore undoes the whole write — the meddled cell and the planned
     // edit both.
     assert.equal(sheet.state[2]?.[3]?.userEnteredValue?.numberValue, 6);
     assert.equal(sheet.state[3]?.[3]?.userEnteredValue?.numberValue, 3, 'the planned edit is undone too');
+    assert.equal(sheet.state[3]?.[1]?.userEnteredValue, undefined, 'note included');
   });
 });
 
@@ -89,7 +102,7 @@ test('a failed rollback freezes the process rather than writing again', async ()
   await run('apply', { meddle: (state) => void (state[2]![3] = cellOf(99)), failRollback: true }, async (result, _calls, sheet, sync) => {
     assert.equal(result.status, 'frozen');
     assert.match(result.error ?? '', /^FROZEN:/);
-    assert.equal(result.record.edits.length, 1, 'the freeze reports the plan it froze on');
+    assert.equal(result.record.edits.length, 2, 'the freeze reports the plan it froze on');
 
     const writesBefore = sheet.writes();
     const again = await sync.run(LIBRARY);
@@ -106,10 +119,41 @@ test('a 500 on the write is never retried, and the re-read settles what happened
   await run('apply', { failWrite: 1 }, (result, calls, sheet) => {
     assert.equal(result.status, 'failed');
     assert.equal(result.retry, true, 'the next poll tries again');
-    assert.equal(result.record.edits.length, 1, 'a batch that never landed still had a plan');
+    assert.equal(result.record.edits.length, 2, 'a batch that never landed still had a plan');
     assert.equal(calls.filter((c) => c.includes(':batchUpdate')).length, 1);
     assert.equal(sheet.state[3]?.[3]?.userEnteredValue?.numberValue, 3, 'unchanged');
   });
+});
+
+// The one write that removes a value rather than replacing one, driven end to
+// end: an empty `userEnteredValue` has to reach the sheet, and VERIFY has to
+// recognise the emptied cell as the write it planned rather than as a
+// concurrent hand — the difference between a clean run and a rollback.
+test('closing a season empties its watch note, and the run verifies', async () => {
+  const grid: CellSpec[][] = [H, show('Fargo', 'Watching', 3381), season(1, 6, 44000), season(2, 3, null, { status: '2024-01-01', episodes: null })];
+  const episodes = [
+    { season: 1, episode: 1, type: 'episode', aired: true },
+    ...Array.from({ length: 2 }, (_, i) => ({ season: 2, episode: i + 1, type: 'episode', aired: true })),
+  ];
+  const watchedOut = libraryOf({
+    id: 3381,
+    title: 'Fargo',
+    status: 'completed',
+    seasons: { 1: [daysAgo(400)], 2: [daysAgo(4), daysAgo(2)] },
+    watched: 3,
+    total: 3,
+  });
+
+  await run(
+    'apply',
+    { grid, episodes },
+    (result, _calls, sheet) => {
+      assert.equal(result.status, 'applied', result.error ?? '');
+      assert.ok(sheet.state[3]?.[5]?.userEnteredValue?.numberValue, 'the row is dated');
+      assert.equal(sheet.state[3]?.[1]?.userEnteredValue, undefined, 'and the note is gone, not blanked to an empty string');
+    },
+    watchedOut,
+  );
 });
 
 // A failed batch carrying an insert leaves the row count unchanged — the one
@@ -150,9 +194,11 @@ test('a 500 on a write that inserts a row fails cleanly instead of freezing', as
 test('a run with nothing to write is idle and writes nothing', async () => {
   clearTokenCache();
   const sheet = server();
-  // The sheet already holds what SIMKL says.
+  // The sheet already holds what SIMKL says. The blank Status cell is part of
+  // the assertion: a note dates a count, so a row whose count does not move
+  // gets none, and this run has nothing at all to write.
   sheet.state[3]![3] = cellOf(5);
-  await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL }, () =>
+  await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL, timezone: 'Europe/London' }, () =>
     withFetch(sheet.handler, async (calls) => {
       const result = await new SheetSync({ logger: quiet }).run(LIBRARY);
       assert.equal(result.status, 'idle');
@@ -235,7 +281,7 @@ test('a second run with nothing moved makes no catalogue requests at all', async
       // The plan is unchanged: the retained catalogue still feeds it in full.
       // The gate is on the network, not on what the planner sees.
       assert.equal(again.status, 'reported');
-      assert.equal(again.record.edits.length, 1);
+      assert.equal(again.record.edits.length, 2);
     }),
   );
 });

@@ -24,6 +24,11 @@
       "address": "D6",
       "field": "Episode",
       "note": "Alien S1: 2 -> 5 episodes"
+    },
+    {
+      "address": "B6",
+      "field": "Status",
+      "note": "Alien S1: last watched 2026-08-05"
     }
   ],
   "inserts": [
