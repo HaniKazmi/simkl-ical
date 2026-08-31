@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { config, type Config } from '../src/shared/config.ts';
 import { clearSheetRuns } from '../src/sheet/io/journal.ts';
+import { clearBaseline } from '../src/sheet/io/baseline.ts';
 
 import type { Calendars } from '../src/feed/io/calendar.ts';
 import type { SheetSnapshot } from '../src/sheet/io/spreadsheet.ts';
@@ -57,15 +58,23 @@ export const recorder = () => {
 /**
  * Override config for the duration of `fn`, then restore. config is a
  * process-wide singleton; a missed restore changes behaviour elsewhere.
+ *
+ * The sheet baseline is emptied here for the same reason, and automatically
+ * rather than by invitation: it is a module-level singleton that *decides*
+ * whether cells get written, so a run that inherits the last test's
+ * observations plans edits against values this test never set up. A test that
+ * wants a baseline seeds it inside `fn`, where this has already cleared it.
  */
 export const withConfig = async (overrides: Partial<Config>, fn: () => void | Promise<void>): Promise<void> => {
   const keys = Object.keys(overrides) as Array<keyof Config>;
   const previous = Object.fromEntries(keys.map((k) => [k, config[k]])) as Partial<Config>;
   Object.assign(config, overrides);
+  clearBaseline();
   try {
     await fn();
   } finally {
     Object.assign(config, previous);
+    clearBaseline();
   }
 };
 

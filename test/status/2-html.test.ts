@@ -297,3 +297,19 @@ test('an unparseable timestamp renders no time element', () => {
   assert.ok(!rendered.includes('datetime="not a date"'), 'no invalid datetime attribute');
   assert.ok(!rendered.includes('title=""'), 'and no empty tooltip');
 });
+
+/**
+ * The record is otherwise invisible: its first run records everything and
+ * writes nothing, which reaches the history as an `idle` run with no edits —
+ * the same thing a sync that never armed produces. This line is what tells
+ * "armed and quiet" from "not running" during a rollout.
+ */
+test('the summary says how much the sync is tracking, and says so when it is nothing', () => {
+  const cold = sheetSection(page({ sheetConfigured: true }));
+  assert.match(cold, /nothing tracked yet/);
+
+  const armed = sheetSection(page({ sheetConfigured: true, baseline: { seasons: 412, at: '2026-08-30T09:00:00.000Z' } }));
+  assert.match(armed, /tracking <b class="mono">412<\/b> seasons/);
+  assert.match(armed, /last moved/);
+  assert.doesNotMatch(armed, /nothing tracked yet/);
+});

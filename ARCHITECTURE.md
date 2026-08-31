@@ -48,12 +48,18 @@ separate SIMKL type rather than a genre, and carries no season number.
 
 ### The sheet sync — INDEX → READ/PARSE → (PLAN ⇄ FETCH) → GUARD → BUILD → APPLY → VERIFY → ROLLBACK
 
-Inert unless `SHEET_ID` **and** a Google credential are both set. It writes exactly five things —
-a season row's `Episode` count, a season row's `End` date, a season row's `Episodes` runtime *into a
-blank cell only*, a show row's `Status`, and a season row's `Status`, which dates that `Episode`
-count and moves only when it does, until `End` arrives to say it better — and inserts a season row
-when a new season is started. Nothing else, ever. The runtime additionally needs `TVDB_API_KEY`;
-without it the other four behave exactly as they do with it.
+Inert unless `SHEET_ID` **and** a Google credential are both set. It writes exactly six things —
+a season row's `Episode` count, its `Start` and `End` dates, its `Episodes` runtime *into a blank
+cell only*, a show row's `Status`, and a season row's `Status`, which dates that `Episode` count and
+moves only when it does, until `End` arrives to say it better — and inserts a season row when a new
+season is started. Nothing else, ever. The runtime additionally needs `TVDB_API_KEY`; without it the
+other five behave exactly as they do with it.
+
+`Start` and `End` are the two that **follow SIMKL**, and the only two written to a row already
+dated. A write needs the value to have moved away from what `io/baseline.ts` recorded — not away
+from what the cell holds, which may have disagreed since before the sync first ran. A season not yet
+recorded is recorded and left alone, so the feature only ever acts on changes from the point it was
+switched on.
 
 | Step | What happens | Upstream calls |
 | --- | --- | --- |
@@ -211,11 +217,12 @@ that no code can derive.
   despite the plural. That identity forces the season average to be the arithmetic mean
   (`averageRuntime` in `3-catalogue.ts` carries the arithmetic).
 - A non-blank `End` closes the row even if it does not parse as a date: a hand-typed `TBD` is not a
-  missing end date. A dated row is **never revisited**, which is the fact almost every conservative
-  rule downstream traces back to.
+  missing end date. A dated row is revisited **only** by `Start` and `End` following SIMKL; for
+  every other cell it is closed for good, which is the fact almost every conservative rule
+  downstream traces back to.
 
-**What may be written** is the guard's checklist (`5-guard.ts`): four whitelisted cells, one
-inserted row per run, nothing on a closed row, never a formula. The bounds it checks are the same
+**What may be written** is the guard's checklist (`5-guard.ts`): five whitelisted cells, one
+inserted row per run, nothing but the tracked dates on a closed row, never a formula. The bounds it checks are the same
 constants the planner writes with (`values.ts`), so a value one emits and the other refuses is
 unrepresentable; the alignment checks — is this address the row the plan thinks it is — stay
 independently derived, because a one-row misalignment is the only catastrophic failure the feature

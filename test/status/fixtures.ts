@@ -72,6 +72,7 @@ export const COLD: StatusInput = {
   sheetUrl: null,
   requests: [],
   runs: [],
+  baseline: { seasons: 0, at: null },
 };
 
 /** The page's knobs, by flat name, placed onto the nested input by `input()`. */
@@ -88,6 +89,7 @@ export interface InputOver {
   sheetUrl?: string | null;
   requests?: RequestRecord[];
   runs?: SheetRunRecord[];
+  baseline?: { seasons: number; at: string | null };
 
   startedAt?: string;
   polledAt?: string | null;
@@ -147,6 +149,7 @@ export const input = (over: InputOver = {}): StatusInput => {
     sheetTab: over.sheetTab ?? COLD.sheetTab,
     requests: over.requests ?? [],
     runs: over.runs ?? [],
+    baseline: over.baseline ?? COLD.baseline,
     snapshot: {
       startedAt: over.startedAt ?? cold.startedAt,
       library: {

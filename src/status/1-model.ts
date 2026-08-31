@@ -48,6 +48,13 @@ export interface StatusInput {
   sheetUrl: string | null;
   requests: RequestRecord[];
   runs: SheetRunRecord[];
+  /**
+   * How much of the sheet baseline exists, and how current it is — a count and
+   * an instant, never the file's contents. `sheet-runs.json` is the one file
+   * this page renders verbatim and so the one to audit for the safe-HTML
+   * brand; rendering a second one would make that true of two.
+   */
+  baseline: { seasons: number; at: string | null };
 }
 
 /** A moment, with the relative wording a reader actually wants. */
@@ -196,6 +203,15 @@ export interface StatusModel {
     frozen: string | null;
     error: string | null;
     runs: RunView[];
+    /**
+     * What the sync has recorded SIMKL as saying, and when that last moved.
+     *
+     * On the page because the record is otherwise invisible: its first run
+     * records everything and writes nothing, which is an `idle` run with no
+     * edits — indistinguishable from a sync that never armed, at exactly the
+     * moment an operator needs to tell those apart.
+     */
+    baseline: { seasons: number; movedAt: Stamp };
   };
   requests: RequestView[];
   /** The recent failures worth putting in front of a reader, already capped. */
@@ -574,6 +590,7 @@ export const buildModel = (input: StatusInput): StatusModel => {
       // message has its own box.
       error: sheet.error === sheet.frozen || sheet.error === (runs[0]?.error ?? null) ? null : sheet.error,
       runs,
+      baseline: { seasons: input.baseline.seasons, movedAt: at(input.baseline.at) },
     },
   };
 

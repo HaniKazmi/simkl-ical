@@ -16,12 +16,12 @@
 
 import { config } from '../shared/config.ts';
 import { isBlank, isFormula, numberOf, runtimeScopeOk, sameValue, type Grid, type HeaderName, type SeasonRow, type ShowBlock } from './2-grid.ts';
-import { maxSerial, ownsNote, plausibleRuntimeDays, plausibleSerial, watchedNoteSerial } from './values.ts';
+import { maxSerial, ownsNote, plausibleRuntimeDays, plausibleSerial, TRACKED_FIELDS, watchedNoteSerial } from './values.ts';
 import type { CellEdit, RowInsert, SheetPlan } from './4-plan.ts';
 import type { ExtendedValue } from '../api/google/types.ts';
 
 /** What the sync may write to a row that already exists. */
-const EDIT_FIELDS = new Set<HeaderName>(['Status', 'Episode', 'End', 'Episodes']);
+const EDIT_FIELDS = new Set<HeaderName>(['Status', 'Episode', 'Start', 'End', 'Episodes']);
 
 /**
  * What may be *emptied* rather than replaced, per whitelist. Its own axis for
@@ -197,6 +197,31 @@ const checkSeasonStatusEdit = (cell: CellEdit, where: string, plan: SheetPlan, s
   checkWatchedNote(where, cell.value, ctx.serialCeiling);
 };
 
+/**
+ * A season's `Start` is the day its first episode was watched, so it cannot sit
+ * after the day its last one was — the one thing these two dates can say
+ * between them that neither can say alone. Both bounds are already checked by
+ * `checkCellShape`; this is the ordering.
+ *
+ * The row's `End` comes off the snapshot rather than off `SeasonRow`, which
+ * carries only the boolean `closed`. A cell holding something that is not a
+ * serial — a hand-typed `TBD` — names no day to be after, so there is nothing
+ * to compare and the check does not apply. Refusing there would refuse the
+ * whole plan over a cell the sync is not writing.
+ */
+const checkStartEdit = (cell: CellEdit, where: string, plan: SheetPlan, ctx: GuardContext): void => {
+  // The planned `End` where this batch writes one, so the pair is checked as
+  // the row will hold it rather than as it holds it now.
+  const planned = plan.edits.find((e) => e.row === cell.row && e.field === 'End');
+  const end = planned ? planned.value?.numberValue : numberOf(ctx.grid.snapshot.rows[cell.row]?.[ctx.grid.columns.End]);
+  if (typeof end !== 'number') return;
+
+  const start = cell.value?.numberValue;
+  if (typeof start === 'number' && start > end) {
+    refuse(`${where}: a start of ${start} would fall after the row's end of ${end}.`);
+  }
+};
+
 const checkEpisodeEdit = (cell: CellEdit, where: string, season: SeasonRow, ctx: GuardContext): void => {
   const next = cell.value?.numberValue;
   if (next === undefined || !Number.isInteger(next) || next < 1) refuse(`${where}: an episode count must be a positive whole number.`);
@@ -280,14 +305,21 @@ const checkEdit = (cell: CellEdit, plan: SheetPlan, ctx: GuardContext): void => 
   const found = ctx.seasonRows.get(cell.row);
   if (!found) refuse(`${where}: ${cell.field} may only be written on a season row.`);
   const { season, block } = found;
-  // A dated season is closed by the user's decision and never revisited.
-  // Neither the runtime write nor clearing the watch note is an exception:
-  // both ride the batch that closes the row, against a snapshot from before it.
-  if (season.closed) refuse(`${where}: the season already has an end date.`);
+  // A dated season settled every fact it settled once, and none of them is
+  // revisited — the runtime write and the note's removal included, which look
+  // like exceptions but ride the batch that closes the row and are checked
+  // against a snapshot from before it.
+  //
+  // The fields that follow SIMKL are the exception, and the only one. What
+  // they hold is not the row's decision but SIMKL's, so freezing them would
+  // not preserve a judgement, it would only keep a stale copy of an upstream
+  // fact. The planner writes one solely when the recorded value moved.
+  if (season.closed && !TRACKED_FIELDS.has(cell.field)) refuse(`${where}: the season already has an end date.`);
 
   if (cell.field === 'Status') checkSeasonStatusEdit(cell, where, plan, season, ctx);
   if (cell.field === 'Episodes') checkRuntimeEdit(cell, where, plan, season, block, ctx);
   if (cell.field === 'Episode') checkEpisodeEdit(cell, where, season, ctx);
+  if (cell.field === 'Start') checkStartEdit(cell, where, plan, ctx);
 };
 
 // --- The insert -------------------------------------------------------------

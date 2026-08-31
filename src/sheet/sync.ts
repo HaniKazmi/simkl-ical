@@ -35,10 +35,12 @@ import { classify } from '../api/tvdb/client.ts';
 import { parseGrid, type Grid } from './2-grid.ts';
 import { indexLibrary, type TitleProgress } from './1-index.ts';
 import { CATALOGUE_MAX_AGE, CatalogueStore, needsLookup } from './3-catalogue.ts';
-import { describePlan, planRecord, planSync, type PlanRecord, type SheetPlan } from './4-plan.ts';
+import { describePlan, planRecord, planSync, type PlanRecord, type PlanResult, type SheetPlan } from './4-plan.ts';
 import { assertPlanSafe, UnsafePlanError } from './5-guard.ts';
 import { applyPlan } from './io/apply.ts';
 import { appendSheetRun, loadSheetRuns } from './io/journal.ts';
+import { baseline, loadBaseline, saveBaseline } from './io/baseline.ts';
+import type { Baseline } from './values.ts';
 import { nowIso } from '../shared/dates.ts';
 
 /**
@@ -100,6 +102,15 @@ export class SheetSync {
   lastStatus: SheetSyncStatus = 'idle';
   /** What the upstreams have said so far, retained across polls — see `3-catalogue.ts`. */
   private store = new CatalogueStore();
+  /**
+   * What the run being recorded saw upstream, waiting on its outcome.
+   *
+   * Held here rather than threaded through `cycle`'s eight return paths, for
+   * the reason the journal append is: the outcome is only known at the choke
+   * point, and `writing` may only be recorded once the write it belongs to
+   * has landed.
+   */
+  private pending: { observed: Baseline; writing: Baseline } | null = null;
 
   constructor({ logger = console as Logger }: { logger?: Logger } = {}) {
     this.log = logger;
@@ -110,8 +121,12 @@ export class SheetSync {
    * by the caller so the half that writes the file knows when to read it.
    * Never throws — an unreadable history is no history.
    */
-  hydrate(): Promise<void> {
-    return loadSheetRuns({ log: this.log });
+  async hydrate(): Promise<void> {
+    await loadSheetRuns({ log: this.log });
+    // The one piece of state here that *decides* something. An unreadable one
+    // reads as nothing observed, so the next run records afresh and writes
+    // nothing — see `io/baseline.ts`.
+    await loadBaseline({ log: this.log });
   }
 
   async run(library: Library | null, { signal }: { signal?: AbortSignal } = {}): Promise<SheetSyncResult> {
@@ -147,6 +162,7 @@ export class SheetSync {
   private async record(result: SheetSyncResult): Promise<SheetSyncResult> {
     this.lastRunAt = nowIso();
     this.lastStatus = result.status;
+    await this.remember(result.status);
     await appendSheetRun(
       {
         at: this.lastRunAt,
@@ -159,6 +175,31 @@ export class SheetSync {
       { log: this.log },
     );
     return result;
+  }
+
+  /**
+   * Fold what this run saw into the baseline, once its outcome is known.
+   *
+   * `observed` goes in whatever happened: it is what the run is *not* writing,
+   * so recording it changes nothing that was going to happen. `writing` goes in
+   * only on `applied`, and that asymmetry is the mechanism. Recorded early, the
+   * next poll would compare against a value the sheet never received, find
+   * nothing moved, and lose the change for good — so a refused, failed,
+   * rolled-back or report-mode run leaves those fields exactly as it found
+   * them, and re-plans the same edit next poll.
+   */
+  private async remember(status: SheetSyncStatus): Promise<void> {
+    const pending = this.pending;
+    // Cleared before the await: a run that reached no plan — frozen, or a
+    // throw out of `cycle` — must not record what the run before it saw.
+    this.pending = null;
+    if (!pending) return;
+
+    const seen = new Map(pending.observed);
+    if (status === 'applied') {
+      for (const [key, entry] of pending.writing) seen.set(key, { ...seen.get(key), ...entry });
+    }
+    await saveBaseline(seen, { log: this.log });
   }
 
   private async cycle(library: Library | null, signal: AbortSignal | undefined): Promise<SheetSyncResult> {
@@ -178,7 +219,11 @@ export class SheetSync {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
       const snapshot = await readSnapshot({ signal });
       const grid = parseGrid(snapshot);
-      const plan = await this.planToFixpoint(grid, index, made, attempt, signal);
+      const { plan, observed, writing } = await this.planToFixpoint(grid, index, made, attempt, signal);
+      // Replaced per attempt, never merged: a FRESH re-read plans against a
+      // different grid, and the observations of a pass whose plan was thrown
+      // away describe rows this run is no longer acting on.
+      this.pending = { observed, writing };
       record = planRecord(plan);
 
       // A failed lookup means some season's shape or runtime is unknown —
@@ -247,17 +292,18 @@ export class SheetSync {
     made: RunLookups,
     attempt: number,
     signal: AbortSignal | undefined,
-  ): Promise<SheetPlan> {
+  ): Promise<PlanResult> {
     // One instant for every pass: two passes disagreeing about which blocks
     // sit inside the activity cut-off would fetch a block and then plan it as
     // out of scope, or the reverse.
     const now = Temporal.Now.instant();
 
     for (let pass = 1; ; pass += 1) {
-      const { plan, demands } = planSync(grid, index, this.store.titles, { now });
+      const result = planSync(grid, index, this.store.titles, { now, baseline: baseline() });
+      const { demands } = result;
       if (pass > MAX_PASSES) {
         this.log.warn(`sheet sync: still demanding lookups after ${MAX_PASSES} planning passes; continuing with what is in hand`);
-        return plan;
+        return result;
       }
 
       // The planner demands with no memory; staleness is the store's
@@ -274,7 +320,7 @@ export class SheetSync {
       // them. `made` already blocks re-fetching what this run asked.
       const runtimes =
         attempt === 1 ? demands.runtimes.filter((request) => !made.runtimes.has(runtimeKeyOf(request.tvdbId, request.season))) : [];
-      if (!catalogue.length && !runtimes.length) return plan;
+      if (!catalogue.length && !runtimes.length) return result;
 
       // Different upstreams with no data dependency, so their latencies
       // overlap rather than stack against the snapshot budget.
