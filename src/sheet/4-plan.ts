@@ -851,17 +851,25 @@ export const planSync = (
     const ids = blockIds(block);
     for (const id of ids) seen.add(id);
 
-    if (!isRecent(ids, index, cutoff)) continue;
+    // Recency gates the *expensive* half — the catalogue lookups, and every
+    // write that reads the sheet cell rather than the record. The fields that
+    // follow SIMKL are not gated on it at all: what makes them safe on a
+    // dormant sheet is the baseline, which writes nothing it has not seen move,
+    // and that is a better gate than a watch timestamp. It is also the only one
+    // that answers the question actually being asked — a date corrected today
+    // is a recent *change*, whatever day it was corrected to, and the watch
+    // timestamp it moves may be years old and may not move at all.
+    const recent = isRecent(ids, index, cutoff);
     const anime = usesCourModel(block);
 
     // The block's catalogue lookups. The episode list cannot be gated on "a
     // season ended" — it is what discovers that. Anime needs none: one entry
     // is one cour, so its own counters describe the season.
-    if (!anime) {
+    if (recent && !anime) {
       for (const id of block.ids) demands.catalogue.push({ id, episodes: true, detail: true });
     }
     const sourceId = statusSource(block);
-    if (sourceId !== null) demands.catalogue.push({ id: sourceId, anime, detail: true });
+    if (recent && sourceId !== null) demands.catalogue.push({ id: sourceId, anime, detail: true });
 
     // Two rows describing the same season of the same title: both would be
     // planned the same count, silently, and only one rolls up into the show
@@ -886,19 +894,22 @@ export const planSync = (
       }
       const resolved = resolution;
 
-      if (!within(resolved.lastWatchedAt, cutoff)) continue;
-
       const label = `${block.title} S${season.season ?? '?'}`;
       if (season.season !== null && idsFor(block, season).some((id) => (claims.get(`${id}:${season.season}`) ?? 0) > 1)) {
         plan.skips.push({ code: 'duplicate-season', message: `${label}: more than one row describes this season, so neither is written` });
         continue;
       }
 
-      // Before the dated-row test, and the only thing that comes before it: a
-      // row with an end date is otherwise finished and left alone, but the
-      // fields that follow SIMKL follow it on a dated row too. Everything
-      // below writes a fact the row settled once.
+      // Before both the recency test and the dated-row test, and the only
+      // thing that is: a row with an end date is otherwise finished, and a row
+      // outside the activity window is otherwise untouched, but the fields that
+      // follow SIMKL follow it through either. `End` still needs the season to
+      // be known complete, which outside the window no catalogue answered, so
+      // in practice it is `Start` that reaches back — and `Start` costs nothing
+      // to compute, so widening it adds no upstream call.
       followUpstream(follow, season, resolved, label);
+
+      if (!recent || !within(resolved.lastWatchedAt, cutoff)) continue;
       if (season.closed) continue;
 
       // A hand-typed count — "12 (rewatch)", "~8" — parses to null, so the
@@ -925,6 +936,8 @@ export const planSync = (
       const note = statusNote(grid, season, resolved.lastWatchedAt, { advanced, closing, label, timezone });
       if (note) plan.edits.push(note);
     }
+
+    if (!recent) continue;
 
     // --- Status, and the season-row insert
     //

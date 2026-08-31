@@ -164,7 +164,7 @@ for the library: the watch detail rides along on the fetch the feed already make
 | `GOOGLE_SA_KEY_B64`              | —          | **Secret.** Base64 of the service-account JSON: `base64 -w0 sa.json` |
 | `GOOGLE_APPLICATION_CREDENTIALS` | —          | Path to that JSON instead, for local dev                        |
 | `SHEET_SYNC_MODE`                | `report`   | `off` / `report` / `apply`. Anything unrecognised clamps to `report` |
-| `SHEET_SINCE_DAYS`               | `90`       | Nothing is touched without watch activity this recent           |
+| `SHEET_SINCE_DAYS`               | `90`       | Counts and statuses need watch activity this recent; dates do not |
 | `SHEET_MAX_EDITS`                | `30`       | Over budget refuses the whole plan rather than trimming it      |
 | `SHEET_MAX_ROWS`                 | `20`       | Distinct rows in one run                                        |
 | `TVDB_API_KEY`                   | —          | **Secret.** Gets each season's *own* average runtime. Unset, the cell falls back to SIMKL's show-wide runtime |
@@ -193,6 +193,12 @@ The start and end dates are the two that **keep following SIMKL** after the row 
 date changes upstream — you correct a watch date, or rewatch the last episode — the cell is
 updated to match, even on a season that already has an end date. Nothing else on a dated row is
 ever touched again.
+
+They also ignore `SHEET_SINCE_DAYS`. Correcting the date you started a season in 2018 is a change
+made *today*, but it moves no watch timestamp, so a recency window would never see it. What keeps
+this safe on a sheet nobody touches is the record described below, not the window: a value never
+seen to move is never written. Everything else — counts, statuses, runtimes, new rows — still needs
+recent watch activity.
 
 This only ever acts on changes made *from the point you switch it on*. It records what SIMKL says
 the first time it sees each season and writes nothing that run, so dates your sheet and SIMKL have

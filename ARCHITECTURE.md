@@ -55,8 +55,10 @@ moves only when it does, until `End` arrives to say it better — and inserts a 
 season is started. Nothing else, ever. The runtime additionally needs `TVDB_API_KEY`; without it the
 other five behave exactly as they do with it.
 
-`Start` and `End` are the two that **follow SIMKL**, and the only two written to a row already
-dated. A write needs the value to have moved away from what `io/baseline.ts` recorded — not away
+`Start` and `End` are the two that **follow SIMKL**, the only two written to a row already dated,
+and the only two that ignore the activity window — a corrected watch date is a recent change that
+moves no watch timestamp, so a recency gate cannot see it, and the baseline is what keeps a dormant
+sheet quiet instead. A write needs the value to have moved away from what `io/baseline.ts` recorded — not away
 from what the cell holds, which may have disagreed since before the sync first ran. A season not yet
 recorded is recorded and left alone, so the feature only ever acts on changes from the point it was
 switched on.

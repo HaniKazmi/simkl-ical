@@ -114,6 +114,15 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   follows *watching* — `seasonAired` versus `seasonComplete` in `3-catalogue.ts`. The two tracked
   fields are exempt because what they hold is not the row's decision but SIMKL's: freezing them
   would preserve no judgement, only a stale copy of an upstream fact.
+- **The fields that follow SIMKL ignore the activity window; everything else obeys it.** The window
+  asks "has this been watched lately", which is not the question a corrected date asks — fixing the
+  day you started a season in 2018 is a change made today, moves no watch timestamp, and may belong
+  to a season never watched again. What keeps a dormant sheet quiet is the baseline, not the window:
+  a value never seen to move is never written, which is a strictly better gate. `recent` in
+  `planSync` therefore gates the catalogue demands and every write that reads the cell, while
+  `followUpstream` runs above it. This costs no upstream call, because `Start` comes off the library
+  and `End` needs a completeness answer that no lookup supplies outside the window — so in practice
+  it is `Start` that reaches back.
 - **A change is measured against what was last observed, never against the cell.** SIMKL has no
   per-field revision and a disagreeing cell may have disagreed since before the sync first ran, so
   the only thing "changed" can mean is *different from what this service recorded* —

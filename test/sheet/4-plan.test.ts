@@ -1410,3 +1410,39 @@ test('an open season completing on an unusable timestamp is skipped, not planned
   assert.deepEqual(plan.edits.filter((e) => e.field === 'End'), []);
   assert.doesNotThrow(() => assertPlanSafe(plan, grid));
 });
+
+/**
+ * The question the activity window answers is "has this been watched lately",
+ * which is not the question a corrected date asks. Fixing the date you started
+ * a season in 2018 is a change made *today*; it moves no watch timestamp, and
+ * the season it belongs to may never be watched again.
+ *
+ * What keeps this safe on a dormant sheet is the baseline, not the window: a
+ * value never seen move is never written, so a sheet nobody touches still plans
+ * nothing. `Start` costs no lookup, so reaching back adds no upstream call.
+ */
+test('a start date that moved is written however long ago the season was watched', () => {
+  const old = watched(6, 900);
+  const { grid, result } = scenario({
+    rows: [show('Fargo', 'Ended', 300), season(1, 6, TODAY_SERIAL)],
+    items: [{ id: 300, status: 'completed', seasons: { 1: old }, watched: 6, total: 6 }],
+  });
+  const { plan, demands } = result(new Map([[seasonKey(300, 1), { Start: daysAgo(1200) }]]));
+
+  assert.deepEqual(plan.edits.map((e) => e.field), ['Start']);
+  assert.doesNotThrow(() => assertPlanSafe(plan, grid));
+  // The window still gates everything that costs a call: a block nobody has
+  // watched lately is not looked up just to compare a date already in hand.
+  assert.deepEqual(demands.catalogue, []);
+});
+
+/** The counterpart: nothing else reaches back with it. */
+test('an out-of-window row still takes no count, note or status', () => {
+  const old = watched(6, 900);
+  const { plan } = scenario({
+    rows: [show('Fargo', 'Watching', 300), season(1, 2, null)],
+    items: [{ id: 300, status: 'completed', seasons: { 1: old }, watched: 6, total: 6 }],
+  }).result();
+  assert.deepEqual(plan.edits, []);
+  assert.equal(plan.insert, null);
+});
