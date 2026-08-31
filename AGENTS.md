@@ -362,7 +362,9 @@ the image. 26.0.0 is the real floor — it is the release Temporal shipped in, a
 *build-time* option rather than a runtime flag, so code using it typechecks green against
 `@types/node` and then throws `ReferenceError` on a build without it. Homebrew's `node` is such a
 build; the nodejs.org binaries and `node:26-alpine` are not. That is why the matrix pins the floor
-rather than testing only `lts`, and why `index.ts` asserts the global at boot.
+rather than testing only `lts`, and why `shared/config.ts` asserts the global at module scope,
+before the first `Temporal` value it builds. It cannot sit in `index.ts`: imports are hoisted, so
+config fully evaluates before any statement there runs.
 
 The smoke test runs the built image and asserts `/healthz` answers with parseable JSON, that a wrong
 feed token gets a 404 and the right one returns something starting `BEGIN:VCALENDAR`, and the same

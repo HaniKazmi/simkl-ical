@@ -76,13 +76,16 @@ export const baselineSummary = (): BaselineSummary => ({ seasons: seasons.size, 
  * `recordedSerial` parses them and a number or an object there would read as
  * absent — silently, and for the life of the file.
  *
+ * An array is rejected explicitly: it satisfies every other clause, and one
+ * merged into an entry would persist as `{"0": …}`.
+ *
  * The key set is deliberately not policed against `HEADERS`: an entry for a
  * column nothing tracks is never looked up, and dropping it would only make
  * narrowing `TRACKED_FIELDS` and widening it again lose observations in
  * between.
  */
 const isEntry = (value: unknown): value is BaselineEntry =>
-  typeof value === 'object' && value !== null && Object.values(value).every((v) => typeof v === 'string');
+  typeof value === 'object' && value !== null && !Array.isArray(value) && Object.values(value).every((v) => typeof v === 'string');
 
 /**
  * Read the record into memory. Never throws: a missing file is a first run, and

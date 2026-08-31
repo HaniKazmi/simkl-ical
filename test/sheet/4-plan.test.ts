@@ -1394,7 +1394,7 @@ test('a start date that would fall after the row’s end is skipped, not planned
   const { grid, result } = dated(seen, 44000);
   const { plan } = result(baselineOf({ Start: daysAgo(30) }));
   assert.deepEqual(plan.edits, []);
-  assert.match(skipMessages(plan), /would fall after the end date the row holds/);
+  assert.match(skipMessages(plan), /starting after it ended/);
   assert.doesNotThrow(() => assertPlanSafe(plan, grid));
 });
 
@@ -1445,4 +1445,61 @@ test('an out-of-window row still takes no count, note or status', () => {
   }).result();
   assert.deepEqual(plan.edits, []);
   assert.equal(plan.insert, null);
+});
+
+/**
+ * The mirror of the start rule, and the reason the pair is decided before
+ * either half is emitted: an end date that moves *below* the start the row
+ * holds inverts it just as surely, and a check attached to `Start` alone never
+ * runs on a batch that only moves `End`.
+ */
+test('an end date that would fall before the row’s start is skipped, not planned', () => {
+  const { grid, result } = scenario({
+    rows: [show('Fargo', 'Ended', 300), season(1, 2, TODAY_SERIAL, null, null)],
+    items: [{ id: 300, status: 'completed', seasons: { 1: [daysAgo(3000), daysAgo(2999)] }, watched: 2, total: 2 }],
+    episodes: { 300: eps(1, 2) },
+  });
+  const { plan } = result(new Map([[seasonKey(300, 1), { Start: daysAgo(3000), End: daysAgo(1) }]]));
+  assert.deepEqual(plan.edits, []);
+  assert.match(skipMessages(plan), /End date would leave the row starting after it ended/);
+  assert.doesNotThrow(() => assertPlanSafe(plan, grid));
+});
+
+/**
+ * Every row now reaches `resolveRow`, including blocks far outside the activity
+ * window. A sheet holding one title SIMKL no longer lists would otherwise name
+ * it on every poll for the life of the sheet — and an unresolvable row has no
+ * tracked field to follow, so saying so buys nothing.
+ */
+test('a row that cannot be resolved is reported only while its block is in scope', () => {
+  const gone = (watchedDaysAgo: number) =>
+    scenario({
+      rows: [show('Gone Show', 'Ended', 999999), season(1, 6, TODAY_SERIAL)],
+      items: [{ id: 300, status: 'completed', seasons: { 1: [daysAgo(watchedDaysAgo)] }, watched: 1, total: 1 }],
+    }).plan();
+
+  assert.deepEqual(gone(900).skips, [], 'nothing recent in the block, so nothing to say about it');
+  // The same unresolvable row inside the window is still worth naming: there,
+  // the sync would otherwise be expected to write to it.
+  const inScope = scenario({
+    rows: [show('Gone Show', 'Ended', 999999), season(1, 6, TODAY_SERIAL, 999999)],
+    items: [{ id: 999999, status: 'completed', seasons: { 1: [daysAgo(3)] }, watched: 1, total: 1 }],
+  });
+  assert.doesNotThrow(() => assertPlanSafe(inScope.plan(), inScope.grid));
+});
+
+/**
+ * The run that closes a season records the date it wrote, like any other
+ * tracked write. Without it the closing run banks nothing, the next poll sees
+ * `End` for the first time and records it silently, and a correction landing in
+ * between is lost for good.
+ */
+test('the batch that dates a row records the date it wrote', () => {
+  const { result } = dated(seen, null);
+  const { plan, writing } = result();
+  assert.ok(plan.edits.some((e) => e.field === 'End'), 'the row is closed by this batch');
+  assert.equal(writing.get(KEY)?.End, LAST);
+  // In `writing`, never `observed`: a value recorded before its write lands is
+  // a change banked and never made.
+  assert.equal(result().observed.get(KEY)?.End, undefined);
 });
