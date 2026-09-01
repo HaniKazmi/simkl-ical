@@ -33,6 +33,7 @@ import {
   duplicateIds,
   idsFor,
   isBlank,
+  isFormula,
   numberOf,
   runtimeScopeOk,
   usesCourModel,
@@ -561,8 +562,9 @@ type ResolvedRow = Extract<RowResolution, { kind: 'resolved' }>;
  * wide means every later move is a real move.
  *
  * `End` cannot be recorded this way. It exists only once a season is known
- * complete, which takes a catalogue lookup, which is only asked for blocks
- * already in the window.
+ * complete, which for a row resolved through the catalogue takes a lookup —
+ * so it is seeded a row at a time by `endMayHaveMoved`, which asks for that
+ * lookup where the record and SIMKL disagree, rather than library-wide here.
  *
  * An inserted row is recorded on the same run that writes it, which looks like
  * the banking this file is otherwise careful about and is not: an insert is
@@ -624,6 +626,52 @@ const resulting = (candidates: Candidate[], field: TrackedField, grid: Grid, row
   return typeof held === 'number' ? held : null;
 };
 
+/**
+ * How many blocks one pass may ask a completeness lookup for.
+ *
+ * A sheet whose baseline has no `End` for its dormant rows wants one lookup
+ * per block, and asking for all of them at once is what makes the ask
+ * dangerous rather than merely slow: SIMKL answers a burst with `412`, which
+ * `classify` reads as `account` and `pool` rethrows, so the throw escapes
+ * before `foldCatalogue` runs and *nothing* in that round is stamped — not
+ * even the calls that succeeded. The next poll then repeats the same burst.
+ *
+ * Capped, the seeding drains a few blocks a poll and every round keeps what it
+ * fetched. The recent set is never capped: it is bounded by the window
+ * already, and it is what the sheet is for.
+ */
+const SEEDING_PER_PASS = 12;
+
+/**
+ * Whether this row's `End` might be about to move, decided without a lookup.
+ *
+ * `End` is eligible only on a complete season, and for a row resolved through
+ * the catalogue that answer is behind the very fetch this is choosing whether
+ * to make. What *can* be decided here is cheaper and enough: the row is
+ * dated, and the day SIMKL now reports differs from the day recorded for it,
+ * or nothing was recorded at all. A season whose recorded `End` already
+ * matches asks for nothing.
+ *
+ * Deliberately not gated on the recorded value existing. A row that has never
+ * been observed is exactly the row that can never be followed later, because
+ * `moved` is measured against a record that is never written — so the first
+ * sighting has to be reachable out here too.
+ *
+ * `season.ids.length`, not the block's model: `resolveRow` picks the cour
+ * branch per row, and a row carrying its own id takes `complete` from its
+ * entry's counters. Asking the block's id for an episode list would name a
+ * title that cannot answer for this row, and would ask again every day
+ * forever, because nothing the answer contains can settle it.
+ */
+const endMayHaveMoved = (season: SeasonRow, resolved: ResolvedRow, { baseline, timezone, ceiling }: FollowContext): boolean => {
+  if (season.ids.length || !season.closed || resolved.key === null) return false;
+  const serial = watchSerial(resolved.lastWatchedAt, timezone);
+  // The same range `followUpstream` declines on. Asked here too so a timestamp
+  // it is going to refuse does not first earn a lookup to refuse it with.
+  if (serial === null || !plausibleSerial(serial, ceiling)) return false;
+  return recordedSerial(baseline.get(resolved.key)?.End, timezone) !== serial;
+};
+
 const followUpstream = (
   { plan, grid, timezone, ceiling, baseline, observed, writing }: FollowContext,
   season: SeasonRow,
@@ -664,12 +712,18 @@ const followUpstream = (
     // Out of range is SIMKL's fault. Inverted is usually the sheet's — a row
     // holding a date typed by hand, or one written here before the watch it
     // came from was corrected — and writing anyway would leave the row saying
-    // it ended before it began.
+    // it ended before it began. A formula is the sheet's too, and the one the
+    // guard refuses *unconditionally*: these two fields reach rows no window
+    // takes back out of scope, so a formula in one of them would refuse every
+    // plan the sheet ever makes rather than for as long as a row stayed
+    // recent.
     const why = !plausibleSerial(serial, ceiling)
       ? 'is outside the range this sync writes'
-      : inverted
-        ? 'would leave the row starting after it ended'
-        : null;
+      : isFormula(cellAt(grid, season.row, grid.columns[field]))
+        ? 'would overwrite a formula'
+        : inverted
+          ? 'would leave the row starting after it ended'
+          : null;
 
     if (moved && why !== null) {
       plan.skips.push({ code: 'unusable-timestamp', message: `${label}: SIMKL's ${field} date ${why}, so that cell is left alone` });
@@ -878,6 +932,8 @@ export const planSync = (
   // mutated in place — only replaced — so a shallow copy is enough.
   const observed = new Map(starts ?? observeStarts(index));
   const writing: Baseline = new Map();
+  // Blocks that have spent this pass's seeding allowance — see `SEEDING_PER_PASS`.
+  let seeding = 0;
   const follow: FollowContext = { plan, grid, timezone, ceiling: maxSerial(now, timezone), baseline, observed, writing };
 
   for (const block of grid.blocks) {
@@ -898,6 +954,12 @@ export const planSync = (
     // The block's catalogue lookups. The episode list cannot be gated on "a
     // season ended" — it is what discovers that. Anime needs none: one entry
     // is one cour, so its own counters describe the season.
+    //
+    // A dormant block can earn the same lookup a second way, below: `End`
+    // follows SIMKL whatever the window says, and a row resolved through the
+    // catalogue needs a completeness answer only the catalogue holds. Asking
+    // here would fetch the whole sheet every poll, so the demand waits until a
+    // row has been resolved and shown to want one.
     if (recent && !anime) {
       for (const id of block.ids) demands.catalogue.push({ id, episodes: true, detail: true });
     }
@@ -909,6 +971,7 @@ export const planSync = (
     // row above. Keyed on the *effective* id because a blank season row
     // inherits the block's — an anime block whose rows each carry their own
     // id has one season 1 per title and is not this.
+    let wantsCompleteness = false;
     const claims = new Map<string, number>();
     for (const row of block.seasons) {
       if (row.season === null) continue;
@@ -941,13 +1004,22 @@ export const planSync = (
       // Before both the recency test and the dated-row test, and the only
       // thing that is: a row with an end date is otherwise finished, and a row
       // outside the activity window is otherwise untouched, but the fields that
-      // follow SIMKL follow it through either. Neither costs an upstream call:
-      // `Start` comes off the library, and `End` needs a completeness answer
-      // that live-action can only get from a catalogue lookup nobody makes out
-      // here — so for a show it is `Start` alone that reaches back, while an
-      // anime cour, whose own counters settle completeness, reaches back with
-      // both.
+      // follow SIMKL follow it through either.
+      //
+      // `Start` comes off the library and needs nothing else. `End` is only
+      // eligible on a complete season, and a row resolved through the
+      // catalogue takes that answer from there — so a dormant row that looks
+      // like it has an `End` to move asks for the lookup that would settle it.
+      // Without that ask the field is not merely skipped out here but frozen:
+      // never eligible means never recorded, and a value never recorded can
+      // never be seen to move. A cour row settles completeness from its own
+      // counters and asks for nothing.
       followUpstream(follow, season, resolved, label);
+      // `complete` already true means the answer is in hand and `End` was
+      // eligible above — the demand is for the rows where it is missing.
+      if (!recent && !wantsCompleteness && !resolved.complete && endMayHaveMoved(season, resolved, follow)) {
+        wantsCompleteness = true;
+      }
 
       if (!recent || !within(resolved.lastWatchedAt, cutoff)) continue;
       if (season.closed) continue;
@@ -975,6 +1047,27 @@ export const planSync = (
       // date, a row being closed hands the fact over to `End`.
       const note = statusNote(grid, season, resolved.lastWatchedAt, { advanced, closing, label, timezone });
       if (note) plan.edits.push(note);
+    }
+
+    // Earned by a row, not by the window. Asked for here rather than beside
+    // the recency demand above because it takes a resolved row to know a
+    // block wants it, and asking on suspicion alone would fetch the whole
+    // sheet every poll.
+    //
+    // The same shape the recent half asks for, episode list *and* detail. The
+    // completeness answer is in `shapes` alone, but `foldCatalogue` stamps by
+    // id and not by which flags the request carried, so an episodes-only
+    // fetch would leave a title stamped fresh with no `status` and no
+    // `tvdbId` — and `needsLookup` would then decline the detail this same
+    // block needs the moment it turns recent, since its own `lastWatchedAt`
+    // never moved. One flag cheaper is not worth a stamp that lies.
+    //
+    // `sync.ts` drops a request the store answered inside `CATALOGUE_MAX_AGE`,
+    // so a season that stays unsettled — dated here, incomplete upstream —
+    // costs one call a day rather than one a poll.
+    if (wantsCompleteness && seeding < SEEDING_PER_PASS) {
+      seeding += 1;
+      for (const id of block.ids) demands.catalogue.push({ id, episodes: true, detail: true });
     }
 
     if (!recent) continue;

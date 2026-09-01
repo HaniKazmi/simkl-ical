@@ -120,9 +120,22 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   to a season never watched again. What keeps a dormant sheet quiet is the baseline, not the window:
   a value never seen to move is never written, which is a strictly better gate. `recent` in
   `planSync` therefore gates the catalogue demands and every write that reads the cell, while
-  `followUpstream` runs above it. This costs no upstream call, because `Start` comes off the library
-  and `End` needs a completeness answer that no lookup supplies outside the window — so in practice
-  it is `Start` that reaches back.
+  `followUpstream` runs above it. `Start` comes off the library and costs nothing. `End` is
+  eligible only on a complete season, and a row resolved through the catalogue takes that answer
+  from there — so a dormant row earns that lookup a second way: `endMayHaveMoved` asks, from the
+  library and the record alone, whether the row is dated and the day SIMKL reports differs from the
+  day written down for it. Gating that on `recent` would not merely skip the field out here, it
+  **freezes** it: never eligible means never recorded, and a value never recorded can never be seen
+  to move. Bounded three ways, each load-bearing: a row carrying its **own** id is excluded, because
+  its `complete` comes from that entry's counters and no episode list can settle it — and the id the
+  block would name is not the one the row resolved through; `SEEDING_PER_PASS` caps how many blocks
+  one pass may ask for, because SIMKL answers a burst with `412`, which `pool` rethrows before
+  `foldCatalogue` runs, discarding a whole round including the calls that succeeded; and the request
+  carries `detail` as well as the episode list, because `foldCatalogue` stamps by id and not by
+  flags, so an episodes-only fetch would leave a title stamped fresh with no `status` or `tvdbId`
+  and `needsLookup` would then decline the detail the block needs the moment it turns recent. What
+  does **not** stop asking is a row dated here but incomplete upstream: it never records, so it
+  costs one call a day for as long as it disagrees.
 - **A change is measured against what was last observed, never against the cell.** SIMKL has no
   per-field revision and a disagreeing cell may have disagreed since before the sync first ran, so
   the only thing "changed" can mean is *different from what this service recorded* —
