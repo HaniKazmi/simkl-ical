@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { assertPlanSafe } from '../../src/sheet/5-guard.ts';
 import { parseGrid } from '../../src/sheet/2-grid.ts';
-import { deriveStatus, observeStarts, planRecord, planSync, statusSource, type SheetPlan } from '../../src/sheet/4-plan.ts';
+import { deriveStatus, observeWatches, planRecord, planSync, statusSource, type SheetPlan } from '../../src/sheet/4-plan.ts';
 import { seasonShapes, type TitleCatalogue } from '../../src/sheet/3-catalogue.ts';
 import { indexLibrary } from '../../src/sheet/1-index.ts';
 import { dateSerial, seasonKey, type Baseline } from '../../src/sheet/values.ts';
@@ -712,12 +712,11 @@ test('running again over the applied result produces nothing', () => {
 
 // --- demands ---------------------------------------------------------------
 
-// The cut-off keeps a warm run at roughly 28 calls rather than 600: an
-// out-of-scope block demands nothing once its dates are settled, however stale
-// its catalogue. Unsettled it asks once, for the episode list that says whether
-// its season is complete — which is what decides if `End` may follow SIMKL —
-// and stops once that value is recorded. A sheet older than its baseline is
-// therefore the 600 spread over polls by `SEEDING_PER_PASS`, not in one burst.
+// The cut-off keeps a run at roughly 28 calls rather than 600: an out-of-scope
+// block demands nothing, however stale its catalogue. A dormant block asks only
+// where its recorded `End` and SIMKL's disagree — one season's worth of lookup
+// for one season's worth of change, never a pass over the sheet, because
+// `observeWatches` records both fields library-wide for free.
 test('only eligible blocks demand catalogue lookups', () => {
   const settled = scenario({
     rows: [show('Recent', 'Watching', 1), season(1, 1, null), show('Dormant', 'Ended', 2), season(1, 10, 44000)],
@@ -728,14 +727,13 @@ test('only eligible blocks demand catalogue lookups', () => {
   });
   // The same array the scenario built its library from, not a second call that
   // happens to reduce to the same day.
-  const dormantSeen = watched(10, 500);
-  const recorded: Baseline = new Map([[seasonKey(2, 1), { Start: dormantSeen[0] as string, End: dormantSeen.at(-1) as string }]]);
-  assert.deepEqual([...new Set(settled.result(recorded).demands.catalogue.map((r) => r.id))], [1]);
+  assert.deepEqual([...new Set(settled.demands().catalogue.map((r) => r.id))], [1]);
 
-  // Unsettled, it asks — the same shape the recent half asks for, so the stamp
-  // it earns means what every other stamp means. This is the
-  // one-time seeding a sheet older than the baseline pays, not a per-poll cost.
-  assert.deepEqual(settled.demands().catalogue.filter((r) => r.id === 2), [{ id: 2, episodes: true, detail: true }]);
+  // It asks only once its record and SIMKL disagree — the same shape the recent
+  // half asks for, so the stamp it earns means what every other stamp means.
+  const dormantSeen = watched(10, 500);
+  const stale: Baseline = new Map([[seasonKey(2, 1), { Start: dormantSeen[0] as string, End: daysAgo(2000) }]]);
+  assert.deepEqual(settled.result(stale).demands.catalogue.filter((r) => r.id === 2), [{ id: 2, episodes: true, detail: true }]);
 });
 
 // The planner demands with no memory — filtering already-fetched is the
@@ -1328,7 +1326,7 @@ const animeCour = (first: number) =>
   });
 
 /**
- * The key is `(SIMKL id, SIMKL season)`, so it agrees with what `observeStarts`
+ * The key is `(SIMKL id, SIMKL season)`, so it agrees with what `observeWatches`
  * records off the index. Keyed on the *sheet's* season number instead, an anime
  * row would look up `1500:2`, find nothing there ever, and re-record itself on
  * every poll — never writing, and never saying why.
@@ -1380,12 +1378,31 @@ test('a split cour keeps the key it had before the second half existed', () => {
  * field by deleting it in place would strip it from the seed itself, leaving a
  * discarded pass to decide what later passes see.
  */
+/**
+ * Both fields, library-wide, from the library alone. What needs a lookup is
+ * *writing* `End` — the row must be complete, and only the episode list says
+ * so for a season resolved by number. Recording asks nothing, and recording
+ * wide is what makes a later disagreement a real move by one season rather
+ * than a first sighting on every season nobody happened to look up.
+ */
+test('every season records both its first and its last watch', () => {
+  // Captured once: `watched` reads the clock, so a second call for the
+  // assertion would differ from the fixture by a millisecond.
+  const one = watched(6, 900);
+  const two = watched(4, 100);
+  const index = indexLibrary(libraryOf({ id: 300, status: 'completed', seasons: { 1: one, 2: two }, watched: 10, total: 10 }));
+  const seed = observeWatches(index);
+
+  assert.deepEqual(seed.get(seasonKey(300, 1)), { Start: one[0], End: one.at(-1) });
+  assert.deepEqual(seed.get(seasonKey(300, 2)), { Start: two[0], End: two.at(-1) });
+});
+
 test('planning does not edit the seed it was handed', () => {
   // An **open** row: on a dated one the `End` step replaces the entry before
   // `Start` withdraws from it, so the sharing this guards is already broken and
   // the assertion would hold whatever the withdrawal did.
   const { grid, index, titles } = dated(seen, null);
-  const starts = observeStarts(index);
+  const starts = observeWatches(index);
   const before = JSON.stringify([...starts]);
 
   // A moved Start, so the withdrawal this guards actually runs.
@@ -1565,23 +1582,6 @@ test('a formula in a dated end cell is declined, not planned onto', () => {
   assert.equal(observed.get(seasonKey(300, 1))?.End, old.at(-1));
 });
 
-/**
- * A sheet older than its baseline wants one lookup per dormant block. Asking
- * for all of them at once is what makes SIMKL answer with a throttle, and a
- * throttled round is discarded whole — so the seeding drains a few blocks a
- * poll and every round keeps what it fetched.
- */
-test('seeding lookups are capped per pass so a cold baseline drains rather than bursts', () => {
-  const old = watched(6, 900);
-  const rows = Array.from({ length: 30 }, (_, i) => [show(`Show ${i}`, 'Ended', 400 + i), season(1, 6, TODAY_SERIAL)]).flat();
-  const { grid, index, titles } = scenario({
-    rows,
-    items: Array.from({ length: 30 }, (_, i) => ({ id: 400 + i, status: 'completed', seasons: { 1: old }, watched: 6, total: 6 })),
-  });
-  const { demands } = planSync(grid, index, titles, { timezone: TZ, baseline: new Map() });
-
-  assert.equal(new Set(demands.catalogue.map((r) => r.id)).size, 12);
-});
 
 /**
  * A row matched by season *number* is only that season if it holds the same
@@ -1631,6 +1631,7 @@ test('an open row whose count lags SIMKL still follows its start date', () => {
   assert.equal(plan.skips.filter((s) => s.code === 'season-fragment').length, 0);
   assert.doesNotThrow(() => assertPlanSafe(plan, grid));
 });
+
 
 test('a dormant season whose end date agrees with the record asks for nothing', () => {
   const old = watched(6, 900);

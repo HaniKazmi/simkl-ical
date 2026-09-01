@@ -35,7 +35,7 @@ import { classify } from '../api/tvdb/client.ts';
 import { parseGrid, type Grid } from './2-grid.ts';
 import { indexLibrary, type TitleProgress } from './1-index.ts';
 import { CATALOGUE_MAX_AGE, CatalogueStore, needsLookup } from './3-catalogue.ts';
-import { describePlan, observeStarts, planRecord, planSync, type PlanRecord, type PlanResult, type SheetPlan } from './4-plan.ts';
+import { describePlan, observeWatches, planRecord, planSync, type PlanRecord, type PlanResult, type SheetPlan } from './4-plan.ts';
 import { assertPlanSafe, UnsafePlanError } from './5-guard.ts';
 import { applyPlan } from './io/apply.ts';
 import { appendSheetRun, loadSheetRuns } from './io/journal.ts';
@@ -212,7 +212,7 @@ export class SheetSync {
     // Built once: it is a projection of the library alone, and the library
     // cannot change while a run is in flight, so every planning pass after the
     // first would rebuild a byte-identical map.
-    const starts = observeStarts(index);
+    const starts = observeWatches(index);
 
     // Lookups already made this run. A FRESH re-plan or later planning pass
     // must not re-issue them — failed ones included, which stay unstamped in

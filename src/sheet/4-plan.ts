@@ -169,7 +169,7 @@ export interface PlanOptions {
    */
   baseline?: Baseline;
   /**
-   * `observeStarts(index)`, hoisted. It is a projection of the library alone,
+   * `observeWatches(index)`, hoisted. It is a projection of the library alone,
    * and the library cannot change while a run is in flight — so the sync builds
    * it once rather than paying for it on every pass of the plan-fetch fixpoint.
    * Defaulted so the function stays self-sufficient.
@@ -553,7 +553,7 @@ type ResolvedRow = Extract<RowResolution, { kind: 'resolved' }>;
 // --- Following SIMKL --------------------------------------------------------
 
 /**
- * Every season's first watch, keyed the way the record keys it.
+ * Every season's first and last watch, keyed the way the record keys it.
  *
  * The whole library, not only the rows a pass reaches. Recording is not a write
  * and costs nothing, while the gap it closes is the one that matters: a first
@@ -562,22 +562,28 @@ type ResolvedRow = Extract<RowResolution, { kind: 'resolved' }>;
  * what brought the row into the activity window in the first place. Recording
  * wide means every later move is a real move.
  *
- * `End` cannot be recorded this way. It exists only once a season is known
- * complete, which for a row resolved through the catalogue takes a lookup —
- * so it is seeded a row at a time by `endMayHaveMoved`, which asks for that
- * lookup where the record and SIMKL disagree, rather than library-wide here.
+ * Both fields, because both are facts the library already carries. What needs
+ * a catalogue lookup is *writing* `End` — the row must be complete, and only
+ * the episode list says so for a season resolved by number. Recording is a
+ * different question and asks nothing: this is the day SIMKL currently reports,
+ * whether or not the season is finished. Recorded here, a later disagreement is
+ * a real move by one season; recorded only where a lookup had already been made
+ * for some other reason, most seasons have nothing to disagree with and the
+ * field can never be followed at all.
  *
  * An inserted row is recorded on the same run that writes it, which looks like
  * the banking this file is otherwise careful about and is not: an insert is
  * triggered by a row being absent, never by this comparison, so a failed one
  * re-plans on the next poll whatever the record says.
  */
-export const observeStarts = (index: Map<number, TitleProgress>): Baseline => {
+export const observeWatches = (index: Map<number, TitleProgress>): Baseline => {
   const observed: Baseline = new Map();
   for (const progress of index.values()) {
     for (const season of progress.seasons.values()) {
       if (season.firstWatchedAt === null) continue;
-      observed.set(seasonKey(progress.id, season.number), { Start: isoOf(season.firstWatchedAt) });
+      const entry: Record<string, string> = { Start: isoOf(season.firstWatchedAt) };
+      if (season.lastWatchedAt !== null) entry.End = isoOf(season.lastWatchedAt);
+      observed.set(seasonKey(progress.id, season.number), entry);
     }
   }
   return observed;
@@ -628,35 +634,18 @@ const resulting = (candidates: Candidate[], field: TrackedField, grid: Grid, row
 };
 
 /**
- * How many blocks one pass may ask a completeness lookup for.
+ * Whether this row's `End` has moved, decided without a lookup.
  *
- * A sheet whose baseline has no `End` for its dormant rows wants one lookup
- * per block, and asking for all of them at once is what makes the ask
- * dangerous rather than merely slow: SIMKL answers a burst with `412`, which
- * `classify` reads as `account` and `pool` rethrows, so the throw escapes
- * before `foldCatalogue` runs and *nothing* in that round is stamped — not
- * even the calls that succeeded. The next poll then repeats the same burst.
+ * The same comparison `followUpstream` makes, asked earlier: `End` is eligible
+ * only on a complete season, and for a row resolved through the catalogue that
+ * answer is behind a fetch. Deciding first whether there is anything to write
+ * keeps the fetch to the seasons whose date actually changed — normally none,
+ * because `observeWatches` records both fields library-wide and a library that
+ * has not moved disagrees with nothing.
  *
- * Capped, the seeding drains a few blocks a poll and every round keeps what it
- * fetched. The recent set is never capped: it is bounded by the window
- * already, and it is what the sheet is for.
- */
-const SEEDING_PER_PASS = 12;
-
-/**
- * Whether this row's `End` might be about to move, decided without a lookup.
- *
- * `End` is eligible only on a complete season, and for a row resolved through
- * the catalogue that answer is behind the very fetch this is choosing whether
- * to make. What *can* be decided here is cheaper and enough: the row is
- * dated, and the day SIMKL now reports differs from the day recorded for it,
- * or nothing was recorded at all. A season whose recorded `End` already
- * matches asks for nothing.
- *
- * Deliberately not gated on the recorded value existing. A row that has never
- * been observed is exactly the row that can never be followed later, because
- * `moved` is measured against a record that is never written — so the first
- * sighting has to be reachable out here too.
+ * A first sighting is not a move, exactly as it is not one in `followUpstream`.
+ * It is already recorded by then, so the next real change is measured against
+ * it — which is what confines this to changes from here on.
  *
  * `season.ids.length`, not the block's model: `resolveRow` picks the cour
  * branch per row, and a row carrying its own id takes `complete` from its
@@ -664,13 +653,29 @@ const SEEDING_PER_PASS = 12;
  * title that cannot answer for this row, and would ask again every day
  * forever, because nothing the answer contains can settle it.
  */
-const endMayHaveMoved = (season: SeasonRow, resolved: ResolvedRow, { baseline, timezone, ceiling }: FollowContext): boolean => {
+/**
+ * Whether this block's catalogue lookup has come back at all.
+ *
+ * The distinction `resolved.complete` cannot make: a season is incomplete both
+ * when nothing has been fetched and when the fetch said so. Only the first is
+ * worth a lookup, and reading them as one turns a bounded seeding pass into a
+ * queue of blocks re-asking a settled question forever, spending the allowance
+ * on titles already answered while rows further down the sheet are never asked
+ * about at all.
+ *
+ * An *entry*, not a season count. A row on this grid can be a film — the ones
+ * embedded in a series block — and `/tv/episodes/{id}` answers a film with an
+ * empty list, which is an answer. Keyed on the episode count those never
+ * settle either.
+ */
+const endMoved = (season: SeasonRow, resolved: ResolvedRow, { baseline, timezone, ceiling }: FollowContext): boolean => {
   if (season.ids.length || !season.closed || resolved.key === null) return false;
   const serial = watchSerial(resolved.lastWatchedAt, timezone);
   // The same range `followUpstream` declines on. Asked here too so a timestamp
   // it is going to refuse does not first earn a lookup to refuse it with.
   if (serial === null || !plausibleSerial(serial, ceiling)) return false;
-  return recordedSerial(baseline.get(resolved.key)?.End, timezone) !== serial;
+  const was = recordedSerial(baseline.get(resolved.key)?.End, timezone);
+  return was !== null && was !== serial;
 };
 
 const followUpstream = (
@@ -762,7 +767,7 @@ const followUpstream = (
 
     const before = watchedNote(instantFrom(baseline.get(key)?.[field]), timezone);
     plan.edits.push(edit(grid, season.row, field, num(serial), `${label}: ${field} moved from ${before} to ${watchedNote(at, timezone)}`));
-    // Into `writing`, and *withdrawn* from `observed`, which `observeStarts`
+    // Into `writing`, and *withdrawn* from `observed`, which `observeWatches`
     // has already seeded with this very value: recorded before its write lands,
     // the next poll compares against it, finds nothing moved, and the change is
     // lost. The withdrawal is what keeps the two maps disjoint.
@@ -812,7 +817,7 @@ const closeSeason = (
   resolved: ResolvedRow,
   index: Map<number, TitleProgress>,
   titles: Map<number, TitleCatalogue>,
-  { label, timezone, ceiling, writing }: { label: string; timezone: string; ceiling: number; writing: Baseline },
+  { label, timezone, ceiling, writing, observed }: { label: string; timezone: string; ceiling: number; writing: Baseline; observed: Baseline },
 ): boolean => {
   if (!resolved.complete) return false;
 
@@ -847,8 +852,17 @@ const closeSeason = (
   // this the closing run banks nothing, the next poll sees `End` for the first
   // time and records it silently, and a correction landing in between is lost
   // for good — the gap this whole mechanism exists to close.
+  //
+  // Withdrawn from `observed` for the same reason `followUpstream` withdraws:
+  // `observeWatches` seeds this very value library-wide, and a value recorded
+  // before its write lands is a change banked and never made. Replaced rather
+  // than deleted in place, because the seed's entries are shared across every
+  // planning pass of the run.
   if (resolved.key !== null && resolved.lastWatchedAt !== null) {
     writing.set(resolved.key, { ...writing.get(resolved.key), End: isoOf(resolved.lastWatchedAt) });
+    const seeded = { ...observed.get(resolved.key) };
+    delete seeded.End;
+    observed.set(resolved.key, seeded);
   }
   if (runtime.state === 'ineligible') return true;
 
@@ -952,10 +966,8 @@ export const planSync = (
   // Copied, never used directly: a pass whose plan is discarded must not leave
   // its withdrawals in the caller's seed. The entries themselves are never
   // mutated in place — only replaced — so a shallow copy is enough.
-  const observed = new Map(starts ?? observeStarts(index));
+  const observed = new Map(starts ?? observeWatches(index));
   const writing: Baseline = new Map();
-  // Blocks that have spent this pass's seeding allowance — see `SEEDING_PER_PASS`.
-  let seeding = 0;
   const follow: FollowContext = { plan, grid, timezone, ceiling: maxSerial(now, timezone), baseline, observed, writing };
 
   for (const block of grid.blocks) {
@@ -1037,9 +1049,10 @@ export const planSync = (
       // never be seen to move. A cour row settles completeness from its own
       // counters and asks for nothing.
       followUpstream(follow, season, resolved, label);
-      // `complete` already true means the answer is in hand and `End` was
-      // eligible above — the demand is for the rows where it is missing.
-      if (!recent && !wantsCompleteness && !resolved.complete && endMayHaveMoved(season, resolved, follow)) {
+      // A move with nothing to write it from. `complete` already true means the
+      // answer is in hand and `End` was eligible above; false out here means
+      // the lookup nobody made for this dormant block, so ask for it.
+      if (!recent && !wantsCompleteness && !resolved.complete && endMoved(season, resolved, follow)) {
         wantsCompleteness = true;
       }
 
@@ -1062,7 +1075,7 @@ export const planSync = (
         plan.edits.push(edit(grid, season.row, 'Episode', num(resolved.watched), `${label}: ${season.episode ?? 0} -> ${resolved.watched} episodes`));
       }
 
-      const closing = closeSeason(plan, demands, grid, block, season, resolved, index, titles, { label, timezone, ceiling: follow.ceiling, writing });
+      const closing = closeSeason(plan, demands, grid, block, season, resolved, index, titles, { label, timezone, ceiling: follow.ceiling, writing, observed });
 
       // Last, because what the note should say depends on whether this batch
       // dates the row — a row left open for another poll keeps carrying its
@@ -1087,8 +1100,7 @@ export const planSync = (
     // `sync.ts` drops a request the store answered inside `CATALOGUE_MAX_AGE`,
     // so a season that stays unsettled — dated here, incomplete upstream —
     // costs one call a day rather than one a poll.
-    if (wantsCompleteness && seeding < SEEDING_PER_PASS) {
-      seeding += 1;
+    if (wantsCompleteness) {
       for (const id of block.ids) demands.catalogue.push({ id, episodes: true, detail: true });
     }
 
