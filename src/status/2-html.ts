@@ -306,7 +306,7 @@ const runChanges = (run: RunView) => [
  * script, which the page's `default-src 'none'` requires.
  *
  * A run with a `sole` change gets no expander at all: an incremental history
- * is nearly all one-edit runs, and a triangle that reveals the line already
+ * is nearly all one-change runs, and a triangle that reveals the line already
  * shown is worse than none. Its cells sit at fixed widths so a column of them
  * reads down — the reason the whole section exists is to compare one run's
  * change against the next's.

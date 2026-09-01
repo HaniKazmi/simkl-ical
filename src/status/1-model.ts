@@ -19,6 +19,7 @@ import { pageHealthy, type Assessment } from '../health.ts';
 import type { LibraryMovement, PollOutcome, Snapshot } from '../orchestrator.ts';
 import type { RequestRecord } from '../api/requests.ts';
 import type { SheetRunRecord } from '../sheet/io/journal.ts';
+import type { RecordedEdit } from '../sheet/4-plan.ts';
 import type { BaselineSummary } from '../sheet/io/baseline.ts';
 import type { SheetSyncStatus } from '../sheet/sync.ts';
 
@@ -130,9 +131,10 @@ export type RunView = Omit<SheetRunRecord, 'at'> & {
   /** The newest run only. The page opens it and collapses the rest. */
   open: boolean;
   /**
-   * Set on a run of one write and no error, which is what a real history is
+   * Set on a run of one change and no error, which is what a real history is
    * nearly all of: the summary line carries the change itself and there is
-   * nothing left to expand.
+   * nothing left to expand. One write, or the two a season row's count and its
+   * date always come as.
    */
   sole: SoleChange | null;
   /** `15 edits · 1 insert`, or `3 polls` on a sole run that repeated. Null
@@ -274,9 +276,52 @@ const due = (last: string | null, every: Temporal.Duration, now: Temporal.Instan
     : { label: `in ${duration(now.until(next))}` };
 };
 
+/** The row an address sits on, or null where it names none. */
+const rowOf = (address: string): string | null => /(\d+)$/.exec(address)?.[1] ?? null;
+
 /**
- * A run's whole story, when it is one write. An error is a second thing to
+ * The wording `statusNote` gives a season row's watch note, in
+ * `sheet/4-plan.ts`. Recogniser and extractor at once, and it earns the second
+ * job: the clear that takes the note away is worded differently and fails this,
+ * which leaves a closing batch — End, the clear, and whatever else that batch
+ * settles — on the expander it needs to say all of it. A rewording upstream
+ * costs the collapse and nothing else, so the rows go back to expanders rather
+ * than to anything wrong.
+ */
+const WATCH_NOTE = / last watched \d{4}-\d{2}-\d{2}$/;
+
+/**
+ * A season row's count and the note dating it, as the one change they are: the
+ * note's date is appended to the count's own wording, which already names the
+ * season.
+ *
+ * The address is the count's cell. The note's is the `Status` column of that
+ * same row by construction, which is not a second place to look.
+ *
+ * Matched by field and row rather than by position: this is read off disk, and
+ * the shared prefix stays rather than being deduped, because a title carries
+ * colons of its own — `Frieren: Beyond Journey's End S1` — and no split
+ * recovers the label.
+ */
+const datedCount = (edits: RecordedEdit[]): SoleChange | null => {
+  const count = edits.find((e) => e.field === 'Episode');
+  const note = edits.find((e) => e.field === 'Status');
+  if (!count || !note) return null;
+  const row = rowOf(count.address);
+  if (row === null || row !== rowOf(note.address)) return null;
+  const dated = WATCH_NOTE.exec(note.note);
+  if (dated === null) return null;
+  return { address: count.address, field: count.field, note: `${count.note},${dated[0]}` };
+};
+
+/**
+ * A run's whole story, when it is one change. An error is a second thing to
  * say however small the plan was, so a run carrying one keeps its expander.
+ *
+ * Two edits qualify in exactly one shape, which is the shape most applied runs
+ * have: a count and the note dating it are one change described twice, because
+ * the note is written only when the count beside it moves and only onto that
+ * same row.
  */
 const soleChange = (run: SheetRunRecord): SoleChange | null => {
   if (run.error !== null) return null;
@@ -284,6 +329,7 @@ const soleChange = (run: SheetRunRecord): SoleChange | null => {
     const { address, field, note } = run.edits[0]!;
     return { address, field, note };
   }
+  if (run.edits.length === 2 && run.inserts.length === 0) return datedCount(run.edits);
   if (run.inserts.length === 1 && run.edits.length === 0) {
     const { address, note } = run.inserts[0]!;
     return { address, field: 'insert', note };
