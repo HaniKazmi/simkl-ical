@@ -712,17 +712,30 @@ test('running again over the applied result produces nothing', () => {
 
 // --- demands ---------------------------------------------------------------
 
-// The cut-off keeps a cold run at roughly 28 calls rather than 600: an
-// out-of-scope block demands nothing, however stale its catalogue.
+// The cut-off keeps a warm run at roughly 28 calls rather than 600: an
+// out-of-scope block demands nothing once its dates are settled, however stale
+// its catalogue. Unsettled it asks once, for the episode list that says whether
+// its season is complete — which is what decides if `End` may follow SIMKL —
+// and stops once that value is recorded. A sheet older than its baseline is
+// therefore the 600 spread over polls by `SEEDING_PER_PASS`, not in one burst.
 test('only eligible blocks demand catalogue lookups', () => {
-  const { demands } = scenario({
+  const settled = scenario({
     rows: [show('Recent', 'Watching', 1), season(1, 1, null), show('Dormant', 'Ended', 2), season(1, 10, 44000)],
     items: [
       { id: 1, status: 'watching', seasons: { 1: watched(5) } },
       { id: 2, status: 'completed', seasons: { 1: watched(10, 500) } },
     ],
   });
-  assert.deepEqual([...new Set(demands().catalogue.map((r) => r.id))], [1]);
+  // The same array the scenario built its library from, not a second call that
+  // happens to reduce to the same day.
+  const dormantSeen = watched(10, 500);
+  const recorded: Baseline = new Map([[seasonKey(2, 1), { Start: dormantSeen[0] as string, End: dormantSeen.at(-1) as string }]]);
+  assert.deepEqual([...new Set(settled.result(recorded).demands.catalogue.map((r) => r.id))], [1]);
+
+  // Unsettled, it asks — the same shape the recent half asks for, so the stamp
+  // it earns means what every other stamp means. This is the
+  // one-time seeding a sheet older than the baseline pays, not a per-poll cost.
+  assert.deepEqual(settled.demands().catalogue.filter((r) => r.id === 2), [{ id: 2, episodes: true, detail: true }]);
 });
 
 // The planner demands with no memory — filtering already-fetched is the
@@ -1427,13 +1440,172 @@ test('a start date that moved is written however long ago the season was watched
     rows: [show('Fargo', 'Ended', 300), season(1, 6, TODAY_SERIAL)],
     items: [{ id: 300, status: 'completed', seasons: { 1: old }, watched: 6, total: 6 }],
   });
-  const { plan, demands } = result(new Map([[seasonKey(300, 1), { Start: daysAgo(1200) }]]));
+  // `End` already recorded at the day SIMKL still reports, so the only thing
+  // moving is `Start` — which comes off the library and settles nothing.
+  const { plan, demands } = result(new Map([[seasonKey(300, 1), { Start: daysAgo(1200), End: old.at(-1) as string }]]));
 
   assert.deepEqual(plan.edits.map((e) => e.field), ['Start']);
   assert.doesNotThrow(() => assertPlanSafe(plan, grid));
   // The window still gates everything that costs a call: a block nobody has
   // watched lately is not looked up just to compare a date already in hand.
   assert.deepEqual(demands.catalogue, []);
+});
+
+// --- reaching back for `End` ------------------------------------------------
+//
+// `End` is eligible only on a complete season, and a row resolved through the
+// catalogue takes that answer from there. Gating the lookup on the window
+// freezes the field rather than merely skipping it: never eligible means never
+// recorded, and a value never recorded can never be seen to move.
+//
+// The demand is decided from the library and the record alone, which is what
+// keeps it bounded — a dormant row asks only when the day SIMKL reports is not
+// the day already written down for it.
+
+/** The same block as `dated`, with the catalogue unanswered: what a poll leaves. */
+const dormant = (timestamps: string[]) =>
+  scenario({
+    rows: [show('Fargo', 'Ended', 300), season(1, timestamps.length, TODAY_SERIAL)],
+    items: [{ id: 300, status: 'completed', seasons: { 1: timestamps }, watched: timestamps.length, total: timestamps.length }],
+  });
+
+test('a dormant season whose end date moved upstream asks for the completeness answer', () => {
+  const old = watched(6, 900);
+  const { grid, index, titles } = dormant(old);
+  const stale: Baseline = new Map([[KEY, { Start: old[0] as string, End: daysAgo(1200) }]]);
+  const { plan, demands } = planSync(grid, index, titles, { timezone: TZ, baseline: stale });
+
+  assert.deepEqual(demands.catalogue, [{ id: 300, episodes: true, detail: true }]);
+  // Nothing yet: the answer that makes `End` eligible has not come back. The
+  // sync re-plans once it has, which is what the fixpoint is for.
+  assert.deepEqual(plan.edits.filter((e) => e.field === 'End'), []);
+});
+
+test('the same season writes its end date once the answer is in hand', () => {
+  const old = watched(6, 900);
+  const { grid, result } = dated(old, TODAY_SERIAL);
+  const stale: Baseline = new Map([[KEY, { Start: old[0] as string, End: daysAgo(1200) }]]);
+  const { plan, demands } = result(stale);
+
+  assert.deepEqual(plan.edits.map((e) => e.field), ['End']);
+  assert.doesNotThrow(() => assertPlanSafe(plan, grid));
+  // Answered, so nothing more is asked for.
+  assert.deepEqual(demands.catalogue, []);
+});
+
+/**
+ * The demand's two bounds, each the difference between one lookup and a daily
+ * one forever. A row carrying its own id takes `complete` from that entry's
+ * own counters, so no episode list can settle it — and the id the block would
+ * name is not even the id the row resolved through. An open row has no `End`
+ * to follow at all.
+ */
+test('a season row carrying its own id asks for nothing, whatever its block looks like', () => {
+  const old = watched(6, 900);
+  const { grid, index, titles } = scenario({
+    rows: [show('Fargo', 'Ended', 300), season(1, 6, TODAY_SERIAL, 555)],
+    items: [
+      { id: 300, status: 'completed', seasons: { 1: old }, watched: 6, total: 6 },
+      { id: 555, status: 'watching', seasons: { 1: old }, watched: 6, total: 10, notAired: 4 },
+    ],
+  });
+  const stale: Baseline = new Map([[seasonKey(555, 1), { Start: old[0] as string, End: daysAgo(1200) }]]);
+
+  assert.deepEqual(planSync(grid, index, titles, { timezone: TZ, baseline: stale }).demands.catalogue, []);
+});
+
+/**
+ * The reachable half of the range check out here is the floor: a stamp before
+ * `MIN_SERIAL` is both dormant and unwritable, and SIMKL really does serve
+ * them — an episode marked watched with no date carries the epoch. Above the
+ * ceiling is unreachable on this path, a future stamp being recent by
+ * definition.
+ */
+test('a timestamp below the range this sync writes earns no lookup to refuse it with', () => {
+  const epoch = '1970-01-01T00:00:01Z';
+  const { grid, index, titles } = dormant([epoch]);
+  const stale: Baseline = new Map([[KEY, { Start: epoch, End: daysAgo(1200) }]]);
+
+  assert.deepEqual(planSync(grid, index, titles, { timezone: TZ, baseline: stale }).demands.catalogue, []);
+});
+
+test('an undated season asks for nothing — it has no end date to follow', () => {
+  const old = watched(6, 900);
+  const { grid, index, titles } = scenario({
+    rows: [show('Fargo', 'Ended', 300), season(1, 6, null)],
+    items: [{ id: 300, status: 'completed', seasons: { 1: old }, watched: 6, total: 6 }],
+  });
+
+  assert.deepEqual(planSync(grid, index, titles, { timezone: TZ, baseline: new Map() }).demands.catalogue, []);
+});
+
+/**
+ * These two fields reach rows the window never takes back out of scope, so a
+ * refusal earned out here is not one that ages out: the guard refuses a
+ * formula target whole-plan, which would hold up every unrelated edit on the
+ * sheet on every poll from then on. Declined in the planner, with the value
+ * still recorded so the row settles.
+ */
+test('a formula in a dated end cell is declined, not planned onto', () => {
+  const old = watched(6, 900);
+  const formulaEnd = season(1, 6, TODAY_SERIAL);
+  formulaEnd[5] = { formula: '=TODAY()', value: TODAY_SERIAL };
+  const { grid, index, titles } = scenario({
+    rows: [show('Fargo', 'Ended', 300), formulaEnd],
+    items: [{ id: 300, status: 'completed', seasons: { 1: old }, watched: 6, total: 6 }],
+    episodes: { 300: eps(1, 6) },
+    details: { 300: { status: 'ended', runtime: 45 } },
+  });
+  const stale: Baseline = new Map([[seasonKey(300, 1), { Start: old[0] as string, End: daysAgo(1200) }]]);
+  const { plan, observed } = planSync(grid, index, titles, { timezone: TZ, baseline: stale });
+
+  assert.deepEqual(plan.edits.filter((e) => e.field === 'End'), []);
+  assert.match(skipMessages(plan), /would overwrite a formula/);
+  // Recorded anyway, so the row settles instead of asking again every poll.
+  assert.equal(observed.get(seasonKey(300, 1))?.End, old.at(-1));
+});
+
+/**
+ * A sheet older than its baseline wants one lookup per dormant block. Asking
+ * for all of them at once is what makes SIMKL answer with a throttle, and a
+ * throttled round is discarded whole — so the seeding drains a few blocks a
+ * poll and every round keeps what it fetched.
+ */
+test('seeding lookups are capped per pass so a cold baseline drains rather than bursts', () => {
+  const old = watched(6, 900);
+  const rows = Array.from({ length: 30 }, (_, i) => [show(`Show ${i}`, 'Ended', 400 + i), season(1, 6, TODAY_SERIAL)]).flat();
+  const { grid, index, titles } = scenario({
+    rows,
+    items: Array.from({ length: 30 }, (_, i) => ({ id: 400 + i, status: 'completed', seasons: { 1: old }, watched: 6, total: 6 })),
+  });
+  const { demands } = planSync(grid, index, titles, { timezone: TZ, baseline: new Map() });
+
+  assert.equal(new Set(demands.catalogue.map((r) => r.id)).size, 12);
+});
+
+test('a dormant season whose end date agrees with the record asks for nothing', () => {
+  const old = watched(6, 900);
+  const { grid, index, titles } = dormant(old);
+  const agreed: Baseline = new Map([[KEY, { Start: old[0] as string, End: old.at(-1) as string }]]);
+
+  assert.deepEqual(planSync(grid, index, titles, { timezone: TZ, baseline: agreed }).demands.catalogue, []);
+});
+
+/**
+ * Reaching back far enough to *record* a value is the point; writing one
+ * nobody has seen move is not. A season never observed while it was recent can
+ * otherwise never be followed at all, because `moved` is measured against a
+ * record that never gets written.
+ */
+test('a dormant season with no recorded end date is observed, never written', () => {
+  const old = watched(6, 900);
+  const { result } = dated(old, TODAY_SERIAL);
+  const startOnly: Baseline = new Map([[KEY, { Start: old[0] as string }]]);
+  const { plan, observed, writing } = result(startOnly);
+
+  assert.deepEqual(plan.edits.filter((e) => e.field === 'End'), []);
+  assert.equal(writing.get(KEY)?.End, undefined);
+  assert.equal(observed.get(KEY)?.End, old.at(-1));
 });
 
 /** The counterpart: nothing else reaches back with it. */
