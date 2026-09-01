@@ -95,6 +95,7 @@ export type SkipCode =
   | 'duplicate-season'
   | 'non-numeric-count'
   | 'unusable-timestamp'
+  | 'season-fragment'
   | 'awaiting-runtimes'
   | 'no-episode-list'
   | 'no-format-row';
@@ -701,6 +702,22 @@ const followUpstream = (
   const end = resulting(candidates, 'End', grid, season.row);
   const inverted = start !== null && end !== null && start > end;
 
+  // Whether this row and the season it resolved to describe the same episodes.
+  //
+  // A row matched by season *number* is only that season if it holds the same
+  // ones, and the sheet numbers some shows its own way: a Netflix batch split
+  // into parts gives Disenchantment five ten-episode rows against SIMKL's
+  // 20/20/10, so its row 2 resolves to a season whose first and last watch
+  // belong to rows 1 and 4. Following those dates writes a later part's date
+  // onto an earlier part's row, and every row in such a block is wrong in the
+  // same direction.
+  //
+  // Only on a closed row, where the count is the sheet's final word. An open
+  // one legitimately lags — that disagreement is what the count write exists
+  // to settle, and reading it as a mismatch would stop a season following
+  // SIMKL for exactly as long as it was still being watched.
+  const fragment = season.closed && season.episode !== null && season.episode !== resolved.watched;
+
   for (const { field, at, serial, moved } of candidates) {
     const record = (into: Baseline): void => void into.set(key, { ...into.get(key), [field]: isoOf(at) });
 
@@ -721,12 +738,17 @@ const followUpstream = (
       ? 'is outside the range this sync writes'
       : isFormula(cellAt(grid, season.row, grid.columns[field]))
         ? 'would overwrite a formula'
-        : inverted
-          ? 'would leave the row starting after it ended'
-          : null;
+        : fragment
+          ? `covers ${resolved.watched} episodes where this row holds ${season.episode}`
+          : inverted
+            ? 'would leave the row starting after it ended'
+            : null;
 
     if (moved && why !== null) {
-      plan.skips.push({ code: 'unusable-timestamp', message: `${label}: SIMKL's ${field} date ${why}, so that cell is left alone` });
+      plan.skips.push({
+        code: fragment ? 'season-fragment' : 'unusable-timestamp',
+        message: `${label}: SIMKL's ${field} date ${why}, so that cell is left alone`,
+      });
       record(observed);
       continue;
     }
