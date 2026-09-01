@@ -136,6 +136,16 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   and `needsLookup` would then decline the detail the block needs the moment it turns recent. What
   does **not** stop asking is a row dated here but incomplete upstream: it never records, so it
   costs one call a day for as long as it disagrees.
+- **A row follows SIMKL's dates only where it holds the same episodes as the season it resolved
+  to.** A row matched by season *number* is that season only if the counts agree, and the sheet
+  numbers some shows its own way: a Netflix batch split into parts gives Disenchantment five
+  ten-episode rows against SIMKL's 20/20/10, so its row 2 resolves to a season whose first and last
+  watch belong to rows 1 and 4. `fragment` in `followUpstream` declines both fields there —
+  `season-fragment`, recorded so the row settles — and only on a **closed** row, because an open
+  one's count lags by design and that gap is what the count write settles. The test is a proxy, not
+  a proof: counts can agree while the episodes differ, which is how a corrected Disenchantment
+  season 3 still reaches the part-3 row. Measured against the live sheet, 5 of the 8 rows that would
+  take another row's date are caught; the rest need judgement, not a rule.
 - **A change is measured against what was last observed, never against the cell.** SIMKL has no
   per-field revision and a disagreeing cell may have disagreed since before the sync first ran, so
   the only thing "changed" can mean is *different from what this service recorded* —

@@ -1583,6 +1583,55 @@ test('seeding lookups are capped per pass so a cold baseline drains rather than 
   assert.equal(new Set(demands.catalogue.map((r) => r.id)).size, 12);
 });
 
+/**
+ * A row matched by season *number* is only that season if it holds the same
+ * episodes. The sheet numbers some shows its own way — a Netflix batch split
+ * into parts gives ten-episode rows against a twenty-episode SIMKL season — so
+ * that season's first and last watch belong to other rows, and following them
+ * writes a later part's date onto an earlier part's row.
+ */
+test('a closed row holding fewer episodes than its SIMKL season does not follow its dates', () => {
+  const part = watched(10, 900);
+  const whole = [...watched(10, 1200), ...part];
+  const { result } = scenario({
+    rows: [show('Disenchantment', 'Ended', 300), season(1, 10, TODAY_SERIAL)],
+    items: [{ id: 300, status: 'completed', seasons: { 1: whole }, watched: 20, total: 20 }],
+    episodes: { 300: eps(1, 20) },
+    details: { 300: { status: 'ended', runtime: 25 } },
+  });
+  const stale: Baseline = new Map([[seasonKey(300, 1), { Start: daysAgo(1300), End: daysAgo(1300) }]]);
+  const { plan, observed, writing } = result(stale);
+
+  assert.deepEqual(plan.edits, []);
+  assert.deepEqual([...new Set(plan.skips.map((s) => s.code))], ['season-fragment']);
+  assert.match(skipMessages(plan), /covers 20 episodes where this row holds 10/);
+  // Recorded, so the row settles rather than reporting itself every poll.
+  assert.equal(writing.size, 0);
+  assert.equal(observed.get(seasonKey(300, 1))?.End, whole.at(-1));
+});
+
+/**
+ * The counterpart, and the reason the test is on `closed` alone: an open row's
+ * count lags SIMKL by design — that gap is what the count write settles — so
+ * reading it as a mismatch would stop a season following SIMKL for exactly as
+ * long as it was still being watched.
+ */
+test('an open row whose count lags SIMKL still follows its start date', () => {
+  const seen = watched(6, 5);
+  const { grid, result } = scenario({
+    rows: [show('Fargo', 'Watching', 300), season(1, 2, null)],
+    items: [{ id: 300, status: 'watching', seasons: { 1: seen }, watched: 6, total: 10, notAired: 4 }],
+    episodes: { 300: eps(1, 10, 6) },
+    details: { 300: { status: 'continuing', runtime: 45 } },
+  });
+  const stale: Baseline = new Map([[seasonKey(300, 1), { Start: daysAgo(400) }]]);
+  const { plan } = result(stale);
+
+  assert.ok(plan.edits.some((e) => e.field === 'Start'), 'the start date still follows');
+  assert.equal(plan.skips.filter((s) => s.code === 'season-fragment').length, 0);
+  assert.doesNotThrow(() => assertPlanSafe(plan, grid));
+});
+
 test('a dormant season whose end date agrees with the record asks for nothing', () => {
   const old = watched(6, 900);
   const { grid, index, titles } = dormant(old);
