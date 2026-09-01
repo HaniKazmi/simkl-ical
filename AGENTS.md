@@ -120,22 +120,16 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   to a season never watched again. What keeps a dormant sheet quiet is the baseline, not the window:
   a value never seen to move is never written, which is a strictly better gate. `recent` in
   `planSync` therefore gates the catalogue demands and every write that reads the cell, while
-  `followUpstream` runs above it. `Start` comes off the library and costs nothing. `End` is
-  eligible only on a complete season, and a row resolved through the catalogue takes that answer
-  from there — so a dormant row earns that lookup a second way: `endMayHaveMoved` asks, from the
-  library and the record alone, whether the row is dated and the day SIMKL reports differs from the
-  day written down for it. Gating that on `recent` would not merely skip the field out here, it
-  **freezes** it: never eligible means never recorded, and a value never recorded can never be seen
-  to move. Bounded three ways, each load-bearing: a row carrying its **own** id is excluded, because
-  its `complete` comes from that entry's counters and no episode list can settle it — and the id the
-  block would name is not the one the row resolved through; `SEEDING_PER_PASS` caps how many blocks
-  one pass may ask for, because SIMKL answers a burst with `412`, which `pool` rethrows before
-  `foldCatalogue` runs, discarding a whole round including the calls that succeeded; and the request
-  carries `detail` as well as the episode list, because `foldCatalogue` stamps by id and not by
-  flags, so an episodes-only fetch would leave a title stamped fresh with no `status` or `tvdbId`
-  and `needsLookup` would then decline the detail the block needs the moment it turns recent. What
-  does **not** stop asking is a row dated here but incomplete upstream: it never records, so it
-  costs one call a day for as long as it disagrees.
+  `followUpstream` runs above it. Both fields are recorded library-wide and for free by
+  `observeWatches`, off the library alone — every season's first and last watch, whether or not the
+  season is finished. What needs a lookup is *writing* `End`: the row must be complete, and only the
+  episode list settles that for a season resolved by number. Recording is a different question and
+  asks nothing, which is the distinction that matters — recorded only where a lookup had already
+  been made for some other reason, most seasons have nothing to disagree with and `End` can never be
+  followed at all. Recorded wide, a disagreement is a real move by one season, so the lookup a
+  dormant block earns is one season's worth for one season's worth of change. `endMoved` is that
+  test, and it excludes a row carrying its **own** id: `resolveRow` branches per row, such a row
+  takes `complete` from its entry's counters, and no episode list can settle it.
 - **A row follows SIMKL's dates only where it holds the same episodes as the season it resolved
   to.** A row matched by season *number* is that season only if the counts agree, and the sheet
   numbers some shows its own way: a Netflix batch split into parts gives Disenchantment five
