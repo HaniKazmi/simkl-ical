@@ -154,6 +154,28 @@ test('a run of one write renders flat, with the change on the line and nothing t
   assert.ok(!section.includes('<details'), 'and there is nothing left to expand');
 });
 
+// The two writes an applied run most often is: the line carries both halves
+// and there is still nothing behind it.
+test('a count and its date render flat, on one line', () => {
+  const rendered = page({
+    sheetConfigured: true,
+    runs: [
+      runRecord({
+        edits: [
+          { address: 'F378', field: 'Episode', note: 'Frieren S1: 16 -> 17 episodes' },
+          { address: 'B378', field: 'Status', note: 'Frieren S1: last watched 2026-09-01' },
+        ],
+      }),
+    ],
+  });
+  const section = sheetSection(rendered);
+
+  assert.match(section, /Frieren S1: 16 -&gt; 17 episodes, last watched 2026-09-01/, 'both halves on the one line');
+  assert.match(section, /class="run-head bare sole"/, 'as the line itself');
+  assert.ok(!section.includes('<details'), 'and there is nothing left to expand');
+  assert.ok(!section.includes('B378'), 'the note\u2019s own cell is the Status column of that row, not a second place to look');
+});
+
 // Newest last in the journal, so the two-edit run here is not the open one —
 // the collapse is what is under test, and the newest run never collapses.
 test('a run of several writes keeps the expander it has something to reveal behind', () => {

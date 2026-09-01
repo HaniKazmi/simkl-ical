@@ -336,6 +336,88 @@ test('a run of one write carries that write on its summary line', () => {
   assert.equal(model.sheet.runs[0]?.count, null, 'and no size beside it, which would only repeat the line');
 });
 
+// The note dates the count beside it: it is written only when that count
+// moves, and only onto that row. So the pair is one change described twice,
+// and the count's own wording already names the season the date belongs to.
+test('a count and the note dating it read as the one change they are', () => {
+  const model = buildModel(
+    input({
+      sheetConfigured: true,
+      runs: [
+        runRecord({
+          edits: [
+            { address: 'F378', field: 'Episode', note: 'Frieren S1: 16 -> 17 episodes' },
+            { address: 'B378', field: 'Status', note: 'Frieren S1: last watched 2026-09-01' },
+          ],
+        }),
+      ],
+    }),
+  );
+  assert.deepEqual(model.sheet.runs[0]?.sole, { address: 'F378', field: 'Episode', note: 'Frieren S1: 16 -> 17 episodes, last watched 2026-09-01' });
+  assert.equal(model.sheet.runs[0]?.count, null, 'and no size beside it, which would only repeat the line');
+});
+
+// The journal is read off disk and owes the page no order, so which half comes
+// first cannot be what the pairing turns on.
+test('the pair is recognised with the note first', () => {
+  const model = buildModel(
+    input({
+      sheetConfigured: true,
+      runs: [
+        runRecord({
+          edits: [
+            { address: 'B378', field: 'Status', note: 'Frieren S1: last watched 2026-09-01' },
+            { address: 'F378', field: 'Episode', note: 'Frieren S1: 16 -> 17 episodes' },
+          ],
+        }),
+      ],
+    }),
+  );
+  assert.deepEqual(model.sheet.runs[0]?.sole, { address: 'F378', field: 'Episode', note: 'Frieren S1: 16 -> 17 episodes, last watched 2026-09-01' });
+});
+
+// Two rows is two changes: a note dates the count *beside* it, so a `Status`
+// write on another row is a second season and the line cannot carry both.
+test('a count and a note on different rows keep their expander', () => {
+  const model = buildModel(
+    input({
+      sheetConfigured: true,
+      runs: [
+        runRecord({
+          edits: [
+            { address: 'F378', field: 'Episode', note: 'Frieren S1: 16 -> 17 episodes' },
+            { address: 'B412', field: 'Status', note: 'Fargo S2: last watched 2026-09-01' },
+          ],
+        }),
+      ],
+    }),
+  );
+  assert.equal(model.sheet.runs[0]?.sole, null);
+  assert.equal(model.sheet.runs[0]?.count, '2 edits');
+});
+
+// Only a `Status` cell holding a watch date pairs. The clear that closes a row
+// is worded differently and fails the same test, which is what keeps a closing
+// batch — it dates the row and takes the running note away — on the expander it
+// needs to say both.
+test('a Status write that is not a watch date does not pair with a count', () => {
+  const model = buildModel(
+    input({
+      sheetConfigured: true,
+      runs: [
+        runRecord({
+          edits: [
+            { address: 'F378', field: 'Episode', note: 'Frieren S1: 16 -> 17 episodes' },
+            { address: 'B378', field: 'Status', note: 'Frieren S1: dated, so its last-watched note is cleared' },
+          ],
+        }),
+      ],
+    }),
+  );
+  assert.equal(model.sheet.runs[0]?.sole, null);
+  assert.equal(model.sheet.runs[0]?.count, '2 edits');
+});
+
 // `insert` where an edit names its column: an insert writes a whole row, so
 // `address` is a row rather than a cell and there is no one column to name.
 test('a run of one insert reads the same way, with insert in the column slot', () => {
