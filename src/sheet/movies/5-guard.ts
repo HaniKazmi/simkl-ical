@@ -16,12 +16,14 @@
  *
  * The value conventions it shares with the planner (`values.ts`) are one copy
  * on purpose: a bound that exists twice can disagree, and any gap is a
- * whole-plan refusal on good data.
+ * whole-plan refusal on good data. The budget, the shape every written cell
+ * has and the alignment check are `guard-core.ts`, shared with the show grid's
+ * guard for the same reason.
  */
 
 import { config } from '../../shared/config.ts';
-import { isFormula, sameValue } from '../2-grid.ts';
 import { maxSerial, plausibleSerial } from '../values.ts';
+import { checkBudgets, checkCellAlignment, checkCellShape, describeValue, PlanRefusal, type Refuse, type SpentBudget } from '../guard-core.ts';
 import {
   isCertificate,
   isGenre,
@@ -74,39 +76,22 @@ export const INSERT_FIELDS = new Set<MovieHeaderName>([
   'Anime',
 ]);
 
-export class UnsafeFilmPlanError extends Error {
+export class UnsafeFilmPlanError extends PlanRefusal {
   constructor(message: string) {
     super(message);
     this.name = 'UnsafeFilmPlanError';
   }
 }
 
-// Annotated on the variable, not the arrow: only that form makes TypeScript
-// narrow at call sites, letting the checks below read as straight-line
-// assertions rather than defensive `?.` chains.
-const refuse: (message: string) => never = (message) => {
+const refuse: Refuse = (message) => {
   throw new UnsafeFilmPlanError(message);
 };
-
-const describeValue = (value: ExtendedValue | undefined): string =>
-  value === undefined
-    ? '(empty)'
-    : (value.formulaValue ??
-      value.stringValue ??
-      (value.numberValue !== undefined ? String(value.numberValue) : (value.boolValue !== undefined ? String(value.boolValue) : JSON.stringify(value))));
 
 export interface FilmSafetyLimits {
   maxEdits?: number;
   maxRows?: number;
-  /**
-   * Edits another tab has already planned this poll, which count against the
-   * same budget.
-   *
-   * The budget is a blast radius for the whole poll, not an allowance per tab:
-   * counted per tab, one poll writes twice `SHEET_MAX_EDITS` while each half
-   * reports itself inside it.
-   */
-  spent?: { edits: number; rows: number };
+  /** What earlier halves of the poll already sent — see `checkBudgets`. */
+  spent?: SpentBudget;
   now?: Temporal.Instant;
   timezone?: string;
 }
@@ -120,24 +105,10 @@ interface FilmGuardContext {
   filmRows: Map<number, number>;
 }
 
-// --- Budgets ---------------------------------------------------------------
-
-/** Over budget refuses the whole plan; it never truncates. */
-const checkBudgets = (plan: FilmPlan, maxEdits: number, maxRows: number, spent: { edits: number; rows: number }): void => {
-  const edits = plan.edits.length + spent.edits;
-  if (edits > maxEdits) {
-    refuse(`${edits} edits this poll exceeds SHEET_MAX_EDITS=${maxEdits}. Nothing written; the report lists every proposed edit.`);
-  }
-  const rows = new Set([...plan.edits.map((e) => e.row), ...(plan.insert ? [plan.insert.row] : [])]).size + spent.rows;
-  if (rows > maxRows) refuse(`${rows} distinct rows this poll exceeds SHEET_MAX_ROWS=${maxRows}.`);
-};
-
 // --- Rules every written cell obeys ----------------------------------------
 
 /** The vocabulary and bounds each column accepts, in one place per field. */
 const checkValue = (field: MovieHeaderName, value: ExtendedValue, where: string, serialCeiling: number, releaseCeiling: number): void => {
-  if (value.numberValue !== undefined && !Number.isFinite(value.numberValue)) refuse(`${where}: not a finite number.`);
-
   switch (field) {
     case 'Watch Date':
       if (!plausibleSerial(value.numberValue, serialCeiling)) refuse(`${where}: ${describeValue(value)} is not a plausible watch date.`);
@@ -204,42 +175,10 @@ const checkValue = (field: MovieHeaderName, value: ExtendedValue, where: string,
   }
 };
 
-/**
- * One cell write's shape, existing row or not: a whitelisted field, at the
- * column the header map resolves, holding a value that column accepts.
- */
-const checkCellShape = (cell: FilmCellEdit, allowed: Set<MovieHeaderName>, { grid, serialCeiling, releaseCeiling }: FilmGuardContext): void => {
-  const where = `${cell.address} (${cell.field})`;
-
-  if (!allowed.has(cell.field)) refuse(`${where}: not a field this sync may write.`);
-  if (cell.column !== grid.columns[cell.field]) {
-    refuse(`${where}: column ${cell.column} does not match the resolved position of ${cell.field}.`);
-  }
-
-  if (cell.value === undefined) {
-    if (!EMPTIABLE.has(cell.field)) refuse(`${where}: not a field this sync may empty.`);
-    return;
-  }
-  checkValue(cell.field, cell.value, where, serialCeiling, releaseCeiling);
-};
-
-/**
- * The alignment rules — what catches a plan built against a different grid,
- * the one failure that produces real writes in wrong places.
- */
-const checkCellAlignment = (cell: FilmCellEdit, { grid }: FilmGuardContext): void => {
-  const where = `${cell.address} (${cell.field})`;
-
-  // Bounds first: past the end both sides read as undefined, so the value
-  // comparison would agree with itself and pass.
-  if (cell.row < 0 || cell.row >= grid.snapshot.rows.length) refuse(`${where}: row is outside the snapshot.`);
-  const actual = grid.snapshot.rows[cell.row]?.[cell.column];
-  if (!sameValue(cell.previous, actual?.userEnteredValue)) {
-    refuse(`${where}: the cell no longer holds what the plan was built on.`);
-  }
-  // Unconditional. This tab carries no formula today, and the copy people read
-  // carries one in `Banner` — so the rule has to hold rather than be assumed.
-  if (isFormula(actual)) refuse(`${where}: is a formula.`);
+/** The core's shape rules, then the value the column accepts. */
+const checkShape = (cell: FilmCellEdit, allowed: Set<MovieHeaderName>, { grid, serialCeiling, releaseCeiling }: FilmGuardContext): void => {
+  const value = checkCellShape(cell, { allowed, emptiable: EMPTIABLE, columns: grid.columns }, refuse);
+  if (value !== undefined) checkValue(cell.field, value, `${cell.address} (${cell.field})`, serialCeiling, releaseCeiling);
 };
 
 // --- Edits -----------------------------------------------------------------
@@ -258,8 +197,8 @@ const checkEdit = (cell: FilmCellEdit, ctx: FilmGuardContext): void => {
   if (holds === undefined) refuse(`${where}: row ${cell.row + 1} is not a row this sync can identify a film on.`);
   if (holds !== cell.id) refuse(`${where}: the plan is for film ${cell.id} but that row holds ${holds}.`);
 
-  checkCellShape(cell, EDIT_FIELDS, ctx);
-  checkCellAlignment(cell, ctx);
+  checkShape(cell, EDIT_FIELDS, ctx);
+  checkCellAlignment(cell, ctx.grid.snapshot, refuse);
 };
 
 // --- The insert ------------------------------------------------------------
@@ -288,7 +227,7 @@ const checkInsert = (insert: FilmRowInsert, ctx: FilmGuardContext): void => {
     if (cell.row !== insert.row) refuse(`${cell.address} (${cell.field}): a fill cell must sit on the inserted row.`);
     if (cell.id !== insert.id) refuse(`${cell.address} (${cell.field}): the cell is for film ${cell.id} but the row is for ${insert.id}.`);
     if (cell.previous !== undefined) refuse(`${cell.address} (${cell.field}): the inserted row has no previous value.`);
-    checkCellShape(cell, INSERT_FIELDS, ctx);
+    checkShape(cell, INSERT_FIELDS, ctx);
   }
 
   // The id is what every later run matches this row by. A row inserted without
@@ -334,7 +273,7 @@ export const assertFilmPlanSafe = (
     ),
   };
 
-  checkBudgets(plan, maxEdits, maxRows, spent);
+  checkBudgets(plan, { maxEdits, maxRows, spent }, refuse);
   for (const cell of plan.edits) checkEdit(cell, ctx);
   if (plan.insert) checkInsert(plan.insert, ctx);
 };

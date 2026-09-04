@@ -36,7 +36,7 @@ import { parseGrid, type Grid } from './2-grid.ts';
 import { indexLibrary, type TitleProgress } from './1-index.ts';
 import { CATALOGUE_MAX_AGE, CatalogueStore, needsLookup } from './3-catalogue.ts';
 import { describePlan, emptyPlan, gridIds, observeWatches, planRecord, planSync, type PlanRecord, type PlanResult, type SheetPlan } from './4-plan.ts';
-import { toRequests, writesFor } from './6-requests.ts';
+import { rowsTouched, toRequests, writesFor } from './6-requests.ts';
 import { verify } from './7-verify.ts';
 import { parseMovieGrid, type MovieGrid } from './movies/2-grid.ts';
 import { animeFilmIds, indexFilms, type FilmProgress } from './movies/1-index.ts';
@@ -370,10 +370,7 @@ export class SheetSync {
       // the guard instead, a plan the FRESH loop then discarded — or one report
       // mode never wrote — would still dock the films half's allowance.
       if (applied.status === 'applied') {
-        this.spent = {
-          edits: plan.edits.length,
-          rows: new Set([...plan.edits.map((e) => e.row), ...(plan.insert ? [plan.insert.row] : [])]).size,
-        };
+        this.spent = { edits: plan.edits.length, rows: rowsTouched(plan) };
       }
       return applied;
     }

@@ -34,6 +34,10 @@ export interface PlannedWrites {
   insert: { row: number; fill: readonly PlannedCell[] } | null;
 }
 
+/** The distinct rows a plan touches — what `SHEET_MAX_ROWS` counts. */
+export const rowsTouched = (plan: PlannedWrites): number =>
+  new Set([...plan.edits.map((e) => e.row), ...(plan.insert ? [plan.insert.row] : [])]).size;
+
 /**
  * A plan and the grid it was planned against, tied together.
  *
