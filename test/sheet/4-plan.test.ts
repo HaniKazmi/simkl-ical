@@ -555,6 +555,34 @@ const splitCour = (overrides: Partial<Record<'aEnd' | 'bEnd', boolean>> = {}) =>
     details: { 581835: { status: 'ended' } },
   });
 
+// `TitleProgress.lastWatchedAt` is `item.last_watched_at`, which SIMKL moves to
+// whatever was written last rather than to the latest episode: re-dating a
+// season's opening episode drags it back to the opening day. A row taking `End`
+// from it would then close on its own `Start`. 3 of 183 cour rows on the live
+// library carry the two values apart.
+test("a cour row is dated on its season's last episode, not the record's own timestamp", () => {
+  const first = daysAgo(60);
+  const last = daysAgo(9);
+  const { plan } = scenario({
+    rows: [show('Koukyoushihen: Eureka Seven', 'Ended', null, 'anime'), season(1, 12, null, 38597)],
+    items: [
+      {
+        id: 38597,
+        status: 'completed',
+        // What SIMKL reports once the opening episode is the most recent write.
+        lastWatchedAt: first,
+        seasons: { 1: [first, ...watched(10, 20), last] },
+        watched: 12,
+        total: 12,
+      },
+    ],
+    details: { 38597: { status: 'ended' } },
+  });
+  const end = plan().edits.find((e) => e.field === 'End');
+  assert.equal(end?.value?.numberValue, dateSerial(plainDateIn(Temporal.Instant.from(last), TZ)));
+  assert.notEqual(end?.value?.numberValue, dateSerial(plainDateIn(Temporal.Instant.from(first), TZ)));
+});
+
 test("a split cour's count is summed across every id", () => {
   const episode = splitCour().plan().edits.find((e) => e.field === 'Episode');
   assert.equal(episode?.value?.numberValue, 26);

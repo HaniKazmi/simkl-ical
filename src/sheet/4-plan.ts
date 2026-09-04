@@ -299,6 +299,8 @@ const resolveRow = (
     // recorded and re-reading the whole row as never observed.
     const first = resolved[0] as TitleProgress;
     const number = numberedSeasons(first)[0];
+    const last = resolved.at(-1) as TitleProgress;
+    const lastNumber = numberedSeasons(last)[0];
 
     return {
       kind: 'resolved',
@@ -309,12 +311,18 @@ const resolveRow = (
       // The first cour starts the row, as the last one ends it below.
       firstWatchedAt: number === undefined ? null : (first.seasons.get(number)?.firstWatchedAt ?? null),
       key: number === undefined ? null : seasonKey(first.id, number),
-      // The last id ends the row and dates it. It is also the right *recency*
-      // signal: ids go in release order, and a second is only added once the
-      // first is finished, so the last id is always the active one —
-      // mid-first-cour the row does not have the second id yet. A max across
-      // the ids would say the same thing.
-      lastWatchedAt: resolved.at(-1)?.lastWatchedAt ?? null,
+      // The last id ends the row, and the date comes off that id's *season*
+      // for the same reason `firstWatchedAt` above does: `TitleProgress.lastWatchedAt`
+      // is `item.last_watched_at`, which SIMKL moves to whatever was written
+      // last rather than to the latest episode. Re-dating a season's opening
+      // episode therefore drags that field back to the opening day, and a row
+      // taking `End` from it closes on its own `Start`. Measured on the live
+      // library, 3 of 183 cour rows carry the two values apart.
+      //
+      // Recency is a different question and the title-level field is the right
+      // answer to it — ids go in release order and a second is only added once
+      // the first is finished, so the last id is always the active one.
+      lastWatchedAt: lastNumber === undefined ? null : (last.seasons.get(lastNumber)?.lastWatchedAt ?? null),
     };
   }
 
