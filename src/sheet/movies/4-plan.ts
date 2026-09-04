@@ -85,6 +85,24 @@ export interface FilmPlan {
 
 export const emptyFilmPlan = (): FilmPlan => ({ edits: [], insert: null, skips: [], notes: [], deferredInserts: 0 });
 
+/**
+ * How many films one pass may ask TMDB about.
+ *
+ * Only one row is inserted per run, so a larger burst buys nothing: what it
+ * buys is a cold start on a full library issuing one request per unlisted film
+ * — several hundred — inside a run whose snapshot goes stale at 120s, and
+ * doing it again after every restart, since the store is process-local. A
+ * handful covers the settled and unanswerable films queued ahead of the next
+ * insertable one; the rest arrive on later polls, which is the rate rows land
+ * at anyway.
+ *
+ * It also bounds what a standing failure costs. A 403 that fails every request
+ * — a suspended token, a WAF, a throttle — records nothing, so the same films
+ * are demanded next poll; capped, that is a handful of requests every half
+ * hour rather than one per unlisted film.
+ */
+export const MAX_LOOKUPS_PER_PASS = 8;
+
 /** One film to look up, and the title its answer is filed under. */
 export interface FilmDemand {
   id: number;
@@ -406,14 +424,16 @@ const planInsert = (
     }
     if (known === undefined) {
       if (film.tmdbId === null) {
-        // Reported once and settled, not re-skipped every poll. Nothing about
-        // a record with no TMDB id changes by asking again.
+        // Handed to the caller, which reports it once. No note here: the
+        // planner runs several passes a poll and every poll, and this film is
+        // re-examined each time — cheaply, since it is never looked up.
         unidentifiable.push(film);
-        plan.notes.push(`${film.title} (${film.id}) has no TMDB id, so its row has to be added by hand`);
         continue;
       }
-      demands.push({ id: film.id, tmdbId: film.tmdbId, title: film.title });
-      plan.skips.push({ code: 'awaiting-lookup', row: null, reason: `${film.title}: waiting on TMDB before its row can be built` });
+      if (demands.length < MAX_LOOKUPS_PER_PASS) {
+        demands.push({ id: film.id, tmdbId: film.tmdbId, title: film.title });
+        plan.skips.push({ code: 'awaiting-lookup', row: null, reason: `${film.title}: waiting on TMDB before its row can be built` });
+      }
       continue;
     }
 

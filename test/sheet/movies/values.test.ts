@@ -104,6 +104,39 @@ test('a film that never opened here is never a cinema trip, however soon it was 
   assert.equal(watchedInCinema(null, day('2022-12-23')), false);
 });
 
+test('the certificate belongs to the release the date came from', () => {
+  // Both cells are write-once, so pairing one release's date with another's
+  // rating is permanent. 28 Days Later is this shape: 18 theatrically, 15 on a
+  // later cut, and TMDB contracts no ordering within a type.
+  const reRatedTheatrical = released([
+    ['GB', 3, '2018-06-01', '15'],
+    ['GB', 3, '2002-11-01', '18'],
+  ]);
+  assert.equal(releaseDateOf(reRatedTheatrical)?.toString(), '2002-11-01');
+  assert.equal(certificateOf(reRatedTheatrical), 18, 'the 2002 rating, not the 2018 one');
+  // And the same the other way round in the array.
+  const reversed = released([
+    ['GB', 3, '2002-11-01', '18'],
+    ['GB', 3, '2018-06-01', '15'],
+  ]);
+  assert.equal(certificateOf(reversed), 18);
+});
+
+test('a streaming original gets its digital date, not a blank', () => {
+  // TMDB carries a Netflix or Prime original as digital only. Without a
+  // fallback the row landed with a certificate and a permanently blank date.
+  const digitalOnly = released([['GB', 4, '2022-12-23', '15']]);
+  assert.equal(releaseDateOf(digitalOnly)?.toString(), '2022-12-23');
+  assert.equal(certificateOf(digitalOnly), 15);
+  // Still no cinema window: it never opened in one.
+  assert.equal(openedInCinemas(digitalOnly), null);
+});
+
+test('a GB release TMDB sends with no type still yields its certificate', () => {
+  const untyped: TmdbMovie = { release_dates: { results: [{ iso_3166_1: 'GB', release_dates: [{ release_date: '2010-01-01', certification: '12A' }] }] } };
+  assert.equal(certificateOf(untyped), 12);
+});
+
 test('the theatrical certificate wins over a later re-rating', () => {
   // 166 of the 347 films on the tab carry more than one GB certificate and 8
   // disagree — a re-rating attached to a digital or physical release. TMDB

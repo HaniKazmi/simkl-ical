@@ -102,10 +102,20 @@ export class FilmStore {
   }
 
   /**
-   * A film with no TMDB id can never be looked up, and saying so here keeps
-   * that out of the demand list without a second kind of "settled".
+   * Films the library gives no TMDB id, reported once rather than every poll.
+   *
+   * Not `films.set(id, null)`: that is "TMDB has nothing and never will", and
+   * what is missing here is SIMKL's *id*, which SIMKL fills in over time. Filed
+   * as settled, a film mapped an hour later would wait for a restart. Kept
+   * apart, so the next poll re-checks the library — free, since no lookup is
+   * made either way — and only the report stays quiet.
    */
-  settleUnidentifiable(film: FilmProgress): void {
-    if (film.tmdbId === null && !this.films.has(film.id)) this.films.set(film.id, null);
+  noteUnidentifiable(film: FilmProgress): boolean {
+    if (film.tmdbId !== null || this.unidentified.has(film.id)) return false;
+    this.unidentified.add(film.id);
+    return true;
   }
+
+  /** Films already reported as carrying no TMDB id. Observational, never a gate. */
+  private readonly unidentified = new Set<number>();
 }

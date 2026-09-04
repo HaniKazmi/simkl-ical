@@ -102,6 +102,7 @@ export const genresCell = (secondary: readonly string[]): string => secondary.jo
 
 const THEATRICAL = 3;
 const LIMITED = 2;
+const DIGITAL = 4;
 
 const releasesIn = (movie: TmdbMovie | undefined, country: string): TmdbRelease[] =>
   movie?.release_dates?.results?.find((group) => group.iso_3166_1 === country)?.release_dates ?? [];
@@ -131,7 +132,18 @@ const earliest = (releases: readonly TmdbRelease[], type: number): Temporal.Plai
 export const releaseDateOf = (movie: TmdbMovie | undefined): Temporal.PlainDate | null => {
   const gb = releasesIn(movie, 'GB');
   const us = releasesIn(movie, 'US');
-  return earliest(gb, THEATRICAL) ?? earliest(us, THEATRICAL) ?? earliest(gb, LIMITED) ?? earliest(us, LIMITED);
+  return (
+    earliest(gb, THEATRICAL) ??
+    earliest(us, THEATRICAL) ??
+    earliest(gb, LIMITED) ??
+    earliest(us, LIMITED) ??
+    // A film that never opened in a cinema still has a release date, and this
+    // column wants one for every film. Without this a streaming original — any
+    // Netflix or Prime title, which TMDB carries as digital only — lands with a
+    // certificate and a blank date, and the cell is never revisited.
+    earliest(gb, DIGITAL) ??
+    earliest(us, DIGITAL)
+  );
 };
 
 /**
@@ -201,16 +213,29 @@ export const isCertificate = (value: number): boolean => RATINGS.has(value);
  */
 export const certificateOf = (movie: TmdbMovie | undefined): number | null => {
   const releases = releasesIn(movie, 'GB');
-  const rated = (types: number[]): number | null => {
+  /**
+   * The certificate on the *earliest* release of a type, which is the one
+   * `releaseDateOf` dates the row from. Taking the first in the array instead
+   * pairs one release's date with another's rating: 28 Days Later carries 18
+   * theatrically and 15 on a later cut, and TMDB contracts no ordering.
+   */
+  const rated = (matches: (type: number | undefined) => boolean): number | null => {
+    let best: { date: Temporal.PlainDate; age: number } | null = null;
     for (const release of releases) {
-      if (!types.includes(release.type ?? -1)) continue;
+      if (!matches(release.type)) continue;
       const age = CERTIFICATE_AGES[release.certification?.trim() ?? ''];
-      if (age !== undefined) return age;
+      if (age === undefined) continue;
+      const date = release.release_date ? releaseDate(release.release_date) : null;
+      // Undated but rated still beats nothing, and loses to anything dated.
+      if (date === null) best ??= { date: Temporal.PlainDate.from('9999-12-31'), age };
+      else if (best === null || Temporal.PlainDate.compare(date, best.date) < 0) best = { date, age };
     }
-    return null;
+    return best?.age ?? null;
   };
-  // Theatrical, then a limited run, then whatever else carries one.
-  return rated([THEATRICAL]) ?? rated([LIMITED]) ?? rated([1, 4, 5, 6]);
+  const is = (want: number) => (type: number | undefined) => type === want;
+  // Theatrical, then a limited run, then anything else that carries one —
+  // including a release TMDB sends with no type at all.
+  return rated(is(THEATRICAL)) ?? rated(is(LIMITED)) ?? rated(() => true);
 };
 
 // --- Director, franchise, banner -------------------------------------------

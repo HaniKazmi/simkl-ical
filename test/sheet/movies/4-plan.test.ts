@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { indexFilms } from '../../../src/sheet/movies/1-index.ts';
 import { filmFacts } from '../../../src/sheet/movies/3-catalogue.ts';
-import { NOT_HELD, observeFilms, planFilms } from '../../../src/sheet/movies/4-plan.ts';
+import { MAX_LOOKUPS_PER_PASS, NOT_HELD, observeFilms, planFilms } from '../../../src/sheet/movies/4-plan.ts';
 import { movieKey, type Baseline } from '../../../src/sheet/values.ts';
 import { isoOf } from '../../../src/shared/dates.ts';
 import type { FilmFacts } from '../../../src/sheet/movies/3-catalogue.ts';
@@ -184,14 +184,11 @@ test('a film TMDB has no record of is named once, not demanded every poll', () =
   assert.match(p.notes.join(' '), /Obscure .* has no TMDB record/);
 });
 
-test('a film SIMKL carries no TMDB id for is named once and settled', () => {
-  const { plan: p, demands, unidentifiable } = plan(
-    [film('a', { id: 1 })],
-    [movie({ id: 1 }), movie({ id: 2, title: 'No Id', tmdb: null })],
-  );
+test('a film SIMKL carries no TMDB id for is handed up, not demanded', () => {
+  const { demands, unidentifiable } = plan([film('a', { id: 1 })], [movie({ id: 1 }), movie({ id: 2, title: 'No Id', tmdb: null })]);
+  // Nothing to look it up by, so no request — and the caller reports it once
+  // rather than the plan carrying a line every pass of every poll.
   assert.deepEqual(demands, []);
-  assert.match(p.notes.join(' '), /No Id .* has no TMDB id/);
-  // Handed to the caller to settle, so the note is not re-emitted every poll.
   assert.deepEqual(unidentifiable.map((f) => f.id), [2]);
 });
 
@@ -274,4 +271,17 @@ test('a film with no row left on the tab is named, not planned', () => {
   const { plan: p } = planFilms(full, index, known, { ...OPTS, seed: observeFilms(index) });
   assert.equal(p.insert, null);
   assert.match(p.notes.join(' '), /no row left for No Room/);
+});
+
+test('a cold start asks about a bounded number of films, not all of them', () => {
+  // Only one row lands per run, so a larger burst buys nothing — and costs a
+  // request per unlisted film on every restart, inside a run whose snapshot
+  // goes stale at 120s. It also bounds what a standing TMDB failure costs,
+  // since a failed lookup records nothing and is asked again next poll.
+  const many = Array.from({ length: 40 }, (_, i) => movie({ id: 100 + i, lastWatchedAt: watchedOn(TODAY - i - 1) }));
+  const { plan: p, demands } = plan([film('a', { id: 1 })], [movie({ id: 1 }), ...many]);
+  assert.equal(demands.length, MAX_LOOKUPS_PER_PASS);
+  assert.equal(p.insert, null, 'and nothing is inserted until one of them answers');
+  // Oldest-first still, so the queue drains in the order the tab reads.
+  assert.deepEqual(demands.map((d) => d.id), [139, 138, 137, 136, 135, 134, 133, 132]);
 });

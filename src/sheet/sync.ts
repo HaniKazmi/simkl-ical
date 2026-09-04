@@ -654,9 +654,13 @@ export class SheetSync {
 
     for (let pass = 1; ; pass += 1) {
       const result = planFilms(grid, index, this.films.films, { now, timezone: config.timezone, baseline: baseline(), seed, held });
-      // A film the library gives no TMDB id can never be looked up, so it is
-      // settled here rather than re-examined and re-reported on every poll.
-      for (const film of result.unidentifiable) this.films.settleUnidentifiable(film);
+      // Reported once. Not settled: what is missing is SIMKL's id, not TMDB's
+      // knowledge, so the film stays askable the moment SIMKL fills it in.
+      for (const film of result.unidentifiable) {
+        if (this.films.noteUnidentifiable(film)) {
+          this.log.warn(`${film.title} (${film.id}) has no TMDB id in the library, so its row has to be added by hand`);
+        }
+      }
       if (pass > MAX_PASSES) {
         this.log.warn(`the films planner still wanted lookups after ${MAX_PASSES} passes; running with what it has`);
         return result;

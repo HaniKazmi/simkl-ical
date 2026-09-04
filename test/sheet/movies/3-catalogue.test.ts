@@ -62,16 +62,20 @@ test('a rejected credential settles every pending film, and only those', () => {
   assert.equal(store.films.get(2), null);
 });
 
-test('a film with no TMDB id is settled without a request', () => {
+test('a film with no TMDB id is reported once, and never settled', () => {
+  // What is missing is SIMKL's id, not TMDB's knowledge, and SIMKL fills ids
+  // in over time. Settled, a film mapped an hour later would wait for a
+  // restart; noted, the next poll re-checks the library for free.
   const store = new FilmStore();
   const film = indexFilms(libraryOf({ id: 7, type: 'movies', tmdb: null })).get(7)!;
-  store.settleUnidentifiable(film);
-  assert.equal(store.films.get(7), null);
+  assert.equal(store.noteUnidentifiable(film), true, 'reported the first time');
+  assert.equal(store.noteUnidentifiable(film), false, 'and not again');
+  assert.equal(store.films.has(7), false, 'but never recorded as unobtainable');
 });
 
-test('a film that has a TMDB id is left unanswered, so it is demanded', () => {
+test('a film that has a TMDB id is not reported, so it is demanded', () => {
   const store = new FilmStore();
   const film = indexFilms(libraryOf({ id: 7, type: 'movies', tmdb: '550' })).get(7)!;
-  store.settleUnidentifiable(film);
+  assert.equal(store.noteUnidentifiable(film), false);
   assert.equal(store.films.has(7), false);
 });
