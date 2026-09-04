@@ -290,9 +290,9 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   row carrying no id and a row whose id the tab repeats — the planner declines both, and a guard
   that only repeated the planner's reasoning would not be a second opinion.
 - **A film row goes where `nextFilmRow` says, and both halves ask it.** Under the last film row, or
-  under the **header** when the tab holds none. Anchored separately the planner and the guard
-  disagreed by one exactly when the tab was empty, so a fresh tab could never gain a row — and the
-  guard's own answer was the header row. `MovieGrid` carries `headerRow` for this; `rowCount` is a
+  under the **header** when the tab holds none. Anchored separately, the planner and the guard
+  disagree by one exactly when the tab is empty, so a fresh tab never gains a row — and -1's own
+  answer is the header row. `MovieGrid` carries `headerRow` for this; `rowCount` is a
   count, so the last usable index is one below it, and that check runs *before* the placement rule
   or it could only fire on a row placement had already accepted.
 - **The budget is the poll's, not the tab's.** `SHEET_MAX_EDITS` and `SHEET_MAX_ROWS` are a blast
@@ -301,7 +301,7 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   only once its own plan is safe so a refused show plan does not eat the films allowance.
 - **A run's tab is part of its identity.** Two halves failing the same way — an unshared
   spreadsheet, a 500 on the read — produce byte-identical records, so `sameAs` compares `tab` first;
-  without it the second collapsed into the first, took its label, and the first tab's run was gone.
+  without it the second collapses into the first, takes its label, and the first tab's run is gone.
   For the same reason a films run does not sweep the backup namespace when the show half left a
   snapshot standing: "a leftover tab is swept by the next clean run" held while one poll wrote one
   tab, and the films half is now that run, moments later.
@@ -401,7 +401,7 @@ the process, and the rest carries its pipeline position in the filename, so `ls`
 | PLAN | `4-plan.ts` — grid + library + catalogue + baseline → `{ plan, demands, observed, writing }`; the sync re-plans until nothing new is demanded, and records `writing` only once the write lands |
 | GUARD | `5-guard.ts` — a checklist of named rules; refuses a plan that does not re-derive |
 | BUILD | `6-requests.ts` — a plan → one ordered batch, plus the rollback request builders |
-| VERIFY | `7-verify.ts` — did the write do exactly what was planned, for either tab: `verifyAgainst` holds the rules and `VerifiedTab` the five things a tab answers for itself |
+| VERIFY | `7-verify.ts` — did the write do exactly what was planned, for either tab: `verifyAgainst` holds the rules and `VerifiedTab` what a tab answers for itself |
 | — | `values.ts` — the sheet's value conventions (serials, runtime bounds, the watch note's shape), one copy for planner and guard |
 | io | `io/spreadsheet.ts` (read/apply/list), `io/catalogue.ts` and `io/runtimes.ts` (fetch only), `io/apply.ts` (the write-and-recover protocol, over an `ApplySpec` either tab supplies), `io/backups.ts` (the snapshot tab's whole life), `io/journal.ts` (the run history), `io/baseline.ts` (what SIMKL last said — the one file here that *decides* something) |
 | — | `sync.ts` — the driver for **both** tabs: run states, the freshness loop, the plan-fetch fixpoints, the journal choke point |
@@ -415,7 +415,7 @@ the process, and the rest carries its pipeline position in the filename, so `ls`
 | FOLD | `3-catalogue.ts` — a TMDB payload reduced to the cells a row needs, retained across polls |
 | PLAN | `4-plan.ts` — grid + library + catalogue + baseline → `{ plan, demands, observed, writing }` |
 | GUARD | `5-guard.ts` — the films checklist; its whitelists are its own spec |
-| VERIFY | `7-verify.ts` — the five answers the films tab gives differently; the rules are the parent's `verifyAgainst` |
+| VERIFY | `7-verify.ts` — what the films tab answers differently; the rules are the parent's `verifyAgainst` |
 | — | `values.ts` — the tab's conventions: the genre map, the cinema window, the banner URL |
 | io | `io/tmdb.ts` (fetch only) |
 

@@ -10,7 +10,7 @@
  * apart in silence — hardening one leaves the other on the old behaviour, and
  * nothing fails.
  *
- * What is left here is the five answers this tab gives differently.
+ * What is left here is what this tab answers differently.
  */
 
 import { verifyAgainst, type Verification, type VerifiedTab } from '../7-verify.ts';

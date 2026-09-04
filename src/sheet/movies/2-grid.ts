@@ -70,7 +70,7 @@ export interface MovieGrid {
    * Where the header sits. Carried because it is the only thing that bounds an
    * insert on a tab with no film rows yet: "below the last one" has no answer
    * there, and both the planner and the guard would otherwise have to guess a
-   * floor — differently, as they did.
+   * floor.
    */
   headerRow: number;
   rows: MovieRow[];
@@ -134,8 +134,8 @@ export { GridError };
  * under the header when it holds none.
  *
  * One expression, read by the planner that proposes the row and the guard that
- * re-derives it. Two copies disagreed by one on an empty tab — the planner
- * anchoring on 0 and the guard on -1 — so a tab with no films could never gain
- * its first, and the guard's own answer was the header row itself.
+ * re-derives it. Two copies disagree by one on an empty tab — anchoring on 0
+ * against -1 — so a tab with no films never gains its first row, and -1's own
+ * answer is the header row.
  */
 export const nextFilmRow = (grid: MovieGrid): number => (grid.rows.at(-1)?.row ?? grid.headerRow) + 1;

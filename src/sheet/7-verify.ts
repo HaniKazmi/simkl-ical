@@ -130,7 +130,7 @@ export interface Verification {
  * one it is.
  *
  * The two tabs share every rule that decides whether a bad write is rolled
- * back, and differ in five named things. Kept as two copies those rules drift
+ * back, and differ only in what this interface names. Kept as two copies those rules drift
  * apart silently: hardening `editLanded` on the show grid would leave the films
  * tab on the old behaviour, and nothing would fail.
  */

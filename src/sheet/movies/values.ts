@@ -209,7 +209,7 @@ export const isCertificate = (value: number): boolean => RATINGS.has(value);
  * GB certificate and 8 of those disagree — 28 Days Later lists 18 and 15, The
  * Silence of the Lambs 15 and 18 — usually a re-rating attached to a later
  * digital or physical release. TMDB contracts no ordering, so taking the first
- * made a write-once cell depend on the order a response happened to arrive in.
+ * makes a write-once cell depend on the order a response arrives in.
  */
 export const certificateOf = (movie: TmdbMovie | undefined): number | null => {
   const releases = releasesIn(movie, 'GB');
@@ -318,9 +318,9 @@ export const plausibleRuntime = (minutes: number): boolean => Number.isInteger(m
  *
  * The ceiling is not a watch date's either. A watch cannot be in the future; a
  * release can, and routinely is for a film seen at a preview or festival
- * screening before it opens here. Sharing the watch ceiling dropped that cell
+ * screening before it opens here. Sharing the watch ceiling drops that cell
  * silently, and `Release Date` is written once and never revisited, so the
- * blank was permanent. A decade is the same kind of bound as the floor: wide
+ * blank is permanent. A decade is the same kind of bound as the floor: wide
  * enough that only a payload error crosses it.
  */
 const MIN_RELEASE_SERIAL = dateSerial(Temporal.PlainDate.from('1900-01-01'));
