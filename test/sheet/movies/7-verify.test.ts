@@ -117,5 +117,8 @@ test('a film row losing every cell is caught — it would be re-inserted next po
   emptied[2] = MOVIE_SHEET_HEADERS.map(() => null);
   const result = verifyFilms(ffx.grid, parseMovieGrid(sheetSnapshot(emptied)).snapshot, filmPlanOf());
   assert.equal(result.ok, false);
-  assert.match(result.problems.join(' '), /set of film rows changed|changed without being planned/);
+  // Named on its own. An alternation with "changed without being planned"
+  // proves nothing: blanking a row fires that for every column, so the row-set
+  // rule could be deleted outright and the assertion would still hold.
+  assert.match(result.problems.join(' '), /set of film rows changed/);
 });

@@ -104,6 +104,23 @@ test('a film that never opened here is never a cinema trip, however soon it was 
   assert.equal(watchedInCinema(null, day('2022-12-23')), false);
 });
 
+test('the theatrical certificate wins over a later re-rating', () => {
+  // 166 of the 347 films on the tab carry more than one GB certificate and 8
+  // disagree — a re-rating attached to a digital or physical release. TMDB
+  // contracts no ordering, so picking by position made a write-once cell
+  // depend on the order a response happened to arrive in.
+  const reRated = released([
+    ['GB', 5, '2003-02-01', '18'],
+    ['GB', 4, '2003-01-01', '18'],
+    ['GB', 3, '2002-11-01', '15'],
+  ]);
+  assert.equal(certificateOf(reRated), 15);
+  // With no theatrical entry, a limited run answers before a home release.
+  assert.equal(certificateOf(released([['GB', 5, '2003-02-01', '18'], ['GB', 2, '2002-11-01', '15']])), 15);
+  // And with neither, whatever GB carries is better than a blank.
+  assert.equal(certificateOf(released([['GB', 5, '2003-02-01', '18']])), 18);
+});
+
 test('the certificate is the BBFC age, and an unknown one leaves the cell blank', () => {
   assert.equal(certificateOf(released([['GB', 3, '2003-08-20', 'PG']])), 7);
   assert.equal(certificateOf(released([['GB', 3, '1977-12-27', 'U']])), 3);

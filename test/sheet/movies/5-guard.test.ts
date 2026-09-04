@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { assertFilmPlanSafe, EDIT_FIELDS, INSERT_FIELDS, UnsafeFilmPlanError } from '../../../src/sheet/movies/5-guard.ts';
 import { FOLLOWED_FIELDS } from '../../../src/sheet/movies/4-plan.ts';
 import { ffx, film, filmGrid, filmPlanOf, TODAY } from './fixture.ts';
+import { nextFilmRow, parseMovieGrid } from '../../../src/sheet/movies/2-grid.ts';
+import { MOVIE_SHEET_HEADERS, sheetSnapshot } from '../../helpers.ts';
 import { cellOf, withConfig } from '../../helpers.ts';
 import type { MovieHeaderName } from '../../../src/sheet/movies/2-grid.ts';
 import type { ExtendedValue } from '../../../src/api/google/types.ts';
@@ -163,6 +165,16 @@ test('a films tab holding no rows yet can take its first', () => {
   refuses(filmPlanOf([], empty.insert({ row: 0 })), empty.grid, /only ever added at row 2/);
 });
 
+test('the first row goes under the header, wherever the header is', () => {
+  // A title row above the header is survivable — `findHeaderRow` looks down
+  // five rows for it — so "row 0" is not the floor, the header is. With no
+  // film rows to count back from, that is the only thing that says where the
+  // first one goes.
+  const titled = parseMovieGrid(sheetSnapshot([['Films', null], MOVIE_SHEET_HEADERS]));
+  assert.equal(titled.headerRow, 1);
+  assert.equal(nextFilmRow(titled), 2);
+});
+
 test('a tab whose declared grid is full has no row to add', () => {
   // `rowCount` is a count, so the last usable 0-based index is one below it.
   // A tab trimmed to exactly its data has nowhere for the next film to go.
@@ -224,6 +236,14 @@ test('a genre outside the renderer vocabulary is refused', () => {
   refuses(filmPlanOf([], ffx.insert({ extra: [['Genres', { stringValue: 'Action, Crime' }]] })), ffx.grid, /genres the renderer colours/);
 });
 
+test('no secondary genres is a state the column holds, not an unknown genre', () => {
+  // 27 rows on the tab carry it. `''.split(',')` is `['']`, which is not a
+  // genre — refusing that would make the planner's decision to omit the cell
+  // load-bearing for the guard's correctness, which is the coupling these
+  // rules exist to avoid.
+  allows(filmPlanOf([], ffx.insert({ extra: [['Genres', { stringValue: '' }]] })));
+});
+
 test('more secondary genres than the column holds is refused', () => {
   allows(filmPlanOf([], ffx.insert({ extra: [['Genres', { stringValue: 'Action, Adventure, Drama' }]] })));
   refuses(
@@ -261,6 +281,22 @@ test('over budget refuses the whole plan rather than truncating it', async () =>
       /exceeds SHEET_MAX_ROWS/,
     );
   });
+});
+
+test('what another tab already planned this poll counts against the same budget', () => {
+  // The budget is a blast radius for the poll, not an allowance per tab:
+  // counted per tab, one poll writes twice SHEET_MAX_EDITS while each half
+  // reports itself inside budget.
+  const one = filmPlanOf([ffx.cell('starWars', 'Score', { numberValue: 9 })]);
+  assert.doesNotThrow(() => assertFilmPlanSafe(one, ffx.grid, { maxEdits: 2, spent: { edits: 1, rows: 1 } }));
+  assert.throws(
+    () => assertFilmPlanSafe(one, ffx.grid, { maxEdits: 2, spent: { edits: 2, rows: 1 } }),
+    /3 edits this poll exceeds SHEET_MAX_EDITS=2/,
+  );
+  assert.throws(
+    () => assertFilmPlanSafe(one, ffx.grid, { maxRows: 2, spent: { edits: 0, rows: 2 } }),
+    /3 distinct rows this poll exceeds SHEET_MAX_ROWS=2/,
+  );
 });
 
 test('an empty plan is safe', () => {

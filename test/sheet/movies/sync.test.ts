@@ -10,10 +10,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { SheetSync } from '../../../src/sheet/sync.ts';
 import { clearTokenCache } from '../../../src/api/google/auth.ts';
-import { sheetRuns } from '../../../src/sheet/io/journal.ts';
+import { appendSheetRun, sheetRuns } from '../../../src/sheet/io/journal.ts';
 import { baseline } from '../../../src/sheet/io/baseline.ts';
 import { dateSerial, movieKey } from '../../../src/sheet/values.ts';
 import {
+  daysAgo,
   filmRow,
   jsonResponse,
   libraryOf,
@@ -61,6 +62,7 @@ interface Harness {
   calls: string[];
   sheet: ReturnType<typeof fakeSheets>;
   log: ReturnType<typeof recorder>;
+  sync: SheetSync;
 }
 
 /**
@@ -90,7 +92,7 @@ const harness = async (
     () =>
       withFetch(sheet.handler, async (calls) => {
         const sync = new SheetSync({ logger: log });
-        await body({ poll: (library) => sync.run(library), calls, sheet, log });
+        await body({ poll: (library) => sync.run(library), calls, sheet, log, sync });
       }),
   );
 };
@@ -105,8 +107,9 @@ const run = async (
     calls: string[],
     sheet: ReturnType<typeof fakeSheets>,
     log: ReturnType<typeof recorder>,
+    sync: SheetSync,
   ) => void | Promise<void>,
-) => harness(mode, options, async ({ poll, calls, sheet, log }) => assertions(await poll(library), calls, sheet, log));
+) => harness(mode, options, async ({ poll, calls, sheet, log, sync }) => assertions(await poll(library), calls, sheet, log, sync));
 
 /** A library with no shows at all, so only the films half has anything to do. */
 const filmsOnly = (...items: ItemSpec[]): Library => libraryOf(...items);
@@ -314,6 +317,61 @@ test('the films tab is read by name, never the show grid by accident', async () 
       // And the show grid is not read at all: this library holds no shows, so
       // the show half early-outs before any request.
       assert.deepEqual(reads.filter((c) => c.includes("'Sheet1'")), []);
+    });
+  });
+});
+
+// --- Both halves in one poll ------------------------------------------------
+//
+// Every test above uses a library with no shows, so the show half early-outs
+// and the two-tab interaction never happens. These are the cases only a poll
+// that writes both tabs can reach.
+
+/** The show grid the shared fake serves, plus a library that moves one season. */
+const SHOW = {
+  id: 3381,
+  title: 'Fargo',
+  status: 'watching',
+  seasons: { 1: Array.from({ length: 6 }, (_, i) => daysAgo(400 + i)), 2: Array.from({ length: 5 }, (_, i) => daysAgo(10 - i)) },
+  watched: 11,
+  total: 16,
+  notAired: 5,
+} satisfies ItemSpec;
+
+test('a poll that writes both tabs journals one record each, labelled', async () => {
+  await withFreshJournal(async () => {
+    await run('apply', {}, libraryOf(SHOW, ...ON_TAB), (result) => {
+      assert.equal(result.status, 'applied', result.error ?? '');
+      assert.deepEqual(sheetRuns().map((r) => r.tab), ['shows']);
+      // The films half had nothing to write, so it says nothing — but the show
+      // half did, and its record is not overwritten by the quiet one.
+      assert.equal(sheetRuns()[0]?.status, 'applied');
+    });
+  });
+});
+
+test('two halves failing the same way stay two records', async () => {
+  // The collapse this guards against: same status, same mode, same error text,
+  // empty edits and inserts. Only the tab tells them apart, and without it the
+  // second took the first's place and its label.
+  await withFreshJournal(async () => {
+    await appendSheetRun({ at: '2026-09-04T12:00:00.000Z', tab: 'shows', status: 'failed', mode: 'apply', edits: [], inserts: [], error: 'the sheet could not be read' });
+    await appendSheetRun({ at: '2026-09-04T12:00:01.000Z', tab: 'films', status: 'failed', mode: 'apply', edits: [], inserts: [], error: 'the sheet could not be read' });
+    assert.deepEqual(sheetRuns().map((r) => `${r.tab}x${r.repeats}`), ['showsx1', 'filmsx1']);
+  });
+});
+
+test('a quiet films half does not erase what the show half reported', async () => {
+  // `lastStatus` is what /healthz reports as `sheet.status`, and the show half
+  // runs first — so the films `idle` that follows it must not overwrite the
+  // show run's outcome. Taking the last half's status outright reports a poll
+  // that wrote the show grid as having done nothing.
+  await withFreshJournal(async () => {
+    await run('apply', {}, libraryOf(SHOW, ...ON_TAB), (result, _calls, _sheet, _log, sync) => {
+      assert.equal(result.status, 'applied', result.error ?? '');
+      assert.equal(sync.lastStatus, 'applied');
+      // The films half really did run, and really was quiet.
+      assert.deepEqual(sheetRuns().map((r) => r.tab), ['shows']);
     });
   });
 });
