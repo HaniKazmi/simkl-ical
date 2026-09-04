@@ -401,7 +401,7 @@ the process, and the rest carries its pipeline position in the filename, so `ls`
 | PLAN | `4-plan.ts` — grid + library + catalogue + baseline → `{ plan, demands, observed, writing }`; the sync re-plans until nothing new is demanded, and records `writing` only once the write lands |
 | GUARD | `5-guard.ts` — a checklist of named rules; refuses a plan that does not re-derive |
 | BUILD | `6-requests.ts` — a plan → one ordered batch, plus the rollback request builders |
-| VERIFY | `7-verify.ts` — the five answers this tab gives differently; the rules are the parent's `verifyAgainst` |
+| VERIFY | `7-verify.ts` — did the write do exactly what was planned, for either tab: `verifyAgainst` holds the rules and `VerifiedTab` the five things a tab answers for itself |
 | — | `values.ts` — the sheet's value conventions (serials, runtime bounds, the watch note's shape), one copy for planner and guard |
 | io | `io/spreadsheet.ts` (read/apply/list), `io/catalogue.ts` and `io/runtimes.ts` (fetch only), `io/apply.ts` (the write-and-recover protocol, over an `ApplySpec` either tab supplies), `io/backups.ts` (the snapshot tab's whole life), `io/journal.ts` (the run history), `io/baseline.ts` (what SIMKL last said — the one file here that *decides* something) |
 | — | `sync.ts` — the driver for **both** tabs: run states, the freshness loop, the plan-fetch fixpoints, the journal choke point |
@@ -415,7 +415,7 @@ the process, and the rest carries its pipeline position in the filename, so `ls`
 | FOLD | `3-catalogue.ts` — a TMDB payload reduced to the cells a row needs, retained across polls |
 | PLAN | `4-plan.ts` — grid + library + catalogue + baseline → `{ plan, demands, observed, writing }` |
 | GUARD | `5-guard.ts` — the films checklist; its whitelists are its own spec |
-| VERIFY | `7-verify.ts` — did the write do exactly what was planned |
+| VERIFY | `7-verify.ts` — the five answers the films tab gives differently; the rules are the parent's `verifyAgainst` |
 | — | `values.ts` — the tab's conventions: the genre map, the cinema window, the banner URL |
 | io | `io/tmdb.ts` (fetch only) |
 
