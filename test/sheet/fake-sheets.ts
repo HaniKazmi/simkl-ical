@@ -12,7 +12,7 @@
 
 import { generateKeyPairSync } from 'node:crypto';
 import type { CellData, SheetRequest } from '../../src/api/google/types.ts';
-import { cellOf, jsonResponse, SHEET_HEADERS, seasonRow, showRow, type CellSpec } from '../helpers.ts';
+import { cellOf, filmRow, jsonResponse, MOVIE_SHEET_HEADERS, SHEET_HEADERS, seasonRow, showRow, type CellSpec } from '../helpers.ts';
 
 // A real key, because the assertion is really signed; stubbing node:crypto
 // would test nothing.
@@ -32,6 +32,13 @@ export const DEFAULT_EPISODES = [
   ...Array.from({ length: 10 }, (_, i) => ({ season: 2, episode: i + 1, type: 'episode', aired: i < 5 })),
 ];
 
+/** The default films tab: two films already on it, both fully filled in. */
+export const DEFAULT_MOVIES: CellSpec[][] = [
+  MOVIE_SHEET_HEADERS,
+  filmRow({ name: 'Star Wars', id: 53078, watched: 39487, score: 8, runtime: 121, genre: 'Sci-Fi' }),
+  filmRow({ name: 'Finding Nemo', id: 53080, watched: 38395, score: 6, runtime: 100, genre: 'Adventure' }),
+];
+
 export interface FakeSheetsOptions {
   /** Mutate the sheet behind our back on the write, so verify must fail. */
   meddle?: (state: CellData[][]) => void;
@@ -42,12 +49,26 @@ export interface FakeSheetsOptions {
   hideReplies?: boolean;
   /** Fail the first N tab-listing *attempts*. A listing retries four times. */
   failTabLists?: number;
+  /**
+   * Refuse to serve this tab's grid, the way a transient Sheets fault does —
+   * so a half can fail at its read while the other half still runs.
+   */
+  failReadOf?: string;
   grid?: CellSpec[][];
   episodes?: unknown;
   /** The SIMKL `/tv/{id}` detail body. */
   detail?: unknown;
   /** Answers TVDB season reads; without it any TVDB data request throws. */
   tvdb?: (url: string) => Response;
+  /**
+   * The films tab's grid. Opt-in: without it the tab does not exist, so suites
+   * that predate the films half see exactly the spreadsheet they did before.
+   */
+  movies?: CellSpec[][];
+  /** Answers TMDB film reads; without it any TMDB request throws. */
+  tmdb?: (url: string) => Response;
+  /** `meddle`, for the films tab: mutate it on the write so verify must fail. */
+  meddleMovies?: (films: CellData[][]) => void;
 }
 
 export const fakeSheets = ({
@@ -56,15 +77,27 @@ export const fakeSheets = ({
   failRollback,
   hideReplies,
   failTabLists,
+  failReadOf,
   episodes = DEFAULT_EPISODES,
   grid = DEFAULT_GRID,
   tvdb,
   detail,
+  movies,
+  tmdb,
+  meddleMovies,
 }: FakeSheetsOptions = {}) => {
   const tabs = new Map<number, CellData[][]>([[1, grid.map((row) => row.map(cellOf))]]);
   const titles = new Map<number, string>([[1, 'Sheet1']]);
   const state = tabs.get(1)!;
   let nextSheetId = 2;
+  if (movies) {
+    tabs.set(nextSheetId, movies.map((row) => row.map(cellOf)));
+    titles.set(nextSheetId, 'Movies');
+    nextSheetId += 1;
+  }
+  const films = movies ? tabs.get(nextSheetId - 1)! : null;
+  /** Widths are per tab: the two have different column counts. */
+  const widthOf = (id: number): number => (id === 1 ? SHEET_HEADERS.length : MOVIE_SHEET_HEADERS.length);
   let writes = 0;
   let tabLists = 0;
   const batches: string[][] = [];
@@ -114,6 +147,13 @@ export const fakeSheets = ({
     return {};
   };
 
+  /**
+   * Tabs that have stopped answering, for a fault arriving mid-sequence. Every
+   * read fails while a tab is in here, not just the next one: `readSnapshot`
+   * retries, so a single 500 is a fault the caller never sees.
+   */
+  const unreadable = new Set<string>();
+
   const handler = (url: string, init?: RequestInit): Response => {
     if (url.startsWith('https://oauth2.googleapis.com/token')) return jsonResponse({ access_token: 'sheet-token', expires_in: 3600 });
 
@@ -130,7 +170,10 @@ export const fakeSheets = ({
         return new Response('{"error":{"message":"boom"}}', { status: 500 });
       }
       const replies = requests.map(apply);
-      if (!isRollback) meddle?.(state);
+      if (!isRollback) {
+        meddle?.(state);
+        if (films) meddleMovies?.(films);
+      }
       return jsonResponse(hideReplies && !isRollback ? {} : { replies });
     }
 
@@ -142,11 +185,33 @@ export const fakeSheets = ({
         if (failTabLists !== undefined && tabLists <= failTabLists) return new Response('{"error":{"message":"boom"}}', { status: 500 });
         return jsonResponse({ sheets: [...titles].map(([sheetId, title]) => ({ properties: { sheetId, title } })) });
       }
-      const rows = tabs.get(1) ?? [];
+      // The range names the tab, so the read must answer with *that* tab —
+      // returning Sheet1 for a `Movies` read would have the films planner plan
+      // the show grid's rows against the films tab's rules.
+      const wanted = decodeURIComponent(new URL(url).searchParams.get('ranges') ?? '').replaceAll("'", '');
+      if (wanted === failReadOf || unreadable.has(wanted)) return new Response('{"error":{"message":"boom"}}', { status: 500 });
+      const found = [...titles].find(([, title]) => title === wanted)?.[0];
+      // What Sheets answers for a range naming a tab the spreadsheet lacks: a
+      // 400, not a 404 and not an empty response. Answering with Sheet1 would
+      // be the hazard the comment below warns about, and in a shared double it
+      // is worse: a suite reading a tab this fake does not hold would assert
+      // against the show grid and pass for the wrong reason.
+      if (found === undefined) {
+        return new Response(JSON.stringify({ error: { code: 400, message: `Unable to parse range: ${wanted}`, status: 'INVALID_ARGUMENT' } }), { status: 400 });
+      }
+      const sheetId = found;
+      const rows = tabs.get(sheetId) ?? [];
       return jsonResponse({
         sheets: [
           {
-            properties: { sheetId: 1, title: 'Sheet1', gridProperties: { rowCount: rows.length, columnCount: SHEET_HEADERS.length } },
+            properties: {
+              sheetId,
+              title: titles.get(sheetId) ?? 'Sheet1',
+              // Declared with headroom, as a real tab is: an append lands in
+              // the blank rows past the data, so a grid that stops at its last
+              // row cannot model one.
+              gridProperties: { rowCount: rows.length + 10, columnCount: widthOf(sheetId) },
+            },
             data: [{ rowData: rows.map((row) => ({ values: row })) }],
           },
         ],
@@ -159,6 +224,11 @@ export const fakeSheets = ({
     if (url.startsWith('https://api.simkl.com/tv/episodes/')) return jsonResponse(episodes);
     if (url.startsWith('https://api.simkl.com/tv/')) return jsonResponse(detail ?? { status: 'airing', runtime: 45 });
 
+    if (url.startsWith('https://api.themoviedb.org/')) {
+      if (!tmdb) throw new Error(`unexpected TMDB request: ${url}`);
+      return tmdb(url);
+    }
+
     if (url.startsWith('https://api4.thetvdb.com/v4/login')) return jsonResponse({ data: { token: 'tvdb-token' } });
     if (url.startsWith('https://api4.thetvdb.com/')) {
       if (!tvdb) throw new Error(`unexpected TVDB request: ${url}`);
@@ -167,7 +237,7 @@ export const fakeSheets = ({
     throw new Error(`unexpected request: ${url}`);
   };
 
-  return { handler, state, tabs, titles, batches, writes: () => writes };
+  return { handler, state, films, tabs, titles, batches, writes: () => writes, stopServing: (tab: string) => unreadable.add(tab) };
 };
 
 export type FakeSheets = ReturnType<typeof fakeSheets>;

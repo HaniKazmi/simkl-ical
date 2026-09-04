@@ -11,9 +11,10 @@ A self-hosted service that joins SIMKL's public airdate CDN with your private OA
 serves the intersection as a subscribable iCal feed. No database, no build step, two runtime
 dependencies (`fastify`, `ical-generator`).
 
-Off the same poll it also keeps a hand-maintained Google Sheet of watch progress current. That
-half is inert unless `SHEET_ID` and a Google credential are both set, and the runtime a closing
-season carries additionally needs `TVDB_API_KEY`.
+Off the same poll it also keeps a hand-maintained Google Sheet of watch progress current — a show
+grid on one tab and a films tab on another. That half is inert unless `SHEET_ID` and a Google
+credential are both set; the runtime a closing season carries additionally needs `TVDB_API_KEY`,
+and the films tab additionally needs `TMDB_API_KEY`.
 
 ## Commands
 
@@ -155,7 +156,7 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   values it planned an edit for; `sync.ts` persists the second only on `applied`. Recorded early,
   the next poll compares against a value the sheet never received, finds nothing moved, and the
   change is lost for good. Same discipline as the library watermark, which advances only after the
-  call that consumed it returns. `observeStarts` seeds `observed` library-wide, so `followUpstream`
+  call that consumed it returns. `observeWatches` seeds `observed` library-wide, so `followUpstream`
   has to *withdraw* a field from it when it moves that field to `writing`.
 - **Compare the days, not the instants.** `recordedSerial` renders the stored instant in the
   viewer's zone exactly as the current one is rendered, because a scrobbler restamping an episode
@@ -177,9 +178,11 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   new is demanded. There are no separate what-to-fetch passes to keep in agreement — a row the
   planner waits on is by construction a row the same pass demanded. Do not reintroduce a second
   planning path.
-- **A runtime is only ever written into a blank cell**, and the bounds the guard checks are the same
-  constants the planner converts with (`values.ts`) — a bound that exists twice is a whole-plan
-  refusal waiting to fire on good data.
+- **A season's runtime is only ever written into a blank cell**, and the bounds the guard checks are
+  the same constants the planner converts with (`values.ts`) — a bound that exists twice is a
+  whole-plan refusal waiting to fire on good data. The films tab's `Runtime` is a different column
+  under a different rule: it follows SIMKL for the life of the row, and checks against the same two
+  constants.
 - **Never write a formula cell, and never write a show row except `Status`.** Every derived cell on
   a show row rolls up from the season rows beneath it. Writing one replaces a live roll-up with a
   frozen number, and nothing would ever notice.
@@ -249,6 +252,132 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   a tinted ground and 8px radii all come from there; state colour, `--faint` and a monospace token
   for tabular data are what a status page needs and a link list does not. Monospace is for paths,
   cell addresses and counts — prose in it is what made the old page hard to read.
+- **The films tab is flat, and none of the season machinery reaches it.** One row per film, no
+  block, no season number, no roll-up formula. `parseGrid`, `SeasonRow`, `seasonKey`,
+  `runtimeScopeOk`, `deriveStatus` and the whole close/note/insert apparatus are season-shaped;
+  `src/sheet/movies/` is a sibling numbered core, not a mode of the show one. What the two share is
+  everything that holds no rule about what may be written: the transport, the driver loop
+  (`runTab` in `sync.ts`, over a `TabSpec` each half supplies), the write-and-recover protocol
+  (`applyPlan`, over an `ApplySpec`), the guard's alignment, shape and budget checks
+  (`guard-core.ts`), `verifyAgainst`, the journal, the freeze latch and the baseline file.
+  `6-requests.ts` is structural over `{row, column, value}` so it names no field. What they share
+  no copy of is a single rule about what may be written — those live in each tab's own numbered
+  modules, and the parent core imports nothing from `movies/`.
+- **Three film columns follow SIMKL; eleven are written once and never revisited.** `Watch Date`,
+  `Score` and `Runtime` qualify on `TRACKED_FIELDS`' own test — what they hold is not the row's
+  judgement but SIMKL's — and all three come off the library delta with no lookup at all
+  (`movie.runtime` agrees with the tab on 346 of 346 rows, `user_rating` on 245 of 245). Everything
+  else is a judgement: which backdrop, which genre is primary, whether a franchise is "Pixar".
+  `Name` is deliberately *not* followed though it is 95% derivable, because the 18 rows that
+  disagree carry hand titles. `EDIT_FIELDS` in `movies/5-guard.ts` is the independent statement of
+  that split — not `FOLLOWED_FIELDS`, because a whitelist derived from the planner would widen with
+  it; the suite pins the two sets equal instead.
+- **A recorded absence is not an absent record.** SIMKL holds no score for 102 of the films already
+  on the tab, so leaving those unrecorded would make rating one later a *first sighting* — recorded,
+  written nothing, silent from then on. `NOT_HELD` records the absence, which makes none → 8 a move.
+  `recordedSerial` cannot make that distinction on a date, since it answers null for both, which is
+  what `recordedDate` exists for. The reverse, 8 → none, is declined and recorded: `EMPTIABLE` is
+  empty and nothing on this tab is ever cleared.
+- **A film waits a poll rather than landing with eight blank cells.** Absent facts mean the lookup
+  has not answered; null means it answered that nothing is obtainable — no TMDB id, or a 404 — and
+  only null settles the film. Same discipline as `runtimeAnswer`, and the reason `TMDB_API_KEY` gates
+  the whole half rather than degrading it. A *retryable* failure is never recorded, so the next poll
+  asks again.
+- **A film row is added below the last one, through `insertDimension`.** The blank rows past the
+  data carry a different number format on `Watch Date` and none at all on `Release Date`, so a
+  serial written straight into one renders as `28486`. `inheritFromBefore: true` is what carries the
+  formats down — and the insert inherits the show grid's one-per-run limit for the same reason, that
+  plan indices are pre-write.
+- **A film write names the film, not just the row.** `FilmCellEdit` carries the SIMKL id the
+  write is *for*, and the guard looks up what the grid says that row holds. A row index cannot be
+  checked on its own: every blank cell compares equal to every other, so an edit aimed one row off
+  finds a `previous` that matches and puts one film's value on another's row. The same map refuses a
+  row carrying no id and a row whose id the tab repeats — the planner declines both, and a guard
+  that only repeated the planner's reasoning would not be a second opinion.
+- **A film row goes where `nextFilmRow` says, and both halves ask it.** Under the last film row, or
+  under the **header** when the tab holds none. Anchored separately, the planner and the guard
+  disagree by one exactly when the tab is empty, so a fresh tab never gains a row — and -1's own
+  answer is the header row. `MovieGrid` carries `headerRow` for this; `rowCount` is a
+  count, so the last usable index is one below it, and that check runs *before* the placement rule
+  or it could only fire on a row placement had already accepted.
+- **The budget is the poll's, not the tab's.** `SHEET_MAX_EDITS` and `SHEET_MAX_ROWS` are a blast
+  radius for what one poll may change; counted per tab, one poll writes twice them while each half
+  reports itself inside budget. What one half *sent* is carried into the next half's guard as
+  `spent` — sent, not verified, because a batch that errored or could not be read back may well have
+  landed; and sent, not planned, because a plan report mode never wrote or the freshness loop
+  discarded changed nothing.
+- **A run's tab is part of its identity.** Two halves failing the same way — an unshared
+  spreadsheet, a 500 on the read — produce byte-identical records, so `sameAs` compares `tab` first;
+  without it the second collapses into the first, takes its label, and the first tab's run is gone.
+  And a repeat is collapsed against the last record *of its tab*: the record before a show run is
+  nearly always a films run, and compared against that a state repeating on both tabs never
+  collapses and two records a poll evict the real history in 25 polls.
+- **A snapshot tab is named after the tab it copies, and a sweep takes only its own.** The name is
+  the only state a snapshot has, and which tab it copies decides who may remove it: a films write
+  verifying clean says nothing about `Sheet1`, and a failed show write kept its copy for the
+  operator. A latch in the process cannot hold that rule — a restart resets it and the snapshot is
+  not, and it protects in one direction only — so `backupName` carries the `sheetId` and
+  `sweepBackups` filters on it, with no state at all.
+- **A rejected TMDB credential is a fact about the token, not about any film.** A 401 sets
+  `FilmStore.rejected`; no film is settled, the planner names the films waiting once in a note that
+  says what to fix, and no further lookup — or poll — is asked for this process, since the token is
+  read at start-up. Settling the pending films would file them as ones TMDB has nothing for, eight
+  more every poll, and tell the operator to add by hand rows TMDB could build once the token is
+  fixed.
+- **The films fixpoint stops at the pass that plans the insert.** One row lands per run, so the
+  lookups the films behind it need are the next poll's to make; fetched now, every pass to the
+  ceiling spends another `MAX_LOOKUPS_PER_PASS`. The lookups a run chose not to make count as work
+  and arm `retry` the way deferred inserts do — without that, the poll that inserts the last film
+  the store knows has nothing deferred, and the rest of the backlog waits on unrelated activity.
+- **`Cinema` is only ever written `TRUE`, and `id` only ever as text.** The tab spells "no" as an
+  **absent** cell, never `FALSE`; and all 348 id cells hold `{ stringValue }`, so a number there
+  compares unequal to every other row and the sync would not recognise its own insert. Both are
+  guard rules, not conventions.
+- **A film is SIMKL's `movies` category plus `anime` with an `anime_type` of `movie`** — a
+  top-level key beside `show`, and the one fact `LibraryEntry.type` cannot supply, since `type` says
+  only which response key the record arrived under. `ova`, `special` and `ona` stay with the show
+  half: they hang off a series rather than standing alone, and the sheet files them that way. Every
+  film status is *indexed* — a `plantowatch` row someone added by hand must be recognised rather
+  than duplicated — but only `completed` earns a row.
+- **Where an anime film goes is the sheet's answer, not the record's.** It may belong on the films
+  tab or embedded in a show block, and nothing upstream says which, so an id already on the show
+  grid is left there — `onShowGrid` in `movies/4-plan.ts`, read off a per-poll field `sync.ts`
+  assigns the moment a grid parses. No grid parsed means no anime film is inserted, which costs one
+  poll against a duplicate row that stands; and since an anime film's own presence stops the show
+  half early-outing, a failed `Sheet1` read is the only way it meets that branch. The gate sits
+  **inside `planInsert`'s `missing` filter**, because everything past that filter reports: below it,
+  the show half's "add it by hand" note is moved rather than removed. Both halves therefore index
+  anime films, and dropping them from `indexLibrary` is the tidy-up not to make — 20 sit on show-grid
+  rows, which become `unknown-id` skips every poll.
+- **The genre map drops rather than approximates.** TMDB's list in TMDB's own order, which is
+  significance order and the reason this reads TMDB rather than SIMKL, whose genres arrive sorted
+  alphabetically with that signal gone. First survivor is `Genre`, the rest are `Genres`, capped at
+  three. `Documentary` → `True Story` is the one rename that is not a spelling, and it is unanimous
+  on all three documentaries. `History` is dropped: 8 of the 10 films carrying it are filed
+  `True Story`, but 1917 and The Other Boleyn Girl are fiction, and TMDB never lists it first so it
+  could not pick a primary anyway. `Abstract` is in the vocabulary and nothing maps to it. An empty
+  `Genres` is a state 27 rows hold, so the guard accepts one — `''.split(',')` is `['']`, and
+  refusing that would make the planner's decision to omit the cell load-bearing for the guard.
+- **Pick a TMDB value by what it is, never by where it sits in the array.** 166 of the 347 films on
+  the tab carry more than one GB certificate and 8 disagree, usually a re-rating attached to a later
+  digital or physical release; TMDB contracts no ordering, so `certificateOf` prefers the theatrical
+  entry the way `releaseDateOf` prefers a theatrical date. Every one of these cells is written once,
+  so an order-dependent answer is wrong for as long as the row exists.
+- **`Release Date` borrows neither of a watch date's bounds.** Its floor is 1900, not `MIN_SERIAL`'s
+  2000 — The Wizard of Oz is on the tab at 1939 and Star Wars at 1977. Its ceiling is a decade out,
+  not tomorrow: a watch cannot be in the future and a release can, for a film seen at a preview
+  before it opens here. Both bounds are the same kind of question — "is this a date at all" — set
+  wide enough that only a payload error crosses them.
+- **TMDB's 403 is transient.** TVDB counts one as `account` too, but there the cost is a runtime
+  cell left blank for a poll; here `account` settles every pending film as permanently unbuildable
+  for the life of the process, and TMDB answers a throttled or blocked request with 403 as readily
+  as a rejected token. A wrong token still fails closed one poll later, through the 401 its next
+  request gets.
+- **One poll, two runs, one status.** `/healthz` reports the worse of the two, ordered
+  `frozen > rolled-back > failed > refused > applied > reported > idle`, because a frozen films tab
+  beside an applied show grid is a frozen sync. The freeze latch is process-wide and a show half that
+  froze stops the films half in the same poll. `sheet-runs.json` records one line per tab, labelled
+  by `tab`, and a record carrying none is a show run.
 - **`sheet-runs.json` is observational, never control.** Nothing may read it to decide behaviour, so
   a corrupt or deleted history cannot change what the sync does.
 - **Tests must not reach the network, the real `./data`, or the real spreadsheet.** Use `withFetch`,
@@ -307,10 +436,27 @@ the process, and the rest carries its pipeline position in the filename, so `ls`
 | PLAN | `4-plan.ts` — grid + library + catalogue + baseline → `{ plan, demands, observed, writing }`; the sync re-plans until nothing new is demanded, and records `writing` only once the write lands |
 | GUARD | `5-guard.ts` — a checklist of named rules; refuses a plan that does not re-derive |
 | BUILD | `6-requests.ts` — a plan → one ordered batch, plus the rollback request builders |
-| VERIFY | `7-verify.ts` — did the write do exactly what was planned |
+| — | `guard-core.ts` — the rules both guards re-derive the same way: budget, cell shape, alignment; each guard passes its own `refuse` |
+| VERIFY | `7-verify.ts` — did the write do exactly what was planned, for either tab: `verifyAgainst` holds the rules and `VerifiedTab` what a tab answers for itself |
 | — | `values.ts` — the sheet's value conventions (serials, runtime bounds, the watch note's shape), one copy for planner and guard |
-| io | `io/spreadsheet.ts` (read/apply/list), `io/catalogue.ts` and `io/runtimes.ts` (fetch only), `io/apply.ts` (the write-and-recover protocol), `io/backups.ts` (the snapshot tab's whole life), `io/journal.ts` (the run history), `io/baseline.ts` (what SIMKL last said — the one file here that *decides* something) |
-| — | `sync.ts` — the driver: run states, the freshness loop, the plan-fetch fixpoint, the journal choke point |
+| io | `io/spreadsheet.ts` (read/apply/list), `io/catalogue.ts` and `io/runtimes.ts` (fetch only), `io/apply.ts` (the write-and-recover protocol, over an `ApplySpec` either tab supplies), `io/backups.ts` (the snapshot tab's whole life), `io/journal.ts` (the run history), `io/baseline.ts` (what SIMKL last said — the one file here that *decides* something) |
+| — | `sync.ts` — the driver for **both** tabs: one loop (`runTab`) over a per-tab `TabSpec`, the two plan-fetch fixpoints, per-poll state in a `Poll`, the journal choke point |
+
+`src/sheet/movies/` — the films tab. INDEX → PARSE → (PLAN ⇄ FETCH) → GUARD → BUILD → VERIFY
+
+| Step | Module |
+| --- | --- |
+| INDEX | `1-index.ts` — library (films, anime included) → `FilmProgress`, and the early-out |
+| PARSE | `2-grid.ts` — snapshot → one `MovieRow` per film; header resolution by text |
+| FOLD | `3-catalogue.ts` — a TMDB payload reduced to the cells a row needs, retained across polls |
+| PLAN | `4-plan.ts` — grid + library + catalogue + baseline → `{ plan, demands, observed, writing }` |
+| GUARD | `5-guard.ts` — the films checklist; its whitelists are its own spec |
+| VERIFY | `7-verify.ts` — what the films tab answers differently; the rules are the parent's `verifyAgainst` |
+| — | `values.ts` — the tab's conventions: the genre map, the cinema window, the banner URL |
+| io | `io/tmdb.ts` (fetch only) |
+
+`6-` is absent on purpose: BUILD is the parent's `6-requests.ts` unchanged, which reads no field
+name and so needs no films copy.
 
 `src/status/` — MODEL → RENDER
 
@@ -407,6 +553,16 @@ not serve: per-episode runtime. `/tv/episodes/{id}` returns the same nine fields
 but answers a non-browser User-Agent with a Cloudflare 403. TVDB is also what simkl.com *shows*:
 its numbers match episode for episode where TMDb's differ by up to five minutes, in both
 directions, with no rule behind it.
+
+**That rejection of TMDb is about per-episode runtimes only.** The films tab reads TMDB for a
+film's genres, certificate, backdrop, collection and release dates, none of which has a TVDB
+equivalent — so the two decisions are about different data and do not disagree. TMDB v4 is at
+<https://developer.themoviedb.org/reference/intro/getting-started>. Three things checked rather
+than assumed: `TMDB_API_KEY` here is the **v4 read access token**, sent as a bearer, because v3's
+`?api_key=` would put the credential into the paths `describeUrl` prints on the status page;
+`append_to_response=release_dates,credits,images` folds a whole row's worth of columns into one
+request; and `include_image_language=en` is what keeps a null-language backdrop — usually a poster
+crop — out of the `Banner` cell, since 346 of 347 films have a real English one.
 
 `GET /series/{id}/episodes/official?season={n}` returns one season, and one call is one season —
 `links.page_size` is 500 and `next` is null on every season measured, up to a 28-episode cour. Three

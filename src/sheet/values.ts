@@ -99,9 +99,13 @@ export const ownsNote = (cell: CellData | undefined, text: string | null | undef
  */
 export const maxSerial = (now: Temporal.Instant, timezone: string): number => dateSerial(plainDateIn(now, timezone).add({ days: 1 }));
 
-/** The bounds of a per-episode runtime, in minutes: one whole minute to under a day. */
-const MIN_RUNTIME_MINUTES = 1;
-const MAX_RUNTIME_MINUTES = 1440;
+/**
+ * The bounds of a runtime, in minutes: one whole minute to under a day. Both
+ * tabs' runtime columns check against these — a per-episode day fraction on the
+ * show grid, whole minutes on the films tab — so a bound exists once.
+ */
+export const MIN_RUNTIME_MINUTES = 1;
+export const MAX_RUNTIME_MINUTES = 1440;
 
 /**
  * Per-episode minutes → the day fraction the `Episodes` column holds on a
@@ -153,18 +157,36 @@ export const TRACKED_FIELDS: readonly TrackedField[] = TRACKED;
 
 export const isTracked = (field: HeaderName): field is TrackedField => (TRACKED as readonly HeaderName[]).includes(field);
 
-/** What one season's recorded upstream values look like, keyed by column. */
-export type BaselineEntry = Partial<Record<HeaderName, string>>;
+/**
+ * What one row's recorded upstream values look like, keyed by column name.
+ *
+ * Keys are text rather than either tab's header union: one file holds both
+ * tabs' history — a second file would cost a second load, a second save and a
+ * second chance to record a value the sheet never received — and the key
+ * namespaces say which tab an entry belongs to. Each planner reads its own
+ * columns off an entry and never the other's.
+ */
+export type BaselineEntry = Partial<Record<string, string>>;
 
 /**
- * What SIMKL last said, per season. Keyed by identity rather than by row: rows
- * shift under an insert, and a key that moved would compare one season against
- * another's history.
+ * What SIMKL last said, per row. Keyed by identity rather than by row index:
+ * rows shift under an insert, and a key that moved would compare one row
+ * against another's history.
  */
 export type Baseline = Map<string, BaselineEntry>;
 
 /** The key both the planner and the store use. */
 export const seasonKey = (id: number, season: number): string => `${id}:${season}`;
+
+/**
+ * The films tab's key. Prefixed rather than bare, because a film's id and a
+ * show's id come from the same SIMKL numbering: `53078` alone would be a
+ * season key with its season missing, and the two would silently share an
+ * entry the day one collided.
+ */
+export const MOVIE_PREFIX = 'movie:';
+
+export const movieKey = (id: number): string => `${MOVIE_PREFIX}${id}`;
 
 /**
  * The serial a recorded value stands for — the stored ISO instant, rendered in

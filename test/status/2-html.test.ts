@@ -312,6 +312,42 @@ test('the summary says when runtime lookups are off, and nothing when they work'
   assert.doesNotMatch(on, /runtimes off/, 'a page that works says nothing about it');
 });
 
+test('a films run is labelled, so a quiet one is not read as a show run', () => {
+  // One poll writes one record per tab. Unlabelled, a quiet films run and a
+  // quiet show run render identically in the history.
+  const label = /<span class="fld">films<\/span>/;
+  const withFilms = renderPage(buildModel(input({ sheetConfigured: true, runs: [runRecord({ tab: 'films' })] })));
+  assert.match(withFilms, label);
+  const withShows = renderPage(buildModel(input({ sheetConfigured: true, runs: [runRecord({ tab: 'shows' })] })));
+  assert.doesNotMatch(withShows, label);
+});
+
+test('the tracking line counts films apart from seasons', () => {
+  // One baseline file holds both tabs. Rolled together, a page syncing 350
+  // films reads "tracking 762 seasons".
+  const both = renderPage(buildModel(input({ sheetConfigured: true, baseline: { seasons: 412, films: 350, at: '2026-08-30T09:00:00.000Z' } })));
+  assert.match(both, /412<\/b> seasons and <b class="mono">350<\/b> films/);
+  // And counts only seasons on a sheet that syncs no films.
+  const showsOnly = renderPage(buildModel(input({ sheetConfigured: true, baseline: { seasons: 412, films: 0, at: '2026-08-30T09:00:00.000Z' } })));
+  assert.match(showsOnly, /tracking <b class="mono">412<\/b> seasons,/);
+  assert.doesNotMatch(showsOnly, /seasons and/);
+});
+
+test('the summary says when the films tab is off, and names it when it is on', () => {
+  // The same question `runtimes off` answers for TVDB: unconfigured, the films
+  // tab is never read and makes no request, so nothing else on the page tells
+  // "no TMDB token" from "no film has moved".
+  const off = renderPage(buildModel(input({ sheetConfigured: true, filmsConfigured: false })));
+  assert.match(off, /films off/);
+  assert.match(off, /tab “Sheet1”/, 'and only the show tab is named');
+
+  const on = renderPage(buildModel(input({ sheetConfigured: true, filmsConfigured: true })));
+  assert.doesNotMatch(on, /films off/, 'a page that works says nothing about it');
+  // Both named: they are different tabs of one spreadsheet with different
+  // rules, and naming only the first says the films tab is not touched.
+  assert.match(on, /tabs “Sheet1” and “Movies”/);
+});
+
 // A stamp with no usable instant must not become a `<time>`: the attribute
 // would carry the unparseable string and the tooltip would be empty.
 test('an unparseable timestamp renders no time element', () => {
@@ -330,7 +366,7 @@ test('the summary says how much the sync is tracking, and says so when it is not
   const cold = sheetSection(page({ sheetConfigured: true }));
   assert.match(cold, /nothing tracked yet/);
 
-  const armed = sheetSection(page({ sheetConfigured: true, baseline: { seasons: 412, at: '2026-08-30T09:00:00.000Z' } }));
+  const armed = sheetSection(page({ sheetConfigured: true, baseline: { seasons: 412, films: 0, at: '2026-08-30T09:00:00.000Z' } }));
   assert.match(armed, /tracking <b class="mono">412<\/b> seasons/);
   assert.match(armed, /last moved/);
   assert.doesNotMatch(armed, /nothing tracked yet/);

@@ -36,6 +36,8 @@ interface Scenario {
   tvdbIds?: Record<number, number>;
   /** SIMKL id -> season -> average minutes, or null for "asked, nothing usable". */
   runtimes?: Record<number, Record<number, number | null>>;
+  /** Ids the missing-row note stays quiet about — the films tab's. */
+  filed?: Set<number>;
 }
 
 /**
@@ -44,7 +46,7 @@ interface Scenario {
  * `tvdbId` (number or explicit null) the moment it lands, so absence is what
  * the planner reads as pending.
  */
-const scenario = ({ rows, items, episodes = {}, details = {}, tvdbIds = {}, runtimes = {} }: Scenario) => {
+const scenario = ({ rows, items, episodes = {}, details = {}, tvdbIds = {}, runtimes = {}, filed }: Scenario) => {
   const grid = parseGrid(sheetSnapshot([H, ...rows]));
   const index = indexLibrary(libraryOf(...items));
   const titles = new Map<number, TitleCatalogue>();
@@ -55,7 +57,7 @@ const scenario = ({ rows, items, episodes = {}, details = {}, tvdbIds = {}, runt
   for (const [id, seasons] of Object.entries(runtimes)) {
     for (const [n, minutes] of Object.entries(seasons)) entry(Number(id)).seasonRuntimes.set(Number(n), minutes);
   }
-  const result = (baseline?: Baseline) => planSync(grid, index, titles, { timezone: TZ, baseline });
+  const result = (baseline?: Baseline) => planSync(grid, index, titles, { timezone: TZ, baseline, filed });
   return {
     grid,
     index,
@@ -635,6 +637,22 @@ test('a title with no row anywhere is reported, never added', () => {
   const result = plan();
   assert.equal(result.insert, null);
   assert.match(result.notes.join('\n'), /Sousou no Frieren 2nd Season \(simkl 1600\) has recent activity and no row/);
+});
+
+// The films tab places these, and this half keeps indexing them because 20 sit
+// on `Sheet1` rows — dropping them from the index would replace one note with
+// an `unknown-id` skip on each of those.
+test('an anime film the films tab places is not a title missing a row', () => {
+  const args = {
+    rows: [show('Frieren', 'Watching', null, 'anime'), season(1, 11, 44000, 1500)],
+    items: [
+      { id: 1500, title: 'Frieren', status: 'completed', seasons: { 1: watched(11, 3) }, watched: 11, total: 11 },
+      { id: 1600, title: 'Spirited Away', status: 'completed', seasons: { 1: watched(1) } },
+    ],
+    details: { 1500: { status: 'ended' } },
+  };
+  assert.match(scenario(args).plan().notes.join('\n'), /Spirited Away/);
+  assert.deepEqual(scenario({ ...args, filed: new Set([1600]) }).plan().notes, []);
 });
 
 // A cour entry stands for exactly one season; one reporting several means the

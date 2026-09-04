@@ -66,14 +66,16 @@ export const COLD: StatusInput = {
   calendarRefresh: Temporal.Duration.from({ milliseconds: 6 * HOUR }),
   filmsDue: false,
   runtimesConfigured: false,
+  filmsConfigured: false,
   sheetMode: 'off',
   sheetTab: 'Sheet1',
+  filmsTab: 'Movies',
   feedUrl: `http://localhost:3000/${TOKEN}/feed.ics`,
   feedSubscribeUrl: `webcal://localhost:3000/${TOKEN}/feed.ics`,
   sheetUrl: null,
   requests: [],
   runs: [],
-  baseline: { seasons: 0, at: null },
+  baseline: { seasons: 0, films: 0, at: null },
 };
 
 /** The page's knobs, by flat name, placed onto the nested input by `input()`. */
@@ -85,8 +87,10 @@ export interface InputOver {
   calendarRefresh?: Temporal.Duration;
   filmsDue?: boolean;
   runtimesConfigured?: boolean;
+  filmsConfigured?: boolean;
   sheetMode?: SheetSyncMode;
   sheetTab?: string;
+  filmsTab?: string;
   sheetUrl?: string | null;
   requests?: RequestRecord[];
   runs?: SheetRunRecord[];
@@ -145,9 +149,11 @@ export const input = (over: InputOver = {}): StatusInput => {
     calendarRefresh: over.calendarRefresh ?? COLD.calendarRefresh,
     filmsDue: over.filmsDue ?? COLD.filmsDue,
     runtimesConfigured: over.runtimesConfigured ?? COLD.runtimesConfigured,
+    filmsConfigured: over.filmsConfigured ?? COLD.filmsConfigured,
     sheetMode: over.sheetMode ?? COLD.sheetMode,
     sheetUrl: over.sheetUrl === undefined ? COLD.sheetUrl : over.sheetUrl,
     sheetTab: over.sheetTab ?? COLD.sheetTab,
+    filmsTab: over.filmsTab ?? COLD.filmsTab,
     requests: over.requests ?? [],
     runs: over.runs ?? [],
     baseline: over.baseline ?? COLD.baseline,

@@ -316,6 +316,12 @@ const runs = (model: StatusModel) =>
     const changes = runChanges(run);
     const summary = html`<span class="pill ${run.state}">${run.status}</span>
       <span class="run-when">${time(run.at)}</span>
+      ${
+        // One poll writes one record per tab, so without this a quiet films run
+        // and a quiet show run read identically. A record with no `tab` is a
+        // show run.
+        run.tab === 'films' ? html`<span class="fld">films</span>` : null
+      }
       ${run.sole === null
         ? null
         : html`<span class="addr">${run.sole.address}</span><span class="fld">${run.sole.field}</span><span class="note">${run.sole.note}</span>`}
@@ -350,16 +356,28 @@ const sheetBody = (model: StatusModel) => {
  * one thing here rendered verbatim, and it should stay the only one.
  */
 const tracking = (model: StatusModel) => {
-  const { seasons, movedAt } = model.sheet.baseline;
-  if (seasons === 0) return html`<span class="dim">nothing tracked yet</span>`;
-  return html`tracking <b class="mono">${seasons}</b> seasons, last moved ${time(movedAt)}`;
+  const { seasons, films, movedAt } = model.sheet.baseline;
+  if (seasons + films === 0) return html`<span class="dim">nothing tracked yet</span>`;
+  // Named apart, because one record holds both tabs and a rolled-up number
+  // says neither.
+  const counts = films === 0 ? html`<b class="mono">${seasons}</b> seasons` : html`<b class="mono">${seasons}</b> seasons and <b class="mono">${films}</b> films`;
+  return html`tracking ${counts}, last moved ${time(movedAt)}`;
 };
 
 /** The tab, linked when there is a spreadsheet id to link it to. */
+/**
+ * Which tabs are being kept current. Both are named when both are synced: they
+ * are different tabs of one spreadsheet with different rules, and naming only
+ * the first says the films tab is not touched — which is exactly what the
+ * reader is trying to find out.
+ */
 const sheetTab = (model: StatusModel) =>
   model.sheet.url === null
-    ? html`tab “${model.sheet.tab}”`
-    : html`tab <a href="${model.sheet.url}" target="_blank" rel="noopener noreferrer">“${model.sheet.tab}” <span class="ext">↗</span></a>`;
+    ? html`${tabs(model)}`
+    : html`<a href="${model.sheet.url}" target="_blank" rel="noopener noreferrer">${tabs(model)} <span class="ext">↗</span></a>`;
+
+const tabs = (model: StatusModel) =>
+  model.sheet.films ? html`tabs “${model.sheet.tab}” and “${model.sheet.filmsTab}”` : html`tab “${model.sheet.tab}”`;
 
 /** The whole page, as one self-contained document. */
 export const renderPage = (model: StatusModel): string =>
@@ -427,7 +445,7 @@ ${model.problems.length === 0 ? null : html`<div class="problems"><ul>${model.pr
     <h2 class="name">Sheet</h2>
     <span class="pill ${model.sheet.state}">${model.sheet.status}</span>
     <span class="sum">${model.sheet.configured
-      ? html`${model.sheet.mode} mode · ${sheetTab(model)} · ${time(model.sheet.lastRun)}${model.sheet.runtimes ? null : ' · runtimes off'} · ${tracking(model)}`
+      ? html`${model.sheet.mode} mode · ${sheetTab(model)} · ${time(model.sheet.lastRun)}${model.sheet.runtimes ? null : ' · runtimes off'}${model.sheet.films ? null : ' · films off'} · ${tracking(model)}`
       : 'off'}</span>
   </div>
   ${sheetBody(model)}

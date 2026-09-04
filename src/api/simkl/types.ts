@@ -63,17 +63,30 @@ export interface LibraryIds {
   slug?: string;
   /**
    * A string, as SIMKL sends it — `"371572"`, not `371572`. The per-title
-   * endpoints carry more (`imdb`, `tmdb`, `tvdbslug`, `traktslug`); only this
-   * one is read, and listing the rest would make this file a transcription
-   * rather than evidence of what is used.
+   * endpoints carry more (`imdb`, `tvdbslug`, `traktslug`); those are unread,
+   * and listing them would make this file a transcription rather than evidence
+   * of what is used.
    */
   tvdb?: string;
+  /**
+   * Also a string — `"11"`, not `11`. Present on every one of the 327 films an
+   * `extended=full` library pull returns, which is what lets the sheet's films
+   * half reach TMDB off the delta alone, with no per-title SIMKL call.
+   */
+  tmdb?: string;
 }
 
 export interface LibraryTitle {
   /** Absent from an `extended=simkl_ids_only` response, which carries ids alone. */
   title?: string;
   year?: number;
+  /**
+   * Minutes, and only on a film — where it is the whole film's length, not the
+   * per-episode figure `ShowDetail.runtime` carries. It agrees with the sheet's
+   * own `Runtime` column on all 346 rows that have one, which is why the films
+   * half needs no per-title lookup for it.
+   */
+  runtime?: number | null;
   ids: LibraryIds;
 }
 
@@ -101,6 +114,17 @@ export interface LibraryItem {
   show?: LibraryTitle;
   movie?: LibraryTitle;
   /**
+   * What kind of anime this is, on `anime` records only — a **top-level** key,
+   * beside `show` rather than inside it. It is the one thing separating a film
+   * from a cour: an anime film is a show record in every other respect, and
+   * `LibraryEntry.type` says only which response key it arrived under, which is
+   * `anime` for both.
+   *
+   * Measured across 216 records: 155 `tv`, 41 `movie`, 10 `ova`, 7 `special`,
+   * 3 `ona`.
+   */
+  anime_type?: string;
+  /**
    * The only membership there is: the library holds one record per id, and a
    * move replaces it.
    */
@@ -114,6 +138,12 @@ export interface LibraryItem {
   watched_episodes_count?: number;
   total_episodes_count?: number;
   not_aired_episodes_count?: number;
+  /**
+   * The user's own score, 1-10, and null where they have not rated the title.
+   * Null is a value here, not an absence: the films sheet records it, so that
+   * rating something later reads as a move rather than as a first sighting.
+   */
+  user_rating?: number | null;
   /**
    * Only present with `include_all_episodes=yes`, which the completed and
    * dropped lists require — without it the key is absent entirely.

@@ -1,0 +1,83 @@
+{
+  "edits": [
+    {
+      "address": "C3",
+      "field": "Score",
+      "note": "Finding Nemo: Score moved to 9"
+    }
+  ],
+  "inserts": [
+    {
+      "address": "row 4",
+      "title": "A Reference Film",
+      "note": "add A Reference Film (62344)"
+    }
+  ],
+  "fill": [
+    {
+      "column": "A",
+      "field": "Name",
+      "value": "A Reference Film"
+    },
+    {
+      "column": "B",
+      "field": "Watch Date",
+      "value": 46248
+    },
+    {
+      "column": "L",
+      "field": "id",
+      "value": "62344"
+    },
+    {
+      "column": "C",
+      "field": "Score",
+      "value": 7
+    },
+    {
+      "column": "E",
+      "field": "Runtime",
+      "value": 81
+    },
+    {
+      "column": "D",
+      "field": "Cinema",
+      "value": true
+    },
+    {
+      "column": "F",
+      "field": "Genre",
+      "value": "Adventure"
+    },
+    {
+      "column": "G",
+      "field": "Genres",
+      "value": "Sci-Fi, Comedy, Drama"
+    },
+    {
+      "column": "H",
+      "field": "Rating",
+      "value": 12
+    },
+    {
+      "column": "I",
+      "field": "Release Date",
+      "value": 46241
+    },
+    {
+      "column": "J",
+      "field": "Franchise",
+      "value": "A Reference"
+    },
+    {
+      "column": "K",
+      "field": "Director",
+      "value": "A Director"
+    },
+    {
+      "column": "N",
+      "field": "Banner",
+      "value": "https://image.tmdb.org/t/p/w1280/chosen.jpg"
+    }
+  ]
+}

@@ -12,7 +12,7 @@
  */
 
 import { config } from '../../shared/config.ts';
-import { sheetsRequest } from '../../api/google/client.ts';
+import { sheetsRequest, SheetsAccessError } from '../../api/google/client.ts';
 import type { BatchUpdateResponse, CellData, SheetRequest, SpreadsheetResponse } from '../../api/google/types.ts';
 
 /**
@@ -59,8 +59,7 @@ const target = (): string => {
 const GRID_FIELDS =
   'sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)),data(startRow,startColumn,rowData(values(userEnteredValue,effectiveValue))))';
 
-export const readSnapshot = async ({ signal }: { signal?: AbortSignal } = {}): Promise<SheetSnapshot> => {
-  const title = config.sheetName;
+export const readSnapshot = async (title: string, { signal }: { signal?: AbortSignal } = {}): Promise<SheetSnapshot> => {
   const response = await sheetsRequest<SpreadsheetResponse>(target(), {
     component: 'spreadsheet',
     // The tab name is a range, and one containing a space needs quoting.
@@ -72,12 +71,24 @@ export const readSnapshot = async ({ signal }: { signal?: AbortSignal } = {}): P
   // By name only. Falling back to the first tab would be safe only while
   // `params.ranges` constrains the response to one; loosen that mask and the
   // sync would read, plan against and write to whatever came back first —
-  // after a frozen run, a `_sync-REPAIR-…` snapshot. The title below defaults
-  // to the configured name, so the mismatch would not even show in the log.
+  // after a frozen run, a `_sync-REPAIR-…` snapshot. The title below falls back
+  // to the one asked for, so the mismatch would not even show in the log.
+  //
+  // The name is a parameter rather than `config.sheetName` because the two tabs
+  // this reads have different shapes: whichever pipeline is running knows which
+  // it wants, and a default here would let a caller that forgot plan the show
+  // grid's rules against the films tab.
   const sheet = response.sheets?.find((s) => s.properties?.title === title);
   const sheetId = sheet?.properties?.sheetId;
   if (!sheet || sheetId === undefined) {
-    throw new Error(`No tab named ${title} in the spreadsheet.`);
+    // A tab the spreadsheet lacks is normally caught before this by the 400
+    // Sheets answers an unresolvable range with, mapped in the client. This is
+    // reached when the range resolved and the title still differs — Sheets
+    // matches a range name case-insensitively and the response carries the
+    // tab's own spelling — and it is the same kind of failure: named by
+    // configuration, so a `SheetsAccessError` that needs a human rather than a
+    // retryable one that would arm the poll's retry on every tick.
+    throw new SheetsAccessError(`No tab named ${title} in the spreadsheet.`, 404);
   }
 
   const grid = sheet.data?.[0];

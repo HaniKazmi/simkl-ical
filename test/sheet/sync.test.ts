@@ -419,15 +419,15 @@ test('a snapshot that could not be renamed says so, and says to hurry', async ()
 test('a repair snapshot survives a later clean run, which sweeps everything else', async () => {
   clearTokenCache();
   const sheet = server();
-  sheet.titles.set(98, '_sync-REPAIR-2020-01-01T00-00-00-000Z');
+  sheet.titles.set(98, '_sync-REPAIR-1-2020-01-01T00-00-00-000Z');
   sheet.tabs.set(98, []);
-  sheet.titles.set(99, '_sync-backup-2020-01-01T00-00-00-000Z');
+  sheet.titles.set(99, '_sync-backup-1-2020-01-01T00-00-00-000Z');
   sheet.tabs.set(99, []);
 
   await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL }, () =>
     withFetch(sheet.handler, async () => {
       assert.equal((await new SheetSync({ logger: quiet }).run(LIBRARY)).status, 'applied');
-      assert.deepEqual([...sheet.titles.values()], ['Sheet1', '_sync-REPAIR-2020-01-01T00-00-00-000Z']);
+      assert.deepEqual([...sheet.titles.values()], ['Sheet1', '_sync-REPAIR-1-2020-01-01T00-00-00-000Z']);
     }),
   );
 });
@@ -444,11 +444,11 @@ test('a clean run leaves no backup tab behind', async () => {
 });
 
 // Any failure between the write and the verify read strands a snapshot tab. A
-// clean run is the one moment the sheet is known good, so it clears the lot.
+// clean run is the one moment the tab is known good, so it clears the lot.
 test('a clean run sweeps snapshot tabs an earlier run left behind', async () => {
   clearTokenCache();
   const sheet = server();
-  sheet.titles.set(99, '_sync-backup-2020-01-01T00-00-00-000Z');
+  sheet.titles.set(99, '_sync-backup-1-2020-01-01T00-00-00-000Z');
   sheet.tabs.set(99, []);
 
   await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL }, () =>

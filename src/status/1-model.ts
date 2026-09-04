@@ -40,8 +40,16 @@ export interface StatusInput {
    * "no season has closed yet" while the Episodes column stays blank.
    */
   runtimesConfigured: boolean;
+  /**
+   * Whether the films tab is synced at all. Unconfigured it is never read, so
+   * nothing else on the page tells "no TMDB token" from "no film has moved" —
+   * the same question `runtimesConfigured` answers for TVDB.
+   */
+  filmsConfigured: boolean;
   sheetMode: SheetSyncMode;
   sheetTab: string;
+  /** The films tab's own name, which is a different tab of the same spreadsheet. */
+  filmsTab: string;
   /** The feed over http, which is the form you paste into a client that asks for a URL. */
   feedUrl: string;
   /** The same address as `webcal:`, which asks a calendar client to subscribe rather than download. */
@@ -196,6 +204,8 @@ export interface StatusModel {
   sheet: {
     configured: boolean;
     runtimes: boolean;
+    films: boolean;
+    filmsTab: string;
     mode: SheetSyncMode;
     tab: string;
     url: string | null;
@@ -214,7 +224,7 @@ export interface StatusModel {
      * edits — indistinguishable from a sync that never armed, at exactly the
      * moment an operator needs to tell those apart.
      */
-    baseline: { seasons: number; movedAt: Stamp };
+    baseline: { seasons: number; films: number; movedAt: Stamp };
   };
   requests: RequestView[];
   /** The recent failures worth putting in front of a reader, already capped. */
@@ -625,6 +635,8 @@ export const buildModel = (input: StatusInput): StatusModel => {
     sheet: {
       configured: sheet.configured,
       runtimes: input.runtimesConfigured,
+      films: input.filmsConfigured,
+      filmsTab: input.filmsTab,
       mode: input.sheetMode,
       tab: input.sheetTab,
       url: input.sheetUrl,
@@ -637,7 +649,7 @@ export const buildModel = (input: StatusInput): StatusModel => {
       // message has its own box.
       error: sheet.error === sheet.frozen || sheet.error === (runs[0]?.error ?? null) ? null : sheet.error,
       runs,
-      baseline: { seasons: input.baseline.seasons, movedAt: at(input.baseline.at) },
+      baseline: { seasons: input.baseline.seasons, films: input.baseline.films, movedAt: at(input.baseline.at) },
     },
   };
 

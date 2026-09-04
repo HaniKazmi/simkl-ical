@@ -33,7 +33,7 @@ const MAX_PER_COMPONENT = 8;
 /** A failure body is upstream text of unknown length; the page needs a line, not a page. */
 const MAX_ERROR_CHARS = 300;
 
-export type RequestService = 'simkl' | 'cdn' | 'sheets' | 'tvdb';
+export type RequestService = 'simkl' | 'cdn' | 'sheets' | 'tvdb' | 'tmdb';
 
 /**
  * Which part of the service asked — not the same question as which upstream
@@ -45,13 +45,26 @@ export type RequestService = 'simkl' | 'cdn' | 'sheets' | 'tvdb';
  * spreadsheet read are the same `sheets` service and want opposite fixes.
  * `runtimes` is separate from `catalogue` because one asks SIMKL for an
  * episode list and the other asks TVDB for a season's lengths, and a reader
- * chasing a failure needs to know which upstream to look at.
+ * chasing a failure needs to know which upstream to look at. `movie-catalogue`
+ * is separate from `films` for the same reason and not the same one: both ask
+ * about a film, but `films` is the feed asking SIMKL for a release date and
+ * this is the sheet asking TMDB for a row's worth of columns, and only one of
+ * them failing stops the films tab.
  *
  * A property of the calling module, so every `io/` module names itself once.
  * Required rather than defaulted: a new call site has to decide, and `tsc`
  * asking is what keeps the label true.
  */
-export type RequestComponent = 'poll' | 'calendars' | 'films' | 'catalogue' | 'spreadsheet' | 'runtimes' | 'auth' | 'login';
+export type RequestComponent =
+  | 'poll'
+  | 'calendars'
+  | 'films'
+  | 'catalogue'
+  | 'movie-catalogue'
+  | 'spreadsheet'
+  | 'runtimes'
+  | 'auth'
+  | 'login';
 
 export interface RequestRecord {
   at: string;

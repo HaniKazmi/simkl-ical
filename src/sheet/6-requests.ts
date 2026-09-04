@@ -9,9 +9,56 @@
  * the difference between a correct write and a one-row misalignment.
  */
 
-import type { Grid } from './2-grid.ts';
-import type { SheetPlan } from './4-plan.ts';
 import type { ExtendedValue, GridRange, SheetRequest } from '../api/google/types.ts';
+
+/**
+ * What building a batch needs from a planned write, and nothing more.
+ *
+ * Structural rather than `CellEdit`, because the two tabs have different field
+ * vocabularies and this module reads no field name — only where a value goes.
+ * A `HeaderName` in the signature would force a generic through every caller
+ * to say something the ordering rules below do not depend on.
+ */
+export interface PlannedCell {
+  row: number;
+  column: number;
+  value: ExtendedValue | undefined;
+}
+
+export interface PlannedWrites {
+  edits: readonly PlannedCell[];
+  insert: { row: number; fill: readonly PlannedCell[] } | null;
+}
+
+/** The distinct rows a plan touches — what `SHEET_MAX_ROWS` counts. */
+export const rowsTouched = (plan: PlannedWrites): number =>
+  new Set([...plan.edits.map((e) => e.row), ...(plan.insert ? [plan.insert.row] : [])]).size;
+
+/**
+ * A plan and the grid it was planned against, tied together.
+ *
+ * `toRequests` addresses one tab's row and column indices at one `sheetId`,
+ * and the two have to come from the same grid: a films plan sent to the show
+ * grid's id is a one-row misalignment on both tabs at once, which is the
+ * failure this module exists to order correctly. The brand costs one call to
+ * `writesFor` at each site and makes the pairing a single, visible act.
+ *
+ * Structural on both sides, because this module reads no field name and
+ * names no tab: the driver that calls it ties each tab's plan type to its grid
+ * type, so the pairing is checked there and this stays a leaf.
+ */
+// A module-private symbol, so the brand cannot be forged by an object literal
+// that happens to carry the right key — the same reason `2-html.ts` brands
+// safe HTML this way.
+const planned = Symbol('planned-against');
+
+export interface BoundWrites extends PlannedWrites {
+  readonly [planned]: number;
+}
+
+/** Bind a plan to the grid it was built from. The only way to make a `BoundWrites`. */
+export const writesFor = (plan: PlannedWrites, grid: { snapshot: { sheetId: number } }): BoundWrites =>
+  ({ ...plan, [planned]: grid.snapshot.sheetId }) as BoundWrites;
 
 const oneCell = (sheetId: number, row: number, column: number): GridRange => ({
   sheetId,
@@ -46,8 +93,8 @@ const writeCell = (sheetId: number, row: number, column: number, value: Extended
  * insert a blank row below it — overwriting a real row, the exact failure
  * this design exists to prevent.
  */
-export const toRequests = (plan: SheetPlan, grid: Grid): SheetRequest[] => {
-  const { sheetId } = grid.snapshot;
+export const toRequests = (plan: BoundWrites): SheetRequest[] => {
+  const sheetId = plan[planned];
   const requests: SheetRequest[] = [];
 
   for (const cell of [...plan.edits].sort((a, b) => b.row - a.row || b.column - a.column)) {

@@ -21,7 +21,7 @@ import { errorMessage } from '../../shared/errors.ts';
 import type { Logger } from '../../shared/logger.ts';
 import type { SheetSyncMode } from '../../shared/config.ts';
 import type { RecordedEdit, RecordedInsert } from '../4-plan.ts';
-import type { SheetSyncStatus } from '../sync.ts';
+import type { SheetSyncStatus, SheetTab } from '../sync.ts';
 import { instantFrom } from '../../shared/dates.ts';
 
 /** One finished run, as an operator would want it after a restart. */
@@ -29,6 +29,14 @@ export interface SheetRunRecord {
   /** ISO, when the run finished. */
   at: string;
   status: SheetSyncStatus;
+  /**
+   * Which tab the run was against. One poll produces one record per tab, and
+   * without this a quiet films run and a quiet show run are indistinguishable.
+   *
+   * Optional, and absent means the show grid, so a file whose records carry no
+   * `tab` reads correctly rather than being dropped for a version bump.
+   */
+  tab?: SheetTab;
   /** The mode at the time: a `reported` run wrote nothing by design. */
   mode: SheetSyncMode;
   edits: RecordedEdit[];
@@ -166,8 +174,16 @@ const within = (from: string, to: string): boolean => {
   return a !== null && b !== null && b.epochMilliseconds - a.epochMilliseconds < SAME_EPISODE_MS;
 };
 
-/** Same outcome, same plan, same message, and close enough in time to be one run of it. */
+/** Same tab, same outcome, same plan, same message, and close enough in time to be one run of it. */
+/** A record with no `tab` is a show run — see `SheetRunRecord.tab`. */
+const tabOf = (run: { tab?: SheetTab }): SheetTab => run.tab ?? 'shows';
+
 const sameAs = (a: SheetRunRecord, b: NewSheetRun): boolean =>
+  // The tab first: one poll writes one record per tab, and two halves failing
+  // the same way is the commonest case there is — an unshared spreadsheet, a
+  // 500 on the read. Without this the second collapses into the first, takes
+  // its label, and the first tab's run is gone from the history entirely.
+  tabOf(a) === tabOf(b) &&
   a.status === b.status &&
   a.mode === b.mode &&
   a.error === b.error &&
@@ -190,12 +206,17 @@ const sameAs = (a: SheetRunRecord, b: NewSheetRun): boolean =>
 export const appendSheetRun = (run: NewSheetRun, { log }: { log?: Logger } = {}): Promise<void> => {
   if (!saysSomething(run)) return Promise.resolve();
 
-  const previous = runs[runs.length - 1];
+  // The last record *of this tab*, not the last record. A poll writes one
+  // record per tab, so the record before a show run is nearly always a films
+  // run: compared against that, a state repeating on both tabs never collapses
+  // and two records a poll evict the real history in 25 polls.
+  const at = runs.findLastIndex((r) => tabOf(r) === tabOf(run));
+  const previous = runs[at];
   // Only this module can know a run repeated, so only it sets `repeats`. The
   // *first* `at` is kept: "frozen, 37 polls, since 14:02" needs when the
   // state began; the count says it is still happening.
   if (previous && sameAs(previous, run)) {
-    runs[runs.length - 1] = { ...run, at: previous.at, repeats: previous.repeats + 1 };
+    runs[at] = { ...run, at: previous.at, repeats: previous.repeats + 1 };
   } else {
     runs.push({ ...run, repeats: 1 });
     if (runs.length > MAX_RUNS) runs = runs.slice(-MAX_RUNS);

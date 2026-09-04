@@ -96,6 +96,11 @@ export interface Config {
 
   sheetId: string | undefined;
   sheetName: string;
+  /**
+   * The films tab. A second name rather than a list, because the two tabs have
+   * different shapes and different rules — nothing iterates them.
+   */
+  moviesSheetName: string;
   sheetSyncMode: SheetSyncMode;
   sheetSinceDays: number;
   sheetMaxEdits: number;
@@ -114,6 +119,14 @@ export interface Config {
   tvdbApiKey: string | undefined;
   /** Only a user-supported key needs one; a licensed key logs in without it. */
   tvdbPin: string | undefined;
+
+  /**
+   * TMDB v4 read-access token, for a film's genres, certificate, backdrop,
+   * dates and director. Absent, the films tab is never read: eight of its
+   * fourteen columns come from here, and a row inserted with those blank is
+   * worse than no row.
+   */
+  tmdbApiKey: string | undefined;
 }
 
 /**
@@ -162,6 +175,7 @@ export const buildConfig = (env: NodeJS.ProcessEnv): Config => ({
   // --- Google Sheet sync. Absent SHEET_ID, the whole feature is inert.
   sheetId: env.SHEET_ID,
   sheetName: env.SHEET_NAME || 'Sheet1',
+  moviesSheetName: env.MOVIES_SHEET_NAME || 'Movies',
   sheetSyncMode: oneOf(env.SHEET_SYNC_MODE, SHEET_SYNC_MODES, 'report'),
   // Nothing is touched without watch activity this recent — the rule that
   // stops a run retro-editing years of history, so it gates everything.
@@ -180,6 +194,10 @@ export const buildConfig = (env: NodeJS.ProcessEnv): Config => ({
   // nothing to clamp and no default to pick.
   tvdbApiKey: env.TVDB_API_KEY,
   tvdbPin: env.TVDB_PIN,
+
+  // --- Film metadata. Absent TMDB_API_KEY, the films tab is left entirely
+  // alone; the show grid is unaffected.
+  tmdbApiKey: env.TMDB_API_KEY,
 });
 
 /**
@@ -248,6 +266,16 @@ export const sheetSyncConfigured = (c: Config = config): boolean =>
  * pin rather than rejecting it, so requiring one would disable a working key.
  */
 export const tvdbConfigured = (c: Config = config): boolean => Boolean(c.tvdbApiKey);
+
+/**
+ * Whether the films tab can be synced: the sheet sync itself, plus a TMDB
+ * token — the one switch, since eight of that tab's fourteen columns come from
+ * TMDB and a row inserted with them blank is worse than no row.
+ *
+ * `moviesSheetName` is not tested: it always has a value, so the test would say
+ * "a tab was named" on every machine, the way `googleCredentialsPath` would.
+ */
+export const moviesSyncConfigured = (c: Config = config): boolean => sheetSyncConfigured(c) && Boolean(c.tmdbApiKey);
 
 export const requireClientId = (): string => {
   if (!config.clientId) {

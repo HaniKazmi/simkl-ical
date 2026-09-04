@@ -417,6 +417,7 @@ anyone else building against this API:
   Roughly 19% of entries land on a different local date in `America/New_York` than naive
   date-slicing would give, and 3% in `Europe/London`.
 - **Anime films are filed under the anime type, not movies**, so a list of "anime" contains
-  entries with no seasons at all.
+  entries with no seasons at all. `anime_type` tells them apart — a **top-level** key beside `show`,
+  not inside it — and across 216 records reads `tv` 155, `movie` 41, `ova` 10, `special` 7, `ona` 3.
 
 </details>

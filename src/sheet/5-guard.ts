@@ -8,17 +8,20 @@
  *
  * It checks the alignment class *independently* — is this address the row the
  * plan thinks it is — because a misalignment is the one catastrophic failure
- * the subsystem has. The value conventions it shares with the planner
+ * the subsystem has. That rule, the budget and the shape every written cell has
+ * are `guard-core.ts`, shared with the films tab's guard; what is here is every
+ * rule about *this* grid. The value conventions it shares with the planner
  * (`values.ts`, `runtimeScopeOk`) are one copy on purpose: a bound that
  * exists twice can disagree, and any gap is a whole-plan refusal on good
  * data.
  */
 
 import { config } from '../shared/config.ts';
-import { isBlank, isFormula, numberOf, runtimeScopeOk, sameValue, type Grid, type HeaderName, type SeasonRow, type ShowBlock } from './2-grid.ts';
+import { isBlank, numberOf, runtimeScopeOk, type Grid, type HeaderName, type SeasonRow, type ShowBlock } from './2-grid.ts';
 import { isTracked, maxSerial, ownsNote, plausibleRuntimeDays, plausibleSerial, watchedNoteSerial } from './values.ts';
 import type { CellEdit, RowInsert, SheetPlan } from './4-plan.ts';
 import type { ExtendedValue } from '../api/google/types.ts';
+import { checkBudgets, checkCellAlignment, checkCellShape, describeValue, PlanRefusal, type Refuse, type SpentBudget } from './guard-core.ts';
 
 /** What the sync may write to a row that already exists. */
 const EDIT_FIELDS = new Set<HeaderName>(['Status', 'Episode', 'Start', 'End', 'Episodes']);
@@ -42,26 +45,22 @@ const EMPTIABLE_INSERTS = new Set<HeaderName>();
  */
 const INSERT_FIELDS = new Set<HeaderName>(['Season', 'Status', 'Episode', 'Start', 'End', 'Episodes', 'Length']);
 
-export class UnsafePlanError extends Error {
+export class UnsafePlanError extends PlanRefusal {
   constructor(message: string) {
     super(message);
     this.name = 'UnsafePlanError';
   }
 }
 
-// Annotated on the variable, not the arrow: only that form makes TypeScript
-// narrow at call sites, letting the checks below read as straight-line
-// assertions rather than defensive `?.` chains.
-const refuse: (message: string) => never = (message) => {
+const refuse: Refuse = (message) => {
   throw new UnsafePlanError(message);
 };
-
-const describeValue = (value: ExtendedValue | undefined): string =>
-  value === undefined ? '(empty)' : (value.formulaValue ?? value.stringValue ?? (value.numberValue !== undefined ? String(value.numberValue) : JSON.stringify(value)));
 
 export interface SafetyLimits {
   maxEdits?: number;
   maxRows?: number;
+  /** What earlier halves of the poll already sent — see `checkBudgets`. */
+  spent?: SpentBudget;
   now?: Temporal.Instant;
   /**
    * The zone the `End` bound is computed in — must be the one `planSync`
@@ -85,64 +84,18 @@ interface GuardContext {
   seasonRows: Map<number, { season: SeasonRow; block: ShowBlock }>;
 }
 
-// --- Budgets ----------------------------------------------------------------
-
-/** Over budget refuses the whole plan; it never truncates. */
-const checkBudgets = (plan: SheetPlan, maxEdits: number, maxRows: number): void => {
-  if (plan.edits.length > maxEdits) {
-    refuse(`${plan.edits.length} edits exceeds SHEET_MAX_EDITS=${maxEdits}. Nothing written; the report lists every proposed edit.`);
-  }
-  const rows = new Set([...plan.edits.map((e) => e.row), ...(plan.insert ? [plan.insert.row] : [])]);
-  if (rows.size > maxRows) {
-    refuse(`${rows.size} distinct rows exceeds SHEET_MAX_ROWS=${maxRows}.`);
-  }
-};
-
 // --- Rules every written cell obeys -----------------------------------------
 
 /**
- * One cell write's shape, existing row or not: a whitelisted field, at the
- * column the header map resolves, holding a plausible value.
+ * The shape rules the core checks, plus the one both date columns share: a
+ * serial no later than tomorrow in the viewer's zone.
  */
-const checkCellShape = (cell: CellEdit, allowed: Set<HeaderName>, emptiable: Set<HeaderName>, { grid, serialCeiling }: GuardContext): void => {
-  const where = `${cell.address} (${cell.field})`;
-
-  if (!allowed.has(cell.field)) refuse(`${where}: not a field this sync may write.`);
-  if (cell.column !== grid.columns[cell.field]) {
-    refuse(`${where}: column ${cell.column} does not match the resolved position of ${cell.field}.`);
-  }
-
-  const value = cell.value;
-  // Absent empties the cell — nothing else does, so an absent value outside the
-  // emptiable set is a planner that lost one.
-  if (value === undefined) {
-    if (!emptiable.has(cell.field)) refuse(`${where}: not a field this sync may empty.`);
-    return;
-  }
-  if (value.numberValue !== undefined && !Number.isFinite(value.numberValue)) refuse(`${where}: not a finite number.`);
+const checkShape = (cell: CellEdit, allowed: Set<HeaderName>, emptiable: Set<HeaderName>, { grid, serialCeiling }: GuardContext): void => {
+  const value = checkCellShape(cell, { allowed, emptiable, columns: grid.columns }, refuse);
+  if (value === undefined) return;
   if ((cell.field === 'End' || cell.field === 'Start') && !plausibleSerial(value.numberValue, serialCeiling)) {
-    refuse(`${where}: ${describeValue(value)} is not a plausible date serial.`);
+    refuse(`${cell.address} (${cell.field}): ${describeValue(value)} is not a plausible date serial.`);
   }
-};
-
-/**
- * The alignment rules — what catches a plan built against a different grid,
- * the one failure that produces real writes in wrong places.
- */
-const checkCellAlignment = (cell: CellEdit, { grid }: GuardContext): void => {
-  const where = `${cell.address} (${cell.field})`;
-
-  // Bounds first: past the end both sides read as undefined, so the value
-  // comparison would agree with itself and pass.
-  if (cell.row < 0 || cell.row >= grid.snapshot.rows.length) refuse(`${where}: row is outside the snapshot.`);
-  const actual = grid.snapshot.rows[cell.row]?.[cell.column];
-  if (!sameValue(cell.previous, actual?.userEnteredValue)) {
-    refuse(`${where}: the cell no longer holds what the plan was built on.`);
-  }
-  // Unconditional. Every derived cell on a show row is a formula rolling up
-  // from the season rows; writing one replaces a live roll-up with a frozen
-  // number, and nothing would ever notice.
-  if (isFormula(actual)) refuse(`${where}: is a formula.`);
 };
 
 // --- Per-field rules for edits ----------------------------------------------
@@ -294,8 +247,8 @@ const checkRuntimeEdit = (cell: CellEdit, where: string, plan: SheetPlan, season
 };
 
 const checkEdit = (cell: CellEdit, plan: SheetPlan, ctx: GuardContext): void => {
-  checkCellShape(cell, EDIT_FIELDS, EMPTIABLE_EDITS, ctx);
-  checkCellAlignment(cell, ctx);
+  checkShape(cell, EDIT_FIELDS, EMPTIABLE_EDITS, ctx);
+  checkCellAlignment(cell, ctx.grid.snapshot, refuse);
   const where = `${cell.address} (${cell.field})`;
 
   // `Status` is the one field with a meaning per row kind, so which row it
@@ -356,7 +309,7 @@ const checkInsert = (insert: RowInsert, ctx: GuardContext): void => {
     // No alignment: the row does not exist in the snapshot, so there is nothing
     // to compare. `checkInsertPlacement` pinning the row to its block covers
     // the bounds an alignment check would add.
-    checkCellShape(cell, INSERT_FIELDS, EMPTIABLE_INSERTS, ctx);
+    checkShape(cell, INSERT_FIELDS, EMPTIABLE_INSERTS, ctx);
   }
 
   // A runtime carried by an insert needs *more* care than one on an edit: the
@@ -389,7 +342,13 @@ const checkInsert = (insert: RowInsert, ctx: GuardContext): void => {
 export const assertPlanSafe = (
   plan: SheetPlan,
   grid: Grid,
-  { maxEdits = config.sheetMaxEdits, maxRows = config.sheetMaxRows, now = Temporal.Now.instant(), timezone = config.timezone }: SafetyLimits = {},
+  {
+    maxEdits = config.sheetMaxEdits,
+    maxRows = config.sheetMaxRows,
+    spent = { edits: 0, rows: 0 },
+    now = Temporal.Now.instant(),
+    timezone = config.timezone,
+  }: SafetyLimits = {},
 ): void => {
   const ctx: GuardContext = {
     grid,
@@ -398,7 +357,7 @@ export const assertPlanSafe = (
     seasonRows: new Map(grid.blocks.flatMap((b) => b.seasons.map((s) => [s.row, { season: s, block: b }] as const))),
   };
 
-  checkBudgets(plan, maxEdits, maxRows);
+  checkBudgets(plan, { maxEdits, maxRows, spent }, refuse);
   for (const cell of plan.edits) checkEdit(cell, plan, ctx);
   if (plan.insert) checkInsert(plan.insert, ctx);
 };

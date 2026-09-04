@@ -14,7 +14,7 @@
 
 import { errorMessage } from '../shared/errors.ts';
 import { a1, HEADERS, isFormulaValue, parseGrid, sameValue, type Grid, type HeaderName } from './2-grid.ts';
-import type { CellEdit, RowInsert, SheetPlan } from './4-plan.ts';
+import type { SheetPlan } from './4-plan.ts';
 import type { CellData, ExtendedValue } from '../api/google/types.ts';
 import type { SheetSnapshot } from './io/spreadsheet.ts';
 
@@ -29,6 +29,23 @@ import type { SheetSnapshot } from './io/spreadsheet.ts';
  * carry hand-maintained values a user edits between polls.
  */
 const INSPECTED: HeaderName[] = HEADERS.filter((header) => header !== 'id' && header !== 'Type');
+
+/**
+ * What the diff needs from one planned write. Structural, because the two tabs
+ * have different field vocabularies and none of the rules below reads a field
+ * name — only where a value goes and what was there before.
+ */
+interface VerifiableCell {
+  row: number;
+  column: number;
+  previous: ExtendedValue | undefined;
+  value: ExtendedValue | undefined;
+}
+
+interface VerifiablePlan {
+  edits: readonly VerifiableCell[];
+  insert: { row: number; fill: readonly VerifiableCell[] } | null;
+}
 
 /** Where a pre-existing row ends up once the inserts have been applied. */
 export const shiftRow = (row: number, insertRows: number[]): number => row + insertRows.filter((at) => at <= row).length;
@@ -63,7 +80,7 @@ const entered = (snapshot: SheetSnapshot, row: number, column: number): Extended
  * unknown. A cell that already held the planned value is evidence of nothing,
  * so it does not count.
  */
-const editLanded = (after: SheetSnapshot, edit: CellEdit, insertRows: number[]): boolean => {
+const editLanded = (after: SheetSnapshot, edit: VerifiableCell, insertRows: number[]): boolean => {
   if (sameValue(edit.previous, edit.value)) return false;
   return [edit.row, shiftRow(edit.row, insertRows)].some((row) => sameValue(entered(after, row, edit.column), edit.value));
 };
@@ -81,7 +98,7 @@ const editLanded = (after: SheetSnapshot, edit: CellEdit, insertRows: number[]):
  * That is the safe direction. A partial match trades a rare manual repair for
  * a rarer deletion of a row nobody created.
  */
-const insertLanded = (after: SheetSnapshot, insert: RowInsert): boolean =>
+const insertLanded = (after: SheetSnapshot, insert: { fill: readonly VerifiableCell[]; row: number }): boolean =>
   insert.fill.length > 0 && insert.fill.every((cell) => sameValue(entered(after, insert.row, cell.column), cell.value));
 
 export interface Verification {
@@ -108,24 +125,83 @@ export interface Verification {
   deleteRows: number[];
 }
 
-export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Verification => {
+/**
+ * Everything the protocol needs to know about a tab, and nothing about which
+ * one it is.
+ *
+ * The two tabs share every rule that decides whether a bad write is rolled
+ * back, and differ only in what this interface names. Kept as two copies those rules drift
+ * apart silently: hardening `editLanded` on the show grid would leave the films
+ * tab on the old behaviour, and nothing would fail.
+ */
+export interface VerifiedTab<G, H extends string, P extends VerifiablePlan> {
+  /**
+   * Phantom, never read: it is what ties a spec to the plan shape it verifies.
+   * Without `P` on the spec, `verifyAgainst` infers it from the plan argument
+   * alone and a films plan verifies against the show grid.
+   */
+  readonly verifies?: P;
+  /** Names the tab in a problem message. */
+  tab: string;
+  /** What the structural check calls the rows it compares. */
+  rowKind: string;
+  parse: (snapshot: SheetSnapshot) => G;
+  /**
+   * `| 'id'` so the join-key rule below always has a column to compare: it is
+   * the one check that catches a row deleted under the write, and a spec whose
+   * headers omitted `id` would disable it silently.
+   */
+  columnsOf: (grid: G) => Record<H | 'id', number>;
+  snapshotOf: (grid: G) => SheetSnapshot;
+  /**
+   * Every header whose column must not move during the write.
+   *
+   * `H` is the tab's own header union, not `string`: widened, a misspelled
+   * header compiles, `columnsOf` answers undefined for it, that column drops
+   * out of the inspected set, and a concurrent human edit to it verifies
+   * clean. `H` also has to cover `id`, because the join-key rule below is what
+   * catches a row deleted under the write.
+   */
+  headers: readonly H[];
+  /** The subset of those the cell diff inspects. */
+  inspected: readonly H[];
+  /**
+   * The row indices whose set must survive the write unchanged. Show rows on
+   * one tab, film rows on the other.
+   */
+  rowsOf: (grid: G) => number[];
+}
+
+/**
+ * `P` binds the plan to the tab. Left as a bare `VerifiablePlan` every plan
+ * satisfies it, so a films plan verifies against the show grid — one tab's
+ * column indices read off the other's — and nothing is found, which sends
+ * `applyPlan` to roll back over a write that was correct.
+ */
+export const verifyAgainst = <G, H extends string, P extends VerifiablePlan>(
+  spec: VerifiedTab<G, H, P>,
+  before: G,
+  after: SheetSnapshot,
+  plan: P,
+): Verification => {
   const problems: string[] = [];
   const inserts = plan.insert ? [plan.insert] : [];
   const insertRows = inserts.map((i) => i.row);
   const inserted = new Set(insertRows);
+  const beforeColumns = spec.columnsOf(before);
+  const beforeSnapshot = spec.snapshotOf(before);
 
   // The header must still mean what it meant: everything below is indexed by
   // columns resolved from the read *before* the write.
-  let afterGrid: Grid;
+  let afterGrid: G;
   try {
-    afterGrid = parseGrid(after);
+    afterGrid = spec.parse(after);
   } catch (err) {
-    return { ok: false, problems: [`the sheet no longer parses: ${errorMessage(err)}`], landed: true, deleteRows: [] };
+    return { ok: false, problems: [`${spec.tab} no longer parses: ${errorMessage(err)}`], landed: true, deleteRows: [] };
   }
-  for (const header of INSPECTED) {
-    if (afterGrid.columns[header] !== before.columns[header]) {
-      problems.push(`the ${header} column moved during the write`);
-    }
+  const afterColumns = spec.columnsOf(afterGrid);
+  for (const header of spec.headers) {
+    if (afterColumns[header] !== beforeColumns[header]) problems.push(`the ${header} column moved during the write`);
   }
   if (problems.length) return { ok: false, problems, landed: true, deleteRows: [] };
 
@@ -135,9 +211,9 @@ export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Ver
   const created = inserts.filter((insert) => insertLanded(after, insert)).map((insert) => insert.row);
   const landed = created.length > 0 || plan.edits.some((edit) => editLanded(after, edit, insertRows));
 
-  const grew = after.rows.length - before.snapshot.rows.length;
+  const grew = after.rows.length - beforeSnapshot.rows.length;
   if (grew !== insertRows.length) {
-    problems.push(`the sheet grew by ${grew} rows, not ${insertRows.length}`);
+    problems.push(`${spec.tab} grew by ${grew} rows, not ${insertRows.length}`);
     return { ok: false, problems, landed, deleteRows: created };
   }
 
@@ -150,25 +226,26 @@ export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Ver
     for (const fill of insert.fill) expected.set(`${insert.row}:${fill.column}`, fill.value);
   }
 
-  const columns = Object.values(before.columns);
-  const inspected = new Set(INSPECTED.map((h) => before.columns[h]));
+  const columns: number[] = Object.values(beforeColumns);
+  const inspected = new Set(spec.inspected.map((h) => beforeColumns[h]));
   // Only an insert moves rows, and only moved rows get their formulas rewritten.
   const structural = insertRows.length > 0;
 
   // --- Pre-existing rows: every inspected cell must be unchanged, or changed
   //     to exactly what was planned.
-  for (let row = 0; row < before.snapshot.rows.length; row += 1) {
+  for (let row = 0; row < beforeSnapshot.rows.length; row += 1) {
     const target = shiftRow(row, insertRows);
     for (const column of columns) {
-      const was = entered(before.snapshot, row, column);
+      const was = entered(beforeSnapshot, row, column);
       const now = entered(after, target, column);
       const key = `${target}:${column}`;
 
-      // The join key is never written by design, so any change means the rows
-      // are not the rows we think. No formula exemption — nothing to exempt:
-      // on the live sheet 0 of 1644 `id` cells are formulas. 21 `Start` cells
-      // are, which is a different column.
-      if (column === before.columns.id && !sameValue(was, now)) {
+      // The join key is never written to a row that already exists, so any
+      // change means the rows are not the rows we think — which is what a row
+      // deleted under the write looks like. No formula exemption, and nothing
+      // to exempt: on the live sheet 0 of 1644 `id` cells are formulas. 21
+      // `Start` cells are, which is a different column.
+      if (column === beforeColumns.id && !sameValue(was, now)) {
         problems.push(`${a1(target, column)}: the id changed`);
         continue;
       }
@@ -198,23 +275,44 @@ export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Ver
     }
   }
 
-  for (const key of expected.keys()) problems.push(`the write planned for ${key} is not in the sheet`);
+  for (const key of expected.keys()) problems.push(`the write planned for ${key} is not in ${spec.tab}`);
 
-  // --- The block structure must be intact. A show row whose title went missing
-  //     silently merges two blocks, and every roll-up formula with it.
-  const beforeShowRows = before.blocks.map((b) => shiftRow(b.row, insertRows)).join(',');
-  const afterShowRows = afterGrid.blocks.map((b) => b.row).join(',');
-  if (beforeShowRows !== afterShowRows) problems.push('the set of show rows changed');
+  // --- The row structure must be intact. A show row whose title went missing
+  //     silently merges two blocks and every roll-up formula with it; a film
+  //     row that lost every cell stops being one, and that film is inserted
+  //     again on the next poll.
+  //
+  //     The `inserted` filter is what makes one comparison serve both: a season
+  //     insert is never a show row, so it is a no-op there, while a film insert
+  //     *is* a film row and has to come out before the sets can be compared.
+  const beforeRows = spec.rowsOf(before).map((row) => shiftRow(row, insertRows)).join(',');
+  const afterRows = spec.rowsOf(afterGrid).filter((row) => !inserted.has(row)).join(',');
+  if (beforeRows !== afterRows) problems.push(`the set of ${spec.rowKind} changed`);
 
   // --- A formula that broke. Free, because the read already carries it.
   for (let row = 0; row < after.rows.length; row += 1) {
     const source = inserted.has(row) ? undefined : row - insertRows.filter((at) => at <= row).length;
     for (const column of columns) {
       if (!cell(after, row, column)?.effectiveValue?.errorValue) continue;
-      const had = source === undefined ? false : Boolean(cell(before.snapshot, source, column)?.effectiveValue?.errorValue);
+      const had = source === undefined ? false : Boolean(cell(beforeSnapshot, source, column)?.effectiveValue?.errorValue);
       if (!had) problems.push(`${a1(row, column)}: now holds an error value`);
     }
   }
 
   return { ok: problems.length === 0, problems, landed, deleteRows: problems.length ? created : [] };
 };
+
+/** The show grid's answers to the five questions above. */
+const SHOW_GRID: VerifiedTab<Grid, HeaderName, SheetPlan> = {
+  tab: 'the sheet',
+  rowKind: 'show rows',
+  parse: parseGrid,
+  columnsOf: (grid) => grid.columns,
+  snapshotOf: (grid) => grid.snapshot,
+  headers: INSPECTED,
+  inspected: INSPECTED,
+  rowsOf: (grid) => grid.blocks.map((block) => block.row),
+};
+
+export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Verification =>
+  verifyAgainst(SHOW_GRID, before, after, plan);
