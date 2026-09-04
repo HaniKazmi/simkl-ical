@@ -89,7 +89,7 @@ export const fakeSheets = ({
     titles.set(nextSheetId, 'Movies');
     nextSheetId += 1;
   }
-  const films = movies ? tabs.get(2)! : null;
+  const films = movies ? tabs.get(nextSheetId - 1)! : null;
   /** Widths are per tab: the two have different column counts. */
   const widthOf = (id: number): number => (id === 1 ? SHEET_HEADERS.length : MOVIE_SHEET_HEADERS.length);
   let writes = 0;
@@ -176,7 +176,13 @@ export const fakeSheets = ({
       // returning Sheet1 for a `Movies` read would have the films planner plan
       // the show grid's rows against the films tab's rules.
       const wanted = decodeURIComponent(new URL(url).searchParams.get('ranges') ?? '').replaceAll("'", '');
-      const sheetId = [...titles].find(([, title]) => title === wanted)?.[0] ?? 1;
+      const found = [...titles].find(([, title]) => title === wanted)?.[0];
+      // Fail closed. Answering an unknown range with Sheet1 is the hazard the
+      // comment below warns about, and in a shared double it is worse: a suite
+      // reading a tab this fake does not hold would assert against the show
+      // grid and pass for the wrong reason.
+      if (found === undefined) throw new Error(`fake sheets has no tab named ${wanted}`);
+      const sheetId = found;
       const rows = tabs.get(sheetId) ?? [];
       return jsonResponse({
         sheets: [

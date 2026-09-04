@@ -86,6 +86,18 @@ test('an inserted row carrying a value nothing planned does not verify, and is d
   assert.deepEqual(result.deleteRows, [3], 'and the rollback knows which row it created');
 });
 
+test('an insert whose row landed but whose cells did not is not claimed as ours', () => {
+  // Strict on purpose, and with a cost worth stating: the row is left in place
+  // and the run freezes rather than deleting a row this read cannot positively
+  // identify as the sync's. A partial match would trade a rare manual repair
+  // for a rarer deletion of a row nobody created.
+  const insert = ffx.insert({ id: 999, title: 'A New Film' });
+  const partial = sheetSnapshot([...BASE, filmRow({ name: 'A New Film', id: 999, watched: null })]);
+  const result = verifyFilms(ffx.grid, partial, filmPlanOf([], insert));
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.deleteRows, [], 'nothing is deleted on a row we cannot claim');
+});
+
 test('a tab that no longer parses is a problem, not a throw', () => {
   const broken = sheetSnapshot([['nothing', 'recognisable']]);
   const result = verifyFilms(ffx.grid, broken, filmPlanOf());

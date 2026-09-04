@@ -85,7 +85,7 @@ export const apiGet = async <T>(path: string, { component, params = {}, signal }
   // cannot reach a credential.
   const token = config.tmdbApiKey;
   // Thrown before any fetch, so an unconfigured install cannot reach TMDB even
-  // if a caller forgets to gate on `tmdbConfigured`.
+  // if a caller forgets to gate on `moviesSyncConfigured`.
   if (!token) throw new TmdbError('TMDB_API_KEY is not set, so no film lookup can be made.');
 
   const url = new URL(path.replace(/^\//, ''), API_BASE);

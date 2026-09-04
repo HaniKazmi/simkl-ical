@@ -342,7 +342,7 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   `frozen > rolled-back > failed > refused > applied > reported > idle`, because a frozen films tab
   beside an applied show grid is a frozen sync. The freeze latch is process-wide and a show half that
   froze stops the films half in the same poll. `sheet-runs.json` records one line per tab, labelled
-  by `tab` — absent means the show grid, which every record written before the films half existed was.
+  by `tab`, and a record carrying none is a show run.
 - **`sheet-runs.json` is observational, never control.** Nothing may read it to decide behaviour, so
   a corrupt or deleted history cannot change what the sync does.
 - **Tests must not reach the network, the real `./data`, or the real spreadsheet.** Use `withFetch`,

@@ -78,16 +78,29 @@ export type SheetSyncStatus = 'idle' | 'reported' | 'applied' | 'refused' | 'fai
 export type SheetTab = 'shows' | 'films';
 
 /**
- * Worst-first. `/healthz` reports one status for a sync that now runs against
- * two tabs, and the worse of the two is the only answer that cannot understate
- * what happened: a frozen films tab beside an applied show grid is a frozen
- * sync, and reporting `applied` would hide the one state that needs a human.
+ * Worst-first. `/healthz` reports one status for a sync that runs against two
+ * tabs, and the worse of the two is the only answer that cannot understate what
+ * happened: a frozen films tab beside an applied show grid is a frozen sync,
+ * and reporting `applied` would hide the one state that needs a human.
+ *
+ * A `Record` rather than an ordered array, so `tsc` requires every status to
+ * have a rank. An array typed `SheetSyncStatus[]` need not *contain* them all,
+ * and `indexOf` answers -1 for one it omits — which sorts ahead of `frozen`,
+ * silently making a newly added status the worst thing that can happen.
  */
-const SEVERITY: readonly SheetSyncStatus[] = ['frozen', 'rolled-back', 'failed', 'refused', 'applied', 'reported', 'idle'];
+const SEVERITY: Record<SheetSyncStatus, number> = {
+  frozen: 0,
+  'rolled-back': 1,
+  failed: 2,
+  refused: 3,
+  applied: 4,
+  reported: 5,
+  idle: 6,
+};
 
 const worse = (a: SheetSyncResult, b: SheetSyncResult | null): SheetSyncResult => {
   if (!b) return a;
-  const worst = SEVERITY.indexOf(a.status) <= SEVERITY.indexOf(b.status) ? a : b;
+  const worst = SEVERITY[a.status] <= SEVERITY[b.status] ? a : b;
   return {
     status: worst.status,
     // Both halves' plans, so the caller's counts describe the whole poll.
@@ -230,8 +243,9 @@ export class SheetSync {
    */
   private async record(result: SheetSyncResult, tab: SheetTab): Promise<SheetSyncResult> {
     this.lastRunAt = nowIso();
-    // Worst-wins across the poll, so a films failure is not erased by a show
-    // run that follows it cleanly on the next tick of the same poll.
+    // Worst-wins across the poll. Shows runs first, so what this protects is
+    // the show run's outcome from the films run that follows it: a quiet films
+    // half reporting `idle` must not overwrite a show grid that was refused.
     this.lastStatus = tab === 'shows' ? result.status : worse(result, outcome(this.lastStatus)).status;
     await this.remember(result.status, tab);
     await appendSheetRun(
@@ -520,7 +534,10 @@ export class SheetSync {
    */
   private async filmsCycle(library: Library | null, signal: AbortSignal | undefined): Promise<SheetSyncResult> {
     const index = indexFilms(library);
-    // The early-out: a poll in which no film moved never reads the tab.
+    // The early-out, and it is narrower than it looks: `indexFilms` returns
+    // every film whatever moved, so this fires only when the library holds none
+    // at all. The tab is read on every other poll by design — baseline gating
+    // and the missing-from-tab diff both need the grid.
     if (index.size === 0) return outcome('idle');
 
     // Every id the library holds, so a row for an anime film reads as the show
