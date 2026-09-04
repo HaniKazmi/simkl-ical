@@ -115,6 +115,19 @@ test('a column that moved during the write is caught before any cell is compared
   assert.match(result.problems.join(' '), /column moved during the write/);
 });
 
+test('the id column moving is caught too, though the diff skips that column', () => {
+  // `id` is excluded from the cell diff and checked by a rule of its own, so
+  // it has to stay in the set whose positions are compared: it is the column
+  // every film row is matched by, and a tab whose id column moved is one
+  // nothing else can be trusted about.
+  const moved = MOVIE_SHEET_HEADERS.map((h) => h);
+  const id = moved.indexOf('id');
+  [moved[id], moved[id + 1]] = [moved[id + 1]!, moved[id]!];
+  const result = verifyFilms(ffx.grid, sheetSnapshot([moved, BASE[1]!, BASE[2]!]), filmPlanOf());
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(' '), /the id column moved during the write/);
+});
+
 test('a cell newly holding an error value does not verify', () => {
   const rows = BASE.map((row) => [...row]);
   const snapshot = sheetSnapshot(rows);

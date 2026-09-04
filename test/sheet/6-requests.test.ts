@@ -36,6 +36,18 @@ test('an insert precedes its own fill, which shares the same row index', () => {
 
 // deleteDimension shifts every row beneath it, so the deletes go bottom-up and
 // no index moves under one that has not run yet.
+// The blank rows past a tab's data carry different number formats — on the
+// films tab a different date format on `Watch Date` and none at all on
+// `Release Date` — so a serial written straight into one renders as `28486`.
+// `inheritFromBefore` is what carries the formats down, and it is the only
+// reason an append goes through `insertDimension` at all.
+test('an inserted row inherits the formats of the row above it', () => {
+  const requests = toRequests(writesFor(planOf([], fx.insertAt(fx.end, 3)), fx.grid));
+  const insert = requests.find((r) => 'insertDimension' in r);
+  assert.ok(insert && 'insertDimension' in insert);
+  assert.equal(insert.insertDimension.inheritFromBefore, true);
+});
+
 test('row deletions are emitted descending', () => {
   assert.deepEqual(
     deleteRowRequests(1, [4, 40, 9]).map((r) => ('deleteDimension' in r ? r.deleteDimension.range.startIndex : -1)),

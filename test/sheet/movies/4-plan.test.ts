@@ -6,7 +6,7 @@ import { MAX_LOOKUPS_PER_PASS, NOT_HELD, observeFilms, planFilms } from '../../.
 import { movieKey, type Baseline } from '../../../src/sheet/values.ts';
 import { isoOf } from '../../../src/shared/dates.ts';
 import type { FilmFacts } from '../../../src/sheet/movies/3-catalogue.ts';
-import { libraryOf, type ItemSpec } from '../../helpers.ts';
+import { cellOf, libraryOf, type ItemSpec } from '../../helpers.ts';
 import { film, filmGrid, rawFilm, TODAY } from './fixture.ts';
 
 const NOW = Temporal.Instant.from('2026-09-04T12:00:00Z');
@@ -120,6 +120,20 @@ test('a value outside the range its column accepts is declined, not written', ()
   );
   assert.equal(p.edits.length, 0);
   assert.match(p.skips[0]?.reason ?? '', /outside the range/);
+});
+
+test('a formula in a followed column is declined, not handed to the guard', () => {
+  // The guard refuses a formula unconditionally and whole-plan, so without the
+  // planner declining first, one formula in one cell would refuse every film
+  // edit on every poll for as long as that cell held it.
+  const baseline: Baseline = new Map([[movieKey(1), { Score: '5', 'Watch Date': watchedOn(40000), Runtime: '90' }]]);
+  const grid = filmGrid(film('a', { id: 1, watched: 40000, score: 5, runtime: 90 }));
+  const withFormula = { ...grid.grid, snapshot: { ...grid.grid.snapshot, rows: grid.grid.snapshot.rows.map((r) => [...r]) } };
+  withFormula.snapshot.rows[1]![grid.grid.columns.Score] = cellOf({ formula: '=5', value: 5 });
+  const index = indexFilms(libraryOf(movie({ id: 1, lastWatchedAt: watchedOn(40000), rating: 9, runtime: 90 })));
+  const { plan: p } = planFilms(withFormula, index, new Map(), { ...OPTS, baseline, seed: observeFilms(index) });
+  assert.equal(p.edits.length, 0);
+  assert.equal(p.skips.find((s) => s.code === 'formula-cell')?.code, 'formula-cell');
 });
 
 test('a row whose id is on the tab twice is skipped rather than guessed at', () => {
