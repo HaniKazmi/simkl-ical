@@ -21,7 +21,7 @@ import type { TmdbBackdrop, TmdbMovie, TmdbRelease } from '../../api/tmdb/types.
  * `Abstract` is in the vocabulary and nothing maps to it: no TMDB genre means
  * it, and no row on the tab uses it. It stays hand-only.
  */
-export const GENRE_VOCABULARY = [
+const GENRE_VOCABULARY = [
   'Abstract',
   'Action',
   'Adventure',
@@ -181,7 +181,7 @@ export const watchedInCinema = (
  */
 const CERTIFICATE_AGES: Record<string, number> = { U: 3, PG: 7, '12A': 12, '12': 12, '15': 15, '18': 18 };
 
-export const CERTIFICATE_VALUES: readonly number[] = [3, 7, 12, 15, 18];
+const CERTIFICATE_VALUES: readonly number[] = [3, 7, 12, 15, 18];
 
 const RATINGS = new Set(CERTIFICATE_VALUES);
 
@@ -280,9 +280,6 @@ export const plausibleScore = (score: number): boolean => Number.isInteger(score
  * a day is a payload error, not a film.
  */
 export const plausibleRuntime = (minutes: number): boolean => Number.isInteger(minutes) && minutes >= 1 && minutes <= 1440;
-
-/** The serial a `PlainDate` stands for on this tab, same epoch as the show grid. */
-export const serialOf = (date: Temporal.PlainDate): number => dateSerial(date);
 
 /**
  * `Release Date` needs bounds of its own, at both ends.

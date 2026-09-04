@@ -22,12 +22,12 @@
 import { isoOf, plainDateIn } from '../../shared/dates.ts';
 import type { ExtendedValue } from '../../api/google/types.ts';
 import { isFormula } from '../2-grid.ts';
-import { maxSerial, movieKey, plausibleSerial, recordedSerial, watchSerial, type Baseline } from '../values.ts';
+import { dateSerial, maxSerial, movieKey, plausibleSerial, recordedSerial, watchSerial, type Baseline } from '../values.ts';
 import { movieAddress, movieCellAt, nextFilmRow, type MovieGrid, type MovieHeaderName } from './2-grid.ts';
 import { filmIsWatched, type FilmProgress } from './1-index.ts';
 import type { FilmFacts } from './3-catalogue.ts';
 import type { PlanRecord } from '../4-plan.ts';
-import { plausibleReleaseSerial, plausibleRuntime, plausibleScore, releaseCeiling, serialOf, watchedInCinema } from './values.ts';
+import { plausibleReleaseSerial, plausibleRuntime, plausibleScore, releaseCeiling, watchedInCinema } from './values.ts';
 
 // --- The plan --------------------------------------------------------------
 
@@ -141,10 +141,6 @@ export interface PlanFilmsOptions {
 export const FOLLOWED_FIELDS = ['Watch Date', 'Score', 'Runtime'] as const satisfies readonly MovieHeaderName[];
 
 export type FollowedField = (typeof FOLLOWED_FIELDS)[number];
-
-const FOLLOWED = new Set<MovieHeaderName>(FOLLOWED_FIELDS);
-
-export const isFollowed = (field: MovieHeaderName): field is FollowedField => FOLLOWED.has(field);
 
 /**
  * What a baseline entry records for a field SIMKL holds no value for.
@@ -470,7 +466,7 @@ const buildInsert = (
   // Declined here rather than left for the guard: a guard refusal is
   // whole-plan, so one film with an unreadable release date would stop every
   // other film being added for as long as it stayed in the library.
-  const released = facts.releaseDate ? serialOf(facts.releaseDate) : null;
+  const released = facts.releaseDate ? dateSerial(facts.releaseDate) : null;
   if (released !== null && plausibleReleaseSerial(released, releaseTo)) fill.push(fillCell(grid, row, film.id, 'Release Date', num(released), note));
   if (facts.franchise) fill.push(fillCell(grid, row, film.id, 'Franchise', str(facts.franchise), note));
   if (facts.director) fill.push(fillCell(grid, row, film.id, 'Director', str(facts.director), note));
