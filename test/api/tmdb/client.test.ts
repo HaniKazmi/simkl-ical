@@ -87,7 +87,10 @@ test('a 404 is not retried — TMDB not knowing a film is a settled answer', asy
 test('the failure classes separate a dead film from a dead credential', () => {
   assert.equal(classify(new TmdbError('gone', 404)), 'gone');
   assert.equal(classify(new TmdbError('bad token', 401)), 'account');
-  assert.equal(classify(new TmdbError('forbidden', 403)), 'account');
+  // Not `account`: TMDB answers a throttled or blocked request with 403, and
+  // `account` settles every pending film as permanently unbuildable for the
+  // life of the process.
+  assert.equal(classify(new TmdbError('forbidden', 403)), 'transient');
   assert.equal(classify(new TmdbError('boom', 503)), 'transient');
   // A transport failure carries no status, and settling every film on one
   // would strand three hundred rows over one bad minute.

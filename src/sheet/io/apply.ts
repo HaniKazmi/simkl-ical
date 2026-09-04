@@ -47,6 +47,16 @@ export interface ApplyOptions {
 export interface ApplySpec {
   /** The tab as it was when the plan was built. Its title is what gets re-read. */
   snapshot: SheetSnapshot;
+  /**
+   * Whether a clean write may tidy away every snapshot tab it finds.
+   *
+   * False once another tab has been written this poll: a failed write leaves
+   * its snapshot in place on the reasoning that "a leftover tab is swept by the
+   * next clean run", which held while one poll wrote one tab. Sweeping here
+   * would take the operator's copy of the other tab's pre-write grid before
+   * they had seen the error that produced it.
+   */
+  maySweep: boolean;
   /** The plan's writes, already ordered. The backup is prepended here. */
   requests: SheetRequest[];
   /** Log lines describing the plan, rendered only when something is reported. */
@@ -113,7 +123,7 @@ export const applyPlan = async (spec: ApplySpec, { log, signal }: ApplyOptions):
 
   if (verification.ok) {
     if (writeError) log.warn(`the sheet write reported "${writeError}" but landed exactly as planned`);
-    await sweepBackups(log, signal);
+    if (spec.maySweep) await sweepBackups(log, signal);
     report(`sheet sync applied ${spec.summary}`);
     return { status: 'applied', error: null };
   }

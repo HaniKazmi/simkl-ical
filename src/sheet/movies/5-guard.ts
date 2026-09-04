@@ -22,7 +22,15 @@
 import { config } from '../../shared/config.ts';
 import { isFormula, sameValue } from '../2-grid.ts';
 import { maxSerial, plausibleSerial } from '../values.ts';
-import { isCertificate, isGenre, MAX_SECONDARY_GENRES, plausibleReleaseSerial, plausibleRuntime, plausibleScore } from './values.ts';
+import {
+  isCertificate,
+  isGenre,
+  MAX_SECONDARY_GENRES,
+  plausibleReleaseSerial,
+  plausibleRuntime,
+  plausibleScore,
+  releaseCeiling as releaseHorizon,
+} from './values.ts';
 import { nextFilmRow, type MovieGrid, type MovieHeaderName } from './2-grid.ts';
 import type { FilmCellEdit, FilmPlan, FilmRowInsert } from './4-plan.ts';
 import type { ExtendedValue } from '../../api/google/types.ts';
@@ -89,6 +97,15 @@ const describeValue = (value: ExtendedValue | undefined): string =>
 export interface FilmSafetyLimits {
   maxEdits?: number;
   maxRows?: number;
+  /**
+   * Edits another tab has already planned this poll, which count against the
+   * same budget.
+   *
+   * The budget is a blast radius for the whole poll, not an allowance per tab:
+   * counted per tab, one poll writes twice `SHEET_MAX_EDITS` while each half
+   * reports itself inside it.
+   */
+  spent?: { edits: number; rows: number };
   now?: Temporal.Instant;
   timezone?: string;
 }
@@ -96,6 +113,8 @@ export interface FilmSafetyLimits {
 interface FilmGuardContext {
   grid: MovieGrid;
   serialCeiling: number;
+  /** Wider than `serialCeiling`: a film can be watched before it opens here. */
+  releaseCeiling: number;
   /** Row index → the film that row holds, for the rows a write may land on. */
   filmRows: Map<number, number>;
 }
@@ -103,18 +122,19 @@ interface FilmGuardContext {
 // --- Budgets ---------------------------------------------------------------
 
 /** Over budget refuses the whole plan; it never truncates. */
-const checkBudgets = (plan: FilmPlan, maxEdits: number, maxRows: number): void => {
-  if (plan.edits.length > maxEdits) {
-    refuse(`${plan.edits.length} film edits exceeds SHEET_MAX_EDITS=${maxEdits}. Nothing written; the report lists every proposed edit.`);
+const checkBudgets = (plan: FilmPlan, maxEdits: number, maxRows: number, spent: { edits: number; rows: number }): void => {
+  const edits = plan.edits.length + spent.edits;
+  if (edits > maxEdits) {
+    refuse(`${edits} edits this poll exceeds SHEET_MAX_EDITS=${maxEdits}. Nothing written; the report lists every proposed edit.`);
   }
-  const rows = new Set([...plan.edits.map((e) => e.row), ...(plan.insert ? [plan.insert.row] : [])]);
-  if (rows.size > maxRows) refuse(`${rows.size} distinct film rows exceeds SHEET_MAX_ROWS=${maxRows}.`);
+  const rows = new Set([...plan.edits.map((e) => e.row), ...(plan.insert ? [plan.insert.row] : [])]).size + spent.rows;
+  if (rows > maxRows) refuse(`${rows} distinct rows this poll exceeds SHEET_MAX_ROWS=${maxRows}.`);
 };
 
 // --- Rules every written cell obeys ----------------------------------------
 
 /** The vocabulary and bounds each column accepts, in one place per field. */
-const checkValue = (field: MovieHeaderName, value: ExtendedValue, where: string, serialCeiling: number): void => {
+const checkValue = (field: MovieHeaderName, value: ExtendedValue, where: string, serialCeiling: number, releaseCeiling: number): void => {
   if (value.numberValue !== undefined && !Number.isFinite(value.numberValue)) refuse(`${where}: not a finite number.`);
 
   switch (field) {
@@ -124,7 +144,7 @@ const checkValue = (field: MovieHeaderName, value: ExtendedValue, where: string,
     case 'Release Date':
       // A different floor from a watch date, and the reason is in `values.ts`:
       // films predate anything this sheet records watching.
-      if (!plausibleReleaseSerial(value.numberValue, serialCeiling)) {
+      if (!plausibleReleaseSerial(value.numberValue, releaseCeiling)) {
         refuse(`${where}: ${describeValue(value)} is not a plausible release date.`);
       }
       return;
@@ -148,6 +168,11 @@ const checkValue = (field: MovieHeaderName, value: ExtendedValue, where: string,
       return;
     case 'Genres': {
       if (typeof value.stringValue !== 'string') refuse(`${where}: Genres must be text.`);
+      // No secondaries is a real state — 27 rows on the tab hold it — and
+      // `''.split(',')` is `['']`, which is not a genre. Refusing that would
+      // make the planner's decision to omit the cell load-bearing for the
+      // guard's correctness, which is the coupling these rules exist to avoid.
+      if (!value.stringValue) return;
       const tokens = value.stringValue.split(',').map((token) => token.trim());
       if (tokens.length > MAX_SECONDARY_GENRES) refuse(`${where}: ${tokens.length} genres exceeds the ${MAX_SECONDARY_GENRES} this column holds.`);
       for (const token of tokens) if (!isGenre(token)) refuse(`${where}: ${token} is not one of the genres the renderer colours.`);
@@ -176,7 +201,7 @@ const checkValue = (field: MovieHeaderName, value: ExtendedValue, where: string,
  * One cell write's shape, existing row or not: a whitelisted field, at the
  * column the header map resolves, holding a value that column accepts.
  */
-const checkCellShape = (cell: FilmCellEdit, allowed: Set<MovieHeaderName>, { grid, serialCeiling }: FilmGuardContext): void => {
+const checkCellShape = (cell: FilmCellEdit, allowed: Set<MovieHeaderName>, { grid, serialCeiling, releaseCeiling }: FilmGuardContext): void => {
   const where = `${cell.address} (${cell.field})`;
 
   if (!allowed.has(cell.field)) refuse(`${where}: not a field this sync may write.`);
@@ -188,7 +213,7 @@ const checkCellShape = (cell: FilmCellEdit, allowed: Set<MovieHeaderName>, { gri
     if (!EMPTIABLE.has(cell.field)) refuse(`${where}: not a field this sync may empty.`);
     return;
   }
-  checkValue(cell.field, cell.value, where, serialCeiling);
+  checkValue(cell.field, cell.value, where, serialCeiling, releaseCeiling);
 };
 
 /**
@@ -282,11 +307,18 @@ const checkInsert = (insert: FilmRowInsert, ctx: FilmGuardContext): void => {
 export const assertFilmPlanSafe = (
   plan: FilmPlan,
   grid: MovieGrid,
-  { maxEdits = config.sheetMaxEdits, maxRows = config.sheetMaxRows, now = Temporal.Now.instant(), timezone = config.timezone }: FilmSafetyLimits = {},
+  {
+    maxEdits = config.sheetMaxEdits,
+    maxRows = config.sheetMaxRows,
+    spent = { edits: 0, rows: 0 },
+    now = Temporal.Now.instant(),
+    timezone = config.timezone,
+  }: FilmSafetyLimits = {},
 ): void => {
   const ctx: FilmGuardContext = {
     grid,
     serialCeiling: maxSerial(now, timezone),
+    releaseCeiling: releaseHorizon(now, timezone),
     // Only rows carrying an id the tab does not repeat: an id-less row is one
     // someone typed by hand and a repeated id makes "which row is this film"
     // a coin toss, so neither may be written to.
@@ -295,7 +327,7 @@ export const assertFilmPlanSafe = (
     ),
   };
 
-  checkBudgets(plan, maxEdits, maxRows);
+  checkBudgets(plan, maxEdits, maxRows, spent);
   for (const cell of plan.edits) checkEdit(cell, ctx);
   if (plan.insert) checkInsert(plan.insert, ctx);
 };

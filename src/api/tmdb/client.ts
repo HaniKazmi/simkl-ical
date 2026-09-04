@@ -46,7 +46,13 @@ export class TmdbError extends HttpError {
 export const classify = (err: unknown): FailureKind => {
   const status = err instanceof TmdbError ? err.status : undefined;
   if (status === undefined) return 'transient';
-  if (status === 401 || status === 403) return 'account';
+  // 401 only. TVDB counts a 403 as `account` too, but there the cost is one
+  // runtime cell left blank for a poll; here `account` settles every pending
+  // film as permanently unbuildable for the life of the process, and TMDB
+  // answers a throttled or WAF-blocked request with 403 as readily as a
+  // rejected token. A wrong token still fails closed, one poll later, through
+  // the 401 its next request gets.
+  if (status === 401) return 'account';
   return status === 404 ? 'gone' : 'transient';
 };
 

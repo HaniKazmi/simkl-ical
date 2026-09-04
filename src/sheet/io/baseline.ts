@@ -24,7 +24,7 @@ import { config } from '../../shared/config.ts';
 import { errorMessage } from '../../shared/errors.ts';
 import { instantFrom, nowIso } from '../../shared/dates.ts';
 import type { Logger } from '../../shared/logger.ts';
-import type { Baseline, BaselineEntry } from '../values.ts';
+import { MOVIE_PREFIX, type Baseline, type BaselineEntry } from '../values.ts';
 
 interface BaselineFile {
   version: number;
@@ -66,10 +66,21 @@ export const clearBaseline = (): void => {
 /** What the status page shows: that the record exists, and how current it is. */
 export interface BaselineSummary {
   seasons: number;
+  films: number;
   at: string | null;
 }
 
-export const baselineSummary = (): BaselineSummary => ({ seasons: seasons.size, at: movedAt });
+/**
+ * Counted apart, because one file now holds both tabs and the page names what
+ * it shows. Rolled together, a first films poll adds one entry per film in the
+ * library and the season count roughly doubles overnight — on the very number
+ * whose job is telling a recording-only first run from a sync that never armed.
+ */
+export const baselineSummary = (): BaselineSummary => {
+  let films = 0;
+  for (const key of seasons.keys()) if (key.startsWith(MOVIE_PREFIX)) films += 1;
+  return { seasons: seasons.size - films, films, at: movedAt };
+};
 
 /**
  * Enough that every later read is total. Values must be strings, because

@@ -180,7 +180,9 @@ export const seasonKey = (id: number, season: number): string => `${id}:${season
  * season key with its season missing, and the two would silently share an
  * entry the day one collided.
  */
-export const movieKey = (id: number): string => `movie:${id}`;
+export const MOVIE_PREFIX = 'movie:';
+
+export const movieKey = (id: number): string => `${MOVIE_PREFIX}${id}`;
 
 /**
  * The serial a recorded value stands for — the stored ISO instant, rendered in

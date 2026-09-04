@@ -27,7 +27,7 @@ import { movieAddress, movieCellAt, nextFilmRow, type MovieGrid, type MovieHeade
 import { filmIsWatched, type FilmProgress } from './1-index.ts';
 import type { FilmFacts } from './3-catalogue.ts';
 import type { PlanRecord } from '../4-plan.ts';
-import { plausibleReleaseSerial, plausibleRuntime, plausibleScore, serialOf, watchedInCinema } from './values.ts';
+import { plausibleReleaseSerial, plausibleRuntime, plausibleScore, releaseCeiling, serialOf, watchedInCinema } from './values.ts';
 
 // --- The plan --------------------------------------------------------------
 
@@ -62,7 +62,7 @@ export interface FilmRowInsert {
   note: string;
 }
 
-export type FilmSkipCode = 'duplicate-id' | 'unknown-id' | 'unusable-value' | 'formula-cell' | 'awaiting-lookup' | 'not-in-tmdb';
+export type FilmSkipCode = 'duplicate-id' | 'unknown-id' | 'unusable-value' | 'formula-cell' | 'awaiting-lookup';
 
 export interface FilmSkip {
   code: FilmSkipCode;
@@ -95,6 +95,11 @@ export interface FilmDemand {
 export interface FilmPlanResult {
   plan: FilmPlan;
   demands: FilmDemand[];
+  /**
+   * Films the library gives no TMDB id, which no lookup can resolve. Settled
+   * by the caller so the note above is written once rather than every poll.
+   */
+  unidentifiable: FilmProgress[];
   /** Seen but not written: first sightings, unmoved values, declined moves. */
   observed: Baseline;
   /** Values an edit was planned for. Recordable only once that edit lands. */
@@ -350,9 +355,10 @@ export const planFilms = (
     }
   }
 
-  planInsert(grid, index, facts, onTab, plan, demands, { timezone, ceiling });
+  const unidentifiable: FilmProgress[] = [];
+  planInsert(grid, index, facts, onTab, plan, demands, unidentifiable, { timezone, ceiling, releaseTo: releaseCeiling(now, timezone) });
 
-  return { plan, demands, observed, writing };
+  return { plan, demands, unidentifiable, observed, writing };
 };
 
 /**
@@ -369,7 +375,8 @@ const planInsert = (
   onTab: Set<number>,
   plan: FilmPlan,
   demands: FilmDemand[],
-  { timezone, ceiling }: { timezone: string; ceiling: number },
+  unidentifiable: FilmProgress[],
+  { timezone, ceiling, releaseTo }: { timezone: string; ceiling: number; releaseTo: number },
 ): void => {
   const missing = [...index.values()]
     .filter((film) => filmIsWatched(film) && !onTab.has(film.id))
@@ -390,7 +397,10 @@ const planInsert = (
     }
     if (known === undefined) {
       if (film.tmdbId === null) {
-        plan.skips.push({ code: 'not-in-tmdb', row: null, reason: `${film.title}: SIMKL carries no TMDB id for this film` });
+        // Reported once and settled, not re-skipped every poll. Nothing about
+        // a record with no TMDB id changes by asking again.
+        unidentifiable.push(film);
+        plan.notes.push(`${film.title} (${film.id}) has no TMDB id, so its row has to be added by hand`);
         continue;
       }
       demands.push({ id: film.id, tmdbId: film.tmdbId, title: film.title });
@@ -416,7 +426,7 @@ const planInsert = (
       plan.deferredInserts += 1;
       continue;
     }
-    plan.insert = buildInsert(grid, film, known, watched, timezone, ceiling);
+    plan.insert = buildInsert(grid, film, known, watched, timezone, releaseTo);
   }
 
   if (plan.deferredInserts) {
@@ -430,7 +440,7 @@ const buildInsert = (
   facts: FilmFacts,
   watched: number,
   timezone: string,
-  ceiling: number,
+  releaseTo: number,
 ): FilmRowInsert => {
   // Below the last row the tab uses, so nothing shifts under an existing
   // index. `inheritFromBefore` on the request is what carries the number
@@ -461,7 +471,7 @@ const buildInsert = (
   // whole-plan, so one film with an unreadable release date would stop every
   // other film being added for as long as it stayed in the library.
   const released = facts.releaseDate ? serialOf(facts.releaseDate) : null;
-  if (released !== null && plausibleReleaseSerial(released, ceiling)) fill.push(fillCell(grid, row, film.id, 'Release Date', num(released), note));
+  if (released !== null && plausibleReleaseSerial(released, releaseTo)) fill.push(fillCell(grid, row, film.id, 'Release Date', num(released), note));
   if (facts.franchise) fill.push(fillCell(grid, row, film.id, 'Franchise', str(facts.franchise), note));
   if (facts.director) fill.push(fillCell(grid, row, film.id, 'Director', str(facts.director), note));
   if (facts.banner) fill.push(fillCell(grid, row, film.id, 'Banner', str(facts.banner), note));

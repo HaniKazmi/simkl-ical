@@ -356,9 +356,12 @@ const sheetBody = (model: StatusModel) => {
  * one thing here rendered verbatim, and it should stay the only one.
  */
 const tracking = (model: StatusModel) => {
-  const { seasons, movedAt } = model.sheet.baseline;
-  if (seasons === 0) return html`<span class="dim">nothing tracked yet</span>`;
-  return html`tracking <b class="mono">${seasons}</b> seasons, last moved ${time(movedAt)}`;
+  const { seasons, films, movedAt } = model.sheet.baseline;
+  if (seasons + films === 0) return html`<span class="dim">nothing tracked yet</span>`;
+  // Named apart, because one record holds both tabs and a rolled-up number
+  // says neither.
+  const counts = films === 0 ? html`<b class="mono">${seasons}</b> seasons` : html`<b class="mono">${seasons}</b> seasons and <b class="mono">${films}</b> films`;
+  return html`tracking ${counts}, last moved ${time(movedAt)}`;
 };
 
 /** The tab, linked when there is a spreadsheet id to link it to. */

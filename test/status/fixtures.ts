@@ -73,7 +73,7 @@ export const COLD: StatusInput = {
   sheetUrl: null,
   requests: [],
   runs: [],
-  baseline: { seasons: 0, at: null },
+  baseline: { seasons: 0, films: 0, at: null },
 };
 
 /** The page's knobs, by flat name, placed onto the nested input by `input()`. */

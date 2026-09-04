@@ -129,14 +129,16 @@ test('an implausible runtime or watch date is refused', () => {
   refuses(filmPlanOf([ffx.cell('starWars', 'Watch Date', { numberValue: TODAY + 7 })]), ffx.grid, /watch date/);
 });
 
-test('a release date long predates anything the sheet records watching', () => {
-  // The bound a watch date uses is 2000-01-01, and the tab carries films from
-  // 1939 — sharing it refused a whole plan over South Park's 1999.
+test('a release date is bounded at both ends, and neither is a watch date bound', () => {
+  // A watch date floors at 2000-01-01 and ceilings at tomorrow. A release does
+  // neither: the tab carries films from 1939, and a film can be watched at a
+  // preview before it opens here.
   const wizardOfOz = 14482; // 1939-08-25
   allows(filmPlanOf([], ffx.insert({ extra: [['Release Date', { numberValue: wizardOfOz }]] })));
-  // Still bounded: 1900 is the floor, and tomorrow the ceiling.
+  allows(filmPlanOf([], ffx.insert({ extra: [['Release Date', { numberValue: TODAY + 7 }]] })));
+  // Still bounded, at a width only a payload error crosses.
   refuses(filmPlanOf([], ffx.insert({ extra: [['Release Date', { numberValue: -100 }]] })), ffx.grid, /release date/);
-  refuses(filmPlanOf([], ffx.insert({ extra: [['Release Date', { numberValue: TODAY + 7 }]] })), ffx.grid, /release date/);
+  refuses(filmPlanOf([], ffx.insert({ extra: [['Release Date', { numberValue: TODAY + 4000 }]] })), ffx.grid, /release date/);
 });
 
 // --- The insert --------------------------------------------------------------

@@ -147,6 +147,24 @@ export class SheetSync {
    * has landed.
    */
   private pending = new Map<SheetTab, Pick<PlanResult, 'observed' | 'writing'>>();
+  /**
+   * What the show half planned this poll, spent against the same budget.
+   *
+   * `SHEET_MAX_EDITS` is a blast radius for the poll, not an allowance per tab:
+   * counted per tab, one poll writes twice it while each half reports itself
+   * inside budget.
+   */
+  private spent = { edits: 0, rows: 0 };
+  /**
+   * Whether the show half left a snapshot tab standing this poll.
+   *
+   * Only a `failed` run does: it keeps the snapshot when the write may have
+   * landed, on the reasoning that the next clean run sweeps it. That held while
+   * one poll wrote one tab; now the films half is the next clean run, moments
+   * later, and would take the operator's only copy of the pre-write show grid
+   * before they had seen the error.
+   */
+  private keptBackup = false;
 
   constructor({ logger = console as Logger }: { logger?: Logger } = {}) {
     this.log = logger;
@@ -172,7 +190,10 @@ export class SheetSync {
       return await this.record(outcome('frozen', { error: this.frozen }), 'shows');
     }
 
+    this.spent = { edits: 0, rows: 0 };
+    this.keptBackup = false;
     const shows = await this.half('shows', () => this.cycle(library, signal));
+    this.keptBackup = shows.status === 'failed';
     // The freeze latch is process-wide, so a show half that froze stops the
     // films half in the same poll rather than on the next one: the sheet is in
     // a state nobody has verified, and which tab that state is on does not make
@@ -305,6 +326,12 @@ export class SheetSync {
 
       try {
         assertPlanSafe(plan, grid);
+        // Recorded only once the plan is safe, so a refused show plan does not
+        // eat the films half's allowance.
+        this.spent = {
+          edits: plan.edits.length,
+          rows: new Set([...plan.edits.map((e) => e.row), ...(plan.insert ? [plan.insert.row] : [])]).size,
+        };
       } catch (err) {
         // The refusal is no reason to retry: the same inputs would refuse
         // again. A failed lookup is, independent of why the plan was refused.
@@ -460,6 +487,8 @@ export class SheetSync {
     const applied = await applyPlan(
       {
         snapshot: grid.snapshot,
+        // Shows runs first, so nothing else has written this poll.
+        maySweep: true,
         requests: toRequests(writesFor(plan, grid)),
         describe: () => describePlan(plan, grid.columns),
         summary: `${plan.edits.length} edits and ${plan.insert ? 1 : 0} inserts`,
@@ -531,7 +560,7 @@ export class SheetSync {
       }
 
       try {
-        assertFilmPlanSafe(plan, grid);
+        assertFilmPlanSafe(plan, grid, { spent: this.spent });
       } catch (err) {
         // The refusal is no reason to retry: the same inputs would refuse
         // again. A failed lookup is, independent of why the plan was refused.
@@ -557,6 +586,8 @@ export class SheetSync {
       const applied = await applyPlan(
         {
           snapshot: grid.snapshot,
+          // Unless the show half left one standing on purpose.
+          maySweep: !this.keptBackup,
           requests: toRequests(writesFor(plan, grid)),
           describe: () => describeFilmPlan(plan),
           summary: `${plan.edits.length} film edits and ${plan.insert ? 1 : 0} inserts`,
@@ -598,6 +629,9 @@ export class SheetSync {
 
     for (let pass = 1; ; pass += 1) {
       const result = planFilms(grid, index, this.films.films, { now, timezone: config.timezone, baseline: baseline(), seed, held });
+      // A film the library gives no TMDB id can never be looked up, so it is
+      // settled here rather than re-examined and re-reported on every poll.
+      for (const film of result.unidentifiable) this.films.settleUnidentifiable(film);
       if (pass > MAX_PASSES) {
         this.log.warn(`the films planner still wanted lookups after ${MAX_PASSES} passes; running with what it has`);
         return result;

@@ -12,7 +12,7 @@
  */
 
 import { config } from '../../shared/config.ts';
-import { sheetsRequest } from '../../api/google/client.ts';
+import { sheetsRequest, SheetsAccessError } from '../../api/google/client.ts';
 import type { BatchUpdateResponse, CellData, SheetRequest, SpreadsheetResponse } from '../../api/google/types.ts';
 
 /**
@@ -81,7 +81,11 @@ export const readSnapshot = async (title: string, { signal }: { signal?: AbortSi
   const sheet = response.sheets?.find((s) => s.properties?.title === title);
   const sheetId = sheet?.properties?.sheetId;
   if (!sheet || sheetId === undefined) {
-    throw new Error(`No tab named ${title} in the spreadsheet.`);
+    // A `SheetsAccessError` that needs a human, not a plain Error: the tab is
+    // named by configuration and no amount of retrying conjures it, so a
+    // retryable failure here would arm the poll's retry on every tick and
+    // defeat the orchestrator's quiet-poll early-out for good.
+    throw new SheetsAccessError(`No tab named ${title} in the spreadsheet.`, 404);
   }
 
   const grid = sheet.data?.[0];

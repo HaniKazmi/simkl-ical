@@ -214,7 +214,7 @@ export interface StatusModel {
      * edits — indistinguishable from a sync that never armed, at exactly the
      * moment an operator needs to tell those apart.
      */
-    baseline: { seasons: number; movedAt: Stamp };
+    baseline: { seasons: number; films: number; movedAt: Stamp };
   };
   requests: RequestView[];
   /** The recent failures worth putting in front of a reader, already capped. */
@@ -637,7 +637,7 @@ export const buildModel = (input: StatusInput): StatusModel => {
       // message has its own box.
       error: sheet.error === sheet.frozen || sheet.error === (runs[0]?.error ?? null) ? null : sheet.error,
       runs,
-      baseline: { seasons: input.baseline.seasons, movedAt: at(input.baseline.at) },
+      baseline: { seasons: input.baseline.seasons, films: input.baseline.films, movedAt: at(input.baseline.at) },
     },
   };
 

@@ -175,8 +175,13 @@ const within = (from: string, to: string): boolean => {
   return a !== null && b !== null && b.epochMilliseconds - a.epochMilliseconds < SAME_EPISODE_MS;
 };
 
-/** Same outcome, same plan, same message, and close enough in time to be one run of it. */
+/** Same tab, same outcome, same plan, same message, and close enough in time to be one run of it. */
 const sameAs = (a: SheetRunRecord, b: NewSheetRun): boolean =>
+  // The tab first: one poll writes one record per tab, and two halves failing
+  // the same way is the commonest case there is — an unshared spreadsheet, a
+  // 500 on the read. Without this the second collapses into the first, takes
+  // its label, and the first tab's run is gone from the history entirely.
+  a.tab === b.tab &&
   a.status === b.status &&
   a.mode === b.mode &&
   a.error === b.error &&

@@ -330,7 +330,7 @@ test('the summary says how much the sync is tracking, and says so when it is not
   const cold = sheetSection(page({ sheetConfigured: true }));
   assert.match(cold, /nothing tracked yet/);
 
-  const armed = sheetSection(page({ sheetConfigured: true, baseline: { seasons: 412, at: '2026-08-30T09:00:00.000Z' } }));
+  const armed = sheetSection(page({ sheetConfigured: true, baseline: { seasons: 412, films: 0, at: '2026-08-30T09:00:00.000Z' } }));
   assert.match(armed, /tracking <b class="mono">412<\/b> seasons/);
   assert.match(armed, /last moved/);
   assert.doesNotMatch(armed, /nothing tracked yet/);

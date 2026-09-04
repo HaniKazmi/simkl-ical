@@ -8,7 +8,7 @@
  * history is reproduced.
  */
 
-import { releaseDate } from '../../shared/dates.ts';
+import { plainDateIn, releaseDate } from '../../shared/dates.ts';
 import { dateSerial } from '../values.ts';
 import type { TmdbBackdrop, TmdbMovie, TmdbRelease } from '../../api/tmdb/types.ts';
 
@@ -191,13 +191,26 @@ export const isCertificate = (value: number): boolean => RATINGS.has(value);
  * The GB certificate, or null when TMDB carries none or one outside the BBFC
  * set. Null leaves the cell blank: a blank reads as unfinished, and a guessed
  * age does not.
+ *
+ * Preferred by release type, the way `releaseDateOf` picks a date, rather than
+ * by position in the array. 166 of the 347 films on the tab carry more than one
+ * GB certificate and 8 of those disagree — 28 Days Later lists 18 and 15, The
+ * Silence of the Lambs 15 and 18 — usually a re-rating attached to a later
+ * digital or physical release. TMDB contracts no ordering, so taking the first
+ * made a write-once cell depend on the order a response happened to arrive in.
  */
 export const certificateOf = (movie: TmdbMovie | undefined): number | null => {
-  for (const release of releasesIn(movie, 'GB')) {
-    const age = CERTIFICATE_AGES[release.certification?.trim() ?? ''];
-    if (age !== undefined) return age;
-  }
-  return null;
+  const releases = releasesIn(movie, 'GB');
+  const rated = (types: number[]): number | null => {
+    for (const release of releases) {
+      if (!types.includes(release.type ?? -1)) continue;
+      const age = CERTIFICATE_AGES[release.certification?.trim() ?? ''];
+      if (age !== undefined) return age;
+    }
+    return null;
+  };
+  // Theatrical, then a limited run, then whatever else carries one.
+  return rated([THEATRICAL]) ?? rated([LIMITED]) ?? rated([1, 4, 5, 6]);
 };
 
 // --- Director, franchise, banner -------------------------------------------
@@ -272,17 +285,28 @@ export const plausibleRuntime = (minutes: number): boolean => Number.isInteger(m
 export const serialOf = (date: Temporal.PlainDate): number => dateSerial(date);
 
 /**
- * `Release Date` needs its own floor. `MIN_SERIAL` is 2000-01-01, which is the
- * right bound for a *watch* date — the sheet records nothing watched before
- * then — and badly wrong for a release: The Wizard of Oz is on the tab at 1939
- * and Star Wars at 1977, and the bound as first written refused the whole plan
- * over South Park's 1999.
+ * `Release Date` needs bounds of its own, at both ends.
  *
- * 1900 rather than something tighter because the question this bound answers is
- * "is this a date at all", not "is this a plausible film". The ceiling stays the
- * caller's, since a film announced for next year is a real release date.
+ * The floor is not `MIN_SERIAL` (2000-01-01), which is right for a *watch*
+ * date — the sheet records nothing watched before then — and wrong for a
+ * release: The Wizard of Oz sits on the tab at 1939 and Star Wars at 1977, and
+ * South Park's 1999 is below it too. 1900 rather than something tighter
+ * because the question is "is this a date at all", not "is this a plausible
+ * film".
+ *
+ * The ceiling is not a watch date's either. A watch cannot be in the future; a
+ * release can, and routinely is for a film seen at a preview or festival
+ * screening before it opens here. Sharing the watch ceiling dropped that cell
+ * silently, and `Release Date` is written once and never revisited, so the
+ * blank was permanent. A decade is the same kind of bound as the floor: wide
+ * enough that only a payload error crosses it.
  */
 const MIN_RELEASE_SERIAL = dateSerial(Temporal.PlainDate.from('1900-01-01'));
 
+const RELEASE_HORIZON_DAYS = 3653;
+
+export const releaseCeiling = (now: Temporal.Instant, timezone: string): number =>
+  dateSerial(plainDateIn(now, timezone).add({ days: RELEASE_HORIZON_DAYS }));
+
 export const plausibleReleaseSerial = (serial: number | null | undefined, ceiling: number): boolean =>
-  typeof serial === 'number' && Number.isFinite(serial) && serial >= MIN_RELEASE_SERIAL && serial <= ceiling;
+  typeof serial === 'number' && serial >= MIN_RELEASE_SERIAL && serial <= ceiling;

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { baseline, baselineSummary, clearBaseline, loadBaseline, saveBaseline } from '../../../src/sheet/io/baseline.ts';
-import type { Baseline } from '../../../src/sheet/values.ts';
+import { movieKey, seasonKey, type Baseline } from '../../../src/sheet/values.ts';
 import { quiet, withFreshBaseline } from '../../helpers.ts';
 
 const FILE = 'sheet-baseline.json';
@@ -83,7 +83,7 @@ test('a malformed entry is dropped without costing the others', async () => {
  */
 test('the summary counts seasons and only moves when something did', async () => {
   await withFreshBaseline(async () => {
-    assert.deepEqual(baselineSummary(), { seasons: 0, at: null });
+    assert.deepEqual(baselineSummary(), { seasons: 0, films: 0, at: null });
 
     await saveBaseline(one({ Start: '2024-01-15T20:14:00.000Z' }));
     const first = baselineSummary();
@@ -92,5 +92,18 @@ test('the summary counts seasons and only moves when something did', async () =>
 
     await saveBaseline(one({ Start: '2024-01-15T20:14:00.000Z' }));
     assert.deepEqual(baselineSummary(), first);
+  });
+});
+
+test('films are counted apart from seasons — one record holds both tabs', async () => {
+  // Rolled together, a first films poll adds one entry per film in the library
+  // and the season count roughly doubles overnight, on the number whose job is
+  // telling a recording-only first run from a sync that never armed.
+  await withFreshBaseline(async () => {
+    await saveBaseline(new Map([[seasonKey(1, 2), { Start: '2024-01-15T20:14:00.000Z' }]]));
+    await saveBaseline(new Map([[movieKey(9), { 'Watch Date': '2024-02-01T20:14:00.000Z' }]]));
+    const summary = baselineSummary();
+    assert.equal(summary.seasons, 1);
+    assert.equal(summary.films, 1);
   });
 });

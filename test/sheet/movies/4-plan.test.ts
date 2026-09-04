@@ -184,10 +184,15 @@ test('a film TMDB has no record of is named once, not demanded every poll', () =
   assert.match(p.notes.join(' '), /Obscure .* has no TMDB record/);
 });
 
-test('a film SIMKL carries no TMDB id for is never demanded', () => {
-  const { plan: p, demands } = plan([film('a', { id: 1 })], [movie({ id: 1 }), movie({ id: 2, tmdb: null })]);
+test('a film SIMKL carries no TMDB id for is named once and settled', () => {
+  const { plan: p, demands, unidentifiable } = plan(
+    [film('a', { id: 1 })],
+    [movie({ id: 1 }), movie({ id: 2, title: 'No Id', tmdb: null })],
+  );
   assert.deepEqual(demands, []);
-  assert.equal(p.skips.find((s) => s.code === 'not-in-tmdb')?.code, 'not-in-tmdb');
+  assert.match(p.notes.join(' '), /No Id .* has no TMDB id/);
+  // Handed to the caller to settle, so the note is not re-emitted every poll.
+  assert.deepEqual(unidentifiable.map((f) => f.id), [2]);
 });
 
 test('only a completed film earns a row', () => {
