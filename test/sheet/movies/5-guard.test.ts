@@ -36,6 +36,7 @@ test('every write-once column is refused on a row that already exists', () => {
   const cases: Array<[MovieHeaderName, ExtendedValue]> = [
     ['Name', { stringValue: 'Renamed' }],
     ['Cinema', { boolValue: true }],
+    ['Anime', { boolValue: true }],
     ['Genre', { stringValue: 'Drama' }],
     ['Genres', { stringValue: 'Action' }],
     ['Rating', { numberValue: 15 }],
@@ -221,8 +222,12 @@ test('a column filled twice is refused', () => {
   refuses(filmPlanOf([], twice), ffx.grid, /Name is filled twice/);
 });
 
-test('Anime is in neither whitelist — the sync never sets it', () => {
-  refuses(filmPlanOf([], ffx.insert({ extra: [['Anime' as MovieHeaderName, { boolValue: true }]] })), ffx.grid, /not a field this sync may write/);
+test('Anime is only ever written TRUE, and only on an insert', () => {
+  allows(filmPlanOf([], ffx.insert({ extra: [['Anime', { boolValue: true }]] })));
+  // The switch has no `default`, so a whitelisted field with no case of its own
+  // is accepted at any shape. This is what proves `Anime` has one.
+  refuses(filmPlanOf([], ffx.insert({ extra: [['Anime', { boolValue: false }]] })), ffx.grid, /only ever written as TRUE/);
+  refuses(filmPlanOf([], ffx.insert({ extra: [['Anime', { stringValue: 'yes' }]] })), ffx.grid, /only ever written as TRUE/);
 });
 
 test('Cinema is only ever written TRUE — the tab spells no as an absent cell', () => {
@@ -311,5 +316,9 @@ test('the guard whitelist and the planner followed set say the same thing', () =
   assert.deepEqual([...EDIT_FIELDS].sort(), [...FOLLOWED_FIELDS].sort());
   // And every followed field is insertable, since a new row carries them too.
   for (const field of FOLLOWED_FIELDS) assert.ok(INSERT_FIELDS.has(field));
-  assert.equal(INSERT_FIELDS.has('Anime' as MovieHeaderName), false);
+  // `Anime` goes the other way: filled once when the row is built, and never
+  // followed, because what kind of film a row holds is not a thing SIMKL
+  // revises.
+  assert.ok(INSERT_FIELDS.has('Anime' as MovieHeaderName));
+  assert.equal(EDIT_FIELDS.has('Anime' as MovieHeaderName), false);
 });

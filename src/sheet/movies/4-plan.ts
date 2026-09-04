@@ -133,12 +133,23 @@ export interface PlanFilmsOptions {
   /**
    * Every SIMKL id the library holds, whatever its type.
    *
-   * Twenty-two rows on this tab are anime films, which arrive under the `anime`
-   * category and so are in no film list. They are not unknown — the show half
-   * holds them — and reporting each as a skip every poll would bury the rows
-   * that really are unaccounted for.
+   * A row can hold a title this half does not index — an anime *special*, say,
+   * which stays with the show half. Such a row is not unknown, and reporting
+   * each as a skip every poll would bury the rows that really are unaccounted
+   * for.
    */
   held?: Set<number>;
+  /**
+   * Every SIMKL id the show grid holds, or null when no show grid was parsed
+   * this poll.
+   *
+   * An anime film may belong on this tab or embedded in a `Sheet1` block, and
+   * nothing in the record says which — so the sheet's own placement decides:
+   * already on `Sheet1` means leave it there. Null fails closed and inserts no
+   * anime film at all, which costs one poll's delay on a newly-completed one
+   * against a duplicate row that stands.
+   */
+  onShowGrid?: Set<number> | null;
 }
 
 // --- Recording -------------------------------------------------------------
@@ -293,7 +304,7 @@ export const planFilms = (
   grid: MovieGrid,
   index: Map<number, FilmProgress>,
   facts: Map<number, FilmFacts | null>,
-  { now = Temporal.Now.instant(), timezone = 'UTC', baseline = new Map(), seed, held }: PlanFilmsOptions = {},
+  { now = Temporal.Now.instant(), timezone = 'UTC', baseline = new Map(), seed, held, onShowGrid = null }: PlanFilmsOptions = {},
 ): FilmPlanResult => {
   const plan = emptyFilmPlan();
   const demands: FilmDemand[] = [];
@@ -336,8 +347,8 @@ export const planFilms = (
     }
     const film = index.get(row.id);
     if (!film) {
-      // Held under another type — an anime film — is not unknown, and the row
-      // is simply not this half's to touch.
+      // Held under another type — an anime special, say — is not unknown, and
+      // the row is simply not this half's to touch.
       if (!held?.has(row.id)) {
         skip('unknown-id', row.row, `SIMKL id ${row.id} is in no list at all, so nothing upstream describes this row`);
       }
@@ -378,7 +389,7 @@ export const planFilms = (
   }
 
   const unidentifiable: FilmProgress[] = [];
-  planInsert(grid, index, facts, onTab, namedOnTab, plan, demands, unidentifiable, {
+  planInsert(grid, index, facts, onTab, namedOnTab, onShowGrid, plan, demands, unidentifiable, {
     timezone,
     ceiling,
     releaseTo: releaseCeiling(now, timezone),
@@ -400,13 +411,24 @@ const planInsert = (
   facts: Map<number, FilmFacts | null>,
   onTab: Set<number>,
   namedOnTab: Set<string | undefined>,
+  onShowGrid: Set<number> | null,
   plan: FilmPlan,
   demands: FilmDemand[],
   unidentifiable: FilmProgress[],
   { timezone, ceiling, releaseTo }: { timezone: string; ceiling: number; releaseTo: number },
 ): void => {
+  // Everything past this filter reports: a film reaching the loop below with no
+  // TMDB id is either named in a note or handed to the caller, which warns. So
+  // a film this tab is not taking is excluded *here* rather than inside — else
+  // the show half's "add it by hand" line is not removed but merely moved.
   const missing = [...index.values()]
-    .filter((film) => filmIsWatched(film) && !onTab.has(film.id) && !namedOnTab.has(film.title.trim().toLowerCase()))
+    .filter(
+      (film) =>
+        filmIsWatched(film) &&
+        !onTab.has(film.id) &&
+        !(film.anime && (onShowGrid === null || onShowGrid.has(film.id))) &&
+        !namedOnTab.has(film.title.trim().toLowerCase()),
+    )
     .sort((a, b) => {
       if (!a.watchedAt) return 1;
       if (!b.watchedAt) return -1;
@@ -501,6 +523,8 @@ const buildInsert = (
   // Only ever `true`. The tab spells "no" as an absent cell, never as FALSE.
   const watchedOn = film.watchedAt ? plainDateIn(film.watchedAt, timezone) : null;
   if (watchedInCinema(facts.openedInCinemas, watchedOn)) fill.push(fillCell(grid, row, film.id, 'Cinema', bool(true), note));
+  // Likewise only ever `true`, and on the same convention.
+  if (film.anime) fill.push(fillCell(grid, row, film.id, 'Anime', bool(true), note));
 
   if (facts.genre) fill.push(fillCell(grid, row, film.id, 'Genre', str(facts.genre), note));
   if (facts.genres) fill.push(fillCell(grid, row, film.id, 'Genres', str(facts.genres), note));

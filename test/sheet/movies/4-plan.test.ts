@@ -25,14 +25,20 @@ const facts = (over: Partial<FilmFacts> = {}): FilmFacts => ({ ...filmFacts({}, 
 const plan = (
   rows: Parameters<typeof filmGrid>,
   items: ItemSpec[],
-  { baseline = new Map() as Baseline, known = new Map<number, FilmFacts | null>(), held }: { baseline?: Baseline; known?: Map<number, FilmFacts | null>; held?: Set<number> } = {},
+  {
+    baseline = new Map() as Baseline,
+    known = new Map<number, FilmFacts | null>(),
+    held,
+    onShowGrid = new Set<number>(),
+  }: { baseline?: Baseline; known?: Map<number, FilmFacts | null>; held?: Set<number>; onShowGrid?: Set<number> | null } = {},
 ) => {
   const grid = filmGrid(...rows);
   const index = indexFilms(libraryOf(...items));
-  return { grid, ...planFilms(grid.grid, index, known, { ...OPTS, baseline, held, seed: observeFilms(index) }) };
+  return { grid, ...planFilms(grid.grid, index, known, { ...OPTS, baseline, held, onShowGrid, seed: observeFilms(index) }) };
 };
 
 const movie = (over: Partial<ItemSpec> & { id: number }): ItemSpec => ({ type: 'movies', status: 'completed', ...over });
+const animeFilm = (over: Partial<ItemSpec> & { id: number }): ItemSpec => ({ type: 'anime', animeType: 'movie', status: 'completed', ...over });
 
 // --- Following SIMKL on a row that already exists ----------------------------
 
@@ -298,4 +304,94 @@ test('a cold start asks about a bounded number of films, not all of them', () =>
   assert.equal(p.insert, null, 'and nothing is inserted until one of them answers');
   // Oldest-first still, so the queue drains in the order the tab reads.
   assert.deepEqual(demands.map((d) => d.id), [139, 138, 137, 136, 135, 134, 133, 132]);
+});
+
+// --- Placing an anime film ---------------------------------------------------
+
+test('an anime film with no row anywhere is inserted, and marked as one', () => {
+  const known = new Map<number, FilmFacts | null>([[2, facts()]]);
+  const { plan: p } = plan(
+    [film('a', { id: 1 })],
+    [movie({ id: 1 }), animeFilm({ id: 2, title: 'Spirited Away', lastWatchedAt: watchedOn(TODAY - 2), runtime: 125 })],
+    { known },
+  );
+  assert.equal(p.insert?.id, 2);
+  const filled = Object.fromEntries(p.insert!.fill.map((c) => [c.field, c.value]));
+  // Only ever `true`, the way `Cinema` is: the tab spells "no" as no cell.
+  assert.deepEqual(filled.Anime, { boolValue: true });
+  assert.deepEqual(filled.Runtime, { numberValue: 125 });
+});
+
+test('an ordinary film is not marked as anime', () => {
+  const known = new Map<number, FilmFacts | null>([[2, facts()]]);
+  const { plan: p } = plan([film('a', { id: 1 })], [movie({ id: 1 }), movie({ id: 2, lastWatchedAt: watchedOn(TODAY - 2) })], { known });
+  assert.equal(p.insert?.id, 2);
+  assert.equal(p.insert!.fill.some((c) => c.field === 'Anime'), false);
+});
+
+test('an anime film already on the show grid stays there rather than gaining a second row', () => {
+  // The sheet's own placement is the only thing that answers this: nothing in
+  // the record says whether a film belongs here or embedded in a `Sheet1`
+  // block, and a wrong insert is a duplicate row on the one tab that already
+  // holds legitimate cross-tab duplicates.
+  const known = new Map<number, FilmFacts | null>([[2, facts()]]);
+  const { plan: p } = plan(
+    [film('a', { id: 1 })],
+    [movie({ id: 1 }), animeFilm({ id: 2, lastWatchedAt: watchedOn(TODAY - 2) })],
+    { known, onShowGrid: new Set([2]) },
+  );
+  assert.equal(p.insert, null);
+  // And silently: everything past the insert filter reports, so gating after it
+  // would trade the show half's "add it by hand" line for this half's.
+  assert.deepEqual(p.notes, []);
+});
+
+test('a film on the show grid is placed anyway when it is not anime', () => {
+  // An ordinary film sharing an id with a `Sheet1` row is not a placement
+  // question — the rule is about anime only, and a wider gate would silently
+  // stop inserting films whose id happens to collide.
+  const known = new Map<number, FilmFacts | null>([[2, facts()]]);
+  const { plan: p } = plan([film('a', { id: 1 })], [movie({ id: 1 }), movie({ id: 2, lastWatchedAt: watchedOn(TODAY - 2) })], {
+    known,
+    onShowGrid: new Set([2]),
+  });
+  assert.equal(p.insert?.id, 2);
+});
+
+test('no show grid this poll inserts no anime film, and no lookup is asked for it', () => {
+  // Fails closed: the placement rule cannot be evaluated, so waiting a poll is
+  // the cheap answer and a duplicate row is the standing one.
+  const { plan: p, demands } = plan(
+    [film('a', { id: 1 })],
+    [movie({ id: 1 }), animeFilm({ id: 2, lastWatchedAt: watchedOn(TODAY - 2) })],
+    { onShowGrid: null },
+  );
+  assert.equal(p.insert, null);
+  assert.deepEqual(p.notes, []);
+  assert.deepEqual(demands, []);
+});
+
+test('no show grid still inserts an ordinary film', () => {
+  const known = new Map<number, FilmFacts | null>([[2, facts()]]);
+  const { plan: p } = plan([film('a', { id: 1 })], [movie({ id: 1 }), movie({ id: 2, lastWatchedAt: watchedOn(TODAY - 2) })], {
+    known,
+    onShowGrid: null,
+  });
+  assert.equal(p.insert?.id, 2);
+});
+
+test('a gated anime film with a row of its own is still followed', () => {
+  // The gate governs insertion only. Thirteen anime films hold a row on both
+  // tabs, and each is an ordinary row of this tab's whose watch date, score and
+  // runtime follow SIMKL like any other.
+  const baseline: Baseline = new Map([[movieKey(2), { Score: '5' }]]);
+  const { plan: p } = plan(
+    [film('a', { id: 1 }), film('b', { id: 2, score: 5 })],
+    [movie({ id: 1 }), animeFilm({ id: 2, rating: 9 })],
+    { baseline, onShowGrid: new Set([2]) },
+  );
+  assert.deepEqual(
+    p.edits.map((e) => [e.field, e.value]),
+    [['Score', { numberValue: 9 }]],
+  );
 });

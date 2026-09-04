@@ -176,6 +176,15 @@ export interface PlanOptions {
    * Defaulted so the function stays self-sufficient.
    */
   starts?: Baseline;
+  /**
+   * Ids the missing-row note stays quiet about: the anime films, which the
+   * films half places on its own tab.
+   *
+   * A set rather than a flag on `TitleProgress`, which is type-blind by
+   * construction — both halves' indexes are built from the same records, and
+   * which tab a title belongs on is not a fact about the title.
+   */
+  filed?: Set<number>;
 }
 
 const cellAt = (grid: Grid, row: number, column: number): CellData | undefined => grid.snapshot.rows[row]?.[column];
@@ -195,6 +204,15 @@ const edit = (grid: Grid, row: number, field: HeaderName, value: ExtendedValue |
  * happened here recently", so a plain max is right.
  */
 const blockIds = (block: ShowBlock): number[] => [...new Set([...block.ids, ...block.seasons.flatMap((s) => s.ids)])];
+
+/**
+ * Every SIMKL id the grid holds anywhere — show rows and season rows alike.
+ *
+ * The same reading of a block `planSync` uses for `seen`, exported so the films
+ * half's placement rule asks this question exactly once rather than keeping a
+ * second copy of what counts as "on `Sheet1`".
+ */
+export const gridIds = (grid: Grid): Set<number> => new Set(grid.blocks.flatMap(blockIds));
 
 const latestOf = (progresses: TitleProgress[]): Temporal.Instant | null =>
   progresses.reduce<Temporal.Instant | null>(
@@ -965,7 +983,7 @@ export const planSync = (
   grid: Grid,
   index: Map<number, TitleProgress>,
   titles: Map<number, TitleCatalogue>,
-  { now = Temporal.Now.instant(), timezone = config.timezone, sinceDays = config.sheetSinceDays, baseline = new Map(), starts }: PlanOptions = {},
+  { now = Temporal.Now.instant(), timezone = config.timezone, sinceDays = config.sheetSinceDays, baseline = new Map(), starts, filed }: PlanOptions = {},
 ): PlanResult => {
   const plan = emptyPlan();
   const demands: PlanDemands = { catalogue: [], runtimes: [] };
@@ -1183,6 +1201,9 @@ export const planSync = (
   // Title matching is unreliable enough that this must never try.
   for (const progress of index.values()) {
     if (seen.has(progress.id) || !within(progress.lastWatchedAt, cutoff)) continue;
+    // An anime film with no block is not missing a row: the films tab holds it,
+    // and this half still indexes it because 20 of them sit on `Sheet1` rows.
+    if (filed?.has(progress.id)) continue;
     plan.notes.push(`${progress.title} (simkl ${progress.id}) has recent activity and no row — add it by hand if you want it tracked`);
   }
 

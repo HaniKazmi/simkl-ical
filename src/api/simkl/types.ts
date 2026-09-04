@@ -114,6 +114,17 @@ export interface LibraryItem {
   show?: LibraryTitle;
   movie?: LibraryTitle;
   /**
+   * What kind of anime this is, on `anime` records only — a **top-level** key,
+   * beside `show` rather than inside it. It is the one thing separating a film
+   * from a cour: an anime film is a show record in every other respect, and
+   * `LibraryEntry.type` says only which response key it arrived under, which is
+   * `anime` for both.
+   *
+   * Measured across 216 records: 155 `tv`, 41 `movie`, 10 `ova`, 7 `special`,
+   * 3 `ona`.
+   */
+  anime_type?: string;
+  /**
    * The only membership there is: the library holds one record per id, and a
    * move replaces it.
    */

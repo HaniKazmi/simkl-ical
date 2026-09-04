@@ -35,11 +35,11 @@ import { classify } from '../api/tvdb/client.ts';
 import { parseGrid, type Grid } from './2-grid.ts';
 import { indexLibrary, type TitleProgress } from './1-index.ts';
 import { CATALOGUE_MAX_AGE, CatalogueStore, needsLookup } from './3-catalogue.ts';
-import { describePlan, emptyPlan, observeWatches, planRecord, planSync, type PlanRecord, type PlanResult, type SheetPlan } from './4-plan.ts';
+import { describePlan, emptyPlan, gridIds, observeWatches, planRecord, planSync, type PlanRecord, type PlanResult, type SheetPlan } from './4-plan.ts';
 import { toRequests, writesFor } from './6-requests.ts';
 import { verify } from './7-verify.ts';
 import { parseMovieGrid, type MovieGrid } from './movies/2-grid.ts';
-import { indexFilms, type FilmProgress } from './movies/1-index.ts';
+import { animeFilmIds, indexFilms, type FilmProgress } from './movies/1-index.ts';
 import { FilmStore } from './movies/3-catalogue.ts';
 import { describeFilmPlan, emptyFilmPlan, filmPlanRecord, observeFilms, planFilms, type FilmPlanResult } from './movies/4-plan.ts';
 import { assertFilmPlanSafe, UnsafeFilmPlanError } from './movies/5-guard.ts';
@@ -182,6 +182,20 @@ export class SheetSync {
    * let the films half sweep the very copy the failure preserved.
    */
   private keptBackup = false;
+  /**
+   * Every SIMKL id the show grid held when this poll read it, or null if it was
+   * never read.
+   *
+   * Held here rather than returned, for the reason `pending` is: `cycle` has
+   * eight return paths and `half` swallows what it throws. Reset per poll, and
+   * assigned the moment a grid parses — so a show half that fails *after* the
+   * read still leaves a valid answer, because a later PLAN or APPLY failure
+   * does not unanswer what the read answered.
+   *
+   * The films half needs it to place an anime film: on `Sheet1` already means
+   * leave it there. Null fails closed — see `onShowGrid` in `movies/4-plan.ts`.
+   */
+  private onShowGrid: Set<number> | null = null;
 
   constructor({ logger = console as Logger }: { logger?: Logger } = {}) {
     this.log = logger;
@@ -208,6 +222,7 @@ export class SheetSync {
     }
 
     this.spent = { edits: 0, rows: 0 };
+    this.onShowGrid = null;
     const shows = await this.half('shows', () => this.cycle(library, signal));
     if (shows.status === 'failed') this.keptBackup = true;
     else if (shows.status === 'applied') this.keptBackup = false;
@@ -303,6 +318,8 @@ export class SheetSync {
     // cannot change while a run is in flight, so every planning pass after the
     // first would rebuild a byte-identical map.
     const starts = observeWatches(index);
+    // The films tab's, so this half does not report each as a title with no row.
+    const filed = animeFilmIds(library);
 
     // Lookups already made this run. A FRESH re-plan or later planning pass
     // must not re-issue them — failed ones included, which stay unstamped in
@@ -317,7 +334,8 @@ export class SheetSync {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
       const snapshot = await readSnapshot(config.sheetName, { signal });
       const grid = parseGrid(snapshot);
-      const { plan, observed, writing } = await this.planToFixpoint(grid, index, starts, made, attempt, signal);
+      this.onShowGrid = gridIds(grid);
+      const { plan, observed, writing } = await this.planToFixpoint(grid, index, starts, filed, made, attempt, signal);
       // Replaced per attempt, never merged: a FRESH re-read plans against a
       // different grid, and the observations of a pass whose plan was thrown
       // away describe rows this run is no longer acting on.
@@ -398,6 +416,7 @@ export class SheetSync {
     grid: Grid,
     index: Map<number, TitleProgress>,
     starts: Baseline,
+    filed: Set<number>,
     made: RunLookups,
     attempt: number,
     signal: AbortSignal | undefined,
@@ -408,7 +427,7 @@ export class SheetSync {
     const now = Temporal.Now.instant();
 
     for (let pass = 1; ; pass += 1) {
-      const result = planSync(grid, index, this.store.titles, { now, baseline: baseline(), starts });
+      const result = planSync(grid, index, this.store.titles, { now, baseline: baseline(), starts, filed });
       const { demands } = result;
       if (pass > MAX_PASSES) {
         this.log.warn(`sheet sync: still demanding lookups after ${MAX_PASSES} planning passes; continuing with what is in hand`);
@@ -653,7 +672,14 @@ export class SheetSync {
     const now = Temporal.Now.instant();
 
     for (let pass = 1; ; pass += 1) {
-      const result = planFilms(grid, index, this.films.films, { now, timezone: config.timezone, baseline: baseline(), seed, held });
+      const result = planFilms(grid, index, this.films.films, {
+        now,
+        timezone: config.timezone,
+        baseline: baseline(),
+        seed,
+        held,
+        onShowGrid: this.onShowGrid,
+      });
       // Reported once. Not settled: what is missing is SIMKL's id, not TMDB's
       // knowledge, so the film stays askable the moment SIMKL fills it in.
       for (const film of result.unidentifiable) {

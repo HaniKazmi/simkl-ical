@@ -287,6 +287,11 @@ export interface ItemSpec {
   rating?: number | null;
   /** Films only: whole minutes, the figure the tab's `Runtime` column holds. */
   runtime?: number | null;
+  /**
+   * `anime` records only, and a **top-level** key beside `show` — the one thing
+   * separating a film from a cour.
+   */
+  animeType?: string;
 }
 
 export const libraryItem = ({
@@ -302,10 +307,17 @@ export const libraryItem = ({
   tmdb = String(id),
   rating = null,
   runtime = 100,
+  animeType,
 }: ItemSpec): LibraryItem => {
   const episodes = Object.values(seasons).flat();
   const counted = episodes.filter((at) => at !== null).length;
-  const nested = { title, ids: { simkl: id } };
+  // An anime record nests under `show` like any other, and carries the same
+  // `runtime` and TMDB id a film record does — whatever its `anime_type`, so a
+  // test excluding an `ova` is testing the filter and not a missing field.
+  const nested =
+    type === 'anime'
+      ? { title, runtime, ids: { simkl: id, ...(tmdb === null ? {} : { tmdb }) } }
+      : { title, ids: { simkl: id } };
   if (type === 'movies') {
     return {
       movie: { title, runtime, ids: { simkl: id, ...(tmdb === null ? {} : { tmdb }) } },
@@ -316,7 +328,11 @@ export const libraryItem = ({
   }
   return {
     show: nested,
+    ...(animeType === undefined ? {} : { anime_type: animeType }),
     status,
+    // On every library record, not just films — and an anime film's score is
+    // read off it the same way an ordinary film's is.
+    user_rating: rating,
     last_watched_at: lastWatchedAt ?? episodes.filter((at): at is string => at !== null).sort().at(-1) ?? null,
     watched_episodes_count: watched ?? counted,
     total_episodes_count: total ?? counted,

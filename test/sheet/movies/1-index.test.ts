@@ -1,15 +1,54 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { filmIsWatched, indexFilms, tmdbIdOf } from '../../../src/sheet/movies/1-index.ts';
+import { animeFilmIds, filmIsWatched, indexFilms, tmdbIdOf } from '../../../src/sheet/movies/1-index.ts';
 import { libraryOf } from '../../helpers.ts';
 
-test('only the movies category is indexed — an anime film belongs to the show half', () => {
+test('the films tab takes the movies category and anime films, and nothing else', () => {
   const library = libraryOf(
     { id: 1, type: 'movies', title: 'Dune', status: 'completed' },
-    { id: 2, type: 'anime', title: 'Kingsglaive' },
+    { id: 2, type: 'anime', title: 'Kingsglaive', animeType: 'movie' },
     { id: 3, type: 'shows', title: 'Fargo' },
+    { id: 4, type: 'anime', title: 'Frieren', animeType: 'tv' },
+  );
+  assert.deepEqual([...indexFilms(library).keys()], [1, 2]);
+});
+
+test('an anime extra is not a film — an ova, special or ona stays with the show half', () => {
+  // Each carries the same nested runtime and TMDB id a film does, so what
+  // excludes them is `anime_type` and not a field they happen to lack.
+  const library = libraryOf(
+    { id: 1, type: 'anime', animeType: 'movie', status: 'completed' },
+    { id: 2, type: 'anime', animeType: 'ova', status: 'completed' },
+    { id: 3, type: 'anime', animeType: 'special', status: 'completed' },
+    { id: 4, type: 'anime', animeType: 'ona', status: 'completed' },
   );
   assert.deepEqual([...indexFilms(library).keys()], [1]);
+});
+
+test('an anime film nests under `show`, where its runtime is the whole film', () => {
+  const library = libraryOf({ id: 7, type: 'anime', title: 'Spirited Away', animeType: 'movie', status: 'completed', runtime: 125 });
+  const film = indexFilms(library).get(7);
+  assert.equal(film?.title, 'Spirited Away');
+  assert.equal(film?.runtime, 125);
+  assert.equal(film?.tmdbId, 7);
+  assert.equal(film?.anime, true);
+});
+
+test('an ordinary film is not marked anime', () => {
+  assert.equal(indexFilms(libraryOf({ id: 1, type: 'movies' })).get(1)?.anime, false);
+});
+
+test('animeFilmIds names the ids the films tab takes off the show half', () => {
+  const library = libraryOf(
+    { id: 1, type: 'movies', status: 'completed' },
+    { id: 2, type: 'anime', animeType: 'movie', status: 'completed' },
+    // Watched status is not the question: a `plantowatch` anime film is still
+    // this tab's to place, so the show half must not report it either.
+    { id: 3, type: 'anime', animeType: 'movie', status: 'plantowatch' },
+    { id: 4, type: 'anime', animeType: 'special', status: 'completed' },
+    { id: 5, type: 'shows' },
+  );
+  assert.deepEqual([...animeFilmIds(library)].sort((a, b) => a - b), [2, 3]);
 });
 
 test('every status is indexed, so a hand-added row is recognised rather than duplicated', () => {

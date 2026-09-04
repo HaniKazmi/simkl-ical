@@ -13,15 +13,7 @@ import type { CellData } from '../../api/google/types.ts';
 import type { SheetSnapshot } from '../io/spreadsheet.ts';
 import { a1, findHeaderRow, GridError, isBlank, numberOf, resolveColumns, textOf } from '../2-grid.ts';
 
-/**
- * The labels the films sync reads or writes — every column on the tab but the
- * one it never touches.
- *
- * `Anime` is deliberately absent, for the reason `HEADERS` gives for leaving
- * `Genre` out of the show grid: requiring a column nothing reads makes
- * renaming it a hard failure. The 22 rows carrying it came from SIMKL's anime
- * category, which this sync does not pull.
- */
+/** Every column on the tab, all of which the films sync reads or writes. */
 export const MOVIE_HEADERS = [
   'Name',
   'Watch Date',
@@ -36,6 +28,7 @@ export const MOVIE_HEADERS = [
   'Director',
   'id',
   'Banner',
+  'Anime',
 ] as const;
 
 export type MovieHeaderName = (typeof MOVIE_HEADERS)[number];

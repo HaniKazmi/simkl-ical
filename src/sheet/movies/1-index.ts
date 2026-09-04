@@ -5,21 +5,34 @@
  * Runs before the films tab is read: `sync.ts` uses an empty index as its
  * early-out, so a poll in which no film moved never reads the tab at all.
  *
- * Only SIMKL's `movies` category. An anime film arrives under `anime` with an
- * `anime_type` of `movie`, and whether it belongs on this tab or embedded in a
- * `Sheet1` block is a curation call nothing in the record answers — so those
- * are left to the show half, which already indexes them.
+ * SIMKL's `movies` category, plus the `anime` records whose `anime_type` is
+ * `movie`. Whether an anime film belongs here or embedded in a `Sheet1` block
+ * is a curation call the record does not answer, so the planner reads the
+ * sheet's own placement instead — see `onShowGrid` in `4-plan.ts`.
+ *
+ * An anime film is therefore in *both* halves' indexes, and that is not a
+ * duplication to tidy away: 20 of them sit on `Sheet1` rows, which the show
+ * half skips as `unknown-id` every poll the moment `indexLibrary` stops
+ * holding them.
  */
 
 import { instantFrom } from '../../shared/dates.ts';
 import { itemStatus } from '../../api/simkl/item.ts';
 import type { Library } from '../../library.ts';
+import type { LibraryItem } from '../../api/simkl/types.ts';
 
 /**
  * A film's status is one of `completed`, `dropped` or `plantowatch` — SIMKL's
  * movies category carries no `watching` or `hold` key.
  */
 export const WATCHED_STATUS = 'completed';
+
+/**
+ * The one `anime_type` this tab takes. `ova`, `special` and `ona` stay with the
+ * show half: they are extras hanging off a series rather than films in their
+ * own right, and the sheet files them that way.
+ */
+export const ANIME_FILM = 'movie';
 
 export interface FilmProgress {
   id: number;
@@ -45,6 +58,8 @@ export interface FilmProgress {
    * the planner settles rather than re-asking each poll.
    */
   tmdbId: number | null;
+  /** Whether this arrived under `anime`, which is what fills the column. */
+  anime: boolean;
 }
 
 /**
@@ -58,6 +73,21 @@ export const tmdbIdOf = (raw: string | undefined): number | null => {
   return Number.isInteger(id) && id > 0 ? id : null;
 };
 
+const isAnimeFilm = (type: string, item: LibraryItem): boolean => type === 'anime' && item.anime_type === ANIME_FILM;
+
+/**
+ * The ids this tab takes off the show half's hands.
+ *
+ * The show half still indexes these — 20 sit on `Sheet1` rows — but must stop
+ * reporting the rest as titles missing a row, which is what they stopped being
+ * the moment this tab started placing them.
+ */
+export const animeFilmIds = (library: Library | null | undefined): Set<number> => {
+  const out = new Set<number>();
+  for (const [id, { type, item }] of library ?? []) if (isAnimeFilm(type, item)) out.add(id);
+  return out;
+};
+
 /**
  * Every film in the library, keyed by SIMKL id — including `plantowatch` and
  * `dropped` ones, which are never inserted but whose ids must still be known,
@@ -66,8 +96,11 @@ export const tmdbIdOf = (raw: string | undefined): number | null => {
 export const indexFilms = (library: Library | null | undefined): Map<number, FilmProgress> => {
   const out = new Map<number, FilmProgress>();
   for (const [id, { type, item }] of library ?? []) {
-    if (type !== 'movies') continue;
-    const movie = item.movie;
+    const anime = isAnimeFilm(type, item);
+    if (type !== 'movies' && !anime) continue;
+    // Anime nests its title under `show`, the way every other anime record
+    // does, and carries `runtime` there as the whole film's length.
+    const movie = item.movie ?? item.show;
     out.set(id, {
       id,
       // `||`, not `??`: an empty or whitespace-only title is a value SIMKL can
@@ -80,6 +113,7 @@ export const indexFilms = (library: Library | null | undefined): Map<number, Fil
       rating: typeof item.user_rating === 'number' ? item.user_rating : null,
       runtime: typeof movie?.runtime === 'number' ? movie.runtime : null,
       tmdbId: tmdbIdOf(movie?.ids?.tmdb),
+      anime,
     });
   }
   return out;

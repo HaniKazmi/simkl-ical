@@ -51,11 +51,11 @@ const EMPTIABLE: Set<MovieHeaderName> = new Set();
 
 /**
  * What it may write into a row it is creating. A *separate* whitelist: an
- * insert fills up to thirteen columns, and folding the two together would
+ * insert fills up to fourteen columns, and folding the two together would
  * either forbid the insert or let an ordinary edit reach every one of them.
  *
- * `Anime` is in neither. The rows carrying it came from SIMKL's anime
- * category, which this sync does not pull.
+ * `Anime` is here and not in `EDIT_FIELDS`: what kind of film a row holds is
+ * settled when the row is built and is not a thing SIMKL revises.
  */
 export const INSERT_FIELDS = new Set<MovieHeaderName>([
   'Name',
@@ -71,6 +71,7 @@ export const INSERT_FIELDS = new Set<MovieHeaderName>([
   'Director',
   'id',
   'Banner',
+  'Anime',
 ]);
 
 export class UnsafeFilmPlanError extends Error {
@@ -182,6 +183,12 @@ const checkValue = (field: MovieHeaderName, value: ExtendedValue, where: string,
       // Only ever true. The tab spells "no" as an absent cell, so a written
       // FALSE would be a value no hand-maintained row has ever held.
       if (value.boolValue !== true) refuse(`${where}: Cinema is only ever written as TRUE.`);
+      return;
+    case 'Anime':
+      // Same convention as `Cinema`, and needed for the same reason the case
+      // above it is: the switch has no `default`, so a whitelisted field with
+      // no case of its own is accepted at any shape.
+      if (value.boolValue !== true) refuse(`${where}: Anime is only ever written as TRUE.`);
       return;
     case 'id':
       // Text, matching all 348 rows. A number here compares unequal to every
