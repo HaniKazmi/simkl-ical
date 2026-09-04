@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { columnLetter, duplicateIds, findHeaderRow, GridError, idsFor, parseGrid, parseIds, resolveColumns } from '../../src/sheet/2-grid.ts';
+import { columnLetter, duplicateIds, findHeaderRow, GridError, HEADERS, idsFor, parseGrid, parseIds, resolveColumns } from '../../src/sheet/2-grid.ts';
 import { cellOf, sheetSnapshot, SHEET_HEADERS, type CellSpec, seasonRow, showRow } from '../helpers.ts';
 
 const H = SHEET_HEADERS;
@@ -25,12 +25,12 @@ test('column letters are real base 26 past Z', () => {
 
 test('the header row is found by content, so a title row above it is survivable', () => {
   const rows = [['My shows', null], [], H, ...[show('Fargo', 'Ended', 1, 'show')]];
-  assert.equal(findHeaderRow(rows.map((r) => r.map(cellOf))), 2);
+  assert.equal(findHeaderRow(rows.map((r) => r.map(cellOf)), ['Show', 'Season']), 2);
 });
 
 test('headers resolve case-insensitively and on trimmed text', () => {
   const header = ['  SHOW ', 'status', 'Season', 'Episode', 'Start', 'End', 'Episodes', 'Length', 'ID', 'type'];
-  const columns = resolveColumns(header.map(cellOf), header.length);
+  const columns = resolveColumns(header.map(cellOf), header.length, HEADERS);
   assert.equal(columns.Show, 0);
   assert.equal(columns.id, 8);
 });
@@ -51,10 +51,10 @@ test('a shuffled column order resolves to the same blocks', () => {
 
 test('a missing, renamed or duplicated header is a hard failure', () => {
   const missing = H.map((h) => (h === 'End' ? 'Finished' : h));
-  assert.throws(() => resolveColumns(missing.map(cellOf), missing.length), /End is missing/);
+  assert.throws(() => resolveColumns(missing.map(cellOf), missing.length, HEADERS), /End is missing/);
 
   const duplicated = [...H, 'Episode'];
-  assert.throws(() => resolveColumns(duplicated.map(cellOf), duplicated.length), /Episode appears in D and K/);
+  assert.throws(() => resolveColumns(duplicated.map(cellOf), duplicated.length, HEADERS), /Episode appears in D and K/);
 });
 
 test('the declared width is used, not the widest row', () => {

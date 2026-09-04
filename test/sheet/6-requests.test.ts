@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { deleteRowRequests, toRequests } from '../../src/sheet/6-requests.ts';
+import { deleteRowRequests, toRequests, writesFor } from '../../src/sheet/6-requests.ts';
 import { fx, planOf, TODAY } from './fixture.ts';
 
 /** The batch as a readable shape: what each request is, and which row it hits. */
@@ -10,7 +10,7 @@ const kinds = (requests: ReturnType<typeof toRequests>) =>
   );
 
 test('every write is a single cell, with userEnteredValue fields only', () => {
-  for (const request of toRequests(planOf([fx.cell('fargoS2', 'Episode', { numberValue: 8 })], fx.insertAt(fx.end, 3)), fx.grid)) {
+  for (const request of toRequests(writesFor(planOf([fx.cell('fargoS2', 'Episode', { numberValue: 8 })], fx.insertAt(fx.end, 3)), fx.grid))) {
     if (!('updateCells' in request)) continue;
     const { range, fields, rows } = request.updateCells;
     assert.equal((range.endRowIndex ?? 0) - (range.startRowIndex ?? 0), 1);
@@ -21,7 +21,7 @@ test('every write is a single cell, with userEnteredValue fields only', () => {
 });
 
 test('an edit below an insert is still emitted before it', () => {
-  const requests = toRequests(planOf([fx.cell('fargoS2', 'Episode', { numberValue: 8 })], fx.insertAt(fx.end, 3)), fx.grid);
+  const requests = toRequests(writesFor(planOf([fx.cell('fargoS2', 'Episode', { numberValue: 8 })], fx.insertAt(fx.end, 3)), fx.grid));
   assert.deepEqual(kinds(requests).slice(0, 2), [`write@${fx.at.fargoS2}`, 'insert']);
 });
 
@@ -29,7 +29,7 @@ test('an edit below an insert is still emitted before it', () => {
 // the insert, so "edits before inserts" would write the fill over whatever
 // currently sits there and *then* insert a blank row below it.
 test('an insert precedes its own fill, which shares the same row index', () => {
-  const requests = toRequests(planOf([], fx.insertAt(fx.end, 3)), fx.grid);
+  const requests = toRequests(writesFor(planOf([], fx.insertAt(fx.end, 3)), fx.grid));
   assert.equal(kinds(requests)[0], 'insert');
   assert.ok(kinds(requests).slice(1).every((k) => k === `write@${fx.end}`));
 });
@@ -52,7 +52,7 @@ test('a season closing with its runtime emits three cell writes on one row', () 
     fx.cell('fargoS2', 'End', { numberValue: TODAY }),
     fx.cell('fargoS2', 'Episodes', { numberValue: 49 / 1440 }),
   ]);
-  const requests = toRequests(plan, fx.grid);
+  const requests = toRequests(writesFor(plan, fx.grid));
   assert.equal(requests.length, 3);
   const columns = requests.map((r) => ('updateCells' in r ? r.updateCells.range.startColumnIndex : -1));
   assert.deepEqual(

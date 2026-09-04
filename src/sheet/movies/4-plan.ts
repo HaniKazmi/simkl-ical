@@ -23,7 +23,7 @@ import { isoOf, plainDateIn } from '../../shared/dates.ts';
 import type { ExtendedValue } from '../../api/google/types.ts';
 import { isFormula } from '../2-grid.ts';
 import { maxSerial, movieKey, plausibleSerial, recordedSerial, watchSerial, type Baseline } from '../values.ts';
-import { movieAddress, movieCellAt, type MovieGrid, type MovieHeaderName } from './2-grid.ts';
+import { movieAddress, movieCellAt, nextFilmRow, type MovieGrid, type MovieHeaderName } from './2-grid.ts';
 import { filmIsWatched, type FilmProgress } from './1-index.ts';
 import type { FilmFacts } from './3-catalogue.ts';
 import type { PlanRecord } from '../4-plan.ts';
@@ -35,6 +35,15 @@ export interface FilmCellEdit {
   /** Zero-based, in the snapshot the plan was built from. */
   row: number;
   column: number;
+  /**
+   * The SIMKL id of the film this write is *for*.
+   *
+   * Carried so the guard can re-derive that the row still holds that film. A
+   * row index alone cannot be checked: every blank cell compares equal to
+   * every other, so an edit aimed one row off lands on a cell whose `previous`
+   * matches and passes alignment without anything noticing.
+   */
+  id: number;
   field: MovieHeaderName;
   /** The snapshot's `userEnteredValue`, for the guard and the rollback. */
   previous: ExtendedValue | undefined;
@@ -175,6 +184,7 @@ const bool = (value: boolean): ExtendedValue => ({ boolValue: value });
 const edit = (
   grid: MovieGrid,
   row: number,
+  id: number,
   field: MovieHeaderName,
   value: ExtendedValue | undefined,
   note: string,
@@ -183,6 +193,7 @@ const edit = (
   return {
     row,
     column,
+    id,
     field,
     previous: movieCellAt(grid, row, column)?.userEnteredValue,
     value,
@@ -192,9 +203,10 @@ const edit = (
 };
 
 /** A cell on a row that does not exist yet, so it has no `previous`. */
-const fillCell = (grid: MovieGrid, row: number, field: MovieHeaderName, value: ExtendedValue, note: string): FilmCellEdit => ({
+const fillCell = (grid: MovieGrid, row: number, id: number, field: MovieHeaderName, value: ExtendedValue, note: string): FilmCellEdit => ({
   row,
   column: grid.columns[field],
+  id,
   field,
   previous: undefined,
   value,
@@ -333,7 +345,7 @@ export const planFilms = (
         continue;
       }
 
-      plan.edits.push(edit(grid, row.row, field, value, `${film.title}: ${field} moved to ${wanted}`));
+      plan.edits.push(edit(grid, row.row, film.id, field, value, `${film.title}: ${field} moved to ${wanted}`));
       willWrite(key, field, field === 'Watch Date' ? isoOf(film.watchedAt as Temporal.Instant) : String(wanted));
     }
   }
@@ -425,34 +437,34 @@ const buildInsert = (
   // formats down: the blank rows past the data have a different date format on
   // `Watch Date` and none at all on `Release Date`, so a serial written into
   // one renders as `28486`.
-  const row = (grid.rows.at(-1)?.row ?? 0) + 1;
+  const row = nextFilmRow(grid);
   const note = `${film.title} (${film.id})`;
   const fill: FilmCellEdit[] = [
-    fillCell(grid, row, 'Name', str(film.title), note),
-    fillCell(grid, row, 'Watch Date', num(watched), note),
+    fillCell(grid, row, film.id, 'Name', str(film.title), note),
+    fillCell(grid, row, film.id, 'Watch Date', num(watched), note),
     // Text, matching what all 348 rows hold. A number here would compare
     // unequal to every other id cell on the tab.
-    fillCell(grid, row, 'id', str(String(film.id)), note),
+    fillCell(grid, row, film.id, 'id', str(String(film.id)), note),
   ];
 
-  if (film.rating !== null && plausibleScore(film.rating)) fill.push(fillCell(grid, row, 'Score', num(film.rating), note));
-  if (film.runtime !== null && plausibleRuntime(film.runtime)) fill.push(fillCell(grid, row, 'Runtime', num(film.runtime), note));
+  if (film.rating !== null && plausibleScore(film.rating)) fill.push(fillCell(grid, row, film.id, 'Score', num(film.rating), note));
+  if (film.runtime !== null && plausibleRuntime(film.runtime)) fill.push(fillCell(grid, row, film.id, 'Runtime', num(film.runtime), note));
 
   // Only ever `true`. The tab spells "no" as an absent cell, never as FALSE.
   const watchedOn = film.watchedAt ? plainDateIn(film.watchedAt, timezone) : null;
-  if (watchedInCinema(facts.openedInCinemas, watchedOn)) fill.push(fillCell(grid, row, 'Cinema', bool(true), note));
+  if (watchedInCinema(facts.openedInCinemas, watchedOn)) fill.push(fillCell(grid, row, film.id, 'Cinema', bool(true), note));
 
-  if (facts.genre) fill.push(fillCell(grid, row, 'Genre', str(facts.genre), note));
-  if (facts.genres) fill.push(fillCell(grid, row, 'Genres', str(facts.genres), note));
-  if (facts.certificate !== null) fill.push(fillCell(grid, row, 'Rating', num(facts.certificate), note));
+  if (facts.genre) fill.push(fillCell(grid, row, film.id, 'Genre', str(facts.genre), note));
+  if (facts.genres) fill.push(fillCell(grid, row, film.id, 'Genres', str(facts.genres), note));
+  if (facts.certificate !== null) fill.push(fillCell(grid, row, film.id, 'Rating', num(facts.certificate), note));
   // Declined here rather than left for the guard: a guard refusal is
   // whole-plan, so one film with an unreadable release date would stop every
   // other film being added for as long as it stayed in the library.
   const released = facts.releaseDate ? serialOf(facts.releaseDate) : null;
-  if (released !== null && plausibleReleaseSerial(released, ceiling)) fill.push(fillCell(grid, row, 'Release Date', num(released), note));
-  if (facts.franchise) fill.push(fillCell(grid, row, 'Franchise', str(facts.franchise), note));
-  if (facts.director) fill.push(fillCell(grid, row, 'Director', str(facts.director), note));
-  if (facts.banner) fill.push(fillCell(grid, row, 'Banner', str(facts.banner), note));
+  if (released !== null && plausibleReleaseSerial(released, ceiling)) fill.push(fillCell(grid, row, film.id, 'Release Date', num(released), note));
+  if (facts.franchise) fill.push(fillCell(grid, row, film.id, 'Franchise', str(facts.franchise), note));
+  if (facts.director) fill.push(fillCell(grid, row, film.id, 'Director', str(facts.director), note));
+  if (facts.banner) fill.push(fillCell(grid, row, film.id, 'Banner', str(facts.banner), note));
 
   return { row, id: film.id, title: film.title, fill, note: `add ${note}` };
 };

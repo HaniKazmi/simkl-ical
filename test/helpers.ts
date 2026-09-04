@@ -215,10 +215,20 @@ export const cellOf = (spec: CellSpec): CellData => {
 /** Today's column order. Tests that care about header resolution shuffle it. */
 export const SHEET_HEADERS = ['Show', 'Status', 'Season', 'Episode', 'Start', 'End', 'Episodes', 'Length', 'id', 'Type'];
 
-export const sheetSnapshot = (rows: CellSpec[][], { sheetId = 1, columnCount }: { sheetId?: number; columnCount?: number } = {}): SheetSnapshot => ({
+/**
+ * `rowCount` is the *declared* grid, which on a real tab runs well past the
+ * rows that hold anything — the live films tab declares 999 for 350 rows of
+ * data, and that headroom is what an insert lands in. Defaulted with room for
+ * the same reason: a fixture whose grid stops at its last row cannot express
+ * an append, so a bound checked against it would look wrong when it is right.
+ */
+export const sheetSnapshot = (
+  rows: CellSpec[][],
+  { sheetId = 1, columnCount, rowCount }: { sheetId?: number; columnCount?: number; rowCount?: number } = {},
+): SheetSnapshot => ({
   sheetId,
   title: 'Sheet1',
-  rowCount: rows.length,
+  rowCount: rowCount ?? rows.length + 10,
   columnCount: columnCount ?? Math.max(...rows.map((r) => r.length)),
   rows: rows.map((row) => row.map(cellOf)),
   readAtMono: performance.now(),

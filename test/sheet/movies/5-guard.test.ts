@@ -72,12 +72,35 @@ test('a row outside the snapshot is refused before its value is compared', () =>
   // strictly stronger: it also refuses an in-bounds row the parse found no
   // film on.
   const edit = ffx.cell('starWars', 'Score', { numberValue: 9 });
-  refuses(filmPlanOf([{ ...edit, row: 500 }]), ffx.grid, /not a film row/);
+  refuses(filmPlanOf([{ ...edit, row: 500 }]), ffx.grid, /not a row this sync can identify/);
 });
 
 test('the header row is not a film row', () => {
   const edit = ffx.cell(0, 'Score', { numberValue: 9 });
-  refuses(filmPlanOf([edit]), ffx.grid, /not a film row/);
+  refuses(filmPlanOf([edit]), ffx.grid, /not a row this sync can identify/);
+});
+
+test('an edit aimed at another film row is refused, blank cell or not', () => {
+  // Alignment alone cannot catch this: both Score cells are blank, so
+  // `previous` matches whichever row the write lands on and the wrong film
+  // silently takes the value.
+  const fx = filmGrid(film('starWars', { id: 53078, score: null }), film('nemo', { id: 53080, score: null }));
+  const misaimed = fx.cell('nemo', 'Score', { numberValue: 9 }, undefined, 53078);
+  refuses(filmPlanOf([misaimed]), fx.grid, /the plan is for film 53078 but that row holds 53080/);
+});
+
+test('a row carrying no id is never written to', () => {
+  // A hand-typed footer or a row someone started: the sync cannot say which
+  // film it is, so it may not touch it.
+  const fx = filmGrid(film('a', { id: 1, score: null }), film('totals', { id: null, name: 'TOTALS', score: null }));
+  refuses(filmPlanOf([fx.cell('totals', 'Score', { numberValue: 9 }, undefined, 1)]), fx.grid, /not a row this sync can identify/);
+});
+
+test('a row whose id the tab repeats is never written to', () => {
+  // Which of the two rows holds that film is a coin toss, and the guard says
+  // so on its own rather than trusting the planner to have declined.
+  const fx = filmGrid(film('a', { id: 42, score: null }), film('b', { id: 42, score: null }));
+  refuses(filmPlanOf([fx.cell('a', 'Score', { numberValue: 9 })]), fx.grid, /not a row this sync can identify/);
 });
 
 test('a formula target is refused unconditionally', () => {
@@ -122,11 +145,28 @@ test('a well-formed insert below the last row is allowed', () => {
   allows(filmPlanOf([], ffx.insert()));
 });
 
-test('an insert anywhere but below the last row is refused', () => {
+test('an insert anywhere but the next free row is refused', () => {
   // Its index is pre-write, and every other edit in the plan carries one too:
   // inserting into the middle shifts rows out from under them.
-  refuses(filmPlanOf([], ffx.insert({ row: 1 })), ffx.grid, /added below the last one/);
-  refuses(filmPlanOf([], ffx.insert({ row: ffx.end + 1 })), ffx.grid, /added below the last one/);
+  refuses(filmPlanOf([], ffx.insert({ row: 1 })), ffx.grid, /only ever added at row/);
+  refuses(filmPlanOf([], ffx.insert({ row: ffx.end + 1 })), ffx.grid, /only ever added at row/);
+});
+
+test('a films tab holding no rows yet can take its first', () => {
+  // "Below the last one" has no answer here, so the floor is the header row.
+  // Anchored separately, the planner and the guard disagreed by one and the
+  // tab could never gain a row at all.
+  const empty = filmGrid();
+  allows(filmPlanOf([], empty.insert({ row: 1 })), empty.grid);
+  refuses(filmPlanOf([], empty.insert({ row: 0 })), empty.grid, /only ever added at row 2/);
+});
+
+test('a tab whose declared grid is full has no row to add', () => {
+  // `rowCount` is a count, so the last usable 0-based index is one below it.
+  // A tab trimmed to exactly its data has nowhere for the next film to go.
+  const full = filmGrid(film('a', { id: 1 }), film('b', { id: 2 }));
+  full.grid.snapshot.rowCount = full.grid.rows.length + 1;
+  refuses(filmPlanOf([], full.insert()), full.grid, /no row to add/);
 });
 
 test('an inserted row must carry its id, as text, and it must be the film planned', () => {

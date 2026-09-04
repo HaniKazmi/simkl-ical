@@ -37,7 +37,8 @@ export interface FilmGridFixture {
   /** One past the last row: where an insert at the end of the tab lands. */
   end: number;
   /** An edit whose `previous` comes from the snapshot, the way the planner builds one. */
-  cell(row: string | number, field: MovieHeaderName, value: ExtendedValue | undefined, previous?: ExtendedValue): FilmCellEdit;
+  /** `id` overrides the film the row holds — for aiming a write at the wrong row on purpose. */
+  cell(row: string | number, field: MovieHeaderName, value: ExtendedValue | undefined, previous?: ExtendedValue, id?: number): FilmCellEdit;
   /** A well-formed insert below the last row. */
   insert(options?: FilmInsertOptions): FilmRowInsert;
 }
@@ -65,17 +66,23 @@ export const filmGrid = (...named: NamedFilmRow[]): FilmGridFixture => {
     return index;
   };
 
+  /**
+   * An edit as the planner builds one: `id` is the film the *row* holds, so a
+   * test aiming a write at the wrong row has to say so explicitly.
+   */
   const cell = (
     row: string | number,
     field: MovieHeaderName,
     value: ExtendedValue | undefined,
     previous?: ExtendedValue,
+    id?: number,
   ): FilmCellEdit => {
     const index = indexOf(row);
     const column = grid.columns[field];
     return {
       row: index,
       column,
+      id: id ?? grid.rows.find((r) => r.row === index)?.id ?? 0,
       field,
       previous: previous ?? grid.snapshot.rows[index]?.[column]?.userEnteredValue,
       value,
@@ -99,6 +106,7 @@ export const filmGrid = (...named: NamedFilmRow[]): FilmGridFixture => {
       fill: fields.map(([field, value]) => ({
         row,
         column: grid.columns[field],
+        id,
         field,
         previous: undefined,
         value,

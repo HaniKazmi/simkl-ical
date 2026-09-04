@@ -36,7 +36,7 @@ import { parseGrid, type Grid } from './2-grid.ts';
 import { indexLibrary, type TitleProgress } from './1-index.ts';
 import { CATALOGUE_MAX_AGE, CatalogueStore, needsLookup } from './3-catalogue.ts';
 import { describePlan, emptyPlan, observeWatches, planRecord, planSync, type PlanRecord, type PlanResult, type SheetPlan } from './4-plan.ts';
-import { toRequests } from './6-requests.ts';
+import { toRequests, writesFor } from './6-requests.ts';
 import { verify } from './7-verify.ts';
 import { parseMovieGrid, type MovieGrid } from './movies/2-grid.ts';
 import { indexFilms, type FilmProgress } from './movies/1-index.ts';
@@ -460,7 +460,7 @@ export class SheetSync {
     const applied = await applyPlan(
       {
         snapshot: grid.snapshot,
-        requests: toRequests(plan, grid),
+        requests: toRequests(writesFor(plan, grid)),
         describe: () => describePlan(plan, grid.columns),
         summary: `${plan.edits.length} edits and ${plan.insert ? 1 : 0} inserts`,
         verify: (after) => verify(grid, after, plan),
@@ -557,7 +557,7 @@ export class SheetSync {
       const applied = await applyPlan(
         {
           snapshot: grid.snapshot,
-          requests: toRequests(plan, grid),
+          requests: toRequests(writesFor(plan, grid)),
           describe: () => describeFilmPlan(plan),
           summary: `${plan.edits.length} film edits and ${plan.insert ? 1 : 0} inserts`,
           verify: (after) => verifyFilms(grid, after, plan),

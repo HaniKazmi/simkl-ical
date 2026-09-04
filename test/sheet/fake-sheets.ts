@@ -184,7 +184,10 @@ export const fakeSheets = ({
             properties: {
               sheetId,
               title: titles.get(sheetId) ?? 'Sheet1',
-              gridProperties: { rowCount: rows.length, columnCount: widthOf(sheetId) },
+              // Declared with headroom, as a real tab is: an append lands in
+              // the blank rows past the data, so a grid that stops at its last
+              // row cannot model one.
+              gridProperties: { rowCount: rows.length + 10, columnCount: widthOf(sheetId) },
             },
             data: [{ rowData: rows.map((row) => ({ values: row })) }],
           },

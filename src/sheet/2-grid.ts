@@ -131,9 +131,13 @@ const fold = (label: string): string => label.trim().toLowerCase();
  * the whole set: a tab is recognised by the columns that make it that tab, and
  * demanding all of them would make a header row unfindable the moment one
  * column is renamed — turning a clear "X is missing" into "no header row at
- * all". Defaulted to the show grid's pair so its callers read unchanged.
+ * all".
+ *
+ * Passed rather than defaulted, for the reason `resolveColumns` gives: two
+ * tabs of different shapes read this, and a default is a shape one of them can
+ * take by forgetting.
  */
-export const findHeaderRow = (rows: CellData[][], required: readonly string[] = ['Show', 'Season']): number => {
+export const findHeaderRow = (rows: CellData[][], required: readonly string[]): number => {
   const wanted = required.map(fold);
   const limit = Math.min(rows.length, HEADER_SEARCH_ROWS);
   for (let row = 0; row < limit; row += 1) {
@@ -147,12 +151,14 @@ export const findHeaderRow = (rows: CellData[][], required: readonly string[] = 
  * Column index per label. Every label must appear exactly once: a duplicate
  * makes "which column is Episode" unanswerable, and the wrong answer is a
  * real edit to the wrong cell.
+ *
+ * `headers` is required and `H` is inferred from it. A default would have to
+ * be cast to `H` — there is no value that is every caller's header list — and
+ * that cast is a hole: a films caller omitting the argument would compile and
+ * receive the *show* grid's columns branded as movie columns, which is a wrong
+ * column for every write and no error anywhere.
  */
-export const resolveColumns = <H extends string = HeaderName>(
-  headerCells: CellData[],
-  width: number,
-  headers: readonly H[] = HEADERS as unknown as readonly H[],
-): Record<H, number> => {
+export const resolveColumns = <H extends string>(headerCells: CellData[], width: number, headers: readonly H[]): Record<H, number> => {
   const found = new Map<string, number[]>();
   for (let column = 0; column < width; column += 1) {
     const label = fold(textOf(headerCells[column]) ?? '');
@@ -246,12 +252,12 @@ export const parseIds = (cell: CellData | undefined): number[] => {
 
 export const parseGrid = (snapshot: SheetSnapshot): Grid => {
   const { rows } = snapshot;
-  const headerRow = findHeaderRow(rows);
+  const headerRow = findHeaderRow(rows, ['Show', 'Season']);
   // The declared width, not the widest row: a truncated read presents a
   // displaced header as *missing*, which fail-closed turns into a disabled
   // sync.
   const width = Math.max(snapshot.columnCount, ...rows.map((r) => r.length));
-  const columns = resolveColumns(rows[headerRow] ?? [], width);
+  const columns = resolveColumns(rows[headerRow] ?? [], width, HEADERS);
 
   const blocks: ShowBlock[] = [];
   for (let row = headerRow + 1; row < rows.length; row += 1) {

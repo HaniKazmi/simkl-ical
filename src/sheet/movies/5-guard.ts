@@ -23,7 +23,7 @@ import { config } from '../../shared/config.ts';
 import { isFormula, sameValue } from '../2-grid.ts';
 import { maxSerial, plausibleSerial } from '../values.ts';
 import { isCertificate, isGenre, MAX_SECONDARY_GENRES, plausibleReleaseSerial, plausibleRuntime, plausibleScore } from './values.ts';
-import type { MovieGrid, MovieHeaderName } from './2-grid.ts';
+import { nextFilmRow, type MovieGrid, type MovieHeaderName } from './2-grid.ts';
 import type { FilmCellEdit, FilmPlan, FilmRowInsert } from './4-plan.ts';
 import type { ExtendedValue } from '../../api/google/types.ts';
 
@@ -96,8 +96,8 @@ export interface FilmSafetyLimits {
 interface FilmGuardContext {
   grid: MovieGrid;
   serialCeiling: number;
-  /** Every row index the snapshot holds a film on. */
-  filmRows: Set<number>;
+  /** Row index → the film that row holds, for the rows a write may land on. */
+  filmRows: Map<number, number>;
 }
 
 // --- Budgets ---------------------------------------------------------------
@@ -215,12 +215,16 @@ const checkCellAlignment = (cell: FilmCellEdit, { grid }: FilmGuardContext): voi
 const checkEdit = (cell: FilmCellEdit, ctx: FilmGuardContext): void => {
   const where = `${cell.address} (${cell.field})`;
 
-  // Not `isFollowed`: consulting the planner's own set is exactly what these
-  // whitelists exist to avoid, since widening it there would widen the guard
-  // with it. `EDIT_FIELDS` is the independent statement, and
-  // `5-guard.test.ts` pins the two equal so a divergence is a failing test
-  // rather than a silent widening.
-  if (!ctx.filmRows.has(cell.row)) refuse(`${where}: row ${cell.row + 1} is not a film row.`);
+  // Which film this row holds, re-derived from the grid rather than trusted
+  // from the plan. Alignment alone cannot catch a write aimed one row off:
+  // every blank cell compares equal to every other, so `previous` matches and
+  // the wrong film silently takes the value. Rows the parse cannot identify —
+  // no id, or an id on two rows — are absent from the map and so unwritable,
+  // which is the same answer the planner reaches and the guard must reach on
+  // its own.
+  const holds = ctx.filmRows.get(cell.row);
+  if (holds === undefined) refuse(`${where}: row ${cell.row + 1} is not a row this sync can identify a film on.`);
+  if (holds !== cell.id) refuse(`${where}: the plan is for film ${cell.id} but that row holds ${holds}.`);
 
   checkCellShape(cell, EDIT_FIELDS, ctx);
   checkCellAlignment(cell, ctx);
@@ -231,20 +235,26 @@ const checkEdit = (cell: FilmCellEdit, ctx: FilmGuardContext): void => {
 const checkInsert = (insert: FilmRowInsert, ctx: FilmGuardContext): void => {
   const { grid } = ctx;
 
-  // Below every row the tab uses. Inserting into the middle would shift every
-  // row beneath it, and this plan's other edits carry pre-write indices.
-  const last = grid.rows.at(-1)?.row ?? -1;
-  if (insert.row !== last + 1) {
-    refuse(`insert at row ${insert.row + 1}: a film row is only ever added below the last one (row ${last + 2}).`);
+  const expected = nextFilmRow(grid);
+  // Room first, because the placement rule below pins the row to exactly one
+  // value: asked second, this could only ever fire on the row placement had
+  // already accepted, so it would never be reached and never be tested.
+  // `rowCount` is a count, so the last usable 0-based index is one below it.
+  if (expected >= grid.snapshot.rowCount) {
+    refuse(`insert at row ${expected + 1}: the tab declares only ${grid.snapshot.rowCount} rows, so there is no row to add.`);
   }
-  // The grid must have room. `insertDimension` past the declared end is not a
-  // row the following fill would land in.
-  if (insert.row > grid.snapshot.rowCount) refuse(`insert at row ${insert.row + 1}: past the end of the tab.`);
+  // Below every row the tab uses, or under the header when it holds none.
+  // Inserting into the middle would shift every row beneath it, and this
+  // plan's other edits carry pre-write indices.
+  if (insert.row !== expected) {
+    refuse(`insert at row ${insert.row + 1}: a film row is only ever added at row ${expected + 1}.`);
+  }
 
   // No edit may touch the row being created: its index is pre-write, so an
   // edit sharing it addresses whatever currently sits there.
   for (const cell of insert.fill) {
     if (cell.row !== insert.row) refuse(`${cell.address} (${cell.field}): a fill cell must sit on the inserted row.`);
+    if (cell.id !== insert.id) refuse(`${cell.address} (${cell.field}): the cell is for film ${cell.id} but the row is for ${insert.id}.`);
     if (cell.previous !== undefined) refuse(`${cell.address} (${cell.field}): the inserted row has no previous value.`);
     checkCellShape(cell, INSERT_FIELDS, ctx);
   }
@@ -277,7 +287,12 @@ export const assertFilmPlanSafe = (
   const ctx: FilmGuardContext = {
     grid,
     serialCeiling: maxSerial(now, timezone),
-    filmRows: new Set(grid.rows.map((row) => row.row)),
+    // Only rows carrying an id the tab does not repeat: an id-less row is one
+    // someone typed by hand and a repeated id makes "which row is this film"
+    // a coin toss, so neither may be written to.
+    filmRows: new Map(
+      grid.rows.filter((row) => row.id !== null && !grid.duplicates.has(row.id)).map((row) => [row.row, row.id as number]),
+    ),
   };
 
   checkBudgets(plan, maxEdits, maxRows);

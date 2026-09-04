@@ -10,6 +10,10 @@
  */
 
 import type { ExtendedValue, GridRange, SheetRequest } from '../api/google/types.ts';
+import type { Grid } from './2-grid.ts';
+import type { SheetPlan } from './4-plan.ts';
+import type { MovieGrid } from './movies/2-grid.ts';
+import type { FilmPlan } from './movies/4-plan.ts';
 
 /**
  * What building a batch needs from a planned write, and nothing more.
@@ -28,6 +32,42 @@ export interface PlannedCell {
 export interface PlannedWrites {
   edits: readonly PlannedCell[];
   insert: { row: number; fill: readonly PlannedCell[] } | null;
+}
+
+/**
+ * A plan and the grid it was planned against, tied together.
+ *
+ * Structural typing alone cannot express that: every plan satisfies
+ * `PlannedWrites` and every grid carries a `sheetId`, so a films plan and the
+ * show grid typecheck together and the batch addresses one tab's row and
+ * column indices at the other tab's `sheetId` — a one-row misalignment on both
+ * tabs at once, which is the failure this module exists to order correctly.
+ * The brand costs one call to `writesFor` at each site and makes the pairing a
+ * compile error instead of a runtime one.
+ */
+// A module-private symbol, so the brand cannot be forged by an object literal
+// that happens to carry the right key — the same reason `2-html.ts` brands
+// safe HTML this way.
+const planned = Symbol('planned-against');
+
+export interface BoundWrites extends PlannedWrites {
+  readonly [planned]: number;
+}
+
+/**
+ * Bind a plan to the grid it was built from. The only way to make a
+ * `BoundWrites`, and the one place that says which pairings are legal.
+ *
+ * Overloaded rather than structural: every plan satisfies `PlannedWrites` and
+ * every grid carries a `sheetId`, so a single structural signature accepts a
+ * films plan against the show grid and sends one tab's indices to the other's
+ * id. The overloads are type-only imports, so this stays a leaf module at
+ * runtime.
+ */
+export function writesFor(plan: SheetPlan, grid: Grid): BoundWrites;
+export function writesFor(plan: FilmPlan, grid: MovieGrid): BoundWrites;
+export function writesFor(plan: PlannedWrites, grid: { snapshot: { sheetId: number } }): BoundWrites {
+  return { ...plan, [planned]: grid.snapshot.sheetId } as BoundWrites;
 }
 
 const oneCell = (sheetId: number, row: number, column: number): GridRange => ({
@@ -63,8 +103,8 @@ const writeCell = (sheetId: number, row: number, column: number, value: Extended
  * insert a blank row below it — overwriting a real row, the exact failure
  * this design exists to prevent.
  */
-export const toRequests = (plan: PlannedWrites, grid: { snapshot: { sheetId: number } }): SheetRequest[] => {
-  const { sheetId } = grid.snapshot;
+export const toRequests = (plan: BoundWrites): SheetRequest[] => {
+  const sheetId = plan[planned];
   const requests: SheetRequest[] = [];
 
   for (const cell of [...plan.edits].sort((a, b) => b.row - a.row || b.column - a.column)) {

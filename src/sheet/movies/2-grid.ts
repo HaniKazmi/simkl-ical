@@ -66,6 +66,13 @@ export interface MovieRow {
 export interface MovieGrid {
   snapshot: SheetSnapshot;
   columns: MovieColumnMap;
+  /**
+   * Where the header sits. Carried because it is the only thing that bounds an
+   * insert on a tab with no film rows yet: "below the last one" has no answer
+   * there, and both the planner and the guard would otherwise have to guess a
+   * floor — differently, as they did.
+   */
+  headerRow: number;
   rows: MovieRow[];
   /**
    * Ids appearing on more than one row. Such a row is skipped rather than
@@ -110,7 +117,7 @@ export const parseMovieGrid = (snapshot: SheetSnapshot): MovieGrid => {
     parsed.push({ row, name: textOf(cells[columns.Name]), id });
   }
 
-  return { snapshot, columns, rows: parsed, duplicates };
+  return { snapshot, columns, headerRow, rows: parsed, duplicates };
 };
 
 /** The cell at a position in the grid the plan was built from. */
@@ -121,3 +128,14 @@ export const movieCellAt = (grid: MovieGrid, row: number, column: number): CellD
 export const movieAddress = (grid: MovieGrid, row: number, field: MovieHeaderName): string => a1(row, grid.columns[field]);
 
 export { GridError };
+
+/**
+ * Where a new film row goes: under the last one the tab holds, or directly
+ * under the header when it holds none.
+ *
+ * One expression, read by the planner that proposes the row and the guard that
+ * re-derives it. Two copies disagreed by one on an empty tab — the planner
+ * anchoring on 0 and the guard on -1 — so a tab with no films could never gain
+ * its first, and the guard's own answer was the header row itself.
+ */
+export const nextFilmRow = (grid: MovieGrid): number => (grid.rows.at(-1)?.row ?? grid.headerRow) + 1;
