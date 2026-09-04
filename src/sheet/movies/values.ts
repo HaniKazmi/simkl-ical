@@ -270,3 +270,19 @@ export const plausibleRuntime = (minutes: number): boolean => Number.isInteger(m
 
 /** The serial a `PlainDate` stands for on this tab, same epoch as the show grid. */
 export const serialOf = (date: Temporal.PlainDate): number => dateSerial(date);
+
+/**
+ * `Release Date` needs its own floor. `MIN_SERIAL` is 2000-01-01, which is the
+ * right bound for a *watch* date — the sheet records nothing watched before
+ * then — and badly wrong for a release: The Wizard of Oz is on the tab at 1939
+ * and Star Wars at 1977, and the bound as first written refused the whole plan
+ * over South Park's 1999.
+ *
+ * 1900 rather than something tighter because the question this bound answers is
+ * "is this a date at all", not "is this a plausible film". The ceiling stays the
+ * caller's, since a film announced for next year is a real release date.
+ */
+const MIN_RELEASE_SERIAL = dateSerial(Temporal.PlainDate.from('1900-01-01'));
+
+export const plausibleReleaseSerial = (serial: number | null | undefined, ceiling: number): boolean =>
+  typeof serial === 'number' && Number.isFinite(serial) && serial >= MIN_RELEASE_SERIAL && serial <= ceiling;

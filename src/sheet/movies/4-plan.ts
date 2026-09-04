@@ -27,7 +27,7 @@ import { movieAddress, movieCellAt, type MovieGrid, type MovieHeaderName } from 
 import { filmIsWatched, type FilmProgress } from './1-index.ts';
 import type { FilmFacts } from './3-catalogue.ts';
 import type { PlanRecord } from '../4-plan.ts';
-import { plausibleRuntime, plausibleScore, serialOf, watchedInCinema } from './values.ts';
+import { plausibleReleaseSerial, plausibleRuntime, plausibleScore, serialOf, watchedInCinema } from './values.ts';
 
 // --- The plan --------------------------------------------------------------
 
@@ -98,6 +98,15 @@ export interface PlanFilmsOptions {
   baseline?: Baseline;
   /** `observeFilms(index)`, hoisted so the fixpoint loop does not rebuild it per pass. */
   seed?: Baseline;
+  /**
+   * Every SIMKL id the library holds, whatever its type.
+   *
+   * Twenty-two rows on this tab are anime films, which arrive under the `anime`
+   * category and so are in no film list. They are not unknown — the show half
+   * holds them — and reporting each as a skip every poll would bury the rows
+   * that really are unaccounted for.
+   */
+  held?: Set<number>;
 }
 
 // --- Recording -------------------------------------------------------------
@@ -253,7 +262,7 @@ export const planFilms = (
   grid: MovieGrid,
   index: Map<number, FilmProgress>,
   facts: Map<number, FilmFacts | null>,
-  { now = Temporal.Now.instant(), timezone = 'UTC', baseline = new Map(), seed }: PlanFilmsOptions = {},
+  { now = Temporal.Now.instant(), timezone = 'UTC', baseline = new Map(), seed, held }: PlanFilmsOptions = {},
 ): FilmPlanResult => {
   const plan = emptyFilmPlan();
   const demands: FilmDemand[] = [];
@@ -288,7 +297,11 @@ export const planFilms = (
     }
     const film = index.get(row.id);
     if (!film) {
-      skip('unknown-id', row.row, `SIMKL id ${row.id} is in no film list, so nothing upstream describes this row`);
+      // Held under another type — an anime film — is not unknown, and the row
+      // is simply not this half's to touch.
+      if (!held?.has(row.id)) {
+        skip('unknown-id', row.row, `SIMKL id ${row.id} is in no list at all, so nothing upstream describes this row`);
+      }
       continue;
     }
 
@@ -391,7 +404,7 @@ const planInsert = (
       plan.deferredInserts += 1;
       continue;
     }
-    plan.insert = buildInsert(grid, film, known, watched, timezone);
+    plan.insert = buildInsert(grid, film, known, watched, timezone, ceiling);
   }
 
   if (plan.deferredInserts) {
@@ -405,6 +418,7 @@ const buildInsert = (
   facts: FilmFacts,
   watched: number,
   timezone: string,
+  ceiling: number,
 ): FilmRowInsert => {
   // Below the last row the tab uses, so nothing shifts under an existing
   // index. `inheritFromBefore` on the request is what carries the number
@@ -431,7 +445,11 @@ const buildInsert = (
   if (facts.genre) fill.push(fillCell(grid, row, 'Genre', str(facts.genre), note));
   if (facts.genres) fill.push(fillCell(grid, row, 'Genres', str(facts.genres), note));
   if (facts.certificate !== null) fill.push(fillCell(grid, row, 'Rating', num(facts.certificate), note));
-  if (facts.releaseDate) fill.push(fillCell(grid, row, 'Release Date', num(serialOf(facts.releaseDate)), note));
+  // Declined here rather than left for the guard: a guard refusal is
+  // whole-plan, so one film with an unreadable release date would stop every
+  // other film being added for as long as it stayed in the library.
+  const released = facts.releaseDate ? serialOf(facts.releaseDate) : null;
+  if (released !== null && plausibleReleaseSerial(released, ceiling)) fill.push(fillCell(grid, row, 'Release Date', num(released), note));
   if (facts.franchise) fill.push(fillCell(grid, row, 'Franchise', str(facts.franchise), note));
   if (facts.director) fill.push(fillCell(grid, row, 'Director', str(facts.director), note));
   if (facts.banner) fill.push(fillCell(grid, row, 'Banner', str(facts.banner), note));

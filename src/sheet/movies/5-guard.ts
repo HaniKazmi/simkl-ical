@@ -22,7 +22,7 @@
 import { config } from '../../shared/config.ts';
 import { isFormula, sameValue } from '../2-grid.ts';
 import { maxSerial, plausibleSerial } from '../values.ts';
-import { isCertificate, isGenre, MAX_SECONDARY_GENRES, plausibleRuntime, plausibleScore } from './values.ts';
+import { isCertificate, isGenre, MAX_SECONDARY_GENRES, plausibleReleaseSerial, plausibleRuntime, plausibleScore } from './values.ts';
 import type { MovieGrid, MovieHeaderName } from './2-grid.ts';
 import type { FilmCellEdit, FilmPlan, FilmRowInsert } from './4-plan.ts';
 import type { ExtendedValue } from '../../api/google/types.ts';
@@ -119,8 +119,14 @@ const checkValue = (field: MovieHeaderName, value: ExtendedValue, where: string,
 
   switch (field) {
     case 'Watch Date':
+      if (!plausibleSerial(value.numberValue, serialCeiling)) refuse(`${where}: ${describeValue(value)} is not a plausible watch date.`);
+      return;
     case 'Release Date':
-      if (!plausibleSerial(value.numberValue, serialCeiling)) refuse(`${where}: ${describeValue(value)} is not a plausible date serial.`);
+      // A different floor from a watch date, and the reason is in `values.ts`:
+      // films predate anything this sheet records watching.
+      if (!plausibleReleaseSerial(value.numberValue, serialCeiling)) {
+        refuse(`${where}: ${describeValue(value)} is not a plausible release date.`);
+      }
       return;
     case 'Score':
       if (value.numberValue === undefined || !plausibleScore(value.numberValue)) refuse(`${where}: ${describeValue(value)} is not a score of 1-10.`);

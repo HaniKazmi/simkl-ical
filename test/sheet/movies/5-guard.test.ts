@@ -101,9 +101,19 @@ test('a score outside SIMKL scale is refused rather than rounded', () => {
 test('an implausible runtime or watch date is refused', () => {
   refuses(filmPlanOf([ffx.cell('starWars', 'Runtime', { numberValue: 0 })]), ffx.grid, /runtime/);
   refuses(filmPlanOf([ffx.cell('starWars', 'Runtime', { numberValue: 1441 })]), ffx.grid, /runtime/);
-  refuses(filmPlanOf([ffx.cell('starWars', 'Watch Date', { numberValue: 1000 })]), ffx.grid, /date serial/);
+  refuses(filmPlanOf([ffx.cell('starWars', 'Watch Date', { numberValue: 1000 })]), ffx.grid, /watch date/);
   // Tomorrow is the ceiling; a watch a week out is a payload error.
-  refuses(filmPlanOf([ffx.cell('starWars', 'Watch Date', { numberValue: TODAY + 7 })]), ffx.grid, /date serial/);
+  refuses(filmPlanOf([ffx.cell('starWars', 'Watch Date', { numberValue: TODAY + 7 })]), ffx.grid, /watch date/);
+});
+
+test('a release date long predates anything the sheet records watching', () => {
+  // The bound a watch date uses is 2000-01-01, and the tab carries films from
+  // 1939 — sharing it refused a whole plan over South Park's 1999.
+  const wizardOfOz = 14482; // 1939-08-25
+  allows(filmPlanOf([], ffx.insert({ extra: [['Release Date', { numberValue: wizardOfOz }]] })));
+  // Still bounded: 1900 is the floor, and tomorrow the ceiling.
+  refuses(filmPlanOf([], ffx.insert({ extra: [['Release Date', { numberValue: -100 }]] })), ffx.grid, /release date/);
+  refuses(filmPlanOf([], ffx.insert({ extra: [['Release Date', { numberValue: TODAY + 7 }]] })), ffx.grid, /release date/);
 });
 
 // --- The insert --------------------------------------------------------------

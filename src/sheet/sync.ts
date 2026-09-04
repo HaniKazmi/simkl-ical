@@ -494,6 +494,10 @@ export class SheetSync {
     // The early-out: a poll in which no film moved never reads the tab.
     if (index.size === 0) return outcome('idle');
 
+    // Every id the library holds, so a row for an anime film reads as the show
+    // half's rather than as unaccounted for.
+    const held = new Set(library?.keys() ?? []);
+
     // A projection of the library alone, which cannot change while a run is in
     // flight, so every planning pass after the first would rebuild it identically.
     const seed = observeFilms(index);
@@ -508,7 +512,7 @@ export class SheetSync {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
       const snapshot = await readSnapshot(config.moviesSheetName, { signal });
       const grid = parseMovieGrid(snapshot);
-      const { plan, observed, writing } = await this.filmsToFixpoint(grid, index, seed, made, signal);
+      const { plan, observed, writing } = await this.filmsToFixpoint(grid, index, seed, held, made, signal);
       // Replaced per attempt, never merged: a FRESH re-read plans against a
       // different grid, and the observations of a pass whose plan was thrown
       // away describe rows this run is no longer acting on.
@@ -586,13 +590,14 @@ export class SheetSync {
     grid: MovieGrid,
     index: Map<number, FilmProgress>,
     seed: Baseline,
+    held: Set<number>,
     made: { films: Set<number>; failures: number },
     signal: AbortSignal | undefined,
   ): Promise<FilmPlanResult> {
     const now = Temporal.Now.instant();
 
     for (let pass = 1; ; pass += 1) {
-      const result = planFilms(grid, index, this.films.films, { now, timezone: config.timezone, baseline: baseline(), seed });
+      const result = planFilms(grid, index, this.films.films, { now, timezone: config.timezone, baseline: baseline(), seed, held });
       if (pass > MAX_PASSES) {
         this.log.warn(`the films planner still wanted lookups after ${MAX_PASSES} passes; running with what it has`);
         return result;
