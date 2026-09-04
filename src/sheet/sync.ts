@@ -675,12 +675,18 @@ export class SheetSync {
   }
 
   /**
-   * Plan, fetch what the plan is missing, and re-plan, until a pass demands
-   * nothing new.
+   * Plan, fetch what the plan is missing, and re-plan, until the pass that
+   * plans the insert.
    *
-   * Terminates because every id fetched — or settled — enters `made` and is
-   * never asked again this run. Two passes in practice: one to learn which
-   * films have no row, one to plan the insert with what TMDB answered.
+   * One row is inserted per run, so the lookups the films *behind* it still
+   * need are the next poll's to make, and fetching them now would only spend
+   * `MAX_LOOKUPS_PER_PASS` again on every pass to the ceiling. Two passes in
+   * practice: one to learn which films have no row, one to plan the insert
+   * with what TMDB answered; one, once the store holds the answer. Terminates
+   * because every id fetched enters `made` and is never asked again this run.
+   *
+   * `unfetched` says demands were left standing, which the loop turns into
+   * another poll.
    */
   private async filmsToFixpoint(
     grid: MovieGrid,
@@ -708,13 +714,13 @@ export class SheetSync {
           this.log.warn(`${film.title} (${film.id}) has no TMDB id in the library, so its row has to be added by hand`);
         }
       }
-      if (pass > MAX_PASSES) {
-        this.log.warn(`the films planner still wanted lookups after ${MAX_PASSES} passes; running with what it has`);
-        return { result, unfetched: false };
-      }
 
       const wanted = result.demands.filter((demand) => !made.films.has(demand.id));
-      if (!wanted.length) return { result, unfetched: false };
+      if (!wanted.length || result.plan.insert) return { result, unfetched: wanted.length > 0 };
+      if (pass > MAX_PASSES) {
+        this.log.warn(`the films planner still wanted lookups after ${MAX_PASSES} passes; running with what it has`);
+        return { result, unfetched: true };
+      }
       for (const demand of wanted) made.films.add(demand.id);
 
       try {

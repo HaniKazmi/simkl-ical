@@ -327,19 +327,8 @@ export const planFilms = (
     }
   };
 
-  const onTab = new Set<number>();
-
-  // Names of rows the sync cannot match by id. A row someone typed by hand
-  // carries a title and no id yet, and inserting a second row for that film
-  // beneath it is the one thing the parse keeping such rows is meant to
-  // prevent — but `onTab` is keyed by id, so the name is the only handle.
-  const namedOnTab = new Set(
-    grid.rows.filter((row) => row.id === null && row.name !== null).map((row) => row.name?.trim().toLowerCase()),
-  );
-
   for (const row of grid.rows) {
     if (row.id === null) continue;
-    onTab.add(row.id);
 
     if (grid.duplicates.has(row.id)) {
       skip('duplicate-id', row.row, `SIMKL id ${row.id} is on more than one row, so which one holds that film is a coin toss`);
@@ -389,7 +378,7 @@ export const planFilms = (
   }
 
   const unidentifiable: FilmProgress[] = [];
-  planInsert(grid, index, facts, onTab, namedOnTab, onShowGrid, plan, demands, unidentifiable, {
+  planInsert(grid, index, facts, onShowGrid, plan, demands, unidentifiable, {
     timezone,
     ceiling,
     releaseTo: releaseCeiling(now, timezone),
@@ -409,14 +398,20 @@ const planInsert = (
   grid: MovieGrid,
   index: Map<number, FilmProgress>,
   facts: Map<number, FilmFacts | null>,
-  onTab: Set<number>,
-  namedOnTab: Set<string | undefined>,
   onShowGrid: Set<number> | null,
   plan: FilmPlan,
   demands: FilmDemand[],
   unidentifiable: FilmProgress[],
   { timezone, ceiling, releaseTo }: { timezone: string; ceiling: number; releaseTo: number },
 ): void => {
+  const onTab = new Set(grid.rows.flatMap((row) => (row.id === null ? [] : [row.id])));
+  // Names of rows the sync cannot match by id. A row someone typed by hand
+  // carries a title and no id yet, and inserting a second row for that film
+  // beneath it is the one thing the parse keeping such rows is meant to
+  // prevent — but ids are what rows are matched by, so the name is the only
+  // handle.
+  const namedOnTab = new Set(grid.rows.flatMap((row) => (row.id === null && row.name !== null ? [row.name.trim().toLowerCase()] : [])));
+
   // Everything past this filter reports: a film reaching the loop below with no
   // TMDB id is either named in a note or handed to the caller, which warns. So
   // a film this tab is not taking is excluded *here* rather than inside — else
@@ -430,14 +425,38 @@ const planInsert = (
         !namedOnTab.has(film.title.trim().toLowerCase()),
     )
     .sort((a, b) => {
-      if (!a.watchedAt) return 1;
+      if (!a.watchedAt) return b.watchedAt ? 1 : 0;
       if (!b.watchedAt) return -1;
       return Temporal.Instant.compare(a.watchedAt, b.watchedAt);
     });
 
-  for (const film of missing) {
-    const known = facts.get(film.id);
+  // The declared grid has to have a row to give, and that is a fact about the
+  // grid, so it is asked once and before any lookup: a full tab is a standing
+  // state until someone extends it, and paying TMDB for rows that cannot be
+  // built would cost a burst of lookups every poll for as long as it stands.
+  // Declined here rather than left for the guard for the reason the release
+  // date is: a guard refusal is whole-plan, so a full tab would stop every
+  // followed-column edit on every other row, on every poll.
+  if (missing.length && nextFilmRow(grid) >= grid.snapshot.rowCount) {
+    plan.notes.push(`the films tab has no row left for ${missing.length} film(s), ${missing[0]?.title} (${missing[0]?.id}) first; add rows to the tab`);
+    return;
+  }
 
+  for (const film of missing) {
+    // Asked before any lookup, because no lookup changes it. An epoch stamp is
+    // SIMKL's "watched, never dated"; a row dated 1970 is worse than no row,
+    // and there is nothing to fall back to.
+    const watched = watchSerial(film.watchedAt, timezone);
+    if (watched === null || !plausibleSerial(watched, ceiling)) {
+      plan.skips.push({
+        code: 'unusable-value',
+        row: null,
+        reason: `${film.title}: its watch date is ${film.watchedAt ? 'outside the range this column accepts' : 'missing'}`,
+      });
+      continue;
+    }
+
+    const known = facts.get(film.id);
     if (known === null) {
       // Settled: TMDB has nothing for this film and never will, so the row
       // cannot be built. Named once rather than demanded every poll.
@@ -456,27 +475,6 @@ const planInsert = (
         demands.push({ id: film.id, tmdbId: film.tmdbId, title: film.title });
         plan.skips.push({ code: 'awaiting-lookup', row: null, reason: `${film.title}: waiting on TMDB before its row can be built` });
       }
-      continue;
-    }
-
-    const watched = watchSerial(film.watchedAt, timezone);
-    if (watched === null || !plausibleSerial(watched, ceiling)) {
-      // An epoch stamp is SIMKL's "watched, never dated". A row dated 1970
-      // is worse than no row, and there is nothing to fall back to.
-      plan.skips.push({
-        code: 'unusable-value',
-        row: null,
-        reason: `${film.title}: its watch date is ${film.watchedAt ? 'outside the range this column accepts' : 'missing'}`,
-      });
-      continue;
-    }
-
-    // The declared grid has to have a row to give. Declined here rather than
-    // left for the guard for the reason the release date is: a guard refusal is
-    // whole-plan, so a full tab would stop every followed-column edit on every
-    // other row, on every poll, until someone extended the grid.
-    if (nextFilmRow(grid) >= grid.snapshot.rowCount) {
-      plan.notes.push(`the films tab has no row left for ${film.title} (${film.id}); add rows to the tab`);
       continue;
     }
 

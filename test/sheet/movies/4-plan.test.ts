@@ -190,22 +190,37 @@ test('a watched film with no row gets one, below the last', () => {
 });
 
 test('a film waits a poll rather than landing with blank TMDB cells', () => {
-  const { plan: p, demands } = plan([film('a', { id: 1 })], [movie({ id: 1 }), movie({ id: 2, tmdb: '550' })]);
+  const { plan: p, demands } = plan([film('a', { id: 1 })], [movie({ id: 1 }), movie({ id: 2, tmdb: '550', lastWatchedAt: watchedOn(TODAY - 1) })]);
   assert.equal(p.insert, null);
   assert.deepEqual(demands.map((d) => [d.id, d.tmdbId]), [[2, 550]]);
   assert.equal(p.skips.find((s) => s.code === 'awaiting-lookup')?.code, 'awaiting-lookup');
 });
 
+test('a film whose row can never be built is not looked up', () => {
+  // No lookup changes an undated watch or a full tab, so neither earns one:
+  // a full tab is a standing state, and paying TMDB for it would be a burst
+  // of lookups every poll for as long as it stands.
+  const undated = plan([film('a', { id: 1 })], [movie({ id: 1 }), movie({ id: 2, tmdb: '550' })]);
+  assert.deepEqual(undated.demands, []);
+  assert.equal(undated.plan.skips.find((s) => s.code === 'unusable-value')?.code, 'unusable-value');
+
+  const grid = filmGrid(film('a', { id: 1 }));
+  const full = { ...grid.grid, snapshot: { ...grid.grid.snapshot, rowCount: grid.grid.rows.length + 1 } };
+  const index = indexFilms(libraryOf(movie({ id: 1 }), movie({ id: 2, tmdb: '550', lastWatchedAt: watchedOn(TODAY - 1) })));
+  const { demands } = planFilms(full, index, new Map(), { ...OPTS, seed: observeFilms(index) });
+  assert.deepEqual(demands, []);
+});
+
 test('a film TMDB has no record of is named once, not demanded every poll', () => {
   const known = new Map<number, FilmFacts | null>([[2, null]]);
-  const { plan: p, demands } = plan([film('a', { id: 1 })], [movie({ id: 1 }), movie({ id: 2, title: 'Obscure' })], { known });
+  const { plan: p, demands } = plan([film('a', { id: 1 })], [movie({ id: 1 }), movie({ id: 2, title: 'Obscure', lastWatchedAt: watchedOn(TODAY - 1) })], { known });
   assert.equal(p.insert, null);
   assert.deepEqual(demands, []);
   assert.match(p.notes.join(' '), /Obscure .* has no TMDB record/);
 });
 
 test('a film SIMKL carries no TMDB id for is handed up, not demanded', () => {
-  const { demands, unidentifiable } = plan([film('a', { id: 1 })], [movie({ id: 1 }), movie({ id: 2, title: 'No Id', tmdb: null })]);
+  const { demands, unidentifiable } = plan([film('a', { id: 1 })], [movie({ id: 1 }), movie({ id: 2, title: 'No Id', tmdb: null, lastWatchedAt: watchedOn(TODAY - 1) })]);
   // Nothing to look it up by, so no request — and the caller reports it once
   // rather than the plan carrying a line every pass of every poll.
   assert.deepEqual(demands, []);
@@ -290,7 +305,7 @@ test('a film with no row left on the tab is named, not planned', () => {
   const known = new Map<number, FilmFacts | null>([[2, facts()]]);
   const { plan: p } = planFilms(full, index, known, { ...OPTS, seed: observeFilms(index) });
   assert.equal(p.insert, null);
-  assert.match(p.notes.join(' '), /no row left for No Room/);
+  assert.match(p.notes.join(' '), /no row left for 1 film\(s\), No Room/);
 });
 
 test('a cold start asks about a bounded number of films, not all of them', () => {

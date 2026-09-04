@@ -236,6 +236,45 @@ test('a film TMDB has no record of is settled, not re-requested every poll', asy
   });
 });
 
+test('a backlog is looked up one burst at a time, and drains without stalling', async () => {
+  // One row lands per run, so the lookups the films behind it need are the
+  // next poll's to make. Fetched now, every pass to the ceiling would spend
+  // another `MAX_LOOKUPS_PER_PASS` and log the pass ceiling as a bookkeeping
+  // bug on healthy data. The trap on the other side: with nothing fetched
+  // ahead, the poll that inserts the last film the store knows has nothing
+  // deferred to ask for another poll with, and the rest of the backlog waits
+  // on unrelated library activity — unless the lookups it chose not to make
+  // count as work.
+  await withFreshJournal(async () => {
+    // Nine films past a burst of eight, watched on distinct days.
+    const backlog = Array.from({ length: 9 }, (_, i) =>
+      film({ id: 100 + i, title: `Backlog ${i}`, tmdb: String(500 + i), lastWatchedAt: `2026-08-${String(10 + i).padStart(2, '0')}T20:00:00Z` }),
+    );
+    const library = filmsOnly(...ON_TAB, ...backlog);
+    const tmdbCalls = (calls: string[]) => calls.filter((c) => c.includes('themoviedb')).length;
+    await harness('apply', {}, async ({ poll, calls, sheet, log }) => {
+      const first = await poll(library);
+      assert.equal(first.status, 'applied', first.error ?? '');
+      assert.equal(tmdbCalls(calls), 8, 'one burst, not one per pass');
+      assert.equal(log.lines.some((l) => /still wanted lookups/.test(l)), false, log.lines.join('\n'));
+      assert.equal(first.retry, true);
+
+      // Polls 2–8 insert what the store already holds and ask TMDB nothing.
+      let last = first;
+      for (let n = 2; n <= 8; n += 1) last = await poll(library);
+      assert.equal(tmdbCalls(calls), 8);
+      assert.equal(last.retry, true, 'the ninth film is still unfetched, so the poll asks for another');
+
+      // Poll 9 fetches the one film left and lands it.
+      const ninth = await poll(library);
+      assert.equal(ninth.status, 'applied', ninth.error ?? '');
+      assert.equal(tmdbCalls(calls), 9);
+      assert.equal(sheet.films?.length, 3 + 9, 'every film has its row');
+      assert.equal((await poll(library)).retry, false, 'and nothing is left to ask for');
+    });
+  });
+});
+
 test('report mode plans the insert in full and makes no mutating request', async () => {
   await withFreshJournal(async () => {
     const library = filmsOnly(...ON_TAB, film({ id: 999, lastWatchedAt: '2026-08-25T20:00:00Z' }));
