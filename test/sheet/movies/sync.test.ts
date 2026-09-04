@@ -441,6 +441,14 @@ test('two halves failing the same way stay two records', async () => {
     await appendSheetRun({ at: '2026-09-04T12:00:00.000Z', tab: 'shows', status: 'failed', mode: 'apply', edits: [], inserts: [], error: 'the sheet could not be read' });
     await appendSheetRun({ at: '2026-09-04T12:00:01.000Z', tab: 'films', status: 'failed', mode: 'apply', edits: [], inserts: [], error: 'the sheet could not be read' });
     assert.deepEqual(sheetRuns().map((r) => `${r.tab}x${r.repeats}`), ['showsx1', 'filmsx1']);
+    // And on the next poll each collapses into its own tab's record, not
+    // into the record before it — which is the other tab's. Compared against
+    // that, a state repeating on both tabs never collapses, and two records a
+    // poll evict the real history in 25 polls.
+    await appendSheetRun({ at: '2026-09-04T12:30:00.000Z', tab: 'shows', status: 'failed', mode: 'apply', edits: [], inserts: [], error: 'the sheet could not be read' });
+    await appendSheetRun({ at: '2026-09-04T12:30:01.000Z', tab: 'films', status: 'failed', mode: 'apply', edits: [], inserts: [], error: 'the sheet could not be read' });
+    assert.deepEqual(sheetRuns().map((r) => `${r.tab}x${r.repeats}`), ['showsx2', 'filmsx2']);
+    assert.equal(sheetRuns()[0]?.at, '2026-09-04T12:00:00.000Z', 'the first sighting is kept as when the state began');
   });
 });
 
