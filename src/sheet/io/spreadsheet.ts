@@ -59,8 +59,7 @@ const target = (): string => {
 const GRID_FIELDS =
   'sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)),data(startRow,startColumn,rowData(values(userEnteredValue,effectiveValue))))';
 
-export const readSnapshot = async ({ signal }: { signal?: AbortSignal } = {}): Promise<SheetSnapshot> => {
-  const title = config.sheetName;
+export const readSnapshot = async (title: string, { signal }: { signal?: AbortSignal } = {}): Promise<SheetSnapshot> => {
   const response = await sheetsRequest<SpreadsheetResponse>(target(), {
     component: 'spreadsheet',
     // The tab name is a range, and one containing a space needs quoting.
@@ -72,8 +71,13 @@ export const readSnapshot = async ({ signal }: { signal?: AbortSignal } = {}): P
   // By name only. Falling back to the first tab would be safe only while
   // `params.ranges` constrains the response to one; loosen that mask and the
   // sync would read, plan against and write to whatever came back first —
-  // after a frozen run, a `_sync-REPAIR-…` snapshot. The title below defaults
-  // to the configured name, so the mismatch would not even show in the log.
+  // after a frozen run, a `_sync-REPAIR-…` snapshot. The title below falls back
+  // to the one asked for, so the mismatch would not even show in the log.
+  //
+  // The name is a parameter rather than `config.sheetName` because the two tabs
+  // this reads have different shapes: whichever pipeline is running knows which
+  // it wants, and a default here would let a caller that forgot plan the show
+  // grid's rules against the films tab.
   const sheet = response.sheets?.find((s) => s.properties?.title === title);
   const sheetId = sheet?.properties?.sheetId;
   if (!sheet || sheetId === undefined) {

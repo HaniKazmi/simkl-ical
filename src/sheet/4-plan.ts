@@ -43,6 +43,7 @@ import {
   type SeasonRow,
   type ShowBlock,
 } from './2-grid.ts';
+import type { MovieHeaderName } from './movies/2-grid.ts';
 import { courComplete, type SeasonProgress, type TitleProgress } from './1-index.ts';
 import { maxSerial, ownsNote, plausibleSerial, recordedSerial, runtimeDays, seasonKey, TRACKED_FIELDS, watchedNote, watchSerial } from './values.ts';
 import type { Baseline, TrackedField } from './values.ts';
@@ -1312,7 +1313,12 @@ const planInsert = (
  */
 export interface RecordedEdit {
   address: string;
-  field: HeaderName;
+  /**
+   * Either tab's column. One record shape for both, because the journal and
+   * the status page ask the same three questions of a films edit as of a show
+   * one — where it landed, which column, and why.
+   */
+  field: HeaderName | MovieHeaderName;
   note: string;
 }
 
@@ -1320,7 +1326,8 @@ export interface RecordedInsert {
   /** `row 610` rather than a cell — an insert has no single cell to point at. */
   address: string;
   title: string;
-  season: number;
+  /** Absent on a film row, which has no season to name. */
+  season?: number;
   note: string;
 }
 

@@ -21,11 +21,10 @@
 import { errorMessage } from '../../shared/errors.ts';
 import type { Logger } from '../../shared/logger.ts';
 import { applyRequests, readSnapshot, type SheetSnapshot } from './spreadsheet.ts';
-import type { Grid } from '../2-grid.ts';
-import { describePlan, emptyPlan, type SheetPlan } from '../4-plan.ts';
-import { backupRequest, deleteRowRequests, restoreRequest, toRequests } from '../6-requests.ts';
+import type { SheetRequest } from '../../api/google/types.ts';
+import { backupRequest, deleteRowRequests, restoreRequest } from '../6-requests.ts';
 import { backupName, discardBackup, findBackup, markForRepair, sweepBackups } from './backups.ts';
-import { verify, type Verification } from '../7-verify.ts';
+import type { Verification } from '../7-verify.ts';
 
 export interface ApplyOutcome {
   status: 'applied' | 'failed' | 'rolled-back' | 'frozen';
@@ -38,17 +37,44 @@ export interface ApplyOptions {
   signal?: AbortSignal;
 }
 
-export const applyPlan = async (grid: Grid, plan: SheetPlan, { log, signal }: ApplyOptions): Promise<ApplyOutcome> => {
+/**
+ * Everything this protocol needs to know about a plan, and nothing about which
+ * pipeline built it. The two tabs have different grids, different field
+ * vocabularies and different structural checks, but exactly one write-and-
+ * recover protocol — and a second copy of it is a second place the rollback
+ * can be wrong.
+ */
+export interface ApplySpec {
+  /** The tab as it was when the plan was built. Its title is what gets re-read. */
+  snapshot: SheetSnapshot;
+  /** The plan's writes, already ordered. The backup is prepended here. */
+  requests: SheetRequest[];
+  /** Log lines describing the plan, rendered only when something is reported. */
+  describe: () => string[];
+  /** One line naming what was written, for the applied log. */
+  summary: string;
+  /** Did the write do exactly what was planned. */
+  verify: (after: SheetSnapshot) => Verification;
+  /**
+   * Did the tab go back to exactly how it was — the same check against a plan
+   * that writes nothing. Separate because only the pipeline knows what an
+   * empty plan of its own shape is.
+   */
+  verifyRestored: (after: SheetSnapshot) => Verification;
+}
+
+export const applyPlan = async (spec: ApplySpec, { log, signal }: ApplyOptions): Promise<ApplyOutcome> => {
+  const { snapshot } = spec;
   const report = (headline: string, level: 'info' | 'error' = 'info'): void => {
     log[level](headline);
-    for (const line of describePlan(plan, grid.columns)) log.info(line);
+    for (const line of spec.describe()) log.info(line);
   };
 
   const name = backupName(Temporal.Now.instant());
   // The snapshot rides at the head of the write batch — taken and applied in
   // one atomic request, so there is no state where the sheet changed but
   // nothing recorded what it looked like first.
-  const requests = [backupRequest(grid.snapshot.sheetId, name), ...toRequests(plan, grid)];
+  const requests = [backupRequest(snapshot.sheetId, name), ...spec.requests];
 
   let writeError: string | null = null;
   let backupId: number | undefined;
@@ -77,18 +103,18 @@ export const applyPlan = async (grid: Grid, plan: SheetPlan, { log, signal }: Ap
   // and the next poll re-reads and re-plans against whatever landed.
   let after: SheetSnapshot;
   try {
-    after = await readSnapshot({ signal });
+    after = await readSnapshot(snapshot.title, { signal });
   } catch (err) {
     const message = `the sheet could not be read back after the write: ${errorMessage(err)}`;
     report(`sheet sync ${message}`, 'error');
     return { status: 'failed', error: message };
   }
-  const verification = verify(grid, after, plan);
+  const verification = spec.verify(after);
 
   if (verification.ok) {
     if (writeError) log.warn(`the sheet write reported "${writeError}" but landed exactly as planned`);
     await sweepBackups(log, signal);
-    report(`sheet sync applied ${plan.edits.length} edits and ${plan.insert ? 1 : 0} inserts`);
+    report(`sheet sync applied ${spec.summary}`);
     return { status: 'applied', error: null };
   }
 
@@ -104,21 +130,22 @@ export const applyPlan = async (grid: Grid, plan: SheetPlan, { log, signal }: Ap
     // new row a concurrent edit disturbed reads as false; the row count is
     // the only independent witness. A leftover tab is swept by the next clean
     // run; a discarded snapshot is gone.
-    if (after.rows.length === grid.snapshot.rows.length) await discardBackup(backupId, log, signal);
+    if (after.rows.length === snapshot.rows.length) await discardBackup(backupId, log, signal);
     return { status: 'failed', error: writeError };
   }
 
-  return rollback(grid, after, verification, backupId, name, { log, signal });
+  return rollback(spec, after, verification, backupId, name, { log, signal });
 };
 
 const rollback = async (
-  grid: Grid,
+  spec: ApplySpec,
   after: SheetSnapshot,
   verification: Verification,
   backupId: number | undefined,
   name: string,
   { log, signal }: ApplyOptions,
 ): Promise<ApplyOutcome> => {
+  const { snapshot } = spec;
   const detail = verification.problems.join('; ');
   log.error(`sheet verify failed, rolling back: ${detail}`);
 
@@ -143,7 +170,7 @@ const rollback = async (
     // batch.
     if (verification.deleteRows.length) {
       await applyRequests(deleteRowRequests(after.sheetId, verification.deleteRows), { signal });
-      restored = await readSnapshot({ signal });
+      restored = await readSnapshot(snapshot.title, { signal });
     }
 
     // One server-side paste of the whole tab at zero offset: it cannot be off
@@ -155,10 +182,10 @@ const rollback = async (
     // compares against the pre-write grid the restored tab now matches, so it
     // reports a clean rollback. Closing that window needs a per-cell revert,
     // which is not safe enough to be worth it.
-    await applyRequests([restoreRequest(backupId, restored.sheetId, grid.snapshot.rowCount, grid.snapshot.columnCount)], { signal });
-    restored = await readSnapshot({ signal });
+    await applyRequests([restoreRequest(backupId, restored.sheetId, snapshot.rowCount, snapshot.columnCount)], { signal });
+    restored = await readSnapshot(snapshot.title, { signal });
 
-    const confirmation = verify(grid, restored, emptyPlan());
+    const confirmation = spec.verifyRestored(restored);
     if (!confirmation.ok) {
       throw new Error(`${confirmation.problems.length} cells did not go back (${confirmation.problems.slice(0, 5).join('; ')})`);
     }
@@ -181,7 +208,7 @@ const rollback = async (
       `FROZEN: the sheet write failed verification and the rollback did not complete (${errorMessage(err)}). ` +
       `No further writes this process. ` +
       `Look for a tab named "${tab.title}" — it holds the sheet exactly as it was before the write, so copy it back over ` +
-      `${grid.snapshot.title}, delete it, then restart. ${urgency}If it is not there, restore from Sheets version history instead. ` +
+      `${snapshot.title}, delete it, then restart. ${urgency}If it is not there, restore from Sheets version history instead. ` +
       `Verify problems: ${detail}. Rows to delete: ${verification.deleteRows.map((r) => r + 1).join(', ') || 'none'}.`;
     return { status: 'frozen', error: freeze };
   }

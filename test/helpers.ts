@@ -35,6 +35,10 @@ config.googleCredentialsExplicit = false;
 // reach the live API.
 config.tvdbApiKey = undefined;
 config.tvdbPin = undefined;
+// Same guard: TMDB_API_KEY lives in .env too, and `apiGet` throws without it,
+// so a test that forgot `withFetch` fails loudly rather than reaching the live
+// API on someone's quota.
+config.tmdbApiKey = undefined;
 // Same guard, for writes: everything that persists lands under config.dataDir,
 // which defaults to ./data and holds a live token on a real checkout. The
 // default moves somewhere harmless; `withTempDataDir` stays for tests that
@@ -192,7 +196,7 @@ export const calendarFile = (calendar: unknown[] = [], metadata: Record<string, 
  * formula target must be refused unconditionally, and only
  * `userEnteredValue.formulaValue` distinguishes one.
  */
-export type CellSpec = string | number | null | { formula: string; value?: string | number };
+export type CellSpec = string | number | boolean | null | { formula: string; value?: string | number };
 
 export const cellOf = (spec: CellSpec): CellData => {
   if (spec === null) return {};
@@ -200,7 +204,11 @@ export const cellOf = (spec: CellSpec): CellData => {
     const result = typeof spec.value === 'number' ? { numberValue: spec.value } : spec.value === undefined ? undefined : { stringValue: spec.value };
     return { userEnteredValue: { formulaValue: spec.formula }, ...(result ? { effectiveValue: result } : {}) };
   }
-  const value = typeof spec === 'number' ? { numberValue: spec } : { stringValue: spec };
+  // A boolean is its own `ExtendedValue` member, not a stringified one: the
+  // films tab's `Cinema` and `Anime` cells hold `boolValue: true`, and a
+  // `"TRUE"` string is a different cell to every comparison in the sync.
+  const value =
+    typeof spec === 'number' ? { numberValue: spec } : typeof spec === 'boolean' ? { boolValue: spec } : { stringValue: spec };
   return { userEnteredValue: value, effectiveValue: value };
 };
 
@@ -263,13 +271,39 @@ export interface ItemSpec {
   notAired?: number;
   /** Season number → watched timestamps, one per episode. */
   seasons?: Record<number, Array<string | null>>;
+  /** Films only: SIMKL sends the TMDB id as a string, the way it sends the TVDB one. */
+  tmdb?: string | null;
+  /** Films only: the user's own score, and null where they have not rated it. */
+  rating?: number | null;
+  /** Films only: whole minutes, the figure the tab's `Runtime` column holds. */
+  runtime?: number | null;
 }
 
-export const libraryItem = ({ id, type = 'shows', title = `Show ${id}`, status = 'watching', lastWatchedAt, watched, total, notAired = 0, seasons = {} }: ItemSpec): LibraryItem => {
+export const libraryItem = ({
+  id,
+  type = 'shows',
+  title = `Show ${id}`,
+  status = 'watching',
+  lastWatchedAt,
+  watched,
+  total,
+  notAired = 0,
+  seasons = {},
+  tmdb = String(id),
+  rating = null,
+  runtime = 100,
+}: ItemSpec): LibraryItem => {
   const episodes = Object.values(seasons).flat();
   const counted = episodes.filter((at) => at !== null).length;
   const nested = { title, ids: { simkl: id } };
-  if (type === 'movies') return { movie: nested, status, last_watched_at: lastWatchedAt ?? null };
+  if (type === 'movies') {
+    return {
+      movie: { title, runtime, ids: { simkl: id, ...(tmdb === null ? {} : { tmdb }) } },
+      status,
+      last_watched_at: lastWatchedAt ?? null,
+      user_rating: rating,
+    };
+  }
   return {
     show: nested,
     status,
@@ -290,3 +324,78 @@ export const libraryItem = ({ id, type = 'shows', title = `Show ${id}`, status =
  */
 export const libraryOf = (...items: ItemSpec[]): Library =>
   new Map(items.map((spec) => [spec.id, { type: spec.type ?? 'shows', item: libraryItem(spec) }]));
+
+/**
+ * The films tab's column order today. Tests that care about header resolution
+ * shuffle it; nothing else may depend on the positions.
+ */
+export const MOVIE_SHEET_HEADERS = [
+  'Name',
+  'Watch Date',
+  'Score',
+  'Cinema',
+  'Runtime',
+  'Genre',
+  'Genres',
+  'Rating',
+  'Release Date',
+  'Franchise',
+  'Director',
+  'id',
+  'Anime',
+  'Banner',
+];
+
+export interface FilmRowSpec {
+  name?: string;
+  /** A date serial, the way the tab stores it. */
+  watched?: number | null;
+  score?: number | null;
+  cinema?: boolean;
+  runtime?: number | null;
+  genre?: string | null;
+  genres?: string | null;
+  rating?: number | null;
+  released?: number | null;
+  franchise?: string | null;
+  director?: string | null;
+  /** Text, matching what all 348 live rows hold. A number here is a different cell. */
+  id?: string | number | null;
+  anime?: boolean;
+  banner?: string | null;
+}
+
+/** One film row, in `MOVIE_SHEET_HEADERS` order. */
+export const filmRow = ({
+  name = 'A Film',
+  watched = 45000,
+  score = null,
+  cinema = false,
+  runtime = null,
+  genre = null,
+  genres = null,
+  rating = null,
+  released = null,
+  franchise = null,
+  director = null,
+  id = null,
+  anime = false,
+  banner = null,
+}: FilmRowSpec = {}): CellSpec[] => [
+  name,
+  watched,
+  score,
+  // `null` is a blank cell and `true` a real boolean — the tab spells "no" as
+  // an absent cell and never as FALSE, so there is no `false` case to build.
+  cinema ? true : null,
+  runtime,
+  genre,
+  genres,
+  rating,
+  released,
+  franchise,
+  director,
+  id === null ? null : String(id),
+  anime ? true : null,
+  banner,
+];

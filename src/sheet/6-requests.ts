@@ -9,9 +9,26 @@
  * the difference between a correct write and a one-row misalignment.
  */
 
-import type { Grid } from './2-grid.ts';
-import type { SheetPlan } from './4-plan.ts';
 import type { ExtendedValue, GridRange, SheetRequest } from '../api/google/types.ts';
+
+/**
+ * What building a batch needs from a planned write, and nothing more.
+ *
+ * Structural rather than `CellEdit`, because the two tabs have different field
+ * vocabularies and this module reads no field name — only where a value goes.
+ * A `HeaderName` in the signature would force a generic through every caller
+ * to say something the ordering rules below do not depend on.
+ */
+export interface PlannedCell {
+  row: number;
+  column: number;
+  value: ExtendedValue | undefined;
+}
+
+export interface PlannedWrites {
+  edits: readonly PlannedCell[];
+  insert: { row: number; fill: readonly PlannedCell[] } | null;
+}
 
 const oneCell = (sheetId: number, row: number, column: number): GridRange => ({
   sheetId,
@@ -46,7 +63,7 @@ const writeCell = (sheetId: number, row: number, column: number, value: Extended
  * insert a blank row below it — overwriting a real row, the exact failure
  * this design exists to prevent.
  */
-export const toRequests = (plan: SheetPlan, grid: Grid): SheetRequest[] => {
+export const toRequests = (plan: PlannedWrites, grid: { snapshot: { sheetId: number } }): SheetRequest[] => {
   const { sheetId } = grid.snapshot;
   const requests: SheetRequest[] = [];
 

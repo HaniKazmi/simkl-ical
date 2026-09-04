@@ -21,7 +21,7 @@ import { errorMessage } from '../../shared/errors.ts';
 import type { Logger } from '../../shared/logger.ts';
 import type { SheetSyncMode } from '../../shared/config.ts';
 import type { RecordedEdit, RecordedInsert } from '../4-plan.ts';
-import type { SheetSyncStatus } from '../sync.ts';
+import type { SheetSyncStatus, SheetTab } from '../sync.ts';
 import { instantFrom } from '../../shared/dates.ts';
 
 /** One finished run, as an operator would want it after a restart. */
@@ -29,6 +29,15 @@ export interface SheetRunRecord {
   /** ISO, when the run finished. */
   at: string;
   status: SheetSyncStatus;
+  /**
+   * Which tab the run was against. One poll produces one record per tab, and
+   * without this a quiet films run and a quiet show run are indistinguishable.
+   *
+   * Optional, and absent means the show grid: every record written before the
+   * films half existed was one, so an old file reads correctly rather than
+   * being dropped for a version bump.
+   */
+  tab?: SheetTab;
   /** The mode at the time: a `reported` run wrote nothing by design. */
   mode: SheetSyncMode;
   edits: RecordedEdit[];

@@ -10,6 +10,7 @@
 import { isBlank, isFormula } from './2-grid.ts';
 import { instantFrom, plainDateFrom, plainDateIn } from '../shared/dates.ts';
 import type { HeaderName } from './2-grid.ts';
+import type { MovieHeaderName } from './movies/2-grid.ts';
 import type { CellData } from '../api/google/types.ts';
 
 /** Sheets counts days from 1899-12-30. */
@@ -153,18 +154,33 @@ export const TRACKED_FIELDS: readonly TrackedField[] = TRACKED;
 
 export const isTracked = (field: HeaderName): field is TrackedField => (TRACKED as readonly HeaderName[]).includes(field);
 
-/** What one season's recorded upstream values look like, keyed by column. */
-export type BaselineEntry = Partial<Record<HeaderName, string>>;
+/**
+ * What one row's recorded upstream values look like, keyed by column.
+ *
+ * Both tabs' columns, because one file holds both tabs' history. The key
+ * namespaces say which is which; the field names do not collide, so a widened
+ * union costs nothing and a second file would cost a second load, a second
+ * save and a second chance to record a value the sheet never received.
+ */
+export type BaselineEntry = Partial<Record<HeaderName | MovieHeaderName, string>>;
 
 /**
- * What SIMKL last said, per season. Keyed by identity rather than by row: rows
- * shift under an insert, and a key that moved would compare one season against
- * another's history.
+ * What SIMKL last said, per row. Keyed by identity rather than by row index:
+ * rows shift under an insert, and a key that moved would compare one row
+ * against another's history.
  */
 export type Baseline = Map<string, BaselineEntry>;
 
 /** The key both the planner and the store use. */
 export const seasonKey = (id: number, season: number): string => `${id}:${season}`;
+
+/**
+ * The films tab's key. Prefixed rather than bare, because a film's id and a
+ * show's id come from the same SIMKL numbering: `53078` alone would be a
+ * season key with its season missing, and the two would silently share an
+ * entry the day one collided.
+ */
+export const movieKey = (id: number): string => `movie:${id}`;
 
 /**
  * The serial a recorded value stands for — the stored ISO instant, rendered in

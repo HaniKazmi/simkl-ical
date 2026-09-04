@@ -23,7 +23,7 @@
  * `errors.sheet` and `/healthz`.
  */
 
-import { config } from '../shared/config.ts';
+import { config, moviesSyncConfigured } from '../shared/config.ts';
 import { errorMessage } from '../shared/errors.ts';
 import type { Logger } from '../shared/logger.ts';
 import { SheetsAccessError } from '../api/google/client.ts';
@@ -35,7 +35,17 @@ import { classify } from '../api/tvdb/client.ts';
 import { parseGrid, type Grid } from './2-grid.ts';
 import { indexLibrary, type TitleProgress } from './1-index.ts';
 import { CATALOGUE_MAX_AGE, CatalogueStore, needsLookup } from './3-catalogue.ts';
-import { describePlan, observeWatches, planRecord, planSync, type PlanRecord, type PlanResult, type SheetPlan } from './4-plan.ts';
+import { describePlan, emptyPlan, observeWatches, planRecord, planSync, type PlanRecord, type PlanResult, type SheetPlan } from './4-plan.ts';
+import { toRequests } from './6-requests.ts';
+import { verify } from './7-verify.ts';
+import { parseMovieGrid, type MovieGrid } from './movies/2-grid.ts';
+import { indexFilms, type FilmProgress } from './movies/1-index.ts';
+import { FilmStore } from './movies/3-catalogue.ts';
+import { describeFilmPlan, emptyFilmPlan, filmPlanRecord, observeFilms, planFilms, type FilmPlanResult } from './movies/4-plan.ts';
+import { assertFilmPlanSafe, UnsafeFilmPlanError } from './movies/5-guard.ts';
+import { verifyFilms } from './movies/7-verify.ts';
+import { fetchFilms } from './movies/io/tmdb.ts';
+import { classify as tmdbClassify } from '../api/tmdb/client.ts';
 import { assertPlanSafe, UnsafePlanError } from './5-guard.ts';
 import { applyPlan } from './io/apply.ts';
 import { appendSheetRun, loadSheetRuns } from './io/journal.ts';
@@ -63,6 +73,30 @@ const MAX_ATTEMPTS = 3;
 const MAX_PASSES = 4;
 
 export type SheetSyncStatus = 'idle' | 'reported' | 'applied' | 'refused' | 'failed' | 'rolled-back' | 'frozen';
+
+/** Which tab a run was against. Two per poll once the films half is configured. */
+export type SheetTab = 'shows' | 'films';
+
+/**
+ * Worst-first. `/healthz` reports one status for a sync that now runs against
+ * two tabs, and the worse of the two is the only answer that cannot understate
+ * what happened: a frozen films tab beside an applied show grid is a frozen
+ * sync, and reporting `applied` would hide the one state that needs a human.
+ */
+const SEVERITY: readonly SheetSyncStatus[] = ['frozen', 'rolled-back', 'failed', 'refused', 'applied', 'reported', 'idle'];
+
+const worse = (a: SheetSyncResult, b: SheetSyncResult | null): SheetSyncResult => {
+  if (!b) return a;
+  const worst = SEVERITY.indexOf(a.status) <= SEVERITY.indexOf(b.status) ? a : b;
+  return {
+    status: worst.status,
+    // Both halves' plans, so the caller's counts describe the whole poll.
+    record: { edits: [...a.record.edits, ...b.record.edits], inserts: [...a.record.inserts, ...b.record.inserts] },
+    // Both errors: one half failing must not hide the other's failure.
+    error: [a.error, b.error].filter(Boolean).join('; ') || null,
+    retry: a.retry || b.retry,
+  };
+};
 
 export interface SheetSyncResult {
   status: SheetSyncStatus;
@@ -102,6 +136,8 @@ export class SheetSync {
   lastStatus: SheetSyncStatus = 'idle';
   /** What the upstreams have said so far, retained across polls — see `3-catalogue.ts`. */
   private store = new CatalogueStore();
+  /** What TMDB has said about each film so far — see `movies/3-catalogue.ts`. */
+  private films = new FilmStore();
   /**
    * What the run being recorded saw upstream, waiting on its outcome.
    *
@@ -110,7 +146,7 @@ export class SheetSync {
    * point, and `writing` may only be recorded once the write it belongs to
    * has landed.
    */
-  private pending: Pick<PlanResult, 'observed' | 'writing'> | null = null;
+  private pending = new Map<SheetTab, Pick<PlanResult, 'observed' | 'writing'>>();
 
   constructor({ logger = console as Logger }: { logger?: Logger } = {}) {
     this.log = logger;
@@ -133,20 +169,32 @@ export class SheetSync {
     if (config.sheetSyncMode === 'off') return outcome('idle');
     if (this.frozen) {
       this.log.error(this.frozen);
-      return await this.record(outcome('frozen', { error: this.frozen }));
+      return await this.record(outcome('frozen', { error: this.frozen }), 'shows');
     }
 
+    const shows = await this.half('shows', () => this.cycle(library, signal));
+    // The freeze latch is process-wide, so a show half that froze stops the
+    // films half in the same poll rather than on the next one: the sheet is in
+    // a state nobody has verified, and which tab that state is on does not make
+    // another write safe.
+    const films =
+      this.frozen || !moviesSyncConfigured() ? null : await this.half('films', () => this.filmsCycle(library, signal));
+    return worse(shows, films);
+  }
+
+  /** One tab's run, with the failure handling both share. */
+  private async half(tab: SheetTab, cycle: () => Promise<SheetSyncResult>): Promise<SheetSyncResult> {
     try {
-      return await this.record(await this.cycle(library, signal));
+      return await this.record(await cycle(), tab);
     } catch (err) {
       const message = errorMessage(err);
-      this.log.error(`sheet sync failed: ${message}`);
+      this.log.error(`sheet sync (${tab}) failed: ${message}`);
       // A failure that needs a human — a wrong SHEET_ID, an unshared
       // spreadsheet — is said every run through `errors.sheet`; asking for
       // another poll would only re-arm the retry indefinitely. The client
       // spec decides which failures those are; see `SheetsAccessError`.
       const permanent = err instanceof SheetsAccessError && err.needsHuman;
-      return await this.record(outcome('failed', { error: message, retry: !permanent }));
+      return await this.record(outcome('failed', { error: message, retry: !permanent }), tab);
     }
   }
 
@@ -159,14 +207,17 @@ export class SheetSync {
    * The `sheetSyncMode === 'off'` return in `run()` does not come through
    * here, so an inert install writes no file at all.
    */
-  private async record(result: SheetSyncResult): Promise<SheetSyncResult> {
+  private async record(result: SheetSyncResult, tab: SheetTab): Promise<SheetSyncResult> {
     this.lastRunAt = nowIso();
-    this.lastStatus = result.status;
-    await this.remember(result.status);
+    // Worst-wins across the poll, so a films failure is not erased by a show
+    // run that follows it cleanly on the next tick of the same poll.
+    this.lastStatus = tab === 'shows' ? result.status : worse(result, outcome(this.lastStatus)).status;
+    await this.remember(result.status, tab);
     await appendSheetRun(
       {
         at: this.lastRunAt,
         status: result.status,
+        tab,
         mode: config.sheetSyncMode,
         edits: result.record.edits,
         inserts: result.record.inserts,
@@ -188,11 +239,11 @@ export class SheetSync {
    * rolled-back or report-mode run leaves those fields exactly as it found
    * them, and re-plans the same edit next poll.
    */
-  private async remember(status: SheetSyncStatus): Promise<void> {
-    const pending = this.pending;
+  private async remember(status: SheetSyncStatus, tab: SheetTab): Promise<void> {
+    const pending = this.pending.get(tab);
     // Cleared before the await: a run that reached no plan — frozen, or a
     // throw out of `cycle` — must not record what the run before it saw.
-    this.pending = null;
+    this.pending.delete(tab);
     if (!pending) return;
 
     // Merged into `observed` in place: `this.pending` is already detached and
@@ -225,13 +276,13 @@ export class SheetSync {
     let record: PlanRecord | undefined;
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
-      const snapshot = await readSnapshot({ signal });
+      const snapshot = await readSnapshot(config.sheetName, { signal });
       const grid = parseGrid(snapshot);
       const { plan, observed, writing } = await this.planToFixpoint(grid, index, starts, made, attempt, signal);
       // Replaced per attempt, never merged: a FRESH re-read plans against a
       // different grid, and the observations of a pass whose plan was thrown
       // away describe rows this run is no longer acting on.
-      this.pending = { observed, writing };
+      this.pending.set('shows', { observed, writing });
       record = planRecord(plan);
 
       // A failed lookup means some season's shape or runtime is unknown —
@@ -406,7 +457,17 @@ export class SheetSync {
    * latched so every later run repeats it instead of writing.
    */
   private async apply(grid: Grid, plan: SheetPlan, record: PlanRecord, retry: boolean, signal: AbortSignal | undefined): Promise<SheetSyncResult> {
-    const applied = await applyPlan(grid, plan, { log: this.log, signal });
+    const applied = await applyPlan(
+      {
+        snapshot: grid.snapshot,
+        requests: toRequests(plan, grid),
+        describe: () => describePlan(plan, grid.columns),
+        summary: `${plan.edits.length} edits and ${plan.insert ? 1 : 0} inserts`,
+        verify: (after) => verify(grid, after, plan),
+        verifyRestored: (after) => verify(grid, after, emptyPlan()),
+      },
+      { log: this.log, signal },
+    );
     if (applied.status === 'frozen') {
       this.frozen = applied.error;
       this.log.error(applied.error ?? '');
@@ -417,6 +478,147 @@ export class SheetSync {
     // rolled-back work is not guaranteed to refuse again, since the
     // concurrent edit that triggered it was itself reverted by the restore.
     return outcome(applied.status, { record, error: applied.error, retry: applied.status === 'failed' ? true : retry });
+  }
+
+  /**
+   * The films tab's run: read, plan to a fixpoint, guard, write.
+   *
+   * The same protocol as `cycle` and deliberately not folded into it. What the
+   * two share is the transport and the write-and-recover sequence, both already
+   * shared through `readSnapshot` and `applyPlan`; what they do not share is a
+   * single rule about what may be written, because a film row has no block, no
+   * season and no roll-up formula to reason about.
+   */
+  private async filmsCycle(library: Library | null, signal: AbortSignal | undefined): Promise<SheetSyncResult> {
+    const index = indexFilms(library);
+    // The early-out: a poll in which no film moved never reads the tab.
+    if (index.size === 0) return outcome('idle');
+
+    // A projection of the library alone, which cannot change while a run is in
+    // flight, so every planning pass after the first would rebuild it identically.
+    const seed = observeFilms(index);
+    // Lookups already made this run. A FRESH re-plan or a later pass must not
+    // re-issue them — failed ones included, which stay unrecorded in the store
+    // so the *next poll* retries them, but would otherwise stall this run on
+    // exactly the fetches that aged its snapshot.
+    const made = { films: new Set<number>(), failures: 0 };
+
+    let record: PlanRecord | undefined;
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+      const snapshot = await readSnapshot(config.moviesSheetName, { signal });
+      const grid = parseMovieGrid(snapshot);
+      const { plan, observed, writing } = await this.filmsToFixpoint(grid, index, seed, made, signal);
+      // Replaced per attempt, never merged: a FRESH re-read plans against a
+      // different grid, and the observations of a pass whose plan was thrown
+      // away describe rows this run is no longer acting on.
+      this.pending.set('films', { observed, writing });
+      record = filmPlanRecord(plan);
+
+      const lookupRetry = made.failures > 0;
+      const retry = lookupRetry || (config.sheetSyncMode === 'apply' && plan.deferredInserts > 0);
+      if (plan.deferredInserts) this.log.info(`${plan.deferredInserts} more film row(s) to add; the next poll will take the next one`);
+      if (made.failures) this.log.warn(`${made.failures} TMDB lookup(s) failed; the films sync will retry on the next poll`);
+
+      if (!plan.edits.length && !plan.insert) {
+        const lines = describeFilmPlan(plan);
+        if (lines.length) this.report('films sync: nothing to write', lines);
+        return outcome('idle', { retry });
+      }
+
+      try {
+        assertFilmPlanSafe(plan, grid);
+      } catch (err) {
+        // The refusal is no reason to retry: the same inputs would refuse
+        // again. A failed lookup is, independent of why the plan was refused.
+        if (!(err instanceof UnsafeFilmPlanError)) throw err;
+        this.report(`films sync REFUSED the plan: ${err.message}`, describeFilmPlan(plan), 'error');
+        return outcome('refused', { record, error: err.message, retry: lookupRetry });
+      }
+
+      if (config.sheetSyncMode === 'report') {
+        this.report(
+          `films sync (report mode): ${record.edits.length} edits, ${record.inserts.length} inserts — nothing written`,
+          describeFilmPlan(plan),
+        );
+        return outcome('reported', { record, retry });
+      }
+
+      // FRESH. Back to the read, not on to the write: re-planning is the point.
+      if (performance.now() - snapshot.readAtMono > FRESH_MS) {
+        this.log.warn(`the films snapshot aged past ${FRESH_MS / 1000}s while planning; re-reading (attempt ${attempt})`);
+        continue;
+      }
+
+      const applied = await applyPlan(
+        {
+          snapshot: grid.snapshot,
+          requests: toRequests(plan, grid),
+          describe: () => describeFilmPlan(plan),
+          summary: `${plan.edits.length} film edits and ${plan.insert ? 1 : 0} inserts`,
+          verify: (after) => verifyFilms(grid, after, plan),
+          verifyRestored: (after) => verifyFilms(grid, after, emptyFilmPlan()),
+        },
+        { log: this.log, signal },
+      );
+      if (applied.status === 'frozen') {
+        this.frozen = applied.error;
+        this.log.error(applied.error ?? '');
+        return outcome('frozen', { record, error: applied.error });
+      }
+      return outcome(applied.status, { record, error: applied.error, retry: applied.status === 'failed' ? true : retry });
+    }
+
+    const message = `could not plan the films tab against a fresh snapshot in ${MAX_ATTEMPTS} attempts`;
+    this.log.warn(`films sync: ${message}`);
+    return outcome('failed', { record, error: message, retry: true });
+  }
+
+  /**
+   * Plan, fetch what the plan is missing, and re-plan, until a pass demands
+   * nothing new.
+   *
+   * Terminates because every id fetched — or settled — enters `made` and is
+   * never asked again this run. Two passes in practice: one to learn which
+   * films have no row, one to plan the insert with what TMDB answered.
+   */
+  private async filmsToFixpoint(
+    grid: MovieGrid,
+    index: Map<number, FilmProgress>,
+    seed: Baseline,
+    made: { films: Set<number>; failures: number },
+    signal: AbortSignal | undefined,
+  ): Promise<FilmPlanResult> {
+    const now = Temporal.Now.instant();
+
+    for (let pass = 1; ; pass += 1) {
+      const result = planFilms(grid, index, this.films.films, { now, timezone: config.timezone, baseline: baseline(), seed });
+      if (pass > MAX_PASSES) {
+        this.log.warn(`the films planner still wanted lookups after ${MAX_PASSES} passes; running with what it has`);
+        return result;
+      }
+
+      const wanted = result.demands.filter((demand) => !made.films.has(demand.id));
+      if (!wanted.length) return result;
+      for (const demand of wanted) made.films.add(demand.id);
+
+      try {
+        const fetched = await fetchFilms(wanted, { signal });
+        this.films.fold(wanted, fetched);
+        made.failures += fetched.failed.length;
+        if (fetched.unavailable.length) {
+          this.log.warn(`TMDB has no record for ${fetched.unavailable.length} film(s): ${fetched.unavailable.join(', ')}`);
+        }
+      } catch (err) {
+        // An `account` failure — a rejected token — is rethrown by
+        // `lookupPool` rather than filed as a hundred dead films. Settling the
+        // pending ones is the answer to *that* and never to an outage, which
+        // would strand every film's row on one bad minute.
+        if (tmdbClassify(err) !== 'account') throw err;
+        this.log.error(`TMDB rejected the credential; no film row will be built this process: ${errorMessage(err)}`);
+        this.films.settleUnusable(wanted);
+      }
+    }
   }
 
   private report(headline: string, lines: string[], level: 'info' | 'error' = 'info'): void {

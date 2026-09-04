@@ -84,7 +84,7 @@ export const numberOf = (cell: CellData | undefined): number | null => {
   return typeof n === 'number' && Number.isFinite(n) ? n : null;
 };
 
-const textOf = (cell: CellData | undefined): string | null => {
+export const textOf = (cell: CellData | undefined): string | null => {
   const s = cell?.effectiveValue?.stringValue ?? cell?.userEnteredValue?.stringValue;
   const trimmed = s?.trim();
   return trimmed ? trimmed : null;
@@ -124,14 +124,23 @@ export const a1 = (row: number, column: number): string => `${columnLetter(colum
 
 const fold = (label: string): string => label.trim().toLowerCase();
 
-/** The header row's index, found by content rather than assumed to be row 1. */
-export const findHeaderRow = (rows: CellData[][]): number => {
+/**
+ * The header row's index, found by content rather than assumed to be row 1.
+ *
+ * `required` is the pair of labels that identifies *this* tab's header, not
+ * the whole set: a tab is recognised by the columns that make it that tab, and
+ * demanding all of them would make a header row unfindable the moment one
+ * column is renamed — turning a clear "X is missing" into "no header row at
+ * all". Defaulted to the show grid's pair so its callers read unchanged.
+ */
+export const findHeaderRow = (rows: CellData[][], required: readonly string[] = ['Show', 'Season']): number => {
+  const wanted = required.map(fold);
   const limit = Math.min(rows.length, HEADER_SEARCH_ROWS);
   for (let row = 0; row < limit; row += 1) {
     const labels = new Set((rows[row] ?? []).map((cell) => fold(textOf(cell) ?? '')));
-    if (labels.has('show') && labels.has('season')) return row;
+    if (wanted.every((label) => labels.has(label))) return row;
   }
-  throw new GridError(`No header row in the first ${HEADER_SEARCH_ROWS} rows — looked for one containing Show and Season.`);
+  throw new GridError(`No header row in the first ${HEADER_SEARCH_ROWS} rows — looked for one containing ${required.join(' and ')}.`);
 };
 
 /**
@@ -139,7 +148,11 @@ export const findHeaderRow = (rows: CellData[][]): number => {
  * makes "which column is Episode" unanswerable, and the wrong answer is a
  * real edit to the wrong cell.
  */
-export const resolveColumns = (headerCells: CellData[], width: number): ColumnMap => {
+export const resolveColumns = <H extends string = HeaderName>(
+  headerCells: CellData[],
+  width: number,
+  headers: readonly H[] = HEADERS as unknown as readonly H[],
+): Record<H, number> => {
   const found = new Map<string, number[]>();
   for (let column = 0; column < width; column += 1) {
     const label = fold(textOf(headerCells[column]) ?? '');
@@ -147,9 +160,9 @@ export const resolveColumns = (headerCells: CellData[], width: number): ColumnMa
     found.set(label, [...(found.get(label) ?? []), column]);
   }
 
-  const columns = {} as ColumnMap;
+  const columns = {} as Record<H, number>;
   const problems: string[] = [];
-  for (const header of HEADERS) {
+  for (const header of headers) {
     const matches = found.get(fold(header)) ?? [];
     if (matches.length === 0) problems.push(`${header} is missing`);
     else if (matches.length > 1) problems.push(`${header} appears in ${matches.map((c) => columnLetter(c)).join(' and ')}`);
