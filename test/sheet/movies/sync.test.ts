@@ -329,6 +329,26 @@ test('a cell that changed under the write is rolled back, not left half-applied'
   });
 });
 
+test('a freeze on the films tab is recorded under the films tab on every later poll', async () => {
+  // The repair message names the tab, and so must the run history: a frozen
+  // run repeats on every poll for the life of the process, and a history that
+  // filed those under the show grid would drop the films label on exactly the
+  // entry that says which tab needs a human.
+  await withFreshJournal(async () => {
+    const meddleMovies = (films: CellData[][]) => {
+      films[2]![0] = { userEnteredValue: { stringValue: 'Renamed By Hand' } };
+    };
+    await harness('apply', { meddleMovies, failRollback: true }, async ({ poll, sync }) => {
+      assert.equal((await poll(filmsOnly(...ON_TAB))).status, 'idle');
+      assert.equal((await poll(filmsOnly({ ...ON_TAB[0]!, rating: 10 }, ON_TAB[1]!))).status, 'frozen');
+      assert.equal(sheetRuns().at(-1)?.tab, 'films');
+      assert.equal((await poll(filmsOnly(...ON_TAB))).status, 'frozen');
+      assert.equal(sheetRuns().at(-1)?.tab, 'films', 'the repeat is filed where the freeze was');
+      assert.ok(sync.frozen);
+    });
+  });
+});
+
 test('the films run is journalled under its own tab', async () => {
   await withFreshJournal(async () => {
     const library = filmsOnly(...ON_TAB, film({ id: 999, lastWatchedAt: '2026-08-25T20:00:00Z' }));

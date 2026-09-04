@@ -239,6 +239,8 @@ export class SheetSync {
    * rollback, only a fresh plan against a fresh read.
    */
   frozen: string | null = null;
+  /** Which tab froze, so every later poll's record names the tab that needs repair. */
+  private frozenTab: SheetTab = 'shows';
   lastRunAt: string | null = null;
   lastStatus: SheetSyncStatus = 'idle';
   /** What the upstreams have said so far, retained across polls — see `3-catalogue.ts`. */
@@ -278,7 +280,7 @@ export class SheetSync {
     const poll: Poll = { library, signal, spent: { edits: 0, rows: 0 }, showGridIds: null, status: 'idle' };
     if (this.frozen) {
       this.log.error(this.frozen);
-      return await this.record(outcome('frozen', { error: this.frozen }), 'shows', poll);
+      return await this.record(outcome('frozen', { error: this.frozen }), this.frozenTab, poll);
     }
 
     const shows = await this.half('shows', () => this.showsSpec(poll), poll);
@@ -454,6 +456,7 @@ export class SheetSync {
       // every later run repeats it instead of writing.
       if (applied.status === 'frozen') {
         this.frozen = applied.error;
+        this.frozenTab = spec.tab;
         this.log.error(applied.error ?? '');
         return outcome('frozen', { record, error: applied.error });
       }
