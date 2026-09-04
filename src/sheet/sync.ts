@@ -160,7 +160,8 @@ interface Poll {
    * What earlier halves this poll sent to the sheet, counted against the same
    * budget. `SHEET_MAX_EDITS` is a blast radius for the poll, not an allowance
    * per tab: counted per tab, one poll writes twice it while each half reports
-   * itself inside budget.
+   * itself inside budget. Charged for what was *sent*, not what verified — a
+   * batch that went out and could not be read back may well have landed.
    */
   spent: SpentBudget;
   /**
@@ -444,12 +445,10 @@ export class SheetSync {
         },
         { log: this.log, signal: poll.signal },
       );
-      // Counted from what was written, not from what was planned. Charged at
-      // the guard instead, a plan the FRESH loop then discarded — or one report
-      // mode never wrote — would still dock the next half's allowance.
-      if (applied.status === 'applied') {
-        poll.spent = { edits: poll.spent.edits + plan.edits.length, rows: poll.spent.rows + rowsTouched(plan) };
-      }
+      // The batch went out, whatever became of it. Charged here rather than at
+      // the guard, a plan the FRESH loop then discarded — or one report mode
+      // never wrote — would still dock the next half's allowance.
+      poll.spent = { edits: poll.spent.edits + plan.edits.length, rows: poll.spent.rows + rowsTouched(plan) };
 
       // A freeze is the one outcome with state: the message is latched so
       // every later run repeats it instead of writing.

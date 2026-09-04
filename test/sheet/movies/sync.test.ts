@@ -473,21 +473,40 @@ test('a kept show snapshot survives a films write from a fresh process', async (
   });
 });
 
-test('a show write that failed charges the films half nothing', async () => {
-  // `spent` counts what landed, not what passed the guard. Charged at the
-  // guard, a plan the write then failed to apply — or one the freshness loop
-  // discarded — would dock the films half for edits that never happened, and
-  // its plan is refused whole rather than trimmed.
+test('a show write that went out charges the films half, whatever became of it', async () => {
+  // `spent` counts what was sent, not what verified. A batch that errored or
+  // could not be read back may well have landed, and the budget is a blast
+  // radius for the poll: charged only on `applied`, such a poll writes the
+  // budget twice while each half reports itself inside it.
   await withFreshJournal(async () => {
     await withConfig({ sheetMaxEdits: 2 }, () =>
       harness('apply', { failWrite: 3 }, async ({ poll }) => {
         assert.equal((await poll(libraryOf(showWatching(5), ...ON_TAB))).status, 'applied');
-        // The show half plans two edits and fails to write them; the films
-        // half's one edit is inside the budget on its own.
+        // The show half plans two edits and its batch fails; the films half's
+        // one edit would be inside the budget on its own.
         const result = await poll(libraryOf(showWatching(6), { ...ON_TAB[0]!, rating: 10 }, ON_TAB[1]!));
-        assert.equal(result.status, 'failed', 'the show half failed, and only it');
+        assert.equal(result.status, 'failed', 'the show half failed');
         assert.equal(sheetRuns().at(-1)?.tab, 'films');
-        assert.equal(sheetRuns().at(-1)?.status, 'applied', 'the films edit was not refused on a budget nothing spent');
+        assert.equal(sheetRuns().at(-1)?.status, 'refused', 'and the films half is refused on the budget the show half spent');
+        assert.match(sheetRuns().at(-1)?.error ?? '', /3 edits this poll exceeds SHEET_MAX_EDITS=2/);
+      }),
+    );
+  });
+});
+
+test('a plan report mode never wrote, or the freshness loop discarded, charges nothing', async () => {
+  // Charged at the guard instead, a show plan that was reported and not
+  // written would dock the films half's allowance for edits that never went
+  // out.
+  await withFreshJournal(async () => {
+    await withConfig({ sheetMaxEdits: 2 }, () =>
+      harness('report', {}, async ({ poll }) => {
+        // Poll 1 records the films baseline; poll 2 has two show edits and one
+        // films edit to report, against a budget of two.
+        await poll(libraryOf(showWatching(6), ...ON_TAB));
+        const result = await poll(libraryOf(showWatching(6), { ...ON_TAB[0]!, rating: 10 }, ON_TAB[1]!));
+        assert.equal(result.status, 'reported', result.error ?? '');
+        assert.deepEqual(sheetRuns().slice(-2).map((r) => [r.tab, r.status]), [['shows', 'reported'], ['films', 'reported']]);
       }),
     );
   });
