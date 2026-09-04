@@ -169,20 +169,6 @@ export class SheetSync {
    */
   private spent = { edits: 0, rows: 0 };
   /**
-   * Whether the show half left a snapshot tab standing this poll.
-   *
-   * Only a `failed` run leaves one: it keeps the snapshot when the write may
-   * have landed, so an operator has the pre-write grid. Sweeping is
-   * spreadsheet-global, so the films half must not do it while that copy
-   * stands.
-   *
-   * Latched until the show half *applies*, not merely until it stops failing.
-   * Cleared on any other outcome, a run refused on the poll after the failure —
-   * plausibly refused *because* the unverified write left the grid odd — would
-   * let the films half sweep the very copy the failure preserved.
-   */
-  private keptBackup = false;
-  /**
    * Every SIMKL id the show grid held when this poll read it, or null if it was
    * never read.
    *
@@ -224,8 +210,6 @@ export class SheetSync {
     this.spent = { edits: 0, rows: 0 };
     this.onShowGrid = null;
     const shows = await this.half('shows', () => this.cycle(library, signal));
-    if (shows.status === 'failed') this.keptBackup = true;
-    else if (shows.status === 'applied') this.keptBackup = false;
     // The freeze latch is process-wide, so a show half that froze stops the
     // films half in the same poll rather than on the next one: the sheet is in
     // a state nobody has verified, and which tab that state is on does not make
@@ -528,8 +512,6 @@ export class SheetSync {
     const applied = await applyPlan(
       {
         snapshot: grid.snapshot,
-        // Shows runs first, so nothing else has written this poll.
-        maySweep: true,
         requests: toRequests(writesFor(plan, grid)),
         describe: () => describePlan(plan, grid.columns),
         summary: `${plan.edits.length} edits and ${plan.insert ? 1 : 0} inserts`,
@@ -630,8 +612,6 @@ export class SheetSync {
       const applied = await applyPlan(
         {
           snapshot: grid.snapshot,
-          // Unless the show half left one standing on purpose.
-          maySweep: !this.keptBackup,
           requests: toRequests(writesFor(plan, grid)),
           describe: () => describeFilmPlan(plan),
           summary: `${plan.edits.length} film edits and ${plan.insert ? 1 : 0} inserts`,

@@ -47,16 +47,6 @@ export interface ApplyOptions {
 export interface ApplySpec {
   /** The tab as it was when the plan was built. Its title is what gets re-read. */
   snapshot: SheetSnapshot;
-  /**
-   * Whether a clean write may tidy away every snapshot tab it finds.
-   *
-   * False once another tab has been written this poll: a failed write leaves
-   * its snapshot in place on the reasoning that "a leftover tab is swept by the
-   * next clean run", and with two tabs per poll the other half is that run.
-   * Sweeping here takes the operator's copy of the other tab's pre-write grid
-   * before they have seen the error that produced it.
-   */
-  maySweep: boolean;
   /** The plan's writes, already ordered. The backup is prepended here. */
   requests: SheetRequest[];
   /** Log lines describing the plan, rendered only when something is reported. */
@@ -80,7 +70,7 @@ export const applyPlan = async (spec: ApplySpec, { log, signal }: ApplyOptions):
     for (const line of spec.describe()) log.info(line);
   };
 
-  const name = backupName(Temporal.Now.instant());
+  const name = backupName(snapshot.sheetId, Temporal.Now.instant());
   // The snapshot rides at the head of the write batch — taken and applied in
   // one atomic request, so there is no state where the sheet changed but
   // nothing recorded what it looked like first.
@@ -123,12 +113,9 @@ export const applyPlan = async (spec: ApplySpec, { log, signal }: ApplyOptions):
 
   if (verification.ok) {
     if (writeError) log.warn(`the sheet write reported "${writeError}" but landed exactly as planned`);
-    // Sweeping takes every snapshot tab in the spreadsheet, including one the
-    // other half left standing on purpose. Barred from that, this run still
-    // has to remove its *own*, or a poll that cannot sweep leaves a full-tab
-    // copy behind every time it writes.
-    if (spec.maySweep) await sweepBackups(log, signal);
-    else await discardBackup(backupId, log, signal);
+    // Every snapshot of this tab, this run's included. Another tab's are not
+    // this write's to judge — see `sweepBackups`.
+    await sweepBackups(snapshot.sheetId, log, signal);
     report(`sheet sync applied ${spec.summary}`);
     return { status: 'applied', error: null };
   }

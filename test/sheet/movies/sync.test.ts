@@ -423,22 +423,52 @@ test('the two halves cannot together exceed one poll budget', async () => {
   });
 });
 
-test('a films write leaves no snapshot behind, even when it may not sweep', async () => {
-  // The show half failing keeps its own snapshot for the operator, so the films
-  // half must not sweep — but it still has to remove its own, or every such
+test('a films write sweeps its own snapshots and nothing else', async () => {
+  // Sweeping is per tab, by the id in the snapshot's name. A failed show write
+  // keeps its snapshot as the operator's only copy of the pre-write grid, and
+  // a films write verifying clean says nothing about `Sheet1` — so it must not
+  // take it, while still removing every copy of its own tab, or each such
   // poll leaves a full-tab copy standing.
   await withFreshJournal(async () => {
     // Each write is followed by a sweep batch, so poll 2's show write is
     // the third: poll 1 writes and sweeps, then poll 2 writes.
     await harness('apply', { failWrite: 3 }, async ({ poll, sheet }) => {
       await poll(libraryOf(showWatching(5), ...ON_TAB));
+      // Stand in for the snapshot a failed show write keeps — the fake
+      // discards its own when the row count agrees nothing happened — and an
+      // older films snapshot a failure between write and read-back stranded.
+      sheet.titles.set(98, '_sync-backup-1-2026-09-04T12-00-00-000Z');
+      sheet.tabs.set(98, []);
+      sheet.titles.set(99, '_sync-backup-2-2026-09-04T11-00-00-000Z');
+      sheet.tabs.set(99, []);
       const result = await poll(libraryOf(showWatching(6), { ...ON_TAB[0]!, rating: 10 }, ON_TAB[1]!));
       assert.equal(result.status, 'failed', 'the show half failed');
+      assert.equal(sheetRuns().at(-1)?.status, 'applied', 'and the films half wrote');
+      assert.ok(sheet.titles.has(98), 'the show grid\'s snapshot stands');
       assert.deepEqual(
-        [...sheet.titles.values()].filter((t) => t.startsWith('_sync-backup-')),
+        [...sheet.titles.values()].filter((t) => t.startsWith('_sync-backup-2-')),
         [],
-        'and the films half took its own snapshot with it',
+        'and every films snapshot went, this run\'s and the stranded one',
       );
+    });
+  });
+});
+
+test('a kept show snapshot survives a films write from a fresh process', async () => {
+  // Nothing in the process says the snapshot is there — a restart has no
+  // memory of the failure that kept it. The name does, so a films write in the
+  // next process leaves it exactly as one in the same poll would.
+  await withFreshJournal(async () => {
+    await harness('apply', {}, async ({ poll, sheet }) => {
+      sheet.titles.set(99, '_sync-backup-1-2026-09-04T12-00-00-000Z');
+      sheet.tabs.set(99, []);
+      // A first poll of a new process: the show half is idle — the grid
+      // already holds three episodes — and the films half records; a second
+      // where only the films half writes.
+      await poll(libraryOf(showWatching(3), ...ON_TAB));
+      await poll(libraryOf(showWatching(3), { ...ON_TAB[0]!, rating: 9 }, ON_TAB[1]!));
+      assert.equal(sheetRuns().at(-1)?.tab, 'films', 'the films half wrote');
+      assert.ok(sheet.titles.has(99), 'and left the show grid\'s snapshot alone');
     });
   });
 });
@@ -460,43 +490,6 @@ test('a show write that failed charges the films half nothing', async () => {
         assert.equal(sheetRuns().at(-1)?.status, 'applied', 'the films edit was not refused on a budget nothing spent');
       }),
     );
-  });
-});
-
-test('a snapshot the show half left standing survives the films half', async () => {
-  // Sweeping is spreadsheet-global. While a failed show write's snapshot is
-  // the operator's only copy of the pre-write grid, no other half may take it.
-  await withFreshJournal(async () => {
-    await harness('apply', { failWrite: 3 }, async ({ poll, sheet }) => {
-      await poll(libraryOf(showWatching(5), ...ON_TAB));
-      // Stand in for the snapshot a failed write keeps: the fake discards its
-      // own when the row count agrees nothing happened.
-      sheet.titles.set(99, '_sync-backup-2026-09-04T12-00-00-000Z');
-      sheet.tabs.set(99, []);
-      await poll(libraryOf(showWatching(6), { ...ON_TAB[0]!, rating: 10 }, ON_TAB[1]!));
-      assert.ok(sheet.titles.has(99), 'the films half did not sweep it');
-    });
-  });
-});
-
-test('the latch holds until the show half applies, not until it stops failing', async () => {
-  // A run refused on the poll after a failure — plausibly refused *because* the
-  // unverified write left the grid odd — must not release the snapshot.
-  await withFreshJournal(async () => {
-    await harness('apply', { failWrite: 3 }, async ({ poll, sheet, sync }) => {
-      await poll(libraryOf(showWatching(5), ...ON_TAB));
-      await poll(libraryOf(showWatching(6), ...ON_TAB));
-      sheet.titles.set(99, '_sync-backup-2026-09-04T12-00-00-000Z');
-      sheet.tabs.set(99, []);
-      // A third poll where the films half writes and the show half is idle —
-      // poll 2's write failed, so the grid still matches five episodes. Only a
-      // show *apply* may release the latch; anything else has not verified the
-      // tab and the snapshot is still the operator's only copy.
-      await poll(libraryOf(showWatching(5), { ...ON_TAB[0]!, rating: 9 }, ON_TAB[1]!));
-      assert.equal(sheetRuns().at(-1)?.tab, 'films', 'the films half wrote');
-      assert.ok(sheet.titles.has(99), 'and left the show half\'s snapshot alone');
-      assert.equal(sync.lastStatus === 'frozen', false);
-    });
   });
 });
 

@@ -28,7 +28,24 @@ import { deleteSheetRequest, renameSheetRequest } from '../6-requests.ts';
 const BACKUP_PREFIX = '_sync-backup-';
 const REPAIR_PREFIX = '_sync-REPAIR-';
 
-export const isBackupTab = (title: string): boolean => title.startsWith(BACKUP_PREFIX);
+/**
+ * The namespace one tab's snapshots live in: the prefix plus the source tab's
+ * `sheetId`.
+ *
+ * The id is in the name because the name is the only state a snapshot has,
+ * and which tab it copies decides who may remove it. A write that verified
+ * clean says the sheet is known good — but only the tab it verified. The films
+ * tab and the show grid are written by different runs of one poll and are
+ * failed, kept and swept independently; a sweep that took every snapshot
+ * would let a films write delete the pre-write copy of `Sheet1` that a failed
+ * show write left for the operator, without `Sheet1` having been re-read. A
+ * latch in the process cannot hold that rule either: it is reset by a
+ * restart, and the snapshot is not.
+ */
+const namespaceOf = (sheetId: number): string => `${BACKUP_PREFIX}${sheetId}-`;
+
+/** Whether a title is a snapshot of the given tab. */
+export const isBackupOf = (title: string, sheetId: number): boolean => title.startsWith(namespaceOf(sheetId));
 
 /**
  * Colons and dots are legal in a tab name but awkward to type back.
@@ -37,8 +54,8 @@ export const isBackupTab = (title: string): boolean => title.startsWith(BACKUP_P
  * `Instant.toString()` omits a zero fractional part, which would give some
  * runs a shorter name than others.
  */
-export const backupName = (now: Temporal.Instant): string =>
-  `${BACKUP_PREFIX}${isoOf(now).replaceAll(':', '-').replace('.', '-')}`;
+export const backupName = (sheetId: number, now: Temporal.Instant): string =>
+  `${namespaceOf(sheetId)}${isoOf(now).replaceAll(':', '-').replace('.', '-')}`;
 
 export const repairName = (backup: string): string => backup.replace(BACKUP_PREFIX, REPAIR_PREFIX);
 
@@ -71,17 +88,20 @@ export const discardBackup = async (backupId: number | undefined, log: Logger, s
 };
 
 /**
- * Drop every snapshot tab, not just this run's.
+ * Drop every snapshot of this tab, not just this run's.
  *
- * Only reached after a write verified clean — the one moment the sheet is
+ * Only reached after a write to it verified clean — the one moment the tab is
  * known good, so an older snapshot describes a state nobody chose to restore.
  * Without this they accumulate: every write batch makes one, and any failure
  * between write and verify read leaves it behind. Each is a full copy of a
  * 1644-row tab, against a 10M-cell ceiling for the whole spreadsheet.
+ *
+ * Another tab's snapshots are left alone: nothing about this write says that
+ * tab is good, and a failed write there kept its copy on purpose.
  */
-export const sweepBackups = async (log: Logger, signal: AbortSignal | undefined): Promise<void> => {
+export const sweepBackups = async (sheetId: number, log: Logger, signal: AbortSignal | undefined): Promise<void> => {
   try {
-    const stale = (await listSheets({ signal })).filter((s) => isBackupTab(s.title));
+    const stale = (await listSheets({ signal })).filter((s) => isBackupOf(s.title, sheetId));
     if (!stale.length) return;
     await applyRequests(
       stale.map((s) => deleteSheetRequest(s.sheetId)),
