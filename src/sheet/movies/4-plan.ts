@@ -150,6 +150,12 @@ export interface PlanFilmsOptions {
    * against a duplicate row that stands.
    */
   onShowGrid?: Set<number> | null;
+  /**
+   * Whether TMDB has rejected the credential this process. No lookup will be
+   * answered, so the films waiting on one are named once rather than each
+   * reported as waiting — and none is filed as a film TMDB has nothing for.
+   */
+  lookupsRejected?: boolean;
 }
 
 // --- Recording -------------------------------------------------------------
@@ -304,7 +310,7 @@ export const planFilms = (
   grid: MovieGrid,
   index: Map<number, FilmProgress>,
   facts: Map<number, FilmFacts | null>,
-  { now = Temporal.Now.instant(), timezone = 'UTC', baseline = new Map(), seed, held, onShowGrid = null }: PlanFilmsOptions = {},
+  { now = Temporal.Now.instant(), timezone = 'UTC', baseline = new Map(), seed, held, onShowGrid = null, lookupsRejected = false }: PlanFilmsOptions = {},
 ): FilmPlanResult => {
   const plan = emptyFilmPlan();
   const demands: FilmDemand[] = [];
@@ -382,6 +388,7 @@ export const planFilms = (
     timezone,
     ceiling,
     releaseTo: releaseCeiling(now, timezone),
+    lookupsRejected,
   });
 
   return { plan, demands, unidentifiable, observed, writing };
@@ -402,7 +409,7 @@ const planInsert = (
   plan: FilmPlan,
   demands: FilmDemand[],
   unidentifiable: FilmProgress[],
-  { timezone, ceiling, releaseTo }: { timezone: string; ceiling: number; releaseTo: number },
+  { timezone, ceiling, releaseTo, lookupsRejected }: { timezone: string; ceiling: number; releaseTo: number; lookupsRejected: boolean },
 ): void => {
   const onTab = new Set(grid.rows.flatMap((row) => (row.id === null ? [] : [row.id])));
   // Names of rows the sync cannot match by id. A row someone typed by hand
@@ -442,6 +449,7 @@ const planInsert = (
     return;
   }
 
+  let awaitingCredential = 0;
   for (const film of missing) {
     // Asked before any lookup, because no lookup changes it. An epoch stamp is
     // SIMKL's "watched, never dated"; a row dated 1970 is worse than no row,
@@ -471,6 +479,10 @@ const planInsert = (
         unidentifiable.push(film);
         continue;
       }
+      if (lookupsRejected) {
+        awaitingCredential += 1;
+        continue;
+      }
       if (demands.length < MAX_LOOKUPS_PER_PASS) {
         demands.push({ id: film.id, tmdbId: film.tmdbId, title: film.title });
         plan.skips.push({ code: 'awaiting-lookup', row: null, reason: `${film.title}: waiting on TMDB before its row can be built` });
@@ -489,6 +501,9 @@ const planInsert = (
 
   if (plan.deferredInserts) {
     plan.notes.push(`${plan.deferredInserts} more film(s) need a row; one is inserted per run`);
+  }
+  if (awaitingCredential) {
+    plan.notes.push(`${awaitingCredential} film(s) need a TMDB lookup and TMDB rejected the credential; fix TMDB_API_KEY and restart`);
   }
 };
 

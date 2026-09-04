@@ -54,12 +54,17 @@ test('a retryable failure is not recorded, so the next poll asks again', () => {
   assert.equal(store.films.has(1), false);
 });
 
-test('a rejected credential settles every pending film, and only those', () => {
+test('a rejected credential is recorded about the token, and settles no film', () => {
+  // Settling the pending films would file them as ones TMDB has nothing for,
+  // and the planner would tell the operator to add by hand rows TMDB could
+  // build the moment the token is fixed.
   const store = new FilmStore();
   store.fold([{ id: 1, title: 'Known' }], { films: new Map([[1, MOVIE]]), unavailable: [] });
-  store.settleUnusable([{ id: 1 }, { id: 2 }]);
+  assert.equal(store.rejected, false);
+  store.reject();
+  assert.equal(store.rejected, true);
   assert.equal(store.films.get(1)?.genre, 'Adventure', 'an answered film keeps its answer');
-  assert.equal(store.films.get(2), null);
+  assert.equal(store.films.has(2), false, 'an unanswered one stays unanswered');
 });
 
 test('a film with no TMDB id is reported once, and never settled', () => {

@@ -236,6 +236,28 @@ test('a film TMDB has no record of is settled, not re-requested every poll', asy
   });
 });
 
+test('a rejected TMDB credential is said once about the token, and files no film as unbuildable', async () => {
+  // A 401 is a fact about the token, not about any film. Settled as films
+  // TMDB has nothing for, the report would tell the operator to add by hand
+  // rows TMDB could build the moment the token is fixed — eight more of them
+  // every poll. Held as a fact about the token, no further lookup is made
+  // this process and no poll is asked for, since none could drain it.
+  await withFreshJournal(async () => {
+    const library = filmsOnly(...ON_TAB, film({ id: 999, title: 'Blocked', lastWatchedAt: '2026-08-25T20:00:00Z' }));
+    await harness('apply', { tmdb: () => new Response('{"status_message":"Invalid API key"}', { status: 401 }) }, async ({ poll, calls, log }) => {
+      const first = await poll(library);
+      assert.equal(first.status, 'idle', first.error ?? '');
+      assert.equal(first.retry, false, 'no poll can drain a rejected token');
+      const asked = calls.filter((c) => c.includes('themoviedb')).length;
+      assert.ok(asked >= 1);
+      assert.equal(log.lines.some((l) => /Blocked .*has no TMDB record/.test(l)), false, log.lines.join('\n'));
+      assert.equal(log.lines.some((l) => /1 film\(s\) need a TMDB lookup and TMDB rejected the credential/.test(l)), true, log.lines.join('\n'));
+      await poll(library);
+      assert.equal(calls.filter((c) => c.includes('themoviedb')).length, asked, 'the second poll asks nothing');
+    });
+  });
+});
+
 test('a backlog is looked up one burst at a time, and drains without stalling', async () => {
   // One row lands per run, so the lookups the films behind it need are the
   // next poll's to make. Fetched now, every pass to the ceiling would spend

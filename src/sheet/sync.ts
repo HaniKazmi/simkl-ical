@@ -686,7 +686,8 @@ export class SheetSync {
    * because every id fetched enters `made` and is never asked again this run.
    *
    * `unfetched` says demands were left standing, which the loop turns into
-   * another poll.
+   * another poll — unless TMDB has rejected the credential, when no poll can
+   * drain them and asking would re-read the tab every tick for nothing.
    */
   private async filmsToFixpoint(
     grid: MovieGrid,
@@ -706,6 +707,7 @@ export class SheetSync {
         seed,
         held,
         onShowGrid: poll.showGridIds,
+        lookupsRejected: this.films.rejected,
       });
       // Reported once. Not settled: what is missing is SIMKL's id, not TMDB's
       // knowledge, so the film stays askable the moment SIMKL fills it in.
@@ -716,7 +718,9 @@ export class SheetSync {
       }
 
       const wanted = result.demands.filter((demand) => !made.films.has(demand.id));
-      if (!wanted.length || result.plan.insert) return { result, unfetched: wanted.length > 0 };
+      if (!wanted.length || result.plan.insert || this.films.rejected) {
+        return { result, unfetched: wanted.length > 0 && !this.films.rejected };
+      }
       if (pass > MAX_PASSES) {
         this.log.warn(`the films planner still wanted lookups after ${MAX_PASSES} passes; running with what it has`);
         return { result, unfetched: true };
@@ -732,12 +736,14 @@ export class SheetSync {
         }
       } catch (err) {
         // An `account` failure — a rejected token — is rethrown by
-        // `lookupPool` rather than filed as a hundred dead films. Settling the
-        // pending ones is the answer to *that* and never to an outage, which
-        // would strand every film's row on one bad minute.
+        // `lookupPool` rather than filed as a hundred dead films. It is a fact
+        // about the credential, not about any film, so it is recorded as one:
+        // no film is settled, and no further lookup is made this process.
+        // Filing the films as unobtainable would tell the operator to add by
+        // hand rows TMDB could build the moment the token is fixed.
         if (tmdbClassify(err) !== 'account') throw err;
-        this.log.error(`TMDB rejected the credential; no film row will be built this process: ${errorMessage(err)}`);
-        this.films.settleUnusable(wanted);
+        this.films.reject();
+        this.log.error(`TMDB rejected the credential; no film row will be built until it is fixed and the service restarted: ${errorMessage(err)}`);
       }
     }
   }

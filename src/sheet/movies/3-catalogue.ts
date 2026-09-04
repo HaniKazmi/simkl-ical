@@ -93,12 +93,19 @@ export class FilmStore {
   }
 
   /**
-   * Settle every pending film as unobtainable. The answer to a **rejected
-   * credential** only — never an outage, which would strand every film's row
-   * on one bad minute.
+   * Whether TMDB has rejected the credential this process.
+   *
+   * A fact about the token, not about any film, so it is held apart from the
+   * answers: settling the pending films as unobtainable would have the planner
+   * tell the operator to add by hand rows TMDB could build the moment the
+   * token is fixed. Held for the life of the process because the token is
+   * read at start-up, so a fixed one arrives with a restart — and every poll
+   * in between would otherwise spend its lookups on the same 401.
    */
-  settleUnusable(requests: readonly { id: number }[]): void {
-    for (const request of requests) if (!this.films.has(request.id)) this.films.set(request.id, null);
+  rejected = false;
+
+  reject(): void {
+    this.rejected = true;
   }
 
   /**

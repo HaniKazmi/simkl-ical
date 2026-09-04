@@ -30,11 +30,12 @@ const plan = (
     known = new Map<number, FilmFacts | null>(),
     held,
     onShowGrid = new Set<number>(),
-  }: { baseline?: Baseline; known?: Map<number, FilmFacts | null>; held?: Set<number>; onShowGrid?: Set<number> | null } = {},
+    lookupsRejected = false,
+  }: { baseline?: Baseline; known?: Map<number, FilmFacts | null>; held?: Set<number>; onShowGrid?: Set<number> | null; lookupsRejected?: boolean } = {},
 ) => {
   const grid = filmGrid(...rows);
   const index = indexFilms(libraryOf(...items));
-  return { grid, ...planFilms(grid.grid, index, known, { ...OPTS, baseline, held, onShowGrid, seed: observeFilms(index) }) };
+  return { grid, ...planFilms(grid.grid, index, known, { ...OPTS, baseline, held, onShowGrid, lookupsRejected, seed: observeFilms(index) }) };
 };
 
 const movie = (over: Partial<ItemSpec> & { id: number }): ItemSpec => ({ type: 'movies', status: 'completed', ...over });
@@ -209,6 +210,19 @@ test('a film whose row can never be built is not looked up', () => {
   const index = indexFilms(libraryOf(movie({ id: 1 }), movie({ id: 2, tmdb: '550', lastWatchedAt: watchedOn(TODAY - 1) })));
   const { demands } = planFilms(full, index, new Map(), { ...OPTS, seed: observeFilms(index) });
   assert.deepEqual(demands, []);
+});
+
+test('a rejected TMDB credential names the films waiting on it once, and files none as unbuildable', () => {
+  const { plan: p, demands } = plan(
+    [film('a', { id: 1 })],
+    [movie({ id: 1 }), movie({ id: 2, tmdb: '550', lastWatchedAt: watchedOn(TODAY - 1) }), movie({ id: 3, tmdb: '551', lastWatchedAt: watchedOn(TODAY - 2) })],
+    { lookupsRejected: true },
+  );
+  assert.deepEqual(demands, []);
+  assert.deepEqual(p.skips.filter((s) => s.code === 'awaiting-lookup'), []);
+  assert.equal(p.notes.filter((n) => /rejected the credential/.test(n)).length, 1);
+  assert.match(p.notes.join(' '), /2 film\(s\) need a TMDB lookup/);
+  assert.equal(p.notes.some((n) => /has no TMDB record/.test(n)), false);
 });
 
 test('a film TMDB has no record of is named once, not demanded every poll', () => {
