@@ -49,6 +49,11 @@ export interface FakeSheetsOptions {
   hideReplies?: boolean;
   /** Fail the first N tab-listing *attempts*. A listing retries four times. */
   failTabLists?: number;
+  /**
+   * Refuse to serve this tab's grid, the way a transient Sheets fault does —
+   * so a half can fail at its read while the other half still runs.
+   */
+  failReadOf?: string;
   grid?: CellSpec[][];
   episodes?: unknown;
   /** The SIMKL `/tv/{id}` detail body. */
@@ -72,6 +77,7 @@ export const fakeSheets = ({
   failRollback,
   hideReplies,
   failTabLists,
+  failReadOf,
   episodes = DEFAULT_EPISODES,
   grid = DEFAULT_GRID,
   tvdb,
@@ -141,6 +147,13 @@ export const fakeSheets = ({
     return {};
   };
 
+  /**
+   * Tabs that have stopped answering, for a fault arriving mid-sequence. Every
+   * read fails while a tab is in here, not just the next one: `readSnapshot`
+   * retries, so a single 500 is a fault the caller never sees.
+   */
+  const unreadable = new Set<string>();
+
   const handler = (url: string, init?: RequestInit): Response => {
     if (url.startsWith('https://oauth2.googleapis.com/token')) return jsonResponse({ access_token: 'sheet-token', expires_in: 3600 });
 
@@ -176,6 +189,7 @@ export const fakeSheets = ({
       // returning Sheet1 for a `Movies` read would have the films planner plan
       // the show grid's rows against the films tab's rules.
       const wanted = decodeURIComponent(new URL(url).searchParams.get('ranges') ?? '').replaceAll("'", '');
+      if (wanted === failReadOf || unreadable.has(wanted)) return new Response('{"error":{"message":"boom"}}', { status: 500 });
       const found = [...titles].find(([, title]) => title === wanted)?.[0];
       // Fail closed. Answering an unknown range with Sheet1 is the hazard the
       // comment below warns about, and in a shared double it is worse: a suite
@@ -220,7 +234,7 @@ export const fakeSheets = ({
     throw new Error(`unexpected request: ${url}`);
   };
 
-  return { handler, state, films, tabs, titles, batches, writes: () => writes };
+  return { handler, state, films, tabs, titles, batches, writes: () => writes, stopServing: (tab: string) => unreadable.add(tab) };
 };
 
 export type FakeSheets = ReturnType<typeof fakeSheets>;

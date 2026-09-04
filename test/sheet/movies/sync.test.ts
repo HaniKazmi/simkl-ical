@@ -23,10 +23,12 @@ import {
   withConfig,
   withFetch,
   withFreshJournal,
+  seasonRow,
+  showRow,
   type CellSpec,
   type ItemSpec,
 } from '../../helpers.ts';
-import { CREDENTIAL, DEFAULT_MOVIES, fakeSheets, type FakeSheetsOptions } from '../fake-sheets.ts';
+import { CREDENTIAL, DEFAULT_GRID, DEFAULT_MOVIES, fakeSheets, type FakeSheetsOptions } from '../fake-sheets.ts';
 import type { Library } from '../../../src/library.ts';
 import type { CellData } from '../../../src/api/google/types.ts';
 
@@ -494,6 +496,96 @@ test('the latch holds until the show half applies, not until it stops failing', 
       assert.equal(sheetRuns().at(-1)?.tab, 'films', 'the films half wrote');
       assert.ok(sheet.titles.has(99), 'and left the show half\'s snapshot alone');
       assert.equal(sync.lastStatus === 'frozen', false);
+    });
+  });
+});
+
+// --- Placing an anime film ---------------------------------------------------
+
+// `SHOW` above is what gives these an answer: with it in the library the show
+// half reads `Sheet1` instead of taking its early-out.
+const animeFilm = (over: Partial<ItemSpec> = {}): ItemSpec => ({
+  id: 999,
+  type: 'anime',
+  animeType: 'movie',
+  title: 'A New Film',
+  status: 'completed',
+  lastWatchedAt: '2026-08-25T20:00:00Z',
+  rating: 7,
+  runtime: 110,
+  ...over,
+});
+
+test('an anime film on no Sheet1 block is inserted on the films tab, marked as anime', async () => {
+  await withFreshJournal(async () => {
+    await run('apply', {}, libraryOf(SHOW, animeFilm()), (result, _calls, sheet) => {
+      assert.equal(result.status, 'applied', result.error ?? '');
+      const row = sheet.films?.[3];
+      assert.deepEqual(row?.[0]?.userEnteredValue, { stringValue: 'A New Film' });
+      assert.deepEqual(row?.[11]?.userEnteredValue, { stringValue: '999' });
+      // The column this tab has always carried by hand, now written.
+      assert.deepEqual(row?.[12]?.userEnteredValue, { boolValue: true });
+    });
+  });
+});
+
+test('an anime film already on a Sheet1 block is left there rather than given a second row', async () => {
+  await withFreshJournal(async () => {
+    // The same library, and the only difference is that `Sheet1` holds the id.
+    const grid = [...DEFAULT_GRID, showRow('Kara no Kyoukai', 'Completed', null, 'anime'), seasonRow(1, 7, 45100, { id: 999 })];
+    await run('report', { grid }, libraryOf(SHOW, animeFilm()), (result, _calls, _sheet, log) => {
+      assert.equal(result.record.inserts.length, 0);
+      // And silently. Everything past the insert filter reports, so a gate
+      // below it would move the show half's note here rather than remove it.
+      assert.equal(log.lines.some((l) => /A New Film/.test(l)), false, log.lines.join('\n'));
+    });
+  });
+});
+
+test('a poll whose Sheet1 read failed inserts no anime film at all', async () => {
+  // The reachable way to have no answer, and the only one an anime film can
+  // reach: its own presence in the library is what stops the show half taking
+  // its early-out, so a failed read is what is left. Fails closed — one poll's
+  // delay against a duplicate row that stands.
+  await withFreshJournal(async () => {
+    await run('report', { failReadOf: 'Sheet1' }, libraryOf(SHOW, animeFilm()), (result) => {
+      assert.equal(result.record.inserts.length, 0);
+    });
+  });
+});
+
+test('an ordinary film is inserted even when the Sheet1 read failed', async () => {
+  // The gate is about anime alone. A wider one would stop inserting films
+  // whenever the other half had a bad poll.
+  await withFreshJournal(async () => {
+    const library = libraryOf(SHOW, ...ON_TAB, film({ id: 999, title: 'A New Film', lastWatchedAt: '2026-08-25T20:00:00Z' }));
+    await run('report', { failReadOf: 'Sheet1' }, library, (result) => {
+      assert.equal(result.record.inserts.length, 1);
+    });
+  });
+});
+
+test('the ids Sheet1 held do not carry over into a poll that failed to read it', async () => {
+  // Every value is from this poll or there is none. A set left standing from a
+  // poll ago answers the placement question about a grid nobody read, and it
+  // fails in the expensive direction: an insert permitted.
+  await withFreshJournal(async () => {
+    await harness('report', {}, async ({ poll, sheet }) => {
+      // A first poll that reads `Sheet1` and finds no anime film on it.
+      await poll(libraryOf(SHOW));
+      sheet.stopServing('Sheet1');
+      const second = await poll(libraryOf(SHOW, animeFilm()));
+      assert.equal(second.record.inserts.length, 0);
+    });
+  });
+});
+
+test('the show half does not report an anime film as a title missing a row', async () => {
+  // It still indexes them — 20 sit on `Sheet1` rows, which would read as
+  // `unknown-id` skips the moment it stopped.
+  await withFreshJournal(async () => {
+    await run('report', {}, libraryOf(SHOW, animeFilm()), (_result, _calls, _sheet, log) => {
+      assert.equal(log.lines.some((l) => /has recent activity and no row/.test(l)), false, log.lines.join('\n'));
     });
   });
 });
