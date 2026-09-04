@@ -258,7 +258,7 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   file — `applyPlan` takes an `ApplySpec` so one copy of the rollback serves both, and `6-requests.ts`
   is structural over `{row, column, value}` so it names no field. What they share no copy of is a
   single rule about what may be written.
-- **Three film columns follow SIMKL; ten are written once and never revisited.** `Watch Date`,
+- **Three film columns follow SIMKL; eleven are written once and never revisited.** `Watch Date`,
   `Score` and `Runtime` qualify on `TRACKED_FIELDS`' own test — what they hold is not the row's
   judgement but SIMKL's — and all three come off the library delta with no lookup at all
   (`movie.runtime` agrees with the tab on 346 of 346 rows, `user_rating` on 245 of 245). Everything
@@ -309,11 +309,22 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   **absent** cell, never `FALSE`; and all 348 id cells hold `{ stringValue }`, so a number there
   compares unequal to every other row and the sync would not recognise its own insert. Both are
   guard rules, not conventions.
-- **Only SIMKL's `movies` category is synced.** An anime film arrives under `anime` with an
-  `anime_type` of `movie`, and whether it belongs on the films tab or embedded in a show block is a
-  curation call nothing in the record answers. Every film status is *indexed* even so — a
-  `plantowatch` row someone added by hand must be recognised rather than duplicated — but only
-  `completed` earns a row.
+- **A film is SIMKL's `movies` category plus `anime` with an `anime_type` of `movie`** — a
+  top-level key beside `show`, and the one fact `LibraryEntry.type` cannot supply, since `type` says
+  only which response key the record arrived under. `ova`, `special` and `ona` stay with the show
+  half: they hang off a series rather than standing alone, and the sheet files them that way. Every
+  film status is *indexed* — a `plantowatch` row someone added by hand must be recognised rather
+  than duplicated — but only `completed` earns a row.
+- **Where an anime film goes is the sheet's answer, not the record's.** It may belong on the films
+  tab or embedded in a show block, and nothing upstream says which, so an id already on the show
+  grid is left there — `onShowGrid` in `movies/4-plan.ts`, read off a per-poll field `sync.ts`
+  assigns the moment a grid parses. No grid parsed means no anime film is inserted, which costs one
+  poll against a duplicate row that stands; and since an anime film's own presence stops the show
+  half early-outing, a failed `Sheet1` read is the only way it meets that branch. The gate sits
+  **inside `planInsert`'s `missing` filter**, because everything past that filter reports: below it,
+  the show half's "add it by hand" note is moved rather than removed. Both halves therefore index
+  anime films, and dropping them from `indexLibrary` is the tidy-up not to make — 20 sit on show-grid
+  rows, which become `unknown-id` skips every poll.
 - **The genre map drops rather than approximates.** TMDB's list in TMDB's own order, which is
   significance order and the reason this reads TMDB rather than SIMKL, whose genres arrive sorted
   alphabetically with that signal gone. First survivor is `Genre`, the rest are `Genres`, capped at
@@ -410,7 +421,7 @@ the process, and the rest carries its pipeline position in the filename, so `ls`
 
 | Step | Module |
 | --- | --- |
-| INDEX | `1-index.ts` — library (movies only) → `FilmProgress`, and the early-out |
+| INDEX | `1-index.ts` — library (films, anime included) → `FilmProgress`, and the early-out |
 | PARSE | `2-grid.ts` — snapshot → one `MovieRow` per film; header resolution by text |
 | FOLD | `3-catalogue.ts` — a TMDB payload reduced to the cells a row needs, retained across polls |
 | PLAN | `4-plan.ts` — grid + library + catalogue + baseline → `{ plan, demands, observed, writing }` |
