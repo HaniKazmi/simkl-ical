@@ -25,11 +25,11 @@ const facts = (over: Partial<FilmFacts> = {}): FilmFacts => ({ ...filmFacts({}, 
 const plan = (
   rows: Parameters<typeof filmGrid>,
   items: ItemSpec[],
-  { baseline = new Map() as Baseline, known = new Map<number, FilmFacts | null>() } = {},
+  { baseline = new Map() as Baseline, known = new Map<number, FilmFacts | null>(), held }: { baseline?: Baseline; known?: Map<number, FilmFacts | null>; held?: Set<number> } = {},
 ) => {
   const grid = filmGrid(...rows);
   const index = indexFilms(libraryOf(...items));
-  return { grid, ...planFilms(grid.grid, index, known, { ...OPTS, baseline, seed: observeFilms(index) }) };
+  return { grid, ...planFilms(grid.grid, index, known, { ...OPTS, baseline, held, seed: observeFilms(index) }) };
 };
 
 const movie = (over: Partial<ItemSpec> & { id: number }): ItemSpec => ({ type: 'movies', status: 'completed', ...over });
@@ -133,10 +133,18 @@ test('a row whose id is on the tab twice is skipped rather than guessed at', () 
   assert.deepEqual(p.skips.map((s) => s.code), ['duplicate-id', 'duplicate-id']);
 });
 
-test('a row for a film no longer in the library is left alone', () => {
+test('a row for a film in no list at all is reported once', () => {
   const { plan: p } = plan([film('a', { id: 404 })], [movie({ id: 1 })], {});
   assert.equal(p.edits.length, 0);
   assert.equal(p.skips.find((s) => s.code === 'unknown-id')?.code, 'unknown-id');
+});
+
+test('a row the library holds under another type is silent, not unknown', () => {
+  // The 22 anime films on the tab arrive under SIMKL's `anime` category and so
+  // are in no film list. They belong to the show half, and a skip apiece every
+  // poll would bury the rows that really are unaccounted for.
+  const { plan: p } = plan([film('a', { id: 404 })], [movie({ id: 1 })], { held: new Set([404]) });
+  assert.deepEqual(p.skips.filter((s) => s.code === 'unknown-id'), []);
 });
 
 // --- The insert --------------------------------------------------------------

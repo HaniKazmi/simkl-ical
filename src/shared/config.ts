@@ -268,12 +268,14 @@ export const sheetSyncConfigured = (c: Config = config): boolean =>
 export const tvdbConfigured = (c: Config = config): boolean => Boolean(c.tvdbApiKey);
 
 /**
- * Whether the films tab can be synced. Paired with the sheet's own gate by the
- * caller rather than folded in here, so `/healthz` can say which half is off:
- * a spreadsheet with no TMDB token is a working show sync, not a broken one.
+ * Whether the films tab can be synced: the sheet sync itself, plus a TMDB
+ * token — the one switch, since eight of that tab's fourteen columns come from
+ * TMDB and a row inserted with them blank is worse than no row.
+ *
+ * `moviesSheetName` is not tested: it always has a value, so the test would say
+ * "a tab was named" on every machine, the way `googleCredentialsPath` would.
  */
-export const moviesSyncConfigured = (c: Config = config): boolean =>
-  sheetSyncConfigured(c) && Boolean(c.tmdbApiKey) && Boolean(c.moviesSheetName);
+export const moviesSyncConfigured = (c: Config = config): boolean => sheetSyncConfigured(c) && Boolean(c.tmdbApiKey);
 
 export const requireClientId = (): string => {
   if (!config.clientId) {
