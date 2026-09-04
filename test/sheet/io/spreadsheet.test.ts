@@ -15,6 +15,31 @@ test('a tab the spreadsheet does not have needs a human, not another poll', asyn
   // The tab is named by configuration, so no amount of retrying conjures it.
   // Reported as retryable it arms the poll's retry on every tick, and the
   // orchestrator's quiet-poll early-out never fires again.
+  //
+  // What Sheets actually answers for a `ranges` naming a tab it lacks is a 400
+  // `Unable to parse range`, before any body carrying `sheets` arrives. A
+  // response that resolves the range and still omits the title is the other
+  // way there — a case mismatch — and both have to reach the same answer.
+  clearTokenCache();
+  await withConfig({ sheetId: 'SID', googleKeyBase64: CREDENTIAL }, () =>
+    withFetch(
+      (url) =>
+        url.includes('oauth2')
+          ? jsonResponse({ access_token: 't', expires_in: 3600 })
+          : new Response(JSON.stringify({ error: { code: 400, message: 'Unable to parse range: Movies', status: 'INVALID_ARGUMENT' } }), { status: 400 }),
+      async () => {
+        await assert.rejects(
+          () => readSnapshot('Movies'),
+          (err: unknown) => {
+            assert.ok(err instanceof SheetsAccessError, `expected a SheetsAccessError, got ${String(err)}`);
+            assert.equal(err.needsHuman, true);
+            assert.match(err.message, /MOVIES_SHEET_NAME/);
+            return true;
+          },
+        );
+      },
+    ),
+  );
   clearTokenCache();
   await withConfig({ sheetId: 'SID', googleKeyBase64: CREDENTIAL }, () =>
     withFetch(

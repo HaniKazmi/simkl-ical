@@ -79,6 +79,13 @@ const SPEC: HttpSpec = {
         body,
       );
     }
+    // A tab name that the spreadsheet does not have. Sheets answers a `ranges`
+    // it cannot resolve with 400 `Unable to parse range`, not a 404, and the
+    // tab is named by configuration: no amount of retrying conjures it, and a
+    // retryable failure here would arm the poll's retry on every tick.
+    if (status === 400 && /Unable to parse range/i.test(body)) {
+      return new SheetsAccessError(`${describe(status, body)} — check SHEET_NAME and MOVIES_SHEET_NAME against the tabs the spreadsheet has.`, status, body);
+    }
     if (RETRYABLE.has(status)) return 'retry';
     return new SheetsError(`Sheets ${describe(status, body)} for ${path}`, status, body);
   },

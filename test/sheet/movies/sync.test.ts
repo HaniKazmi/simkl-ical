@@ -363,6 +363,22 @@ test('the films run is journalled under its own tab', async () => {
   });
 });
 
+test('a films tab the spreadsheet lacks fails the films half for a human, and arms no retry', async () => {
+  // The default name is `Movies`; a spreadsheet whose tab is called `Films`
+  // has a configuration problem no poll fixes. Reported as retryable, the
+  // orchestrator would re-read Sheet1 and fail the Movies read on every tick.
+  await withFreshJournal(async () => {
+    await harness('apply', {}, async ({ poll }) => {
+      await withConfig({ moviesSheetName: 'Films' }, async () => {
+        const result = await poll(filmsOnly(...ON_TAB));
+        assert.equal(result.status, 'failed');
+        assert.match(result.error ?? '', /Unable to parse range/);
+        assert.equal(result.retry, false);
+      });
+    });
+  });
+});
+
 test('the films half is inert without a TMDB token', async () => {
   await withFreshJournal(async () => {
     clearTokenCache();

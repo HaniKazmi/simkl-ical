@@ -81,10 +81,13 @@ export const readSnapshot = async (title: string, { signal }: { signal?: AbortSi
   const sheet = response.sheets?.find((s) => s.properties?.title === title);
   const sheetId = sheet?.properties?.sheetId;
   if (!sheet || sheetId === undefined) {
-    // A `SheetsAccessError` that needs a human, not a plain Error: the tab is
-    // named by configuration and no amount of retrying conjures it, so a
-    // retryable failure here would arm the poll's retry on every tick and
-    // defeat the orchestrator's quiet-poll early-out for good.
+    // A tab the spreadsheet lacks is normally caught before this by the 400
+    // Sheets answers an unresolvable range with, mapped in the client. This is
+    // reached when the range resolved and the title still differs — Sheets
+    // matches a range name case-insensitively and the response carries the
+    // tab's own spelling — and it is the same kind of failure: named by
+    // configuration, so a `SheetsAccessError` that needs a human rather than a
+    // retryable one that would arm the poll's retry on every tick.
     throw new SheetsAccessError(`No tab named ${title} in the spreadsheet.`, 404);
   }
 

@@ -191,11 +191,14 @@ export const fakeSheets = ({
       const wanted = decodeURIComponent(new URL(url).searchParams.get('ranges') ?? '').replaceAll("'", '');
       if (wanted === failReadOf || unreadable.has(wanted)) return new Response('{"error":{"message":"boom"}}', { status: 500 });
       const found = [...titles].find(([, title]) => title === wanted)?.[0];
-      // Fail closed. Answering an unknown range with Sheet1 is the hazard the
-      // comment below warns about, and in a shared double it is worse: a suite
-      // reading a tab this fake does not hold would assert against the show
-      // grid and pass for the wrong reason.
-      if (found === undefined) throw new Error(`fake sheets has no tab named ${wanted}`);
+      // What Sheets answers for a range naming a tab the spreadsheet lacks: a
+      // 400, not a 404 and not an empty response. Answering with Sheet1 would
+      // be the hazard the comment below warns about, and in a shared double it
+      // is worse: a suite reading a tab this fake does not hold would assert
+      // against the show grid and pass for the wrong reason.
+      if (found === undefined) {
+        return new Response(JSON.stringify({ error: { code: 400, message: `Unable to parse range: ${wanted}`, status: 'INVALID_ARGUMENT' } }), { status: 400 });
+      }
       const sheetId = found;
       const rows = tabs.get(sheetId) ?? [];
       return jsonResponse({
