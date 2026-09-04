@@ -7,7 +7,7 @@ import { movieKey, type Baseline } from '../../../src/sheet/values.ts';
 import { isoOf } from '../../../src/shared/dates.ts';
 import type { FilmFacts } from '../../../src/sheet/movies/3-catalogue.ts';
 import { libraryOf, type ItemSpec } from '../../helpers.ts';
-import { film, filmGrid, TODAY } from './fixture.ts';
+import { film, filmGrid, rawFilm, TODAY } from './fixture.ts';
 
 const NOW = Temporal.Instant.from('2026-09-04T12:00:00Z');
 const OPTS = { now: NOW, timezone: 'UTC' as const };
@@ -253,4 +253,25 @@ test('a blank cell a film row has no value for is simply not filled', () => {
   const { plan: p } = plan([film('a', { id: 1 })], [movie({ id: 1 }), movie({ id: 2, rating: null, lastWatchedAt: watchedOn(TODAY - 1) })], { known });
   const fields = p.insert!.fill.map((c) => c.field);
   for (const absent of ['Genre', 'Genres', 'Rating', 'Director', 'Banner', 'Score']) assert.equal(fields.includes(absent as never), false);
+});
+
+test('a row someone started by hand is not given a second row beneath it', () => {
+  // The parse keeps a row carrying only a name so the sync can see it; `onTab`
+  // is keyed by id, so the name is the only handle on one that has none yet.
+  const started = rawFilm('started', ['Dune: Part Two', null, null, null, null, null, null, null, null, null, null, null, null, null]);
+  const known = new Map<number, FilmFacts | null>([[991, facts()]]);
+  const { plan: p } = plan([started], [movie({ id: 991, title: 'Dune: Part Two', lastWatchedAt: watchedOn(TODAY - 1) })], { known });
+  assert.equal(p.insert, null);
+});
+
+test('a film with no row left on the tab is named, not planned', () => {
+  // A guard refusal is whole-plan, so a full tab would stop every followed
+  // column on every other row until someone extended the grid.
+  const grid = filmGrid(film('a', { id: 1 }));
+  const full = { ...grid.grid, snapshot: { ...grid.grid.snapshot, rowCount: grid.grid.rows.length + 1 } };
+  const index = indexFilms(libraryOf(movie({ id: 1 }), movie({ id: 2, title: 'No Room', lastWatchedAt: watchedOn(TODAY - 1) })));
+  const known = new Map<number, FilmFacts | null>([[2, facts()]]);
+  const { plan: p } = planFilms(full, index, known, { ...OPTS, seed: observeFilms(index) });
+  assert.equal(p.insert, null);
+  assert.match(p.notes.join(' '), /no row left for No Room/);
 });

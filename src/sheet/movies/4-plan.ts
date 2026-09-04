@@ -300,6 +300,14 @@ export const planFilms = (
 
   const onTab = new Set<number>();
 
+  // Names of rows the sync cannot match by id. A row someone typed by hand
+  // carries a title and no id yet, and inserting a second row for that film
+  // beneath it is the one thing the parse keeping such rows is meant to
+  // prevent — but `onTab` is keyed by id, so the name is the only handle.
+  const namedOnTab = new Set(
+    grid.rows.filter((row) => row.id === null && row.name !== null).map((row) => row.name?.trim().toLowerCase()),
+  );
+
   for (const row of grid.rows) {
     if (row.id === null) continue;
     onTab.add(row.id);
@@ -352,7 +360,11 @@ export const planFilms = (
   }
 
   const unidentifiable: FilmProgress[] = [];
-  planInsert(grid, index, facts, onTab, plan, demands, unidentifiable, { timezone, ceiling, releaseTo: releaseCeiling(now, timezone) });
+  planInsert(grid, index, facts, onTab, namedOnTab, plan, demands, unidentifiable, {
+    timezone,
+    ceiling,
+    releaseTo: releaseCeiling(now, timezone),
+  });
 
   return { plan, demands, unidentifiable, observed, writing };
 };
@@ -369,13 +381,14 @@ const planInsert = (
   index: Map<number, FilmProgress>,
   facts: Map<number, FilmFacts | null>,
   onTab: Set<number>,
+  namedOnTab: Set<string | undefined>,
   plan: FilmPlan,
   demands: FilmDemand[],
   unidentifiable: FilmProgress[],
   { timezone, ceiling, releaseTo }: { timezone: string; ceiling: number; releaseTo: number },
 ): void => {
   const missing = [...index.values()]
-    .filter((film) => filmIsWatched(film) && !onTab.has(film.id))
+    .filter((film) => filmIsWatched(film) && !onTab.has(film.id) && !namedOnTab.has(film.title.trim().toLowerCase()))
     .sort((a, b) => {
       if (!a.watchedAt) return 1;
       if (!b.watchedAt) return -1;
@@ -413,6 +426,15 @@ const planInsert = (
         row: null,
         reason: `${film.title}: its watch date is ${film.watchedAt ? 'outside the range this column accepts' : 'missing'}`,
       });
+      continue;
+    }
+
+    // The declared grid has to have a row to give. Declined here rather than
+    // left for the guard for the reason the release date is: a guard refusal is
+    // whole-plan, so a full tab would stop every followed-column edit on every
+    // other row, on every poll, until someone extended the grid.
+    if (nextFilmRow(grid) >= grid.snapshot.rowCount) {
+      plan.notes.push(`the films tab has no row left for ${film.title} (${film.id}); add rows to the tab`);
       continue;
     }
 
