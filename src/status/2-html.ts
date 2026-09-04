@@ -316,6 +316,12 @@ const runs = (model: StatusModel) =>
     const changes = runChanges(run);
     const summary = html`<span class="pill ${run.state}">${run.status}</span>
       <span class="run-when">${time(run.at)}</span>
+      ${
+        // One poll writes one record per tab, so without this a quiet films run
+        // and a quiet show run read identically. Absent on every record written
+        // before the films half existed, which were all show runs.
+        run.tab === 'films' ? html`<span class="fld">films</span>` : null
+      }
       ${run.sole === null
         ? null
         : html`<span class="addr">${run.sole.address}</span><span class="fld">${run.sole.field}</span><span class="note">${run.sole.note}</span>`}
