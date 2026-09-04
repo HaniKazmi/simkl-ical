@@ -62,7 +62,7 @@ export interface FilmRowInsert {
   note: string;
 }
 
-export type FilmSkipCode = 'duplicate-id' | 'unknown-id' | 'unusable-value' | 'formula-cell' | 'awaiting-lookup';
+export type FilmSkipCode = 'duplicate-id' | 'unknown-id' | 'unusable-value' | 'formula-cell' | 'awaiting-lookup' | 'unlinked-row';
 
 export interface FilmSkip {
   code: FilmSkipCode;
@@ -412,25 +412,23 @@ const planInsert = (
   { timezone, ceiling, releaseTo, lookupsRejected }: { timezone: string; ceiling: number; releaseTo: number; lookupsRejected: boolean },
 ): void => {
   const onTab = new Set(grid.rows.flatMap((row) => (row.id === null ? [] : [row.id])));
-  // Names of rows the sync cannot match by id. A row someone typed by hand
+  // Rows the sync cannot match by id, by name. A row someone typed by hand
   // carries a title and no id yet, and inserting a second row for that film
   // beneath it is the one thing the parse keeping such rows is meant to
   // prevent — but ids are what rows are matched by, so the name is the only
-  // handle.
-  const namedOnTab = new Set(grid.rows.flatMap((row) => (row.id === null && row.name !== null ? [row.name.trim().toLowerCase()] : [])));
+  // handle. A heuristic, so a film it holds back is reported rather than
+  // silently dropped: a hand row titled "Dune" holds back every film of that
+  // title until its id is typed, and only the report says so.
+  const namedOnTab = new Map(
+    grid.rows.flatMap((row) => (row.id === null && row.name !== null ? [[row.name.trim().toLowerCase(), row.row] as const] : [])),
+  );
 
   // Everything past this filter reports: a film reaching the loop below with no
   // TMDB id is either named in a note or handed to the caller, which warns. So
   // a film this tab is not taking is excluded *here* rather than inside — else
   // the show half's "add it by hand" line is not removed but merely moved.
   const missing = [...index.values()]
-    .filter(
-      (film) =>
-        filmIsWatched(film) &&
-        !onTab.has(film.id) &&
-        !(film.anime && (onShowGrid === null || onShowGrid.has(film.id))) &&
-        !namedOnTab.has(film.title.trim().toLowerCase()),
-    )
+    .filter((film) => filmIsWatched(film) && !onTab.has(film.id) && !(film.anime && (onShowGrid === null || onShowGrid.has(film.id))))
     .sort((a, b) => {
       if (!a.watchedAt) return b.watchedAt ? 1 : 0;
       if (!b.watchedAt) return -1;
@@ -451,6 +449,16 @@ const planInsert = (
 
   let awaitingCredential = 0;
   for (const film of missing) {
+    const heldBy = namedOnTab.get(film.title.trim().toLowerCase());
+    if (heldBy !== undefined) {
+      plan.skips.push({
+        code: 'unlinked-row',
+        row: heldBy,
+        reason: `${film.title} (${film.id}): row ${heldBy + 1} holds that title and no id; type the id to link it, or it is never filled in`,
+      });
+      continue;
+    }
+
     // Asked before any lookup, because no lookup changes it. An epoch stamp is
     // SIMKL's "watched, never dated"; a row dated 1970 is worse than no row,
     // and there is nothing to fall back to.

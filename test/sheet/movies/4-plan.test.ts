@@ -308,6 +308,23 @@ test('a row someone started by hand is not given a second row beneath it', () =>
   const known = new Map<number, FilmFacts | null>([[991, facts()]]);
   const { plan: p } = plan([started], [movie({ id: 991, title: 'Dune: Part Two', lastWatchedAt: watchedOn(TODAY - 1) })], { known });
   assert.equal(p.insert, null);
+  // And said, not silently dropped: the match is by title, which is a
+  // heuristic, and a hand row holds back every film of that title until its
+  // id is typed. Only the report tells the operator which row to link.
+  const skip = p.skips.find((s) => s.code === 'unlinked-row');
+  assert.equal(skip?.row, 1);
+  assert.match(skip?.reason ?? '', /Dune: Part Two \(991\): row 2 holds that title and no id/);
+});
+
+test('a hand-typed title Sheets stored as a number still holds its film back', () => {
+  // "1917", "300" and "2012" are real film titles, and Sheets stores each as a
+  // number. Read as text only, such a row would be nameless, and the film it
+  // was started for would get a second row beneath it.
+  const started = rawFilm('started', [1917, null, null, null, null, null, null, null, null, null, null, null, null, null]);
+  const known = new Map<number, FilmFacts | null>([[991, facts()]]);
+  const { plan: p } = plan([started], [movie({ id: 991, title: '1917', lastWatchedAt: watchedOn(TODAY - 1) })], { known });
+  assert.equal(p.insert, null);
+  assert.equal(p.skips.find((s) => s.code === 'unlinked-row')?.row, 1);
 });
 
 test('a film with no row left on the tab is named, not planned', () => {

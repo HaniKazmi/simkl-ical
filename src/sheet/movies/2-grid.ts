@@ -44,7 +44,13 @@ const MOVIE_HEADER_MARKERS = ['Name', 'Watch Date'] as const;
 export interface MovieRow {
   /** Zero-based index into `snapshot.rows`. */
   row: number;
-  /** The `Name` cell. Null when the row carries an id and nothing else. */
+  /**
+   * The `Name` cell, as text. Null when the row carries an id and nothing else.
+   *
+   * A number is read as its text, because Sheets stores a title like "1917" or
+   * "300" as a number, and the one thing the name is used for — recognising a
+   * row someone started by hand, before its id is typed — has to see it.
+   */
   name: string | null;
   /**
    * The SIMKL id, or null when the cell is blank or not a positive integer.
@@ -74,6 +80,14 @@ export interface MovieGrid {
    */
   duplicates: Set<number>;
 }
+
+/** The `Name` cell as text, whichever way Sheets stored it. */
+const nameOf = (cell: CellData | undefined): string | null => {
+  const text = textOf(cell);
+  if (text !== null) return text;
+  const n = numberOf(cell);
+  return n === null ? null : String(n);
+};
 
 /** The id cell, in either representation the tab uses. */
 export const parseMovieId = (cell: CellData | undefined): number | null => {
@@ -107,7 +121,7 @@ export const parseMovieGrid = (snapshot: SheetSnapshot): MovieGrid => {
       if (seen.has(id)) duplicates.add(id);
       else seen.set(id, row);
     }
-    parsed.push({ row, name: textOf(cells[columns.Name]), id });
+    parsed.push({ row, name: nameOf(cells[columns.Name]), id });
   }
 
   return { snapshot, columns, headerRow, rows: parsed, duplicates };
