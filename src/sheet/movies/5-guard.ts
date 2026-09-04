@@ -24,14 +24,14 @@ import { isFormula, sameValue } from '../2-grid.ts';
 import { maxSerial, plausibleSerial } from '../values.ts';
 import { isCertificate, isGenre, MAX_SECONDARY_GENRES, plausibleRuntime, plausibleScore } from './values.ts';
 import type { MovieGrid, MovieHeaderName } from './2-grid.ts';
-import { isFollowed, type FilmCellEdit, type FilmPlan, type FilmRowInsert } from './4-plan.ts';
+import type { FilmCellEdit, FilmPlan, FilmRowInsert } from './4-plan.ts';
 import type { ExtendedValue } from '../../api/google/types.ts';
 
 /**
  * What the sync may write to a row that already exists — the three columns
  * that follow SIMKL, and nothing else.
  */
-const EDIT_FIELDS = new Set<MovieHeaderName>(['Watch Date', 'Score', 'Runtime']);
+export const EDIT_FIELDS = new Set<MovieHeaderName>(['Watch Date', 'Score', 'Runtime']);
 
 /**
  * Nothing on this tab is ever emptied. Its own axis rather than a field name
@@ -49,7 +49,7 @@ const EMPTIABLE: Set<MovieHeaderName> = new Set();
  * `Anime` is in neither. The rows carrying it came from SIMKL's anime
  * category, which this sync does not pull.
  */
-const INSERT_FIELDS = new Set<MovieHeaderName>([
+export const INSERT_FIELDS = new Set<MovieHeaderName>([
   'Name',
   'Watch Date',
   'Score',
@@ -209,11 +209,11 @@ const checkCellAlignment = (cell: FilmCellEdit, { grid }: FilmGuardContext): voi
 const checkEdit = (cell: FilmCellEdit, ctx: FilmGuardContext): void => {
   const where = `${cell.address} (${cell.field})`;
 
-  // The independent copy of the insert-only rule. `EDIT_FIELDS` already
-  // refuses anything outside the followed three; this says the same thing in
-  // the planner's own vocabulary, so widening one without the other fails
-  // loudly instead of quietly letting a write-once column be rewritten.
-  if (!isFollowed(cell.field)) refuse(`${where}: only the columns that follow SIMKL may be written to a row that already exists.`);
+  // Not `isFollowed`: consulting the planner's own set is exactly what these
+  // whitelists exist to avoid, since widening it there would widen the guard
+  // with it. `EDIT_FIELDS` is the independent statement, and
+  // `5-guard.test.ts` pins the two equal so a divergence is a failing test
+  // rather than a silent widening.
   if (!ctx.filmRows.has(cell.row)) refuse(`${where}: row ${cell.row + 1} is not a film row.`);
 
   checkCellShape(cell, EDIT_FIELDS, ctx);

@@ -217,10 +217,26 @@ const recordedNumber = (recorded: string | undefined): number | null | undefined
   return Number.isFinite(n) ? n : undefined;
 };
 
+/**
+ * The recorded watch date, keeping the three states apart.
+ *
+ * `recordedSerial` alone cannot: it answers null both for a value never
+ * recorded and for one recorded as absent, and those pull opposite ways — the
+ * first must write nothing, the second must write as soon as a date appears.
+ * An unparseable entry reads as never recorded, which costs one silent
+ * re-adopt and is the right direction for a file that decides whether cells
+ * get written.
+ */
+const recordedDate = (recorded: string | undefined, timezone: string): number | null | undefined => {
+  if (recorded === undefined) return undefined;
+  if (recorded === NOT_HELD) return null;
+  return recordedSerial(recorded, timezone) ?? undefined;
+};
+
 const compare = (field: FollowedField, film: FilmProgress, entry: Partial<Record<string, string>>, timezone: string): Comparison => {
   if (field === 'Watch Date') {
     const wanted = watchSerial(film.watchedAt, timezone);
-    return { wanted, recorded: recordedSerial(entry['Watch Date'], timezone), value: wanted === null ? undefined : num(wanted) };
+    return { wanted, recorded: recordedDate(entry['Watch Date'], timezone), value: wanted === null ? undefined : num(wanted) };
   }
   const wanted = field === 'Score' ? film.rating : film.runtime;
   return { wanted, recorded: recordedNumber(entry[field]), value: wanted === null ? undefined : num(wanted) };
