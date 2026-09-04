@@ -53,3 +53,13 @@ test('an empty library indexes to nothing — the early-out that skips the read'
   assert.equal(indexFilms(null).size, 0);
   assert.equal(indexFilms(libraryOf({ id: 1, type: 'shows' })).size, 0);
 });
+
+test('a film with no usable title falls back to its id', () => {
+  // `Name` and `Franchise` both take the title and the guard refuses either
+  // empty, so an empty string here refuses the whole films plan — every
+  // unrelated edit with it — on every poll for as long as SIMKL sends it.
+  for (const title of ['', '   ']) {
+    assert.equal(indexFilms(libraryOf({ id: 5, type: 'movies', title })).get(5)?.title, '5');
+  }
+  assert.equal(indexFilms(libraryOf({ id: 5, type: 'movies', title: 'Dune' })).get(5)?.title, 'Dune');
+});

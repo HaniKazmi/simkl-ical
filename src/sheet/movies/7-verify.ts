@@ -30,7 +30,7 @@ import type { SheetSnapshot } from '../io/spreadsheet.ts';
  */
 const INSPECTED: MovieHeaderName[] = MOVIE_HEADERS.filter((header) => header !== 'id');
 
-const FILMS_TAB: VerifiedTab<MovieGrid> = {
+const FILMS_TAB: VerifiedTab<MovieGrid, MovieHeaderName, FilmPlan> = {
   tab: 'the films tab',
   rowKind: 'film rows',
   parse: parseMovieGrid,

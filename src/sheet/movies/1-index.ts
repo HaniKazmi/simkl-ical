@@ -70,7 +70,11 @@ export const indexFilms = (library: Library | null | undefined): Map<number, Fil
     const movie = item.movie;
     out.set(id, {
       id,
-      title: movie?.title ?? String(id),
+      // `||`, not `??`: an empty or whitespace-only title is a value SIMKL can
+      // send, and it reaches `Name` and `Franchise`, which the guard refuses as
+      // non-empty — a whole-plan refusal that would freeze the tab for as long
+      // as that record is in the library.
+      title: movie?.title?.trim() || String(id),
       status: itemStatus(item),
       watchedAt: instantFrom(item.last_watched_at),
       rating: typeof item.user_rating === 'number' ? item.user_rating : null,

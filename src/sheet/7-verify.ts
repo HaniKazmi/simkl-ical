@@ -134,18 +134,37 @@ export interface Verification {
  * apart silently: hardening `editLanded` on the show grid would leave the films
  * tab on the old behaviour, and nothing would fail.
  */
-export interface VerifiedTab<G> {
+export interface VerifiedTab<G, H extends string, P extends VerifiablePlan> {
+  /**
+   * Phantom, never read: it is what ties a spec to the plan shape it verifies.
+   * Without `P` on the spec, `verifyAgainst` infers it from the plan argument
+   * alone and a films plan verifies against the show grid.
+   */
+  readonly verifies?: P;
   /** Names the tab in a problem message. */
   tab: string;
   /** What the structural check calls the rows it compares. */
   rowKind: string;
   parse: (snapshot: SheetSnapshot) => G;
-  columnsOf: (grid: G) => Record<string, number>;
+  /**
+   * `| 'id'` so the join-key rule below always has a column to compare: it is
+   * the one check that catches a row deleted under the write, and a spec whose
+   * headers omitted `id` would disable it silently.
+   */
+  columnsOf: (grid: G) => Record<H | 'id', number>;
   snapshotOf: (grid: G) => SheetSnapshot;
-  /** Every header whose column must not move during the write. */
-  headers: readonly string[];
+  /**
+   * Every header whose column must not move during the write.
+   *
+   * `H` is the tab's own header union, not `string`: widened, a misspelled
+   * header compiles, `columnsOf` answers undefined for it, that column drops
+   * out of the inspected set, and a concurrent human edit to it verifies
+   * clean. `H` also has to cover `id`, because the join-key rule below is what
+   * catches a row deleted under the write.
+   */
+  headers: readonly H[];
   /** The subset of those the cell diff inspects. */
-  inspected: readonly string[];
+  inspected: readonly H[];
   /**
    * The row indices whose set must survive the write unchanged. Show rows on
    * one tab, film rows on the other.
@@ -153,7 +172,18 @@ export interface VerifiedTab<G> {
   rowsOf: (grid: G) => number[];
 }
 
-export const verifyAgainst = <G>(spec: VerifiedTab<G>, before: G, after: SheetSnapshot, plan: VerifiablePlan): Verification => {
+/**
+ * `P` binds the plan to the tab. Left as a bare `VerifiablePlan` every plan
+ * satisfies it, so a films plan verifies against the show grid — one tab's
+ * column indices read off the other's — and nothing is found, which sends
+ * `applyPlan` to roll back over a write that was correct.
+ */
+export const verifyAgainst = <G, H extends string, P extends VerifiablePlan>(
+  spec: VerifiedTab<G, H, P>,
+  before: G,
+  after: SheetSnapshot,
+  plan: P,
+): Verification => {
   const problems: string[] = [];
   const inserts = plan.insert ? [plan.insert] : [];
   const insertRows = inserts.map((i) => i.row);
@@ -196,7 +226,7 @@ export const verifyAgainst = <G>(spec: VerifiedTab<G>, before: G, after: SheetSn
     for (const fill of insert.fill) expected.set(`${insert.row}:${fill.column}`, fill.value);
   }
 
-  const columns = Object.values(beforeColumns);
+  const columns: number[] = Object.values(beforeColumns);
   const inspected = new Set(spec.inspected.map((h) => beforeColumns[h]));
   // Only an insert moves rows, and only moved rows get their formulas rewritten.
   const structural = insertRows.length > 0;
@@ -273,7 +303,7 @@ export const verifyAgainst = <G>(spec: VerifiedTab<G>, before: G, after: SheetSn
 };
 
 /** The show grid's answers to the five questions above. */
-const SHOW_GRID: VerifiedTab<Grid> = {
+const SHOW_GRID: VerifiedTab<Grid, HeaderName, SheetPlan> = {
   tab: 'the sheet',
   rowKind: 'show rows',
   parse: parseGrid,
