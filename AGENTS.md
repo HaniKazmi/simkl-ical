@@ -283,6 +283,28 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   serial written straight into one renders as `28486`. `inheritFromBefore: true` is what carries the
   formats down — and the insert inherits the show grid's one-per-run limit for the same reason, that
   plan indices are pre-write.
+- **A film write names the film, not just the row.** `FilmCellEdit` carries the SIMKL id the
+  write is *for*, and the guard looks up what the grid says that row holds. A row index cannot be
+  checked on its own: every blank cell compares equal to every other, so an edit aimed one row off
+  finds a `previous` that matches and puts one film's value on another's row. The same map refuses a
+  row carrying no id and a row whose id the tab repeats — the planner declines both, and a guard
+  that only repeated the planner's reasoning would not be a second opinion.
+- **A film row goes where `nextFilmRow` says, and both halves ask it.** Under the last film row, or
+  under the **header** when the tab holds none. Anchored separately the planner and the guard
+  disagreed by one exactly when the tab was empty, so a fresh tab could never gain a row — and the
+  guard's own answer was the header row. `MovieGrid` carries `headerRow` for this; `rowCount` is a
+  count, so the last usable index is one below it, and that check runs *before* the placement rule
+  or it could only fire on a row placement had already accepted.
+- **The budget is the poll's, not the tab's.** `SHEET_MAX_EDITS` and `SHEET_MAX_ROWS` are a blast
+  radius for what one poll may change; counted per tab, one poll writes twice them while each half
+  reports itself inside budget. The show half's spend is carried into the films guard, and recorded
+  only once its own plan is safe so a refused show plan does not eat the films allowance.
+- **A run's tab is part of its identity.** Two halves failing the same way — an unshared
+  spreadsheet, a 500 on the read — produce byte-identical records, so `sameAs` compares `tab` first;
+  without it the second collapsed into the first, took its label, and the first tab's run was gone.
+  For the same reason a films run does not sweep the backup namespace when the show half left a
+  snapshot standing: "a leftover tab is swept by the next clean run" held while one poll wrote one
+  tab, and the films half is now that run, moments later.
 - **`Cinema` is only ever written `TRUE`, and `id` only ever as text.** The tab spells "no" as an
   **absent** cell, never `FALSE`; and all 348 id cells hold `{ stringValue }`, so a number there
   compares unequal to every other row and the sync would not recognise its own insert. Both are
@@ -298,7 +320,24 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   three. `Documentary` → `True Story` is the one rename that is not a spelling, and it is unanimous
   on all three documentaries. `History` is dropped: 8 of the 10 films carrying it are filed
   `True Story`, but 1917 and The Other Boleyn Girl are fiction, and TMDB never lists it first so it
-  could not pick a primary anyway. `Abstract` is in the vocabulary and nothing maps to it.
+  could not pick a primary anyway. `Abstract` is in the vocabulary and nothing maps to it. An empty
+  `Genres` is a state 27 rows hold, so the guard accepts one — `''.split(',')` is `['']`, and
+  refusing that would make the planner's decision to omit the cell load-bearing for the guard.
+- **Pick a TMDB value by what it is, never by where it sits in the array.** 166 of the 347 films on
+  the tab carry more than one GB certificate and 8 disagree, usually a re-rating attached to a later
+  digital or physical release; TMDB contracts no ordering, so `certificateOf` prefers the theatrical
+  entry the way `releaseDateOf` prefers a theatrical date. Every one of these cells is written once,
+  so an order-dependent answer is wrong for as long as the row exists.
+- **`Release Date` borrows neither of a watch date's bounds.** Its floor is 1900, not `MIN_SERIAL`'s
+  2000 — The Wizard of Oz is on the tab at 1939 and Star Wars at 1977. Its ceiling is a decade out,
+  not tomorrow: a watch cannot be in the future and a release can, for a film seen at a preview
+  before it opens here. Both bounds are the same kind of question — "is this a date at all" — set
+  wide enough that only a payload error crosses them.
+- **TMDB's 403 is transient.** TVDB counts one as `account` too, but there the cost is a runtime
+  cell left blank for a poll; here `account` settles every pending film as permanently unbuildable
+  for the life of the process, and TMDB answers a throttled or blocked request with 403 as readily
+  as a rejected token. A wrong token still fails closed one poll later, through the 401 its next
+  request gets.
 - **One poll, two runs, one status.** `/healthz` reports the worse of the two, ordered
   `frozen > rolled-back > failed > refused > applied > reported > idle`, because a frozen films tab
   beside an applied show grid is a frozen sync. The freeze latch is process-wide and a show half that
