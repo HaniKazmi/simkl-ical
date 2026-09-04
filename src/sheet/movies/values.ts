@@ -9,7 +9,7 @@
  */
 
 import { plainDateIn, releaseDate } from '../../shared/dates.ts';
-import { dateSerial } from '../values.ts';
+import { dateSerial, MAX_RUNTIME_MINUTES, MIN_RUNTIME_MINUTES } from '../values.ts';
 import type { TmdbBackdrop, TmdbMovie, TmdbRelease } from '../../api/tmdb/types.ts';
 
 // --- Genres ----------------------------------------------------------------
@@ -300,11 +300,12 @@ export const bannerOf = (movie: TmdbMovie | undefined): string | null => {
 export const plausibleScore = (score: number): boolean => Number.isInteger(score) && score >= 1 && score <= 10;
 
 /**
- * The `Runtime` column is whole minutes — the same bounds the show grid's
- * per-episode runtime uses, for the same reason: a film under a minute or over
- * a day is a payload error, not a film.
+ * The `Runtime` column is whole minutes, inside the bounds the show grid's
+ * per-episode runtime uses and for the same reason: a film under a minute or
+ * a day long is a payload error, not a film.
  */
-export const plausibleRuntime = (minutes: number): boolean => Number.isInteger(minutes) && minutes >= 1 && minutes <= 1440;
+export const plausibleRuntime = (minutes: number): boolean =>
+  Number.isInteger(minutes) && minutes >= MIN_RUNTIME_MINUTES && minutes < MAX_RUNTIME_MINUTES;
 
 /**
  * `Release Date` needs bounds of its own, at both ends.

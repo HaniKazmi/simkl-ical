@@ -19,6 +19,7 @@
  * Like the show planner, this never throws: an unresolvable row becomes a skip.
  */
 
+import { config } from '../../shared/config.ts';
 import { isoOf, plainDateIn } from '../../shared/dates.ts';
 import type { ExtendedValue } from '../../api/google/types.ts';
 import { isFormula } from '../2-grid.ts';
@@ -264,7 +265,6 @@ interface Comparison {
   wanted: number | null;
   /** What was last recorded: a number, null for a recorded absence, undefined for never. */
   recorded: number | null | undefined;
-  value: ExtendedValue | undefined;
 }
 
 const recordedNumber = (recorded: string | undefined): number | null | undefined => {
@@ -292,11 +292,9 @@ const recordedDate = (recorded: string | undefined, timezone: string): number | 
 
 const compare = (field: FollowedField, film: FilmProgress, entry: Partial<Record<string, string>>, timezone: string): Comparison => {
   if (field === 'Watch Date') {
-    const wanted = watchSerial(film.watchedAt, timezone);
-    return { wanted, recorded: recordedDate(entry['Watch Date'], timezone), value: wanted === null ? undefined : num(wanted) };
+    return { wanted: watchSerial(film.watchedAt, timezone), recorded: recordedDate(entry['Watch Date'], timezone) };
   }
-  const wanted = field === 'Score' ? film.rating : film.runtime;
-  return { wanted, recorded: recordedNumber(entry[field]), value: wanted === null ? undefined : num(wanted) };
+  return { wanted: field === 'Score' ? film.rating : film.runtime, recorded: recordedNumber(entry[field]) };
 };
 
 const withinBounds = (field: FollowedField, value: number, ceiling: number): boolean => {
@@ -310,7 +308,15 @@ export const planFilms = (
   grid: MovieGrid,
   index: Map<number, FilmProgress>,
   facts: Map<number, FilmFacts | null>,
-  { now = Temporal.Now.instant(), timezone = 'UTC', baseline = new Map(), seed, held, onShowGrid = null, lookupsRejected = false }: PlanFilmsOptions = {},
+  {
+    now = Temporal.Now.instant(),
+    timezone = config.timezone,
+    baseline = new Map(),
+    seed,
+    held,
+    onShowGrid = null,
+    lookupsRejected = false,
+  }: PlanFilmsOptions = {},
 ): FilmPlanResult => {
   const plan = emptyFilmPlan();
   const demands: FilmDemand[] = [];
@@ -354,7 +360,7 @@ export const planFilms = (
     const entry = baseline.get(key) ?? {};
 
     for (const field of FOLLOWED_FIELDS) {
-      const { wanted, recorded, value } = compare(field, film, entry, timezone);
+      const { wanted, recorded } = compare(field, film, entry, timezone);
 
       // A first sighting: recorded by the seed, written nothing. This is what
       // keeps the sync to changes from here on rather than a reconciliation of
@@ -364,7 +370,7 @@ export const planFilms = (
 
       // SIMKL dropped a value it used to hold. Nothing on this tab is ever
       // emptied, so this is recorded and left: the cell keeps what it has.
-      if (wanted === null || value === undefined) {
+      if (wanted === null) {
         skip('unusable-value', row.row, `${film.title}: SIMKL no longer holds a ${field}, and this tab empties no cell`);
         continue;
       }
@@ -378,7 +384,7 @@ export const planFilms = (
         continue;
       }
 
-      plan.edits.push(edit(grid, row.row, film.id, field, value, `${film.title}: ${field} moved to ${wanted}`));
+      plan.edits.push(edit(grid, row.row, film.id, field, num(wanted), `${film.title}: ${field} moved to ${wanted}`));
       willWrite(key, field, field === 'Watch Date' ? isoOf(film.watchedAt as Temporal.Instant) : String(wanted));
     }
   }

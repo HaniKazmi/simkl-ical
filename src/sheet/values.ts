@@ -99,9 +99,13 @@ export const ownsNote = (cell: CellData | undefined, text: string | null | undef
  */
 export const maxSerial = (now: Temporal.Instant, timezone: string): number => dateSerial(plainDateIn(now, timezone).add({ days: 1 }));
 
-/** The bounds of a per-episode runtime, in minutes: one whole minute to under a day. */
-const MIN_RUNTIME_MINUTES = 1;
-const MAX_RUNTIME_MINUTES = 1440;
+/**
+ * The bounds of a runtime, in minutes: one whole minute to under a day. Both
+ * tabs' runtime columns check against these — a per-episode day fraction on the
+ * show grid, whole minutes on the films tab — so a bound exists once.
+ */
+export const MIN_RUNTIME_MINUTES = 1;
+export const MAX_RUNTIME_MINUTES = 1440;
 
 /**
  * Per-episode minutes → the day fraction the `Episodes` column holds on a
