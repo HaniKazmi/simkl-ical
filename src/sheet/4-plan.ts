@@ -43,7 +43,6 @@ import {
   type SeasonRow,
   type ShowBlock,
 } from './2-grid.ts';
-import type { MovieHeaderName } from './movies/2-grid.ts';
 import { courComplete, type SeasonProgress, type TitleProgress } from './1-index.ts';
 import { maxSerial, ownsNote, plausibleSerial, recordedSerial, runtimeDays, seasonKey, TRACKED_FIELDS, watchedNote, watchSerial } from './values.ts';
 import type { Baseline, TrackedField } from './values.ts';
@@ -1335,11 +1334,12 @@ const planInsert = (
 export interface RecordedEdit {
   address: string;
   /**
-   * Either tab's column. One record shape for both, because the journal and
-   * the status page ask the same three questions of a films edit as of a show
-   * one — where it landed, which column, and why.
+   * Either tab's column, as text. One record shape for both, because the
+   * journal and the status page ask the same three questions of a films edit
+   * as of a show one — where it landed, which column, and why — and this
+   * module does not name the other tab's columns.
    */
-  field: HeaderName | MovieHeaderName;
+  field: string;
   note: string;
 }
 

@@ -10,10 +10,6 @@
  */
 
 import type { ExtendedValue, GridRange, SheetRequest } from '../api/google/types.ts';
-import type { Grid } from './2-grid.ts';
-import type { SheetPlan } from './4-plan.ts';
-import type { MovieGrid } from './movies/2-grid.ts';
-import type { FilmPlan } from './movies/4-plan.ts';
 
 /**
  * What building a batch needs from a planned write, and nothing more.
@@ -41,13 +37,15 @@ export const rowsTouched = (plan: PlannedWrites): number =>
 /**
  * A plan and the grid it was planned against, tied together.
  *
- * Structural typing alone cannot express that: every plan satisfies
- * `PlannedWrites` and every grid carries a `sheetId`, so a films plan and the
- * show grid typecheck together and the batch addresses one tab's row and
- * column indices at the other tab's `sheetId` — a one-row misalignment on both
- * tabs at once, which is the failure this module exists to order correctly.
- * The brand costs one call to `writesFor` at each site and makes the pairing a
- * compile error instead of a runtime one.
+ * `toRequests` addresses one tab's row and column indices at one `sheetId`,
+ * and the two have to come from the same grid: a films plan sent to the show
+ * grid's id is a one-row misalignment on both tabs at once, which is the
+ * failure this module exists to order correctly. The brand costs one call to
+ * `writesFor` at each site and makes the pairing a single, visible act.
+ *
+ * Structural on both sides, because this module reads no field name and
+ * names no tab: the driver that calls it ties each tab's plan type to its grid
+ * type, so the pairing is checked there and this stays a leaf.
  */
 // A module-private symbol, so the brand cannot be forged by an object literal
 // that happens to carry the right key — the same reason `2-html.ts` brands
@@ -58,21 +56,9 @@ export interface BoundWrites extends PlannedWrites {
   readonly [planned]: number;
 }
 
-/**
- * Bind a plan to the grid it was built from. The only way to make a
- * `BoundWrites`, and the one place that says which pairings are legal.
- *
- * Overloaded rather than structural: every plan satisfies `PlannedWrites` and
- * every grid carries a `sheetId`, so a single structural signature accepts a
- * films plan against the show grid and sends one tab's indices to the other's
- * id. The overloads are type-only imports, so this stays a leaf module at
- * runtime.
- */
-export function writesFor(plan: SheetPlan, grid: Grid): BoundWrites;
-export function writesFor(plan: FilmPlan, grid: MovieGrid): BoundWrites;
-export function writesFor(plan: PlannedWrites, grid: { snapshot: { sheetId: number } }): BoundWrites {
-  return { ...plan, [planned]: grid.snapshot.sheetId } as BoundWrites;
-}
+/** Bind a plan to the grid it was built from. The only way to make a `BoundWrites`. */
+export const writesFor = (plan: PlannedWrites, grid: { snapshot: { sheetId: number } }): BoundWrites =>
+  ({ ...plan, [planned]: grid.snapshot.sheetId }) as BoundWrites;
 
 const oneCell = (sheetId: number, row: number, column: number): GridRange => ({
   sheetId,

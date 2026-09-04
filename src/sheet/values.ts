@@ -10,7 +10,6 @@
 import { isBlank, isFormula } from './2-grid.ts';
 import { instantFrom, plainDateFrom, plainDateIn } from '../shared/dates.ts';
 import type { HeaderName } from './2-grid.ts';
-import type { MovieHeaderName } from './movies/2-grid.ts';
 import type { CellData } from '../api/google/types.ts';
 
 /** Sheets counts days from 1899-12-30. */
@@ -155,14 +154,15 @@ export const TRACKED_FIELDS: readonly TrackedField[] = TRACKED;
 export const isTracked = (field: HeaderName): field is TrackedField => (TRACKED as readonly HeaderName[]).includes(field);
 
 /**
- * What one row's recorded upstream values look like, keyed by column.
+ * What one row's recorded upstream values look like, keyed by column name.
  *
- * Both tabs' columns, because one file holds both tabs' history. The key
- * namespaces say which is which; the field names do not collide, so a widened
- * union costs nothing and a second file would cost a second load, a second
- * save and a second chance to record a value the sheet never received.
+ * Keys are text rather than either tab's header union: one file holds both
+ * tabs' history — a second file would cost a second load, a second save and a
+ * second chance to record a value the sheet never received — and the key
+ * namespaces say which tab an entry belongs to. Each planner reads its own
+ * columns off an entry and never the other's.
  */
-export type BaselineEntry = Partial<Record<HeaderName | MovieHeaderName, string>>;
+export type BaselineEntry = Partial<Record<string, string>>;
 
 /**
  * What SIMKL last said, per row. Keyed by identity rather than by row index:
