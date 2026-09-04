@@ -11,7 +11,7 @@
  * a hard page refresh costs a render and nothing else.
  */
 
-import { config, tvdbConfigured } from '../shared/config.ts';
+import { config, moviesSyncConfigured, tvdbConfigured } from '../shared/config.ts';
 import { recentRequests } from '../api/requests.ts';
 import { assess } from '../health.ts';
 import { sheetRuns } from '../sheet/io/journal.ts';
@@ -57,10 +57,12 @@ export const renderStatus = (
       // timestamp plus interval can re-derive it.
       filmsDue: state.feed.filmsDue(state.library),
       runtimesConfigured: tvdbConfigured(),
+      filmsConfigured: moviesSyncConfigured(),
       sheetMode: config.sheetSyncMode,
       // The tab name is the label on the tab in front of the reader; the id
       // is only useful as the link below.
       sheetTab: config.sheetName,
+      filmsTab: config.moviesSheetName,
       feedUrl,
       // Same address, handed to the calendar client instead of the browser:
       // following the http one downloads a snapshot, which imports once and

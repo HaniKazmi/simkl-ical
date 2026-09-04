@@ -312,6 +312,21 @@ test('the summary says when runtime lookups are off, and nothing when they work'
   assert.doesNotMatch(on, /runtimes off/, 'a page that works says nothing about it');
 });
 
+test('the summary says when the films tab is off, and names it when it is on', () => {
+  // The same question `runtimes off` answers for TVDB: unconfigured, the films
+  // tab is never read and makes no request, so nothing else on the page tells
+  // "no TMDB token" from "no film has moved".
+  const off = renderPage(buildModel(input({ sheetConfigured: true, filmsConfigured: false })));
+  assert.match(off, /films off/);
+  assert.match(off, /tab “Sheet1”/, 'and only the show tab is named');
+
+  const on = renderPage(buildModel(input({ sheetConfigured: true, filmsConfigured: true })));
+  assert.doesNotMatch(on, /films off/, 'a page that works says nothing about it');
+  // Both named: they are different tabs of one spreadsheet with different
+  // rules, and naming only the first says the films tab is not touched.
+  assert.match(on, /tabs “Sheet1” and “Movies”/);
+});
+
 // A stamp with no usable instant must not become a `<time>`: the attribute
 // would carry the unparseable string and the tooltip would be empty.
 test('an unparseable timestamp renders no time element', () => {
