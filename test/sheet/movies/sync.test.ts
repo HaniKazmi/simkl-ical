@@ -601,3 +601,17 @@ test('the show half does not report an anime film as a title missing a row', asy
     });
   });
 });
+
+test('with no films tab synced, an anime film with no row is still reported by the show half', async () => {
+  // The note goes quiet because the films tab places the film. Without a TMDB
+  // token nothing does, and the note is the only thing that says a watched
+  // film is on neither tab.
+  await withFreshJournal(async () => {
+    await harness('report', {}, async ({ poll, log }) => {
+      await withConfig({ tmdbApiKey: undefined }, async () => {
+        await poll(libraryOf(SHOW, animeFilm()));
+      });
+      assert.equal(log.lines.some((l) => /A New Film .*has recent activity and no row/.test(l)), true, log.lines.join('\n'));
+    });
+  });
+});

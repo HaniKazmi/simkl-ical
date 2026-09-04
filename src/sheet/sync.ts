@@ -480,8 +480,10 @@ export class SheetSync {
     // cannot change while a run is in flight, so every planning pass after the
     // first would rebuild a byte-identical map.
     const starts = observeWatches(index);
-    // The films tab's, so this half does not report each as a title with no row.
-    const filed = animeFilmIds(poll.library);
+    // The films tab's, so this half does not report each as a title with no
+    // row — but only where that tab is being synced. Unconfigured, nothing
+    // places them, and the note is the only thing that says so.
+    const filed = moviesSyncConfigured() ? animeFilmIds(poll.library) : new Set<number>();
 
     // Lookups already made this run. A FRESH re-plan or later planning pass
     // must not re-issue them — failed ones included, which stay unstamped in
