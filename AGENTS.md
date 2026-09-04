@@ -178,9 +178,11 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   new is demanded. There are no separate what-to-fetch passes to keep in agreement — a row the
   planner waits on is by construction a row the same pass demanded. Do not reintroduce a second
   planning path.
-- **A runtime is only ever written into a blank cell**, and the bounds the guard checks are the same
-  constants the planner converts with (`values.ts`) — a bound that exists twice is a whole-plan
-  refusal waiting to fire on good data.
+- **A season's runtime is only ever written into a blank cell**, and the bounds the guard checks are
+  the same constants the planner converts with (`values.ts`) — a bound that exists twice is a
+  whole-plan refusal waiting to fire on good data. The films tab's `Runtime` is a different column
+  under a different rule: it follows SIMKL for the life of the row, and checks against the same two
+  constants.
 - **Never write a formula cell, and never write a show row except `Status`.** Every derived cell on
   a show row rolls up from the season rows beneath it. Writing one replaces a live roll-up with a
   frozen number, and nothing would ever notice.
@@ -254,10 +256,13 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   block, no season number, no roll-up formula. `parseGrid`, `SeasonRow`, `seasonKey`,
   `runtimeScopeOk`, `deriveStatus` and the whole close/note/insert apparatus are season-shaped;
   `src/sheet/movies/` is a sibling numbered core, not a mode of the show one. What the two share is
-  the transport, the write-and-recover protocol, the journal, the freeze latch and the baseline
-  file — `applyPlan` takes an `ApplySpec` so one copy of the rollback serves both, and `6-requests.ts`
-  is structural over `{row, column, value}` so it names no field. What they share no copy of is a
-  single rule about what may be written.
+  everything that holds no rule about what may be written: the transport, the driver loop
+  (`runTab` in `sync.ts`, over a `TabSpec` each half supplies), the write-and-recover protocol
+  (`applyPlan`, over an `ApplySpec`), the guard's alignment, shape and budget checks
+  (`guard-core.ts`), `verifyAgainst`, the journal, the freeze latch and the baseline file.
+  `6-requests.ts` is structural over `{row, column, value}` so it names no field. What they share
+  no copy of is a single rule about what may be written — those live in each tab's own numbered
+  modules, and the parent core imports nothing from `movies/`.
 - **Three film columns follow SIMKL; eleven are written once and never revisited.** `Watch Date`,
   `Score` and `Runtime` qualify on `TRACKED_FIELDS`' own test — what they hold is not the row's
   judgement but SIMKL's — and all three come off the library delta with no lookup at all
@@ -297,14 +302,33 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   or it could only fire on a row placement had already accepted.
 - **The budget is the poll's, not the tab's.** `SHEET_MAX_EDITS` and `SHEET_MAX_ROWS` are a blast
   radius for what one poll may change; counted per tab, one poll writes twice them while each half
-  reports itself inside budget. The show half's spend is carried into the films guard, and recorded
-  only once its own plan is safe so a refused show plan does not eat the films allowance.
+  reports itself inside budget. What one half *sent* is carried into the next half's guard as
+  `spent` — sent, not verified, because a batch that errored or could not be read back may well have
+  landed; and sent, not planned, because a plan report mode never wrote or the freshness loop
+  discarded changed nothing.
 - **A run's tab is part of its identity.** Two halves failing the same way — an unshared
   spreadsheet, a 500 on the read — produce byte-identical records, so `sameAs` compares `tab` first;
   without it the second collapses into the first, takes its label, and the first tab's run is gone.
-  For the same reason a films run does not sweep the backup namespace when the show half left a
-  snapshot standing: "a leftover tab is swept by the next clean run" held while one poll wrote one
-  tab, and the films half is now that run, moments later.
+  And a repeat is collapsed against the last record *of its tab*: the record before a show run is
+  nearly always a films run, and compared against that a state repeating on both tabs never
+  collapses and two records a poll evict the real history in 25 polls.
+- **A snapshot tab is named after the tab it copies, and a sweep takes only its own.** The name is
+  the only state a snapshot has, and which tab it copies decides who may remove it: a films write
+  verifying clean says nothing about `Sheet1`, and a failed show write kept its copy for the
+  operator. A latch in the process cannot hold that rule — a restart resets it and the snapshot is
+  not, and it protects in one direction only — so `backupName` carries the `sheetId` and
+  `sweepBackups` filters on it, with no state at all.
+- **A rejected TMDB credential is a fact about the token, not about any film.** A 401 sets
+  `FilmStore.rejected`; no film is settled, the planner names the films waiting once in a note that
+  says what to fix, and no further lookup — or poll — is asked for this process, since the token is
+  read at start-up. Settling the pending films would file them as ones TMDB has nothing for, eight
+  more every poll, and tell the operator to add by hand rows TMDB could build once the token is
+  fixed.
+- **The films fixpoint stops at the pass that plans the insert.** One row lands per run, so the
+  lookups the films behind it need are the next poll's to make; fetched now, every pass to the
+  ceiling spends another `MAX_LOOKUPS_PER_PASS`. The lookups a run chose not to make count as work
+  and arm `retry` the way deferred inserts do — without that, the poll that inserts the last film
+  the store knows has nothing deferred, and the rest of the backlog waits on unrelated activity.
 - **`Cinema` is only ever written `TRUE`, and `id` only ever as text.** The tab spells "no" as an
   **absent** cell, never `FALSE`; and all 348 id cells hold `{ stringValue }`, so a number there
   compares unequal to every other row and the sync would not recognise its own insert. Both are
@@ -412,10 +436,11 @@ the process, and the rest carries its pipeline position in the filename, so `ls`
 | PLAN | `4-plan.ts` — grid + library + catalogue + baseline → `{ plan, demands, observed, writing }`; the sync re-plans until nothing new is demanded, and records `writing` only once the write lands |
 | GUARD | `5-guard.ts` — a checklist of named rules; refuses a plan that does not re-derive |
 | BUILD | `6-requests.ts` — a plan → one ordered batch, plus the rollback request builders |
+| — | `guard-core.ts` — the rules both guards re-derive the same way: budget, cell shape, alignment; each guard passes its own `refuse` |
 | VERIFY | `7-verify.ts` — did the write do exactly what was planned, for either tab: `verifyAgainst` holds the rules and `VerifiedTab` what a tab answers for itself |
 | — | `values.ts` — the sheet's value conventions (serials, runtime bounds, the watch note's shape), one copy for planner and guard |
 | io | `io/spreadsheet.ts` (read/apply/list), `io/catalogue.ts` and `io/runtimes.ts` (fetch only), `io/apply.ts` (the write-and-recover protocol, over an `ApplySpec` either tab supplies), `io/backups.ts` (the snapshot tab's whole life), `io/journal.ts` (the run history), `io/baseline.ts` (what SIMKL last said — the one file here that *decides* something) |
-| — | `sync.ts` — the driver for **both** tabs: run states, the freshness loop, the plan-fetch fixpoints, the journal choke point |
+| — | `sync.ts` — the driver for **both** tabs: one loop (`runTab`) over a per-tab `TabSpec`, the two plan-fetch fixpoints, per-poll state in a `Poll`, the journal choke point |
 
 `src/sheet/movies/` — the films tab. INDEX → PARSE → (PLAN ⇄ FETCH) → GUARD → BUILD → VERIFY
 

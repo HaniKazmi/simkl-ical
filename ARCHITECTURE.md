@@ -11,10 +11,13 @@ api.simkl.com/sync/all-items        (OAuth, your library, no dates)         ─�
 api.simkl.com/movies/{id}          (per-film release dates)                ─┘
 
 api4.thetvdb.com/v4/series/{id}/episodes/official   (per-episode runtimes)  ─→ the sheet only
+api.themoviedb.org/3/movie/{id}                     (a film's genres, certificate, dates, crew, backdrop) ─→ the sheet only
 ```
 
-The fourth is not part of the join. It answers one question the other three cannot — how long a
-season's episodes are — and only for a season the sheet is about to close.
+The fourth and fifth are not part of the join. TVDB answers one question the other three cannot —
+how long a season's episodes are — and only for a season the sheet is about to close. TMDB answers
+the eight columns a new row on the sheet's films tab needs and SIMKL does not hold, once per film,
+on the poll that adds its row.
 
 One poll drives two independent consumers. `Orchestrator` owns the SIMKL library — the only input
 both halves need — plus the timers, and hands the library to `Feed` and `SheetSync` as peers.
@@ -87,6 +90,24 @@ real spreadsheet before the service account has Editor access.
 Where a run stopped is `/healthz`'s `sheet.status`; AGENTS.md maps each value to the step that
 produced it.
 
+#### The films tab
+
+The same poll keeps a second, flat tab current — one row per film, no blocks, no formulas — through
+a sibling numbered core in `src/sheet/movies/`. It is inert without `TMDB_API_KEY`: eight of the
+tab's fourteen columns come from TMDB, and a row inserted with those blank is worse than no row.
+Three columns follow SIMKL for the life of a row — `Watch Date`, `Score`, `Runtime` — off the
+library alone and against the same baseline file; the rest are written once when the row is
+created, one row per run, below the last row the tab holds.
+
+`sync.ts` runs both tabs through one loop. What the loop holds — the read, the freshness budget,
+the report/refuse/apply branches, the freeze latch, the journal — holds no rule about what may be
+written, so it exists once; what differs between the tabs is how a grid is parsed, planned, guarded,
+described and verified, and each half supplies those as a `TabSpec`. The shows half runs first,
+and what it *sent* is charged against the films half's budget, because `SHEET_MAX_EDITS` bounds a
+poll rather than a tab. A snapshot tab is named after the tab it copies and a sweep takes only its
+own, so a films write verifying clean cannot delete the copy of `Sheet1` a failed show write left
+for the operator.
+
 ---
 
 ## When anything runs, and what it costs
@@ -106,7 +127,8 @@ expensive or the thing it fetches rarely changes.
 | A title's status | same trigger as its episode list | `GET /tv/{id}`, or `/anime/{id}` for a cour |
 | A season's episode lengths | that season is completing with a blank runtime cell, or has finished airing on the run that adds its row — then never again | `GET api4.thetvdb.com/v4/series/{id}/episodes/official?season={n}` — one call is one whole season |
 | TVDB access token | first runtime lookup, then every **20 days**, or after any `401` | `POST api4.thetvdb.com/v4/login` |
-| Read the spreadsheet | start of every sheet-sync run, and again to verify a write | `GET sheets.googleapis.com/v4/spreadsheets/{id}?ranges='Sheet1'&fields=…` |
+| A film's TMDB record | the film is completed and has no row on the films tab; at most **8** per run, and none once the run has chosen the one row it inserts — the rest are the next poll's; never again once answered, for the life of the process | `GET api.themoviedb.org/3/movie/{tmdb}?append_to_response=release_dates,credits,images` — 4 at a time, bearer token from config |
+| Read the spreadsheet | start of every sheet-sync run, per tab, and again to verify a write | `GET sheets.googleapis.com/v4/spreadsheets/{id}?ranges='Sheet1'&fields=…`, and the same for the films tab |
 | Write the spreadsheet | a plan passed the guard, in `apply` mode only | `POST …/spreadsheets/{id}:batchUpdate` |
 | List the tabs | after a write, to find or sweep the snapshot tab | `GET …/spreadsheets/{id}?fields=sheets.properties(sheetId,title)` |
 | Google access token | within **5 minutes** of expiry | `POST oauth2.googleapis.com/token` — a locally-signed RS256 assertion |
@@ -141,9 +163,9 @@ questions: which half of the project needs it, and is it transport or business l
 an `io/` shell around a pure core numbered in pipeline order. AGENTS.md has the file-by-file map;
 layering runs downward only.
 
-`api/` is one retrying JSON transport (`http.ts`) under three thin per-upstream specs — base URL,
-credential headers, and what each status means are exactly what differ between SIMKL, Sheets and
-TVDB, so they are all a spec holds. `cdn.ts` is deliberately not on the engine: conditional-GET
+`api/` is one retrying JSON transport (`http.ts`) under four thin per-upstream specs — base URL,
+credential headers, and what each status means are exactly what differ between SIMKL, Sheets, TVDB
+and TMDB, so they are all a spec holds. `cdn.ts` is deliberately not on the engine: conditional-GET
 plus serve-stale-on-failure is a different protocol from retry-to-success. The lookup pool and the
 request log are shared for the same reason the engine is: each encodes a rule that drifts silently
 when copied — an account-level failure is not a fact about the item that hit it, and a body that

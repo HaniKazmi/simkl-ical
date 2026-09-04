@@ -3,7 +3,10 @@
  * planner needs. Pure.
  *
  * Runs before the films tab is read: `sync.ts` uses an empty index as its
- * early-out, so a poll in which no film moved never reads the tab at all.
+ * early-out, and it is narrow — `indexFilms` returns every film whatever
+ * moved, so only a library holding no film at all skips the read. Every other
+ * poll reads the tab, because baseline gating and the missing-from-tab diff
+ * both need the grid.
  *
  * SIMKL's `movies` category, plus the `anime` records whose `anime_type` is
  * `movie`. Whether an anime film belongs here or embedded in a `Sheet1` block
