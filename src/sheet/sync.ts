@@ -171,11 +171,15 @@ export class SheetSync {
   /**
    * Whether the show half left a snapshot tab standing this poll.
    *
-   * Only a `failed` run does: it keeps the snapshot when the write may have
-   * landed, on the reasoning that the next clean run sweeps it. That held while
-   * one poll wrote one tab; now the films half is the next clean run, moments
-   * later, and would take the operator's only copy of the pre-write show grid
-   * before they had seen the error.
+   * Only a `failed` run leaves one: it keeps the snapshot when the write may
+   * have landed, so an operator has the pre-write grid. Sweeping is
+   * spreadsheet-global, so the films half must not do it while that copy
+   * stands.
+   *
+   * Latched until the show half *applies*, not merely until it stops failing.
+   * Cleared on any other outcome, a run refused on the poll after the failure —
+   * plausibly refused *because* the unverified write left the grid odd — would
+   * let the films half sweep the very copy the failure preserved.
    */
   private keptBackup = false;
 
@@ -204,9 +208,9 @@ export class SheetSync {
     }
 
     this.spent = { edits: 0, rows: 0 };
-    this.keptBackup = false;
     const shows = await this.half('shows', () => this.cycle(library, signal));
-    this.keptBackup = shows.status === 'failed';
+    if (shows.status === 'failed') this.keptBackup = true;
+    else if (shows.status === 'applied') this.keptBackup = false;
     // The freeze latch is process-wide, so a show half that froze stops the
     // films half in the same poll rather than on the next one: the sheet is in
     // a state nobody has verified, and which tab that state is on does not make
@@ -340,12 +344,6 @@ export class SheetSync {
 
       try {
         assertPlanSafe(plan, grid);
-        // Recorded only once the plan is safe, so a refused show plan does not
-        // eat the films half's allowance.
-        this.spent = {
-          edits: plan.edits.length,
-          rows: new Set([...plan.edits.map((e) => e.row), ...(plan.insert ? [plan.insert.row] : [])]).size,
-        };
       } catch (err) {
         // The refusal is no reason to retry: the same inputs would refuse
         // again. A failed lookup is, independent of why the plan was refused.
@@ -365,7 +363,17 @@ export class SheetSync {
         continue;
       }
 
-      return await this.apply(grid, plan, record, retry, signal);
+      const applied = await this.apply(grid, plan, record, retry, signal);
+      // Counted from what was written, not from what was planned. Charged at
+      // the guard instead, a plan the FRESH loop then discarded — or one report
+      // mode never wrote — would still dock the films half's allowance.
+      if (applied.status === 'applied') {
+        this.spent = {
+          edits: plan.edits.length,
+          rows: new Set([...plan.edits.map((e) => e.row), ...(plan.insert ? [plan.insert.row] : [])]).size,
+        };
+      }
+      return applied;
     }
 
     const message = `could not plan against a fresh snapshot in ${MAX_ATTEMPTS} attempts`;

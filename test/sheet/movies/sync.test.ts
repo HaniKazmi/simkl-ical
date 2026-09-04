@@ -375,3 +375,125 @@ test('a quiet films half does not erase what the show half reported', async () =
     });
   });
 });
+
+/** The show library, with `watched` episodes of season 2 seen. */
+const showWatching = (watched: number): ItemSpec => ({
+  id: 3381,
+  title: 'Fargo',
+  status: 'watching',
+  seasons: { 1: Array.from({ length: 6 }, (_, i) => daysAgo(400 + i)), 2: Array.from({ length: watched }, (_, i) => daysAgo(10 - i)) },
+  watched: 6 + watched,
+  total: 16,
+  notAired: 5,
+});
+
+test('a poll where both halves write charges one shared budget', async () => {
+  // Both halves writing in one poll is the only state that reaches the budget
+  // threading, the backup gate and the films side of the status merge — and
+  // every other test here leaves one half idle.
+  await withFreshJournal(async () => {
+    await harness('apply', {}, async ({ poll, sheet }) => {
+      // Poll 1: the show half writes; the films half records its baseline.
+      assert.equal((await poll(libraryOf(showWatching(5), ...ON_TAB))).status, 'applied');
+      // Poll 2: both have something to write.
+      const result = await poll(libraryOf(showWatching(6), { ...ON_TAB[0]!, rating: 10 }, ON_TAB[1]!));
+      assert.equal(result.status, 'applied', result.error ?? '');
+      assert.deepEqual(sheetRuns().map((r) => r.tab).slice(-2), ['shows', 'films']);
+      assert.equal(sheet.films?.[1]?.[2]?.userEnteredValue?.numberValue, 10, 'the films edit landed');
+      assert.equal(sheet.state[3]?.[3]?.userEnteredValue?.numberValue, 6, 'and so did the show edit');
+    });
+  });
+});
+
+test('the two halves cannot together exceed one poll budget', async () => {
+  await withFreshJournal(async () => {
+    // Two show edits plus one films edit, against a budget of two.
+    await withConfig({ sheetMaxEdits: 2 }, () =>
+      harness('apply', {}, async ({ poll }) => {
+        assert.equal((await poll(libraryOf(showWatching(5), ...ON_TAB))).status, 'applied');
+        const result = await poll(libraryOf(showWatching(6), { ...ON_TAB[0]!, rating: 10 }, ON_TAB[1]!));
+        // The show half spends the budget; the films half is refused whole
+        // rather than trimmed, and asks for another poll.
+        assert.equal(result.status, 'refused', result.error ?? '');
+        assert.match(result.error ?? '', /exceeds SHEET_MAX_EDITS=2/);
+      }),
+    );
+  });
+});
+
+test('a films write leaves no snapshot behind, even when it may not sweep', async () => {
+  // The show half failing keeps its own snapshot for the operator, so the films
+  // half must not sweep — but it still has to remove its own, or every such
+  // poll leaves a full-tab copy standing.
+  await withFreshJournal(async () => {
+    // Each write is followed by a sweep batch, so poll 2's show write is
+    // the third: poll 1 writes and sweeps, then poll 2 writes.
+    await harness('apply', { failWrite: 3 }, async ({ poll, sheet }) => {
+      await poll(libraryOf(showWatching(5), ...ON_TAB));
+      const result = await poll(libraryOf(showWatching(6), { ...ON_TAB[0]!, rating: 10 }, ON_TAB[1]!));
+      assert.equal(result.status, 'failed', 'the show half failed');
+      assert.deepEqual(
+        [...sheet.titles.values()].filter((t) => t.startsWith('_sync-backup-')),
+        [],
+        'and the films half took its own snapshot with it',
+      );
+    });
+  });
+});
+
+test('a show write that failed charges the films half nothing', async () => {
+  // `spent` counts what landed, not what passed the guard. Charged at the
+  // guard, a plan the write then failed to apply — or one the freshness loop
+  // discarded — would dock the films half for edits that never happened, and
+  // its plan is refused whole rather than trimmed.
+  await withFreshJournal(async () => {
+    await withConfig({ sheetMaxEdits: 2 }, () =>
+      harness('apply', { failWrite: 3 }, async ({ poll }) => {
+        assert.equal((await poll(libraryOf(showWatching(5), ...ON_TAB))).status, 'applied');
+        // The show half plans two edits and fails to write them; the films
+        // half's one edit is inside the budget on its own.
+        const result = await poll(libraryOf(showWatching(6), { ...ON_TAB[0]!, rating: 10 }, ON_TAB[1]!));
+        assert.equal(result.status, 'failed', 'the show half failed, and only it');
+        assert.equal(sheetRuns().at(-1)?.tab, 'films');
+        assert.equal(sheetRuns().at(-1)?.status, 'applied', 'the films edit was not refused on a budget nothing spent');
+      }),
+    );
+  });
+});
+
+test('a snapshot the show half left standing survives the films half', async () => {
+  // Sweeping is spreadsheet-global. While a failed show write's snapshot is
+  // the operator's only copy of the pre-write grid, no other half may take it.
+  await withFreshJournal(async () => {
+    await harness('apply', { failWrite: 3 }, async ({ poll, sheet }) => {
+      await poll(libraryOf(showWatching(5), ...ON_TAB));
+      // Stand in for the snapshot a failed write keeps: the fake discards its
+      // own when the row count agrees nothing happened.
+      sheet.titles.set(99, '_sync-backup-2026-09-04T12-00-00-000Z');
+      sheet.tabs.set(99, []);
+      await poll(libraryOf(showWatching(6), { ...ON_TAB[0]!, rating: 10 }, ON_TAB[1]!));
+      assert.ok(sheet.titles.has(99), 'the films half did not sweep it');
+    });
+  });
+});
+
+test('the latch holds until the show half applies, not until it stops failing', async () => {
+  // A run refused on the poll after a failure — plausibly refused *because* the
+  // unverified write left the grid odd — must not release the snapshot.
+  await withFreshJournal(async () => {
+    await harness('apply', { failWrite: 3 }, async ({ poll, sheet, sync }) => {
+      await poll(libraryOf(showWatching(5), ...ON_TAB));
+      await poll(libraryOf(showWatching(6), ...ON_TAB));
+      sheet.titles.set(99, '_sync-backup-2026-09-04T12-00-00-000Z');
+      sheet.tabs.set(99, []);
+      // A third poll where the films half writes and the show half is idle —
+      // poll 2's write failed, so the grid still matches five episodes. Only a
+      // show *apply* may release the latch; anything else has not verified the
+      // tab and the snapshot is still the operator's only copy.
+      await poll(libraryOf(showWatching(5), { ...ON_TAB[0]!, rating: 9 }, ON_TAB[1]!));
+      assert.equal(sheetRuns().at(-1)?.tab, 'films', 'the films half wrote');
+      assert.ok(sheet.titles.has(99), 'and left the show half\'s snapshot alone');
+      assert.equal(sync.lastStatus === 'frozen', false);
+    });
+  });
+});

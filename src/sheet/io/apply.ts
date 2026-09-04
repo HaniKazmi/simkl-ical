@@ -123,7 +123,12 @@ export const applyPlan = async (spec: ApplySpec, { log, signal }: ApplyOptions):
 
   if (verification.ok) {
     if (writeError) log.warn(`the sheet write reported "${writeError}" but landed exactly as planned`);
+    // Sweeping takes every snapshot tab in the spreadsheet, including one the
+    // other half left standing on purpose. Barred from that, this run still
+    // has to remove its *own*, or a poll that cannot sweep leaves a full-tab
+    // copy behind every time it writes.
     if (spec.maySweep) await sweepBackups(log, signal);
+    else await discardBackup(backupId, log, signal);
     report(`sheet sync applied ${spec.summary}`);
     return { status: 'applied', error: null };
   }
