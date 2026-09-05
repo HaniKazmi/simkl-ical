@@ -33,7 +33,12 @@ const MAX_PER_COMPONENT = 8;
 /** A failure body is upstream text of unknown length; the page needs a line, not a page. */
 const MAX_ERROR_CHARS = 300;
 
-export type RequestService = 'simkl' | 'cdn' | 'sheets' | 'tvdb' | 'tmdb';
+/**
+ * `storage` is Cloud Storage and `images` is whichever CDN an artwork
+ * candidate lives on — two hosts, one label, because what the page needs to
+ * know is that a download failed, and the path says where.
+ */
+export type RequestService = 'simkl' | 'cdn' | 'sheets' | 'tvdb' | 'tmdb' | 'storage' | 'images';
 
 /**
  * Which part of the service asked — not the same question as which upstream
@@ -49,7 +54,9 @@ export type RequestService = 'simkl' | 'cdn' | 'sheets' | 'tvdb' | 'tmdb';
  * is separate from `films` for the same reason and not the same one: both ask
  * about a film, but `films` is the feed asking SIMKL for a release date and
  * this is the sheet asking TMDB for a row's worth of columns, and only one of
- * them failing stops the films tab.
+ * them failing stops the films tab. `artwork` is the page: every candidate
+ * listing, download, upload and link write it makes, against three upstreams,
+ * and none of them on the poll's behalf.
  *
  * A property of the calling module, so every `io/` module names itself once.
  * Required rather than defaulted: a new call site has to decide, and `tsc`
@@ -64,7 +71,8 @@ export type RequestComponent =
   | 'spreadsheet'
   | 'runtimes'
   | 'auth'
-  | 'login';
+  | 'login'
+  | 'artwork';
 
 export interface RequestRecord {
   at: string;

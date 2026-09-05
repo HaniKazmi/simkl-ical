@@ -1,10 +1,12 @@
 /**
- * The one retrying JSON transport, plus the retry timing it runs on.
+ * The one retrying transport, plus the retry timing it runs on.
  *
- * SIMKL, Sheets and TVDB differ only in URL assembly, credential headers and
- * status meanings — all held in each client's `HttpSpec`. The loop exists once,
- * so a fix to the truncated-body path or the abort handling cannot land in one
- * upstream and miss the other two.
+ * SIMKL, Sheets, TVDB, TMDB and Cloud Storage differ only in URL assembly,
+ * credential headers and status meanings — all held in each client's
+ * `HttpSpec`. The loop exists once, so a fix to the truncated-body path or
+ * the abort handling cannot land in one upstream and miss the others. What a
+ * body *is* — JSON to parse, or bytes to keep — is the one thing the loop
+ * delegates, to a consumer that says whether what it read is worth a retry.
  */
 
 import { config } from '../shared/config.ts';
@@ -85,6 +87,12 @@ export interface HttpRequestOptions {
   headers?: (signal?: AbortSignal) => Promise<Record<string, string>> | Record<string, string>;
   /** JSON-encoded when present. */
   body?: unknown;
+  /**
+   * Sent verbatim under its own content type, for the one caller whose body
+   * is not JSON: a multipart upload carrying image bytes. Exclusive with
+   * `body`.
+   */
+  rawBody?: { bytes: Uint8Array<ArrayBuffer>; contentType: string };
   /** Per-call override: a non-idempotent write passes 1 rather than the spec's budget. */
   maxAttempts?: number;
   /** Names the call in failure messages; defaults to the URL's path. */
@@ -93,16 +101,26 @@ export interface HttpRequestOptions {
 }
 
 /**
- * GET/POST a JSON endpoint with backoff, one request-log record per call.
+ * What a consumer made of an ok response's body. `retry` says whether the
+ * failure is the transfer's — a download that died, a 200 carrying an HTML
+ * interstitial — or the payload's, which asking again cannot change.
+ */
+type Consumed<T> = { value: T; bytes: number } | { error: HttpError; failure: string; bytes: number | null; retry: boolean };
+
+type Consumer<T> = (res: Response, describe: { spec: HttpSpec; path: string }) => Promise<Consumed<T>>;
+
+/**
+ * Make a request with backoff, one request-log record per call.
  *
  * Per call, not per attempt: the retries are the fact worth surfacing, and the
  * loop spends up to five without saying so. Written once on the way out from
  * whatever the last attempt saw, so a new exit cannot forget to record.
  */
-export const requestJson = async <T>(
+const request = async <T>(
   spec: HttpSpec,
   url: URL,
-  { component, method = 'GET', headers, body, maxAttempts = spec.maxAttempts, path = url.pathname, signal }: HttpRequestOptions,
+  { component, method = 'GET', headers, body, rawBody, maxAttempts = spec.maxAttempts, path = url.pathname, signal }: HttpRequestOptions,
+  consume: Consumer<T>,
 ): Promise<T> => {
   const finish = beginRequest({ service: spec.service, component, method, url });
   let attempts = 0;
@@ -131,10 +149,11 @@ export const requestJson = async <T>(
       try {
         const requestHeaders = { ...(await headers?.(signal)) };
         if (body !== undefined) requestHeaders['Content-Type'] = 'application/json';
+        if (rawBody) requestHeaders['Content-Type'] = rawBody.contentType;
         res = await fetch(url, {
           method,
           headers: requestHeaders,
-          body: body === undefined ? undefined : JSON.stringify(body),
+          body: rawBody ? rawBody.bytes : body === undefined ? undefined : JSON.stringify(body),
           signal: withTimeout(signal, spec.timeoutMs),
         });
       } catch (err) {
@@ -146,23 +165,15 @@ export const requestJson = async <T>(
       status = res.status;
 
       if (res.ok) {
-        const read = await readBody(res);
-        bytes = read.bytes;
-        if (read.failure) {
-          // The download died mid-body. Retryable, and named as itself rather
-          // than reaching the parser as a truncation.
-          await retryWith(spec.errorFor(`${spec.label} ${path}: ${read.failure}`, res.status), read.failure, backoffMs(attempts));
-          continue;
+        const consumed = await consume(res, { spec, path });
+        bytes = consumed.bytes;
+        if ('value' in consumed) return consumed.value;
+        if (!consumed.retry) {
+          failure = consumed.failure;
+          throw consumed.error;
         }
-        try {
-          return JSON.parse(read.text) as T;
-        } catch (err) {
-          // A 200 carrying an HTML interstitial. Transient, so it retries
-          // rather than escaping as a bare SyntaxError.
-          const wrapped = spec.errorFor(`${spec.label} returned unparseable JSON for ${path}: ${errorMessage(err)}`, res.status);
-          await retryWith(wrapped, errorMessage(wrapped), backoffMs(attempts));
-          continue;
-        }
+        await retryWith(consumed.error, consumed.failure, backoffMs(attempts));
+        continue;
       }
 
       const read = await readBody(res);
@@ -185,3 +196,74 @@ export const requestJson = async <T>(
     if (!signal?.aborted) finish({ status, bytes, error: failure, attempts });
   }
 };
+
+/** An ok body as JSON. A dead download and an unparseable body are both transient. */
+const consumeJson =
+  <T>(): Consumer<T> =>
+  async (res, { spec, path }) => {
+    const read = await readBody(res);
+    if (read.failure) {
+      // The download died mid-body. Retryable, and named as itself rather
+      // than reaching the parser as a truncation.
+      return { error: spec.errorFor(`${spec.label} ${path}: ${read.failure}`, res.status), failure: read.failure, bytes: read.bytes, retry: true };
+    }
+    try {
+      return { value: JSON.parse(read.text) as T, bytes: read.bytes };
+    } catch (err) {
+      // A 200 carrying an HTML interstitial. Transient, so it retries
+      // rather than escaping as a bare SyntaxError.
+      const wrapped = spec.errorFor(`${spec.label} returned unparseable JSON for ${path}: ${errorMessage(err)}`, res.status);
+      return { error: wrapped, failure: errorMessage(wrapped), bytes: read.bytes, retry: true };
+    }
+  };
+
+/** GET/POST a JSON endpoint with backoff. */
+export const requestJson = <T>(spec: HttpSpec, url: URL, options: HttpRequestOptions): Promise<T> => request(spec, url, options, consumeJson<T>());
+
+export interface RawResponse {
+  bytes: Uint8Array;
+  /** The `Content-Type` header verbatim, or null when the upstream sent none. */
+  contentType: string | null;
+}
+
+/**
+ * An ok body as bytes, refused past `maxBytes` **before** the rest is
+ * downloaded — the header when the upstream sends a length, the stream when
+ * it does not. Over-size is the payload's fault and terminal; a stream that
+ * dies is the transfer's and retries, the same split `consumeJson` makes.
+ */
+const consumeBytes =
+  (maxBytes: number): Consumer<RawResponse> =>
+  async (res, { spec, path }) => {
+    const tooLarge = (size: number): Consumed<RawResponse> => ({
+      error: spec.errorFor(`${spec.label} ${path}: body is ${size} bytes, over the ${maxBytes} byte limit`, res.status),
+      failure: `body over the ${maxBytes} byte limit`,
+      bytes: null,
+      retry: false,
+    });
+    const declared = Number(res.headers.get('content-length'));
+    if (Number.isFinite(declared) && declared > maxBytes) return tooLarge(declared);
+
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    try {
+      if (res.body) {
+        for await (const chunk of res.body) {
+          size += chunk.byteLength;
+          if (size > maxBytes) {
+            await res.body.cancel().catch(() => {});
+            return tooLarge(size);
+          }
+          chunks.push(chunk);
+        }
+      }
+    } catch (err) {
+      const failure = `the response body could not be read: ${errorMessage(err)}`;
+      return { error: spec.errorFor(`${spec.label} ${path}: ${failure}`, res.status), failure, bytes: size, retry: true };
+    }
+    return { value: { bytes: Buffer.concat(chunks), contentType: res.headers.get('content-type') }, bytes: size };
+  };
+
+/** GET a binary endpoint with backoff, bounded in size. */
+export const requestBytes = (spec: HttpSpec, url: URL, { maxBytes, ...options }: HttpRequestOptions & { maxBytes: number }): Promise<RawResponse> =>
+  request(spec, url, options, consumeBytes(maxBytes));
