@@ -156,8 +156,13 @@ What it will not do: write a formula cell, write a cell that is not blank, a buc
 recognisable URL, or write at all while a sync run holds the sheet (it answers "busy" and the page
 retries). In `report` mode the object still uploads and the cell address is reported instead of
 written. Unlike the status page it runs a small script and loads images off-origin, under a
-Content-Security-Policy naming only its own script and the four image hosts; it sends no
-referrer, and no absolute URL on it carries the token.
+Content-Security-Policy naming only its own script and https images; it sends no referrer, and
+no absolute URL on it carries the token.
+
+A `Banner` cell may link any public https host, and adopting copies from wherever it points. The
+service refuses a host that resolves to a private or local address, never follows a redirect, and
+refuses anything that is not an image, so a mistyped cell cannot make it fetch from its own
+network or put a web page in the bucket.
 
 It needs both tabs syncable, `TVDB_API_KEY`, and the two buckets:
 

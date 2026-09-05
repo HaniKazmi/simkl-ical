@@ -1,29 +1,34 @@
 /**
- * Downloading an artwork candidate: the bytes the page chose, from the CDN
- * that serves them, bounded in size and host.
+ * Downloading an artwork candidate or an adopted image: the bytes a cell or
+ * a candidate names, from any public https host, bounded in size.
  *
- * The allowlist is checked **before** any request leaves: the URL a download
- * is asked for comes from a candidate record or from a `Banner` cell, and a
- * cell is hand-editable, so without the check the page would be a fetch proxy
- * for whatever a cell named. A redirect is not followed, for the same reason:
- * followed, the bytes would come from wherever the listed host pointed, and
- * the check would have covered only the first hop. The content type is
- * checked **after**, because a CDN answering a 200 with an HTML error page is
- * the failure that would otherwise put a web page in the bucket under an
- * image's name.
+ * Any host, because the URL can come from a hand-edited `Banner` cell and
+ * the point of adopting is to copy whatever the sheet links. What that must
+ * not become is a way to make this process fetch from its own network: the
+ * hostname is resolved **before** the request and refused if any address is
+ * loopback, private, link-local or the cloud metadata range — that, not a
+ * host list, is what stops a cell naming `http://169.254.169.254/…`. A
+ * redirect is not followed, since followed it would land wherever the first
+ * hop pointed, past every check here. The content type is checked
+ * **after**, because a host answering a 200 with an HTML error page is the
+ * failure that would otherwise put a web page in the bucket under an image's
+ * name.
+ *
+ * The resolver runs once and `fetch` resolves again, so a name that answers
+ * differently the second time (DNS rebinding) is not caught. The cell is the
+ * operator's own, behind the feed token; this guards against a mistake, not
+ * an adversary with write access to the spreadsheet.
  */
 
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
 import { HttpError, requestBytes, type HttpSpec } from './http.ts';
 import { config } from '../shared/config.ts';
+import { errorMessage } from '../shared/errors.ts';
 import type { RequestComponent } from './requests.ts';
 
-/**
- * The CDNs an image may be fetched from: TMDB's for film candidates, TVDB's
- * for show candidates, and fanart.tv's, which offers nothing here but is what
- * five hand-picked `Banner` cells link — an adopt copies from wherever the
- * cell points, and a host off this list is refused before any request.
- */
-export const IMAGE_HOSTS: readonly string[] = ['image.tmdb.org', 'artworks.thetvdb.com', 'assets.fanart.tv'];
+/** The CDNs candidates come from — TMDB's for films, TVDB's for shows. What the page offers, not what it may fetch. */
+export const CANDIDATE_HOSTS: readonly string[] = ['image.tmdb.org', 'artworks.thetvdb.com'];
 
 /** Past this a candidate is not a backdrop; TMDB's largest original is under 6 MiB. */
 export const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
@@ -39,7 +44,7 @@ export class ImageError extends HttpError {
 
 const SPEC: HttpSpec = {
   service: 'images',
-  label: 'Image CDN',
+  label: 'Image host',
   maxAttempts: 3,
   timeoutMs: 60_000,
   errorFor: (message, status, body) => new ImageError(message, status, body),
@@ -47,33 +52,94 @@ const SPEC: HttpSpec = {
     RETRYABLE.has(status)
       ? 'retry'
       : status >= 300 && status < 400
-        ? new ImageError(`Image CDN answered ${path} with a ${status} redirect, which is not followed off the host`, status)
-        : new ImageError(`Image CDN ${status} for ${path}`, status),
+        ? new ImageError(`Image host answered ${path} with a ${status} redirect, which is not followed`, status)
+        : new ImageError(`Image host ${status} for ${path}`, status),
 };
 
 export interface FetchedImage {
   bytes: Uint8Array<ArrayBuffer>;
-  /** The CDN's own, e.g. `image/jpeg`; what the object is stored under. */
+  /** The host's own, e.g. `image/jpeg`; what the object is stored under. */
   contentType: string;
 }
 
-/** Whether a URL is one a download may be made from. */
-export const allowedImageUrl = (url: string, hosts: readonly string[] = IMAGE_HOSTS): URL | null => {
+/** A URL a download may be asked for: https, with a hostname. Where it resolves is checked at fetch time. */
+export const allowedImageUrl = (url: string): URL | null => {
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
     return null;
   }
-  return parsed.protocol === 'https:' && hosts.includes(parsed.hostname) ? parsed : null;
+  if (parsed.protocol !== 'https:' || !parsed.hostname) return null;
+  // A literal address is checked here, so a cell naming one is refused
+  // without a lookup; a name is checked once resolved.
+  if (isIP(parsed.hostname.replace(/^\[|\]$/g, '')) && !isPublicAddress(parsed.hostname.replace(/^\[|\]$/g, ''))) return null;
+  return parsed;
 };
 
-export const fetchImage = async (
-  url: string,
-  { component, maxBytes = MAX_IMAGE_BYTES, hosts = IMAGE_HOSTS, signal }: { component: RequestComponent; maxBytes?: number; hosts?: readonly string[]; signal?: AbortSignal },
-): Promise<FetchedImage> => {
-  const parsed = allowedImageUrl(url, hosts);
-  if (!parsed) throw new ImageError(`refusing to download ${url}: not on an image host (${hosts.join(', ')})`);
+const v4 = (ip: string): number[] | null => {
+  const parts = ip.split('.').map(Number);
+  return parts.length === 4 && parts.every((n) => Number.isInteger(n) && n >= 0 && n <= 255) ? parts : null;
+};
+
+/**
+ * Whether an address is one on the public internet, as opposed to this
+ * host, its network, or the cloud metadata service. IPv4-mapped IPv6 is
+ * judged as the IPv4 inside it.
+ */
+export const isPublicAddress = (ip: string): boolean => {
+  const kind = isIP(ip);
+  if (kind === 4) {
+    const [a, b] = v4(ip) ?? [];
+    if (a === undefined || b === undefined) return false;
+    if (a === 0 || a === 10 || a === 127) return false; // this network, private, loopback
+    if (a === 169 && b === 254) return false; // link-local, and the metadata service
+    if (a === 172 && b >= 16 && b <= 31) return false; // private
+    if (a === 192 && b === 168) return false; // private
+    if (a === 100 && b >= 64 && b <= 127) return false; // carrier-grade NAT
+    if (a >= 224) return false; // multicast and reserved
+    return true;
+  }
+  if (kind === 6) {
+    const lower = ip.toLowerCase();
+    const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(lower);
+    if (mapped?.[1]) return isPublicAddress(mapped[1]);
+    if (lower === '::1' || lower === '::') return false; // loopback, unspecified
+    if (/^f[cd]/.test(lower)) return false; // unique local, fc00::/7
+    if (/^fe[89ab]/.test(lower)) return false; // link-local, fe80::/10
+    if (/^ff/.test(lower)) return false; // multicast
+    return true;
+  }
+  return false;
+};
+
+/** A hostname's addresses. Injectable so a test never touches DNS. */
+export type Resolver = (hostname: string) => Promise<string[]>;
+
+export const systemResolver: Resolver = async (hostname) => (await lookup(hostname, { all: true })).map((a) => a.address);
+
+export interface FetchImageOptions {
+  component: RequestComponent;
+  maxBytes?: number;
+  resolve?: Resolver;
+  signal?: AbortSignal;
+}
+
+export const fetchImage = async (url: string, { component, maxBytes = MAX_IMAGE_BYTES, resolve = systemResolver, signal }: FetchImageOptions): Promise<FetchedImage> => {
+  const parsed = allowedImageUrl(url);
+  if (!parsed) throw new ImageError(`refusing to download ${url}: not an https URL on a public host`);
+  const host = parsed.hostname.replace(/^\[|\]$/g, '');
+  if (!isIP(host)) {
+    let addresses: string[];
+    try {
+      addresses = await resolve(host);
+    } catch (err) {
+      throw new ImageError(`refusing to download ${url}: ${host} does not resolve (${errorMessage(err)})`);
+    }
+    if (addresses.length === 0 || !addresses.every(isPublicAddress)) {
+      throw new ImageError(`refusing to download ${url}: ${host} resolves to a private or local address`);
+    }
+  }
   const got = await requestBytes(SPEC, parsed, {
     component,
     maxBytes,

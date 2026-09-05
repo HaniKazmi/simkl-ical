@@ -8,7 +8,7 @@ import { renderStatus } from './status/status.ts';
 import { ICON_APPLE, ICON_ICO, ICON_SVG } from './status/icons.ts';
 import { Artwork, PickRefused } from './artwork/artwork.ts';
 import { renderArtwork } from './artwork/page.ts';
-import { CLIENT_SCRIPT, PAGE_IMAGE_HOSTS } from './artwork/client.ts';
+import { CLIENT_SCRIPT } from './artwork/client.ts';
 import { SheetBusyError } from './sheet/io/lock.ts';
 
 /** Constant-time compare so the token cannot be recovered by timing the 404s. */
@@ -54,14 +54,13 @@ export interface ServerOptions {
 /**
  * The artwork page's CSP. Unlike the status page it runs a script and loads
  * images off-origin, so both are named: the script is `'self'` only, and
- * images may come from the image CDNs and the buckets and nowhere else.
- * `connect-src 'self'` is what the script's own fetches run under. Built from
- * the one host list the script and the renderer also use, and pinned exactly
- * by `server-artwork.test.ts`.
+ * images may come from any https host — a cell may link any public host and
+ * the row shows what it links — with the `no-referrer` header keeping the
+ * page's URL out of their logs. `connect-src 'self'` is what the script's
+ * own fetches run under. Pinned exactly by `server-artwork.test.ts`.
  */
 export const ARTWORK_CSP =
-  `default-src 'none'; img-src 'self' ${PAGE_IMAGE_HOSTS.map((host) => `https://${host}`).join(' ')}; ` +
-  "script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'";
+  "default-src 'none'; img-src 'self' https:; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'";
 
 /** The statuses a pick's refusal maps to. */
 const PICK_STATUS: Record<PickRefused['code'], number> = {

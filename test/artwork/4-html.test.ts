@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { artworkModel, loadableImage, renderArtworkPage, type ArtworkModel } from '../../src/artwork/4-html.ts';
 import type { ArtworkTitle } from '../../src/artwork/1-index.ts';
-import { CLIENT_SCRIPT, PAGE_IMAGE_HOSTS } from '../../src/artwork/client.ts';
+import { CLIENT_SCRIPT } from '../../src/artwork/client.ts';
 import { ARTWORK_CSP } from '../../src/server.ts';
 
 const NOW = Temporal.Instant.from('2026-09-05T12:00:00Z');
@@ -67,15 +67,17 @@ test('every src and href is relative, or on one of the image hosts the CSP names
   const rendered = page([
     title({ cell: { kind: 'bucket', url: 'https://storage.googleapis.com/movies/Finding Nemo', previous: {} }, stored: { exists: true, updated: null }, state: 'done' }),
     title({ id: 2, title: 'Old', cell: { kind: 'foreign', url: 'https://image.tmdb.org/t/p/w1280/x.jpg', previous: {} }, state: 'adopt' }),
-    title({ id: 3, title: 'Proxy', cell: { kind: 'foreign', url: 'https://wsrv.nl/?url=x', previous: {} }, state: 'unrecognised' }),
+    title({ id: 3, title: 'Proxy', cell: { kind: 'foreign', url: 'https://wsrv.nl/?url=x', previous: {} }, state: 'adopt' }),
+    title({ id: 4, title: 'Plain', cell: { kind: 'foreign', url: 'http://example.com/x.jpg', previous: {} }, state: 'unrecognised' }),
   ]);
   for (const match of rendered.matchAll(/(?:src|href)="([^"]+)"/g)) {
     const url = match[1] ?? '';
-    if (/^[a-z]+:/.test(url)) assert.match(url, /^https:\/\/(image\.tmdb\.org|artworks\.thetvdb\.com|assets\.fanart\.tv|storage\.googleapis\.com)\//, url);
+    if (/^[a-z]+:/.test(url)) assert.match(url, /^https:\/\//, url);
   }
-  assert.ok(!rendered.includes('wsrv.nl/?url'), 'a host the CSP would block is not even attempted');
+  assert.ok(rendered.includes('src="https://wsrv.nl/?url=x"'), 'any https image is shown');
+  assert.ok(!rendered.includes('src="http://example.com'), 'an http one, which the CSP would block, is not attempted');
   assert.ok(rendered.includes('href="status"'), 'the status page is linked relatively');
-  assert.equal(loadableImage('https://wsrv.nl/x'), false);
+  assert.equal(loadableImage('http://wsrv.nl/x'), false);
   assert.equal(loadableImage('https://storage.googleapis.com/b/k'), true);
 });
 
@@ -105,13 +107,11 @@ test('a mode other than apply is said on the page', () => {
   assert.ok(!page([title()]).includes('Sheet mode is'));
 });
 
-// Three places name the image hosts — the CSP, the renderer's check, the
-// script's check — and all three are built from one list. Pinned exactly so a
-// host added to one cannot be missing from another.
-test('the CSP, the page and the script agree on the image hosts', () => {
-  assert.deepEqual([...PAGE_IMAGE_HOSTS], ['image.tmdb.org', 'artworks.thetvdb.com', 'assets.fanart.tv', 'storage.googleapis.com']);
-  const imgSrc = /img-src ([^;]+);/.exec(ARTWORK_CSP)?.[1]?.split(' ') ?? [];
-  assert.deepEqual(imgSrc, ["'self'", ...PAGE_IMAGE_HOSTS.map((h) => `https://${h}`)]);
-  assert.ok(CLIENT_SCRIPT.includes(JSON.stringify(PAGE_IMAGE_HOSTS)), 'the script carries the same list verbatim');
-  for (const host of PAGE_IMAGE_HOSTS) assert.equal(loadableImage(`https://${host}/x`), true);
+// The CSP's img-src, the renderer's check and the script's check all say the
+// same thing: any https URL. Pinned so one cannot tighten without the others.
+test('the CSP, the page and the script agree that an image may be any https URL', () => {
+  assert.match(ARTWORK_CSP, /img-src 'self' https:;/);
+  assert.ok(CLIENT_SCRIPT.includes("new URL(url).protocol === 'https:'"), 'the script checks the scheme and nothing else');
+  assert.equal(loadableImage('https://anything.example/x'), true);
+  assert.equal(loadableImage('http://anything.example/x'), false);
 });

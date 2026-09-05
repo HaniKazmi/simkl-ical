@@ -6,24 +6,14 @@
  * Rules the script keeps, and the tests pin: no `innerHTML` and no inline
  * handlers — every node is built with `createElement` and `textContent`, so a
  * title or an upstream error cannot become markup; an `<img>` gets a `src`
- * only after the host passes the same allowlist the CSP enforces, so a bad
- * URL fails here with a message rather than silently in the console; every
- * request is relative, so the feed token never appears in the script.
+ * only when it is an https URL, the same bound the CSP's `img-src` enforces,
+ * so a bad URL fails here with a message rather than silently in the console;
+ * every request is relative, so the feed token never appears in the script.
  */
 
-import { IMAGE_HOSTS } from '../api/images.ts';
-import { ARTWORK_HOST } from '../sheet/values.ts';
-
-/**
- * The hosts an `<img>` may load from: the candidate CDNs and the bucket host.
- * One list, from which the page's CSP and the script's own check are both
- * built, so the two cannot drift into a silently blocked image.
- */
-export const PAGE_IMAGE_HOSTS: readonly string[] = [...IMAGE_HOSTS, new URL(ARTWORK_HOST).hostname];
 
 export const CLIENT_SCRIPT = String.raw`'use strict';
 (() => {
-  const HOSTS = ${JSON.stringify(PAGE_IMAGE_HOSTS)};
   const NEEDS = new Set(['missing-object', 'unlinked', 'adopt']);
   const rows = Array.from(document.querySelectorAll('.row'));
   const chips = Array.from(document.querySelectorAll('[data-filter]'));
@@ -35,8 +25,7 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
 
   const loadable = (url) => {
     try {
-      const u = new URL(url);
-      return u.protocol === 'https:' && HOSTS.includes(u.hostname);
+      return new URL(url).protocol === 'https:';
     } catch {
       return false;
     }

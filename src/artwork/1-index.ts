@@ -11,7 +11,7 @@
 
 import type { CellData } from '../api/google/types.ts';
 import type { StoredObject } from '../api/google/storage.ts';
-import { allowedImageUrl, IMAGE_HOSTS } from '../api/images.ts';
+import { allowedImageUrl } from '../api/images.ts';
 import type { Library } from '../library.ts';
 import { a1, duplicateIds, findHeaderRow, numberOf, resolveColumns, type Grid, type ShowBlock } from '../sheet/2-grid.ts';
 import { tvdbIdOf } from '../sheet/3-catalogue.ts';
@@ -31,15 +31,13 @@ export type ArtworkKind = 'movie' | 'show';
  * - `missing-object`: the cell links this bucket and nothing is behind it —
  *   a row the sync inserted, or an object never uploaded.
  * - `unlinked`: a blank cell; a pick writes the link.
- * - `adopt`: a URL on a host the page can fetch from; a pick may replace
- *   it, or adopt it.
+ * - `adopt`: an https URL; a pick may replace it, or adopt it.
  * - `no-id`: no SIMKL id, or one shared with another row; nothing can be
  *   looked up or written safely.
  * - `unrecognised`: a formula that does not resolve to this bucket, text
- *   that is not a link, or a link on a host the page cannot fetch from; a
- *   person has to look. Read off the same host list a pick is checked
- *   against, so a row is offered as adoptable only where adopting can
- *   succeed.
+ *   that is not a link, or a link that is not https or names a private
+ *   address; a person has to look. The same test a pick makes, so a row is
+ *   offered as adoptable only where adopting can be attempted.
  */
 export type ArtworkState = 'done' | 'missing-object' | 'unlinked' | 'adopt' | 'no-id' | 'unrecognised';
 
@@ -99,8 +97,6 @@ export interface IndexInput {
 export interface IndexOptions {
   /** For a film with no library stamp, whose `Watch Date` is a calendar day. */
   timezone: string;
-  /** The hosts an adopt may download from; a foreign link elsewhere is not adoptable. */
-  imageHosts?: readonly string[];
 }
 
 /** How far back "added by the sync recently" reaches. Days and below only. One constant for the tile, the chip and the rows. */
@@ -158,7 +154,6 @@ const stateOf = (
   id: number | null,
   stored: Map<string, StoredObject> | null,
   key: string,
-  hosts: readonly string[],
 ): { state: ArtworkState; exists: boolean | null } => {
   const exists = stored === null ? null : stored.has(key);
   if (id === null) return { state: 'no-id', exists };
@@ -170,7 +165,7 @@ const stateOf = (
     case 'blank':
       return { state: 'unlinked', exists };
     case 'foreign':
-      return { state: allowedImageUrl(cell.url ?? '', hosts) ? 'adopt' : 'unrecognised', exists };
+      return { state: allowedImageUrl(cell.url ?? '') ? 'adopt' : 'unrecognised', exists };
     case 'other':
       return { state: 'unrecognised', exists };
   }
@@ -182,11 +177,10 @@ const entry = (
   bucket: string,
   stored: Map<string, StoredObject> | null,
   addedBySync: Temporal.Instant | null,
-  hosts: readonly string[],
 ): ArtworkTitle => {
   const reading = classifyCell(cellData, bucket);
   const key = reading.key ?? artworkKeyFor(base.title);
-  const { state, exists } = stateOf(reading, base.id, stored, key, hosts);
+  const { state, exists } = stateOf(reading, base.id, stored, key);
   return {
     ...base,
     cell: { kind: reading.kind, url: reading.url, previous: cellData },
@@ -213,7 +207,7 @@ const compare = (a: ArtworkTitle, b: ArtworkTitle): number => {
   return a.title.localeCompare(b.title);
 };
 
-export const indexArtwork = (input: IndexInput, { timezone, imageHosts = IMAGE_HOSTS }: IndexOptions): ArtworkTitle[] => {
+export const indexArtwork = (input: IndexInput, { timezone }: IndexOptions): ArtworkTitle[] => {
   const { shows, films, library, runs, stored, buckets } = input;
   const out: ArtworkTitle[] = [];
 
@@ -243,7 +237,6 @@ export const indexArtwork = (input: IndexInput, { timezone, imageHosts = IMAGE_H
           buckets.show,
           stored.show,
           insertedAt(runs, 'shows', block.title),
-          imageHosts,
         ),
       );
     }
@@ -278,7 +271,6 @@ export const indexArtwork = (input: IndexInput, { timezone, imageHosts = IMAGE_H
           buckets.movie,
           stored.movie,
           insertedAt(runs, 'films', row.name),
-          imageHosts,
         ),
       );
     }

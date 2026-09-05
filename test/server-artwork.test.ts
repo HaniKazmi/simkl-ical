@@ -76,7 +76,8 @@ const serve = async (
           state.library = libraryOf({ id: 53080, type: 'movies', title: 'Finding Nemo', tmdb: '12' }, { id: 3381, title: 'Severance', tvdb: '371980' }, { id: 3382, title: 'Unmapped' });
           const sync = new SheetSync({ logger: quiet });
           state.sheetSync = sync;
-          const app = buildServer(state, { logger: false, artwork: new Artwork(state, { linkWait: Temporal.Duration.from({ milliseconds: 100 }) }) });
+          // A resolver that answers every name publicly: the fakes answer the fetch, and no test reaches DNS.
+          const app = buildServer(state, { logger: false, artwork: new Artwork(state, { linkWait: Temporal.Duration.from({ milliseconds: 100 }), resolve: async () => ['203.0.113.10'] }) });
           try {
             await fn(app, { sheet, bucket: store, calls, sync });
           } finally {
@@ -120,7 +121,7 @@ test('the page carries its hardening headers, with the CSP pinned exactly', asyn
     assert.equal(res.headers['content-security-policy'], ARTWORK_CSP);
     assert.equal(
       ARTWORK_CSP,
-      "default-src 'none'; img-src 'self' https://image.tmdb.org https://artworks.thetvdb.com https://assets.fanart.tv https://storage.googleapis.com; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
+      "default-src 'none'; img-src 'self' https:; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
     );
     assert.equal(res.headers['referrer-policy'], 'no-referrer');
     assert.equal(res.headers['x-content-type-options'], 'nosniff');
@@ -146,11 +147,11 @@ test('no absolute URL on the page or in its script carries the feed token', asyn
       assert.deepEqual(carrying, []);
       assert.ok(!body.includes(TOKEN), 'the token appears nowhere in the body');
     }
-    // What the page does load, it loads relatively or from the hosts the CSP names.
+    // What the page does load, it loads relatively or over https.
     for (const match of page.body.matchAll(/(?:src|href)="([^"]+)"/g)) {
       const url = match[1] ?? '';
       if (!/^[a-z]+:/.test(url)) continue;
-      assert.match(url, /^https:\/\/(image\.tmdb\.org|artworks\.thetvdb\.com|assets\.fanart\.tv|storage\.googleapis\.com)\//, url);
+      assert.match(url, /^https:\/\//, url);
     }
   });
 });

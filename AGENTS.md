@@ -243,14 +243,23 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   the spreadsheet id in them is fine. The page does carry three links, which is a different thing: a
   navigation the reader clicks is not a subresource, and `no-referrer` covers it either way.
 - **The artwork page is the one page that runs a script and loads images off-origin, and it does
-  both under its own CSP.** `script-src 'self'` admits only `artwork/app.js`; `img-src` names the
-  three image CDNs and the bucket host and nothing else; `connect-src 'self'` is what the
-  script's fetches run under. Every `src` and `href` on it is relative or on those four hosts, so
-  **no absolute URL on the page carries the feed token** — pinned by `4-html.test.ts` and
-  `server-artwork.test.ts` — and the same `no-referrer` header keeps the page's URL out of the CDNs'
-  logs. The script builds every node with `createElement` and `textContent`: no `innerHTML`, no
-  inline handlers, and an `<img>` gets a `src` only after its host passes the allowlist the CSP
-  enforces, so a bad URL fails with a message rather than silently.
+  both under its own CSP.** `script-src 'self'` admits only `artwork/app.js`; `img-src` is
+  `'self' https:`, because a `Banner` cell may link any public host and the row shows what it
+  links; `connect-src 'self'` is what the script's fetches run under. Every `src` and `href` on it
+  is relative or an https URL, so **no absolute URL on the page carries the feed token** — pinned by
+  `4-html.test.ts` and `server-artwork.test.ts` — and the `no-referrer` header keeps the page's URL
+  out of every image host's logs. The script builds every node with `createElement` and
+  `textContent`: no `innerHTML`, no inline handlers, and an `<img>` gets a `src` only when it is
+  https, the same bound the CSP enforces, so a bad URL fails with a message rather than silently.
+- **An adopt may download from any public https host, and what makes that safe is the address,
+  not a host list.** The URL comes from a hand-edited cell, so `fetchImage` resolves the hostname
+  first and refuses any answer that is loopback, private, link-local or the metadata range — that
+  is what stops a cell naming `https://169.254.169.254/…` from making this process fetch it — never
+  follows a redirect, which would land wherever the first hop pointed, and checks `image/*` after,
+  because a 200 carrying an HTML error page is what would put a web page in the bucket under an
+  image's name. The resolver is injectable (`Artwork`'s `resolve`), and the suite passes one that
+  answers every name publicly, so no test touches DNS. `CANDIDATE_HOSTS` is a different list: where
+  the page's own candidates come from, not what it may fetch.
 - **A page write and a sync run never overlap — `withSheetLock`.** The films verifier inspects every
   column but `id`, `Banner` included, so a `Banner` cell written between the sync's read and its
   verify is one the sync did not plan: VERIFY rolls the whole tab back, taking the page's write with
@@ -440,7 +449,7 @@ needs it**, and **is it transport or business logic**.
 | `src/health.ts` | What the state *means*: `assess` (restart-worthiness, the `/healthz` status code) and `pageHealthy` (the page's stricter question), plus the `/healthz` body |
 | `src/library.ts` | How the library is gated, merged and read: the signatures, the delta merge, the removal diff |
 | `src/library-counts.ts` | The library, counted — the status page's totals and movement deltas |
-| `src/api/` | Every HTTP client, and no domain rules. `http.ts` is the one retrying transport, for JSON and for bytes (`requestBytes`, bounded); `simkl/`, `google/` (`client.ts` for Sheets, `storage.ts` for Cloud Storage, one `auth.ts` minting a token per scope), `tvdb/`, `tmdb/` are specs over it; `images.ts` the bounded, host-allowlisted download; `token-cache.ts` the one bearer cache; `pool.ts`, `requests.ts`, `cdn.ts` shared. `requests.ts` is the one exception to "no domain rules": `RequestComponent` names the callers, because which part of the service asked is not a fact any transport holds |
+| `src/api/` | Every HTTP client, and no domain rules. `http.ts` is the one retrying transport, for JSON and for bytes (`requestBytes`, bounded); `simkl/`, `google/` (`client.ts` for Sheets, `storage.ts` for Cloud Storage, one `auth.ts` minting a token per scope), `tvdb/`, `tmdb/` are specs over it; `images.ts` the bounded download from any public https host, private addresses refused; `token-cache.ts` the one bearer cache; `pool.ts`, `requests.ts`, `cdn.ts` shared. `requests.ts` is the one exception to "no domain rules": `RequestComponent` names the callers, because which part of the service asked is not a fact any transport holds |
 | `src/feed/` | iCal only |
 | `src/sheet/` | Google Sheet sync only |
 | `src/status/` | The HTML status page. Reads the snapshot and the request log; `server.ts` is its only reader |

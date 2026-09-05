@@ -53,6 +53,8 @@ test('every cell kind has a state, and the key follows the cell where it links t
       ...block('Blank', 4, null),
       ...block('Foreign', 5, 'https://artworks.thetvdb.com/x.jpg'),
       ...block('Proxy', 9, 'https://wsrv.nl/?url=x'),
+      ...block('Local', 10, 'https://192.168.1.4/x.jpg'),
+      ...block('Plain', 11, 'http://example.com/x.jpg'),
       ...block('Formula Elsewhere', 6, { formula: '=CONCAT($Z$2,A7)', value: 'Formula Elsewhere' }),
       ...block('Text', 7, 'ask'),
       ...block('No Id', null, null, seasonRow(1, 3, null)),
@@ -68,7 +70,9 @@ test('every cell kind has a state, and the key follows the cell where it links t
   assert.equal(byTitle['Blank']?.state, 'unlinked');
   assert.equal(byTitle['Blank']?.key, 'Blank');
   assert.equal(byTitle['Foreign']?.state, 'adopt');
-  assert.equal(byTitle['Proxy']?.state, 'unrecognised', 'a link on a host the page cannot fetch from is not adoptable');
+  assert.equal(byTitle['Proxy']?.state, 'adopt', 'any https host is adoptable');
+  assert.equal(byTitle['Local']?.state, 'unrecognised', 'a private address is not');
+  assert.equal(byTitle['Plain']?.state, 'unrecognised', 'nor is http');
   assert.equal(byTitle['Formula Elsewhere']?.state, 'unrecognised');
   assert.equal(byTitle['Text']?.state, 'unrecognised');
   assert.equal(byTitle['No Id']?.state, 'no-id');

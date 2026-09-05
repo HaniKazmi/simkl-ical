@@ -7,15 +7,15 @@
  * interpolation.
  *
  * Every `src` and `href` is relative (`artwork/app.js`, `status`, the icons)
- * or on one of the image hosts the CSP names. No absolute URL on this
- * page carries the feed token: the page is reached through it, and the
- * `no-referrer` header the route sends is what keeps it off the image hosts.
+ * or an https image URL — a cell may link any public host, and the row shows
+ * what it links. No absolute URL on this page carries the feed token: the
+ * page is reached through it, and the `no-referrer` header the route sends
+ * is what keeps it out of those hosts' logs.
  */
 
 import { BASE_STYLE, document, html, type SafeHtml } from '../shared/html.ts';
 import { duration } from '../shared/dates.ts';
 import type { ArtworkKind, ArtworkState, ArtworkSummary, ArtworkTitle } from './1-index.ts';
-import { PAGE_IMAGE_HOSTS } from './client.ts';
 
 /** One row as the page shows it; built by the shell from an `ArtworkTitle` and the clock. */
 export interface ArtworkRow {
@@ -71,7 +71,7 @@ const describeCell = (title: ArtworkTitle): string => {
     case 'blank':
       return title.stored.exists ? 'cell is blank, object already uploaded' : 'cell is blank';
     case 'foreign':
-      return title.state === 'adopt' ? `links ${host(title.cell.url)}` : `links ${host(title.cell.url)}, which the page cannot fetch from`;
+      return title.state === 'adopt' ? `links ${host(title.cell.url)}` : `links ${host(title.cell.url)}, which is not an https URL on a public host`;
     case 'other':
       return 'cell holds text that is not a link';
   }
@@ -200,12 +200,11 @@ const STATE_LABEL: Record<ArtworkState, { text: string; pill: string }> = {
   unrecognised: { text: 'unrecognised', pill: 'crit' },
 };
 
-/** Whether an image URL is one the page's CSP lets it load. */
+/** Whether an image URL is one the page's CSP lets it load: any https URL. */
 export const loadableImage = (url: string | null): boolean => {
   if (!url) return false;
   try {
-    const parsed = new URL(url);
-    return parsed.protocol === 'https:' && PAGE_IMAGE_HOSTS.includes(parsed.hostname);
+    return new URL(url).protocol === 'https:';
   } catch {
     return false;
   }

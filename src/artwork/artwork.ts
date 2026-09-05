@@ -25,7 +25,7 @@ import { config } from '../shared/config.ts';
 import { errorMessage } from '../shared/errors.ts';
 import type { Logger } from '../shared/logger.ts';
 import { listObjects, uploadObject, type StoredObject, type Uploaded } from '../api/google/storage.ts';
-import { allowedImageUrl, fetchImage } from '../api/images.ts';
+import { allowedImageUrl, fetchImage, type Resolver } from '../api/images.ts';
 import { parseGrid, type Grid } from '../sheet/2-grid.ts';
 import { parseMovieGrid, type MovieGrid } from '../sheet/movies/2-grid.ts';
 import { fetchCatalogue } from '../sheet/io/catalogue.ts';
@@ -108,11 +108,14 @@ export class Artwork {
   private readonly resolved = new Map<string, number | null>();
   /** How long a link write waits for the sheet; the io module's default, shortened by tests. */
   private readonly linkWait: Temporal.Duration | undefined;
+  /** How an image host's name becomes addresses; the system's, replaced by tests so none reach DNS. */
+  private readonly resolve: Resolver | undefined;
 
-  constructor(state: Orchestrator, { linkWait }: { linkWait?: Temporal.Duration } = {}) {
+  constructor(state: Orchestrator, { linkWait, resolve }: { linkWait?: Temporal.Duration; resolve?: Resolver } = {}) {
     this.state = state;
     this.log = state.log;
     this.linkWait = linkWait;
+    this.resolve = resolve;
   }
 
   /** The index, rebuilt past its TTL or on demand. Concurrent readers share one build. */
@@ -272,7 +275,7 @@ export class Artwork {
       throw new PickRefused('nothing-to-adopt', `${title.title} has no image to adopt: the cell holds ${title.cell.url ?? 'nothing'}`);
     }
 
-    const image = await fetchImage(source, { component: 'artwork', signal });
+    const image = await fetchImage(source, { component: 'artwork', signal, ...(this.resolve ? { resolve: this.resolve } : {}) });
     const uploaded = await uploadObject(bucket, early.key, image.bytes, {
       component: 'artwork',
       contentType: image.contentType,
