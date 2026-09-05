@@ -6,58 +6,72 @@
  * this is the file a reader auditing the status page's interpolation opens.
  */
 
-import type { RunView, Stamp, StatusModel } from './1-model.ts';
+import type { RunView, Stamp, StatusModel, UpcomingGroup } from './1-model.ts';
 import { BASE_STYLE, document, html } from '../shared/html.ts';
 
 export { escapeHtml, html, raw, toHtml, type SafeHtml } from '../shared/html.ts';
 
 // --- The page --------------------------------------------------------------
 
-/** What the status page needs beyond the shared look: its tables, steps, runs and edits. */
+/** What the status page needs beyond the shared look: its signals, tables, groups, runs and edits. */
 const STYLE = `${BASE_STYLE}
+.signals{display:flex;flex-wrap:wrap;gap:.35rem 1.5rem;padding:.7rem 1.1rem;border:1px solid var(--line);
+border-radius:8px;background:var(--card);color:var(--muted);font-size:.8125rem}
+.sig{display:inline-flex;align-items:center;gap:.45rem}
+.sig b{color:var(--ink);font-weight:600;letter-spacing:.05em;text-transform:uppercase;font-size:.75rem}
+.sig.mute .dot{background:var(--faint)}
+.sig.warn,.sig.warn b{color:var(--warn)}.sig.warn .dot{background:var(--warn)}
+.sig.crit,.sig.crit b{color:var(--crit)}.sig.crit .dot{background:var(--crit)}
 table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
 th{text-align:left;font-size:.6875rem;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);
 font-weight:600;padding:0 .625rem .45rem 0;border-bottom:1px solid var(--line);white-space:nowrap}
 td{padding:.25rem .625rem .25rem 0;border-bottom:1px solid var(--bg);font-size:.8125rem}
 tr:last-child td{border-bottom:0}
-table.counts{width:auto;min-width:min(100%,24rem);margin-bottom:.9rem;font-family:var(--mono);font-size:.8125rem}
+table.counts{width:auto;min-width:min(100%,24rem);font-family:var(--mono);font-size:.8125rem}
 table.counts th{padding:0 0 .375rem 1rem;text-align:right}
 table.counts th:first-child{padding-left:0;text-align:left}
 table.counts td{padding:.15rem 0 .15rem 1rem;text-align:right;border-bottom:0}
 table.counts td:first-child{padding-left:0;text-align:left;color:var(--muted);font-family:inherit;font-weight:600}
 table.counts td.total{font-weight:600}
 table.counts td.none{color:var(--line)}
-.moved{display:grid;grid-template-columns:5rem minmax(0,1fr);gap:.125rem .75rem}
-.moved .k,.subscribe .k,.lbl{font-size:.6875rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
+.lib{display:grid;gap:.9rem}
+@media(min-width:52rem){.lib{grid-template-columns:auto minmax(0,1fr);gap:2rem;align-items:start}}
+.moved{display:grid;grid-template-columns:5rem minmax(0,1fr);gap:.125rem .75rem;align-content:start}
+.moved .k,.kv .k{font-size:.6875rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
 .moved .v{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 .6rem}
 .moved .because{grid-column:2;color:var(--muted)}
 .deltas{display:flex;flex-wrap:wrap;gap:0 .75rem;font-family:var(--mono);font-size:.8125rem}
 .delta{color:var(--ok)}
 .run-when{color:var(--muted)}
-.step{display:grid;grid-template-columns:.5rem 3.75rem minmax(0,1fr) auto;gap:.625rem;align-items:baseline;padding:.2rem 0}
-.dot{width:7px;height:7px;border-radius:50%;background:var(--ok);align-self:center}
-.step.bad .dot{background:var(--crit)}
+.stages{margin-top:.75rem;padding-top:.6rem;border-top:1px solid var(--line);display:flex;flex-wrap:wrap;
+gap:.3rem 1.1rem;color:var(--muted);font-size:.8125rem}
+.stage{display:inline-flex;align-items:center;gap:.4rem;min-width:0}
+.stage b{color:var(--ink);font-weight:600}
+.stage.bad,.stage.bad b{color:var(--crit)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--ok);align-self:center;flex:none}
+.stage.bad .dot{background:var(--crit)}
+.g-name{font-weight:600}
+.g-sum{margin-left:auto;color:var(--muted);font-size:.8125rem}
 .when{color:var(--muted);font-size:.8125rem;text-align:right;white-space:nowrap}
 .next{margin-top:.75rem;padding-top:.6rem;border-top:1px solid var(--line);color:var(--muted);font-size:.8125rem;
 display:flex;gap:.875rem;flex-wrap:wrap}
 .next b{color:var(--ink);font-weight:600}
-.subscribe{display:grid;grid-template-columns:5rem minmax(0,1fr);gap:.75rem;margin-top:.5rem;padding-top:.6rem;
+.kv{display:grid;grid-template-columns:5rem minmax(0,1fr);gap:.75rem;margin-top:.5rem;padding-top:.6rem;
 border-top:1px solid var(--line)}
-.subscribe a{overflow-wrap:anywhere;font-family:var(--mono);font-size:.8125rem}
-.run{border:1px solid var(--line);border-radius:8px;margin-bottom:.5rem;overflow:hidden}
-.run:last-child{margin-bottom:0}
-.run-head,details.run>summary{display:flex;flex-wrap:wrap;align-items:center;gap:.625rem;padding:.6rem .9rem;background:var(--bg)}
+.run,.grp{border:1px solid var(--line);border-radius:8px;margin-bottom:.5rem;overflow:hidden}
+.run:last-child,.grp:last-of-type{margin-bottom:0}
+.run-head,.g-head,details.run>summary,details.grp>summary{display:flex;flex-wrap:wrap;align-items:center;gap:.625rem;padding:.6rem .9rem;background:var(--bg)}
 .run-head{border-bottom:1px solid var(--line)}
 .run-head.bare{border-bottom:0}
 .run-count{margin-left:auto;color:var(--muted);font-size:.8125rem}
-details.run>summary{list-style:none;cursor:pointer}
-details.run>summary::-webkit-details-marker{display:none}
-details.run>summary::before,.run-head.sole::before{content:"\\25B8";color:var(--muted);font-size:.8rem;line-height:1;display:inline-block;transition:transform .12s ease}
-details.run[open]>summary::before{transform:rotate(90deg)}
-details.run[open]>summary{border-bottom:1px solid var(--line)}
-details.run:hover{border-color:var(--accent)}
-details.run>summary:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
-@media(prefers-reduced-motion:reduce){details.run>summary::before{transition:none}}
+details.run>summary,details.grp>summary{list-style:none;cursor:pointer}
+details.run>summary::-webkit-details-marker,details.grp>summary::-webkit-details-marker{display:none}
+details.run>summary::before,details.grp>summary::before,.run-head.sole::before{content:"\\25B8";color:var(--muted);font-size:.8rem;line-height:1;display:inline-block;transition:transform .12s ease}
+details.run[open]>summary::before,details.grp[open]>summary::before{transform:rotate(90deg)}
+details.run[open]>summary,details.grp[open]>summary,.g-head{border-bottom:1px solid var(--line)}
+details.run:hover,details.grp:hover{border-color:var(--accent)}
+details.run>summary:focus-visible,details.grp>summary:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+@media(prefers-reduced-motion:reduce){details.run>summary::before,details.grp>summary::before{transition:none}}
 .edit{display:grid;grid-template-columns:4.5rem 5rem minmax(0,1fr);gap:.625rem;padding:.2rem .9rem;font-size:.8125rem}
 .edit:first-of-type{padding-top:.5rem}.edit:last-child{padding-bottom:.5rem}
 .addr{color:var(--accent);font-family:var(--mono)}
@@ -78,6 +92,11 @@ td.path{overflow-wrap:anywhere;font-family:var(--mono);color:var(--muted)}
 .num{text-align:right;white-space:nowrap;font-family:var(--mono)}
 th.st,td.st{width:4rem}th.sz,td.sz{width:3.5rem}th.ms,td.ms{width:4rem}
 td.when{color:var(--faint);text-align:right;white-space:nowrap}
+table.up td.day{color:var(--ink);text-align:left;width:7.5rem}
+table.up th.day{text-align:left}
+table.up td.what{overflow-wrap:anywhere}
+table.up td.kind{color:var(--faint);white-space:nowrap;width:3.5rem}
+.more{color:var(--muted);font-size:.8125rem;padding-top:.5rem}
 th.wh{text-align:right;padding-right:0}
 tr.bad td,tr.bad td.path{color:var(--crit)}
 @media(max-width:640px){
@@ -89,6 +108,9 @@ td{border-bottom:0;padding:0}
 td.src,td.svc,td.st,td.sz,td.ms,td.when{display:inline;text-align:left;font-size:.75rem}
 td.src::after,td.svc::after,td.st::after,td.sz::after,td.ms::after{content:" \\00B7 ";color:var(--line)}
 td.path{display:block;margin-top:.2rem;color:var(--ink)}
+table.up td.day,table.up td.kind{display:inline;text-align:left;font-size:.75rem;width:auto}
+table.up td.day::after{content:" \\00B7 ";color:var(--line)}
+table.up td.what{display:block;margin-top:.2rem;color:var(--ink)}
 table.counts,table.counts tbody,table.counts tr,table.counts td{display:revert}
 table.counts tr{border:0;padding:0;margin:0}
 .run-head.sole{display:flex;flex-wrap:wrap}
@@ -107,18 +129,19 @@ const time = (s: Stamp) =>
   s.title === null ? html`<span class="dim">${s.label}</span>` : html`<time datetime="${s.iso}" title="${s.title}">${s.label}</time>`;
 
 /**
- * The first screen: one card per half of the service, each saying what it
- * holds and when it next acts. A healthy tile is as quiet as any other card —
- * only `warn` and `crit` take colour, so the eye lands on what wants it.
+ * One line, one chip per half of the service: its colour, and the one thing it
+ * does next. A healthy chip is as quiet as the line it sits on — only `warn`
+ * and `crit` take colour, so the eye lands on what wants it.
+ *
+ * Read the same way as the pipeline line inside the Feed section, which is the
+ * point: both say a name, a state and what it is doing, and neither is a card.
  */
-const tiles = (model: StatusModel) =>
-  model.tiles.map(
-    (tile) => html`<div class="tile ${tile.state}">
-      <span class="t-name">${tile.name}</span>
-      <span class="t-head">${tile.headline}</span>
-      <span class="t-next">${tile.next}</span>
-    </div>`,
-  );
+const signals = (model: StatusModel) =>
+  html`<div class="signals">${model.signals.map(
+    (signal) => html`<span class="sig ${signal.state}">
+      <span class="dot"></span><b>${signal.name}</b> ${signal.next}
+    </span>`,
+  )}</div>`;
 
 /**
  * Every count the library holds, not just the totals: the per-status split is
@@ -173,13 +196,47 @@ const requestRows = (model: StatusModel) =>
     </tr>`,
   );
 
-const steps = (model: StatusModel) =>
-  model.feed.steps.map(
-    (step) => html`<div class="step ${step.ok ? '' : 'bad'}">
-      <span class="dot"></span><span class="lbl">${step.name}</span>
-      <span>${step.detail}</span><span class="when">${time(step.at)}</span>
-    </div>`,
-  );
+/**
+ * The feed itself, which is the one thing the rest of the page counts and
+ * never shows. Every value is the render's own — no re-join here — so a row
+ * that looks wrong is wrong in the file a subscriber is holding.
+ *
+ * No header row: two groups would carry two of them, and a date, a type and a
+ * title need no naming.
+ */
+const eventRows = (group: UpcomingGroup) => html`<div class="t-wrap"><table class="up"><tbody>${group.rows.map(
+  (row) => html`<tr>
+    <td class="day"><time datetime="${row.iso}">${row.when}</time></td>
+    <td class="kind">${row.kind}</td>
+    <td class="what">${row.summary}</td>
+    <td class="dim">${row.detail}</td>
+  </tr>`,
+)}</tbody></table></div>${group.more === null ? null : html`<div class="more">${group.more}</div>`}`;
+
+/**
+ * One group, open or behind a triangle. `details` does it with no script,
+ * which the page's `default-src 'none'` requires — and a group short enough
+ * that the expander would only reveal its own summary line stays open, the
+ * rule the sheet's one-write runs already follow.
+ */
+const groupBlock = (group: UpcomingGroup) => {
+  const head = html`<span class="g-name">${group.name}</span><span class="g-sum">${group.summary}</span>`;
+  return group.collapsed
+    ? html`<details class="grp"><summary>${head}</summary>${eventRows(group)}</details>`
+    : html`<div class="grp"><div class="g-head">${head}</div>${eventRows(group)}</div>`;
+};
+
+/**
+ * The pipeline, on one line. The parts were four rows under a pill spelling
+ * the same four words; what is theirs alone is a stamp and whether they
+ * failed, which is what a chip carries.
+ */
+const stages = (model: StatusModel) =>
+  html`<div class="stages">${model.feed.stages.map(
+    (stage) => html`<span class="stage ${stage.ok ? '' : 'bad'}">
+      <span class="dot"></span><b>${stage.name}</b> ${stage.detail} <span class="when">${time(stage.at)}</span>
+    </span>`,
+  )}</div>`;
 
 const runChanges = (run: RunView) => [
   ...run.edits.map(
@@ -235,7 +292,7 @@ const sheetBody = (model: StatusModel) => {
   return html`
     ${sheet.frozen === null ? null : html`<div class="freeze"><b>Frozen — no further writes this process</b>${sheet.frozen}</div>`}
     ${sheet.error === null ? null : html`<div class="msg">${sheet.error}</div>`}
-    ${sheet.artwork === null ? null : html`<div class="subscribe"><span class="k">artwork</span><span>${sheet.artwork.label}${sheet.artwork.checkedAt ? html` · read ${time(sheet.artwork.checkedAt)}` : null} · <a href="${sheet.artwork.url}" rel="noopener noreferrer">open <span class="ext">↗</span></a></span></div>`}
+    ${sheet.artwork === null ? null : html`<div class="kv"><span class="k">artwork</span><span>${sheet.artwork.label}${sheet.artwork.checkedAt ? html` · read ${time(sheet.artwork.checkedAt)}` : null} · <a href="${sheet.artwork.url}" rel="noopener noreferrer">open <span class="ext">↗</span></a></span></div>`}
     ${sheet.runs.length ? runs(model) : html`<p class="dim">Nothing written yet.</p>`}`;
 };
 
@@ -284,48 +341,30 @@ export const renderPage = (model: StatusModel): string =>
   <span class="mark"></span>
   <h1>${model.appName}</h1>
   <span class="pill ${model.ok ? 'ok' : 'warn'}">${model.ok ? 'healthy' : 'degraded'}</span>
-  <span class="meta">v${model.version} · ${model.timezone}<br>${model.uptime === null ? 'starting' : html`up ${model.uptime}`} · ${model.feed.events} events</span>
+  <span class="meta">v${model.version} · ${model.timezone}<br>${model.uptime === null ? 'starting' : html`up ${model.uptime}`}</span>
 </div></header>
 
 <div class="wrap">
 
-<div class="tiles">${tiles(model)}</div>
+${signals(model)}
 
 ${model.problems.length === 0 ? null : html`<div class="problems"><ul>${model.problems.map((p) => html`<li>${p}</li>`)}</ul></div>`}
 
-<div class="grid">
-  <section>
-    <div class="head">
-      <h2 class="name">Library</h2>
-      <span class="pill mute">${model.library.gate}</span>
-      <span class="sum">gated ${time(model.library.polled)} · ${model.library.total} items</span>
-    </div>
+<section>
+  <div class="head">
+    <h2 class="name">Library</h2>
+    <span class="pill mute">${model.library.gate}</span>
+    <span class="sum">gated ${time(model.library.polled)}</span>
+  </div>
+  <div class="lib">
     ${counts(model)}
     ${movement(model)}
-    <div class="next">
-      <span class="dim">a gate is one <b class="mono">/sync/activities</b> call; a delta pull, a render and a sheet sync follow only if it says something moved</span>
-    </div>
-    ${model.library.error === null ? null : html`<div class="msg">${model.library.error}</div>`}
-  </section>
-
-  <section>
-    <div class="head">
-      <h2 class="name">Feed</h2>
-      <span class="pill mute">fetch → join → render → save</span>
-      <span class="sum">rendered ${time(model.feed.rendered)}</span>
-    </div>
-    ${steps(model)}
-    <div class="next">
-      <span><b>films</b> ${model.feed.filmsDue ? 'due on the next gate' : 'none due'}</span>
-      <span class="dim">films resolve on the gate, not on a timer of their own</span>
-    </div>
-    <div class="subscribe">
-      <span class="k">subscribe</span>
-      <a href="${model.feed.subscribe.href}" title="${model.feed.subscribe.url}" rel="noopener noreferrer">feed.ics <span class="ext">↗</span></a>
-    </div>
-    ${model.feed.error === null ? null : html`<div class="msg">${model.feed.error}</div>`}
-  </section>
-</div>
+  </div>
+  <div class="next">
+    <span class="dim">a gate is one <b class="mono">/sync/activities</b> call; a delta pull, a render and a sheet sync follow only if it says something moved</span>
+  </div>
+  ${model.library.error === null ? null : html`<div class="msg">${model.library.error}</div>`}
+</section>
 
 <section>
   <div class="head">
@@ -336,6 +375,20 @@ ${model.problems.length === 0 ? null : html`<div class="problems"><ul>${model.pr
       : 'off'}</span>
   </div>
   ${sheetBody(model)}
+</section>
+
+<section>
+  <div class="head">
+    <h2 class="name">Feed</h2>
+    <span class="pill mute">${model.feed.events} events</span>
+    <span class="sum">rendered ${time(model.feed.rendered)} · <a href="${model.feed.subscribe.href}" title="${model.feed.subscribe.url}" rel="noopener noreferrer">subscribe <span class="ext">↗</span></a></span>
+  </div>
+  ${model.feed.upcoming.length === 0
+    ? html`<p class="dim">Nothing ahead in the feed.</p>`
+    : model.feed.upcoming.map(groupBlock)}
+  ${model.feed.aired === null ? null : html`<div class="more">${model.feed.aired}</div>`}
+  ${stages(model)}
+  ${model.feed.error === null ? null : html`<div class="msg">${model.feed.error}</div>`}
 </section>
 
 <section>

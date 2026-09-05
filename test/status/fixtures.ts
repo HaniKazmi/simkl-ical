@@ -19,6 +19,7 @@ import type { Problem } from '../../src/health.ts';
 import type { SheetSyncStatus } from '../../src/sheet/sync.ts';
 import type { SheetSyncMode } from '../../src/shared/config.ts';
 import type { StatusInput } from '../../src/status/1-model.ts';
+import type { FeedEvent } from '../../src/feed/2-join.ts';
 import type { LibraryMovement, PollOutcome, Snapshot } from '../../src/orchestrator.ts';
 import { libraryCounts, type LibraryCounts } from '../../src/library-counts.ts';
 import type { SyncType } from '../../src/api/simkl/types.ts';
@@ -74,6 +75,7 @@ export const COLD: StatusInput = {
   feedSubscribeUrl: `webcal://localhost:3000/${TOKEN}/feed.ics`,
   sheetUrl: null,
   artwork: null,
+  events: [],
   requests: [],
   runs: [],
   baseline: { seasons: 0, films: 0, at: null },
@@ -96,6 +98,8 @@ export interface InputOver {
   artwork?: StatusInput['artwork'];
   requests?: RequestRecord[];
   runs?: SheetRunRecord[];
+  /** The feed's own events, which the upcoming list is built from. */
+  feedEvents?: FeedEvent[];
   baseline?: BaselineSummary;
 
   startedAt?: string;
@@ -159,6 +163,7 @@ export const input = (over: InputOver = {}): StatusInput => {
     filmsTab: over.filmsTab ?? COLD.filmsTab,
     requests: over.requests ?? [],
     runs: over.runs ?? [],
+    events: over.feedEvents ?? [],
     baseline: over.baseline ?? COLD.baseline,
     snapshot: {
       startedAt: over.startedAt ?? cold.startedAt,
@@ -193,6 +198,22 @@ export const input = (over: InputOver = {}): StatusInput => {
     },
   };
 };
+
+/**
+ * One feed event, at the shape `join` produces. `join` sorts by date, so a
+ * list built here is given in the order the page must keep.
+ */
+export const feedEvent = (ymd: string, over: Partial<FeedEvent> = {}): FeedEvent => ({
+  uid: `simkl-${ymd}@simkl-ical`,
+  kind: 'tv',
+  date: Temporal.PlainDate.from(ymd),
+  summary: `Show – ${ymd}`,
+  episodeTitle: null,
+  detail: null,
+  runtime: null,
+  url: null,
+  ...over,
+});
 
 /** One applied run, an hour old, editing a single cell. */
 export const runRecord = (over: Partial<SheetRunRecord> = {}): SheetRunRecord => ({

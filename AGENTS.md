@@ -252,6 +252,25 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   including one parsed out of `sheet-runs.json`, which the status page renders verbatim. That file
   is the only one to audit for the brand; `status/2-html.ts` and `artwork/4-html.ts` are the two to
   audit for interpolation.
+- **The feed's events reach the status page through `StatusInput`, never the `Snapshot`.** The
+  snapshot is what `/healthz` answers with, and a probe is the one surface here that should carry
+  no titles. The page prints the last render's own events rather than re-joining, so a row that
+  looks wrong is wrong in the file a subscriber holds — and it prints no `episodeTitle`, which the
+  ICS keeps out of `SUMMARY` so a calendar cannot surface a spoiler unasked. Events behind today
+  are counted, not listed: they are in the feed on the grace window, and a 90-day one would fill
+  the list with what has already happened.
+- **A fact appears once on the status page.** The page is four sections — library, sheet, feed,
+  requests — above a strip of one chip per half, in that same order. The chip carries
+  *only* what nothing else says: `feed.calendarsDue` and `library.due` are the page's whole supply
+  of forward-looking text, and a headline there would be the section's own pill an inch below.
+  Same rule flattened the feed's pipeline: four rows under a pill spelling the same four words,
+  where a part owns nothing but a stamp and an `ok`, are one line of chips — and `Stage` keeps the
+  `ok`, because a red dot is how a failed fetch is told from a failed render.
+- **A group of events folds only where the fold hides something.** `UPCOMING_COLLAPSE` in
+  `status/1-model.ts`: past it a `<details>`, below it open, which is the rule a sheet run of one
+  write already follows — an expander revealing the summary line beside it is worse than none.
+  Shows and films fold separately, or a nightly show buries a five-row film list. Anime rides with
+  shows: a third group is empty on most feeds, and the row's `kind` still names it.
 - **The status page fetches nothing, and sends `Referrer-Policy: no-referrer`.** The feed token is
   in the page's own URL, so any subresource — script, font, image, stylesheet — would carry it to a
   third party in a `Referer` header. That is about who else sees the token, not about the page
@@ -526,7 +545,7 @@ name and so needs no films copy.
 
 | Step | Module |
 | --- | --- |
-| MODEL | `1-model.ts` — `{ snapshot, assessment, … }` → a `StatusModel`. Pure |
+| MODEL | `1-model.ts` — `{ snapshot, assessment, events, … }` → a `StatusModel`. Pure |
 | RENDER | `2-html.ts` — a `StatusModel` → one self-contained page. Pure; owns `html`/`raw`/`escapeHtml` |
 | — | `status.ts` — the shell: the only file here that names `Orchestrator`, reads the clock, the request ring and the journal |
 

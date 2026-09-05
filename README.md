@@ -132,9 +132,18 @@ Un-holding brings it back with no further action.
 ## Status page
 
 `https://…/<FEED_TOKEN>/status` is a plain HTML page showing what the service is actually
-doing: how many titles you hold at each status, what the last check found, the feed's
-fetch→join→render steps with when each last ran, every upstream request it has made recently,
-and a history of every edit the sheet sync has made — cell by cell, with what changed.
+doing, in four sections: the **library** — how many titles you hold at each status and what
+the last check found; the **sheet** — every edit the sync has made, cell by cell, with what
+changed; the **feed** — the events themselves, ahead of today, grouped into shows and films,
+with the subscribe link beside them; and the **requests** it has made recently. A line across
+the top says what each half does next.
+
+The event list is the rendered feed, not a fresh join, so a row that looks wrong is wrong in
+the file your calendar is subscribed to. Episode titles are left off it for the same reason
+they are kept out of the calendar's `SUMMARY`. A group folds away once it is more than a
+handful of rows — a nightly show would otherwise bury the films — and stays open below that,
+where an expander would only hide the line beside it. Events that have already aired are
+counted rather than listed; that count is the `GRACE_DAYS` window, visible.
 
 It is **as sensitive as the feed URL**, and behind the same token: it names your shows.
 Treat it the same way, and note that a URL carrying a credential is kept by browser history

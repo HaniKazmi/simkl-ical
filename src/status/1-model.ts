@@ -19,6 +19,7 @@ import type { SheetSyncMode } from '../shared/config.ts';
 import { totalCount, totalsByType, type LibraryCounts } from '../library-counts.ts';
 import { pageHealthy, type Assessment } from '../health.ts';
 import type { LibraryMovement, PollOutcome, Snapshot } from '../orchestrator.ts';
+import type { EventKind, FeedEvent } from '../feed/2-join.ts';
 import type { RequestRecord } from '../api/requests.ts';
 import type { SheetRunRecord } from '../sheet/io/journal.ts';
 import type { RecordedEdit } from '../sheet/4-plan.ts';
@@ -64,6 +65,12 @@ export interface StatusInput {
    * the status page fetches nothing and the index is built on demand there.
    */
   artwork: { url: string; needing: number | null; total: number | null; checkedAt: string | null } | null;
+  /**
+   * The rendered feed's own events, in the order `join` sorted them. Not on
+   * the `Snapshot`: that is what `/healthz` answers with, and the feed's
+   * titles belong on a page behind the token rather than in a health probe.
+   */
+  events: FeedEvent[];
   requests: RequestRecord[];
   runs: SheetRunRecord[];
   /**
@@ -99,16 +106,18 @@ export interface Due {
 export type State = 'ok' | 'warn' | 'crit' | 'mute';
 
 /**
- * One half of the service as a single card: what it holds, and when it next
- * acts. The state is the page's only per-subsystem signal — the header pill
- * says something is wrong, a tile says which.
+ * One half of the service, as its colour and the one thing it does next.
+ *
+ * The state is the page's only per-subsystem signal — the header pill says
+ * something is wrong, a signal says which. What it carries beside that is the
+ * page's only forward-looking text: everything in the sections below is what
+ * has already happened. It carries no headline, because each half's headline
+ * is the pill on its own section an inch below.
  */
-export interface Tile {
+export interface Signal {
   name: string;
   state: State;
-  /** `743 items`, `48 events`, `applied`. */
-  headline: string;
-  /** `gate in 15m`, `calendars in 4h 4m`, `ran 1h 19m ago`. */
+  /** `gate in 15m`, `calendars in 4h 4m`, `runs with the gate`. */
   next: string;
 }
 
@@ -119,11 +128,55 @@ export interface CountRow {
   byStatus: (number | null)[];
 }
 
-export interface Step {
+/**
+ * One part of the feed's pipeline. A part carries its own stamp and its own
+ * `ok`, which is the page's only per-part failure signal; the names alone say
+ * nothing a heading cannot, so they read as one line rather than a row each.
+ */
+export interface Stage {
+  /** `calendars`, `films`, `render`. */
   name: string;
+  /** `new airdates`, `5 resolved`, `serving live`. */
   detail: string;
   at: Stamp;
   ok: boolean;
+}
+
+/**
+ * One line of the feed, as the page prints it. No `episodeTitle`: it is kept
+ * out of the ICS `SUMMARY` so a calendar cannot surface a spoiler unasked,
+ * and a page that prints it anyway gives that back.
+ */
+/**
+ * A run of the feed's events under one heading. A show is a stream of episodes
+ * and a film is one or two dates, so a single count over both answers neither
+ * question — and the two collapse on their own terms.
+ */
+export interface UpcomingGroup {
+  name: string;
+  rows: UpcomingRow[];
+  /** `40 events \u00b7 next Thu 27 Aug` — the whole of what a closed group says. */
+  summary: string;
+  /**
+   * Whether the group hides behind a triangle. A short one does not: an
+   * expander over five rows reveals what its own summary line already showed,
+   * which is why a sheet run of one write gets none either.
+   */
+  collapsed: boolean;
+  /** `12 more, to Fri 18 Jun 2027`. Null when the rows hold everything ahead. */
+  more: string | null;
+}
+
+export interface UpcomingRow {
+  /** `Wed 12 Aug`, carrying the year where it is not this one. */
+  when: string;
+  /** The date itself, for the `datetime` attribute. */
+  iso: string;
+  /** Which half it came from — the row's only marker. */
+  kind: EventKind;
+  summary: string;
+  /** A network for an episode, a release label for a film. */
+  detail: string | null;
 }
 
 /**
@@ -184,8 +237,8 @@ export interface StatusModel {
   ok: boolean;
   problems: string[];
   uptime: string | null;
-  /** Library, feed and sheet, in that order. The page's first screen. */
-  tiles: Tile[];
+  /** Library, sheet and feed, in the order their sections run. */
+  signals: Signal[];
   library: {
     polled: Stamp;
     error: string | null;
@@ -204,10 +257,17 @@ export interface StatusModel {
     events: number;
     rendered: Stamp;
     error: string | null;
-    steps: Step[];
+    stages: Stage[];
     calendarsDue: Due;
     filmsDue: boolean;
     subscribe: { href: string; url: string };
+    /** What the calendar shows next, from today, in groups. Empty when nothing is ahead. */
+    upcoming: UpcomingGroup[];
+    /**
+     * `3 events aired recently, still in the feed` — the grace window, made
+     * visible. Null when nothing in the feed is behind today.
+     */
+    aired: string | null;
   };
   sheet: {
     configured: boolean;
@@ -403,15 +463,15 @@ const shorten = (path: string): string => {
  * `Feed.refreshCalendars` assigns `calendarsChangedAt` the very value it just
  * put in `calendarsAt`.
  */
+/** The calendars' own state. The stage beside it is named, so this does not name it again. */
 const calendarDetail = (calendars: Snapshot['feed']['calendars'], at: Stamped): string => {
-  const prefix = 'airdate calendars';
   // `attemptedAt` is stamped only after a fetch returns, so a failure with
   // none means the CDN has never answered this process and nothing is cached.
   // "Serving cache" there would assert a copy that does not exist.
-  if (calendars.error) return calendars.attemptedAt === null ? `${prefix} — none yet, the CDN has not answered` : `${prefix} — serving cache`;
-  if (calendars.changedAt === null) return prefix;
-  if (calendars.changedAt === calendars.attemptedAt) return `${prefix} — new airdates`;
-  return `${prefix} — unchanged since ${at(calendars.changedAt).label}`;
+  if (calendars.error) return calendars.attemptedAt === null ? 'none yet, the CDN has not answered' : 'serving cache';
+  if (calendars.changedAt === null) return 'no new airdates yet';
+  if (calendars.changedAt === calendars.attemptedAt) return 'new airdates';
+  return `unchanged since ${at(calendars.changedAt).label}`;
 };
 
 /**
@@ -500,6 +560,99 @@ const movementView = (movement: LibraryMovement | null, at: Stamped): MovementVi
 };
 
 /** `21K`, `2.4M`, or `—` for a response that carried no body. */
+/**
+ * How many rows a group prints before it starts counting instead. Fifty, the
+ * journal's number: it bounds the page without cutting a real feed short — an
+ * airing show a night plus the films on plan-to-watch runs to about 45, and
+ * the films are the far end of it.
+ */
+const UPCOMING_LIMIT = 50;
+
+/**
+ * Past how many rows a group hides behind a triangle. Below it the expander
+ * would reveal what the summary line beside it already showed, which is the
+ * rule the sheet's own one-write runs follow.
+ */
+const UPCOMING_COLLAPSE = 8;
+
+const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * `Wed 12 Aug`, and the year too where it is not the current one: a feed
+ * carries dates well over a year out, and `30 Apr` alone reads as four months
+ * ago rather than eight ahead.
+ *
+ * Spelled here rather than through `toLocaleString`: the page is English
+ * either way, and the strings this suite pins would otherwise move with the
+ * ICU build underneath it.
+ */
+const dayLabel = (date: Temporal.PlainDate, today: Temporal.PlainDate): string => {
+  const label = `${WEEKDAYS[date.dayOfWeek - 1]} ${date.day} ${MONTHS[date.month - 1]}`;
+  return date.year === today.year ? label : `${label} ${date.year}`;
+};
+
+/**
+ * The two groups, and which kinds fall in each. Anime sits with shows: it is a
+ * separate SIMKL type rather than a genre, but it is still a stream of
+ * episodes, and a third group is empty on most feeds — a heading over nothing
+ * is a gap a reader has to account for. The row's own `kind` still names it.
+ */
+const GROUPS: ReadonlyArray<{ name: string; kinds: ReadonlyArray<EventKind> }> = [
+  { name: 'Shows', kinds: ['tv', 'anime'] },
+  { name: 'Films', kinds: ['movie'] },
+];
+
+/**
+ * The feed, grouped, as far ahead as the page prints it.
+ *
+ * `events` arrives in the order `join` sorted it — by date, then summary — so
+ * filtering preserves it and each group's first row is its next. Sorting again
+ * here would be a second copy of that rule, and a looser one: a re-sort on date
+ * alone reorders a day's events against the feed a client actually holds.
+ *
+ * Events behind today are counted rather than listed. They are in the feed on
+ * the grace window and a long one would otherwise fill the list with what has
+ * already happened, which is not the question the section asks.
+ *
+ * A group with nothing ahead is dropped rather than printed empty — a feed
+ * with no films on plan-to-watch should not carry a Films heading over a zero.
+ */
+const upcomingOf = (events: FeedEvent[], now: Temporal.Instant, timeZone: string): Pick<StatusModel['feed'], 'upcoming' | 'aired'> => {
+  const today = plainDateIn(now, timeZone);
+  const ahead = events.filter((event) => Temporal.PlainDate.compare(event.date, today) >= 0);
+  const behind = events.length - ahead.length;
+
+  const upcoming: UpcomingGroup[] = [];
+  for (const { name, kinds } of GROUPS) {
+    const mine = ahead.filter((event) => kinds.includes(event.kind));
+    const first = mine[0];
+    const last = mine.at(-1);
+    if (!first || !last) continue;
+    const hidden = Math.max(mine.length - UPCOMING_LIMIT, 0);
+
+    upcoming.push({
+      name,
+      rows: mine.slice(0, UPCOMING_LIMIT).map((event) => ({
+        when: dayLabel(event.date, today),
+        iso: event.date.toString(),
+        kind: event.kind,
+        summary: event.summary,
+        detail: event.detail,
+      })),
+      // Closed, this is the whole of what the group says, so it carries both
+      // the size of the list and the one date a reader came for.
+      summary: `${plural(mine.length, 'event')} \u00b7 next ${dayLabel(first.date, today)}`,
+      collapsed: mine.length > UPCOMING_COLLAPSE,
+      // The furthest date is named, so a reader knows how far the feed reaches
+      // without the page printing every row to prove it.
+      more: hidden > 0 ? `${hidden} more, to ${dayLabel(last.date, today)}` : null,
+    });
+  }
+
+  return { upcoming, aired: behind > 0 ? `${plural(behind, 'event')} aired recently, still in the feed` : null };
+};
+
 const size = (bytes: number | null): string => {
   if (bytes === null) return '—';
   if (bytes < 1024) return `${bytes}B`;
@@ -508,41 +661,31 @@ const size = (bytes: number | null): string => {
 };
 
 /**
- * The three tiles. Each subsystem's state comes from the problems `assess`
- * already tagged, so a tile can never light up over something the box below it
+ * The three signals. Each subsystem's state comes from the problems `assess`
+ * already tagged, so one can never light up over something the box below it
  * does not explain.
  *
  * The feed answers to two areas: its own failure is critical, a quiet CDN only
  * a warning, because a stale calendar still renders. That is the ranking
  * `assess` puts the lines in, applied to colour.
  */
-const tiles = (input: StatusInput, model: Omit<StatusModel, 'tiles'>): Tile[] => {
+const signals = (input: StatusInput, model: Omit<StatusModel, 'signals'>): Signal[] => {
   const has = (area: Assessment['problems'][number]['area']): boolean => input.assessment.problems.some((p) => p.area === area);
   const { library, feed, sheet } = model;
 
-  const sheetTile: Tile = sheet.configured
-    ? {
-        name: 'sheet',
-        state: sheet.state,
-        headline: sheet.status,
-        next: sheet.lastRun.iso === null ? 'not run yet' : `ran ${sheet.lastRun.label}`,
-      }
-    : { name: 'sheet', state: 'mute', headline: 'off', next: 'no SHEET_ID set' };
+  // The sheet has no timer: it runs on the back of the library poll, so what
+  // it does next is whatever the gate beside it decides. Nothing else on the
+  // page says that, and `ran 6m ago` is the section's own head.
+  const sheetSignal: Signal = sheet.configured
+    ? { name: 'sheet', state: sheet.state, next: sheet.lastRun.iso === null ? 'not run yet' : 'runs with the gate' }
+    : { name: 'sheet', state: 'mute', next: 'off, no SHEET_ID' };
 
+  // In the order the sections below run, so a signal and its section read as
+  // one subject rather than two.
   return [
-    {
-      name: 'library',
-      state: has('library') ? 'crit' : 'ok',
-      headline: plural(library.total, 'item'),
-      next: `gate ${library.due.label}`,
-    },
-    {
-      name: 'feed',
-      state: has('feed') ? 'crit' : has('calendars') ? 'warn' : 'ok',
-      headline: plural(feed.events, 'event'),
-      next: `calendars ${feed.calendarsDue.label}`,
-    },
-    sheetTile,
+    { name: 'library', state: has('library') ? 'crit' : 'ok', next: `gate ${library.due.label}` },
+    sheetSignal,
+    { name: 'feed', state: has('feed') ? 'crit' : has('calendars') ? 'warn' : 'ok', next: `calendars ${feed.calendarsDue.label}` },
   ];
 };
 
@@ -565,7 +708,7 @@ export const buildModel = (input: StatusInput): StatusModel => {
   // same moment.
   const rendered = at(feed.renderedAt);
 
-  const model: Omit<StatusModel, 'tiles'> = {
+  const model: Omit<StatusModel, 'signals'> = {
     appName: input.appName,
     version: input.version,
     timezone: input.timezone,
@@ -591,10 +734,18 @@ export const buildModel = (input: StatusInput): StatusModel => {
       events: feed.events,
       rendered,
       error: feed.error,
-      steps: [
-        { name: 'fetch', detail: calendarDetail(feed.calendars, at), at: at(feed.calendars.attemptedAt), ok: feed.calendars.error === null },
-        { name: 'fetch', detail: `film releases — ${feed.films.resolved} resolved`, at: at(feed.films.resolvedAt), ok: true },
-        { name: 'join', detail: plural(feed.events, 'event'), at: rendered, ok: feed.error === null },
+      // Three, not four: JOIN's whole detail was the event count, which is
+      // the section's own subject now that the events are in it.
+      stages: [
+        { name: 'calendars', detail: calendarDetail(feed.calendars, at), at: at(feed.calendars.attemptedAt), ok: feed.calendars.error === null },
+        {
+          name: 'films',
+          // Where the films stand and whether more are wanted, in one phrase:
+          // due is per-film, so no stamp plus interval re-derives it.
+          detail: input.filmsDue ? `${feed.films.resolved} resolved, more due` : `${feed.films.resolved} resolved`,
+          at: at(feed.films.resolvedAt),
+          ok: true,
+        },
         {
           name: 'render',
           detail: feed.servingCached ? 'serving the last saved feed' : 'serving live',
@@ -608,6 +759,7 @@ export const buildModel = (input: StatusInput): StatusModel => {
       // when the next one falls due.
       filmsDue: input.filmsDue,
       subscribe: { href: input.feedSubscribeUrl, url: input.feedUrl },
+      ...upcomingOf(input.events, now, input.timezone),
     },
 
     // No reverse: the request log is already newest first, unlike the run
@@ -655,5 +807,5 @@ export const buildModel = (input: StatusInput): StatusModel => {
     },
   };
 
-  return { ...model, tiles: tiles(input, model) };
+  return { ...model, signals: signals(input, model) };
 };
