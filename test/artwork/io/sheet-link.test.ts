@@ -55,7 +55,7 @@ test('a blank cell is written once, verified, and journalled as a Banner edit', 
     assert.equal(record?.tab, 'films');
     assert.equal(record?.status, 'applied');
     assert.deepEqual(record?.edits.map((e) => [e.address, e.field]), [['N3', 'Banner']]);
-    assert.match(record?.edits[0]?.note ?? '', /^artwork: Finding Nemo → /);
+    assert.equal(record?.edits[0]?.note, 'artwork: Finding Nemo');
   });
 });
 

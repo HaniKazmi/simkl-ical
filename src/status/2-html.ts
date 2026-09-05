@@ -63,7 +63,7 @@ details.run>summary:focus-visible{outline:2px solid var(--accent);outline-offset
 .addr{color:var(--accent);font-family:var(--mono)}
 .edit.ins .addr{color:var(--ok)}
 .fld{color:var(--muted)}
-.run-head.sole{display:grid;grid-template-columns:auto 5.5rem 6rem 4.5rem 5rem minmax(0,1fr) auto;gap:.625rem;align-items:center}
+.run-head.sole{display:grid;grid-template-columns:auto 5.5rem 6rem 2.5rem 4.5rem 5rem minmax(0,1fr) auto;gap:.625rem;align-items:center}
 .run-head.sole::before{visibility:hidden}
 .run-head.sole .addr,.run-head.sole .fld,.note{font-size:.8125rem;overflow-wrap:anywhere}
 .run-head.sole .run-count{margin-left:0;text-align:right}
@@ -94,6 +94,7 @@ table.counts tr{border:0;padding:0;margin:0}
 .run-head.sole{display:flex;flex-wrap:wrap}
 .run-head.sole::before{display:none}
 .run-head.sole .note{flex-basis:100%}
+.run-head:not(.sole) .tab:empty{display:none}
 }
 `;
 
@@ -210,8 +211,10 @@ const runs = (model: StatusModel) =>
       ${
         // One poll writes one record per tab, so without this a quiet films run
         // and a quiet show run read identically. A record with no `tab` is a
-        // show run.
-        run.tab === 'films' ? html`<span class="fld">films</span>` : null
+        // show run. Always a cell, empty for a show run: the sole layout below
+        // is a positional grid, and a cell that is sometimes absent shifts the
+        // note into the count's column, where it takes every pixel it wants.
+        run.tab === 'films' ? html`<span class="fld tab">films</span>` : html`<span class="tab"></span>`
       }
       ${run.sole === null
         ? null

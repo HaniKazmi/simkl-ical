@@ -118,7 +118,9 @@ const linkUnderLock = async ({ kind, id, title, adopt, expectPrevious, signal }:
   if (config.sheetSyncMode !== 'apply') return { status: 'reported', address, key: decision.key, link: decision.link };
 
   const at = nowIso();
-  const note = `artwork: ${title} → ${decision.link}`;
+  // The title alone: the link is derived from it, and the address is its own
+  // column on the status page, so repeating either only widens the row.
+  const note = `artwork: ${title}`;
   let outcome: LinkOutcome;
   let error: string | null = null;
   try {

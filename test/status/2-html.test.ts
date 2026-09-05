@@ -328,7 +328,7 @@ test('the summary says when runtime lookups are off, and nothing when they work'
 test('a films run is labelled, so a quiet one is not read as a show run', () => {
   // One poll writes one record per tab. Unlabelled, a quiet films run and a
   // quiet show run render identically in the history.
-  const label = /<span class="fld">films<\/span>/;
+  const label = /<span class="fld tab">films<\/span>/;
   const withFilms = renderPage(buildModel(input({ sheetConfigured: true, runs: [runRecord({ tab: 'films' })] })));
   assert.match(withFilms, label);
   const withShows = renderPage(buildModel(input({ sheetConfigured: true, runs: [runRecord({ tab: 'shows' })] })));
