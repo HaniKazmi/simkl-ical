@@ -25,6 +25,7 @@ test('the reference library renders the committed feed byte-for-byte', async () 
     { id: 4, type: 'anime', title: 'Airing Anime', status: 'watching' },
     { id: 5, type: 'movies', title: 'Planned Film', status: 'plantowatch' },
     { id: 6, type: 'movies', title: 'Watched Film', status: 'completed' },
+    { id: 7, type: 'movies', title: 'Delayed Film', status: 'plantowatch' },
   );
 
   const tv = calendarOf(
@@ -57,10 +58,16 @@ test('the reference library renders the committed feed byte-for-byte', async () 
     { '4': { title: 'Airing Anime', network: 'Tokyo MX', runtime: '24m' } },
   );
 
+  const on = (ymd: string, type: number, stage: 'cinema' | 'home') => ({ date: Temporal.PlainDate.from(ymd), type, country: 'GB', stage } as const);
+
   const movieReleases = new Map<number, MovieRelease>([
-    [5, { simkl_id: 5, title: 'Planned Film', date: Temporal.PlainDate.from('2026-09-12'), releaseType: 3, runtime: '110m', url: 'https://simkl.com/movies/5' }],
+    // Both stages, so the pair of uids they key is pinned here.
+    [5, { simkl_id: 5, title: 'Planned Film', runtime: '110m', url: 'https://simkl.com/movies/5', dates: [on('2026-09-12', 3, 'cinema'), on('2026-12-04', 4, 'home')] }],
     // Held for a film that is not planned: the join must not emit it.
-    [6, { simkl_id: 6, title: 'Watched Film', date: Temporal.PlainDate.from('2026-09-20'), releaseType: 4, runtime: '95m', url: 'https://simkl.com/movies/6' }],
+    [6, { simkl_id: 6, title: 'Watched Film', runtime: '95m', url: 'https://simkl.com/movies/6', dates: [on('2026-09-20', 4, 'home')] }],
+    // Out of cinemas, streaming ahead: the cinema date falls past the window
+    // and the film is in the feed on the home date alone.
+    [7, { simkl_id: 7, title: 'Delayed Film', runtime: '128m', url: 'https://simkl.com/movies/7', dates: [on('2026-05-01', 3, 'cinema'), on('2026-09-25', 4, 'home')] }],
   ]);
 
   const events = joinFeed({ tv, anime }, library, { timezone: TZ, now: NOW, graceDays: 7, movieReleases });

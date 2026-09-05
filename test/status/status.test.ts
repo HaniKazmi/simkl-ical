@@ -26,12 +26,17 @@ const wired = (): Orchestrator => {
   state.libraryAt = ago(2 * MINUTE);
   state.lastPoll = { at: ago(MINUTE), changed: true, pull: 'delta', removalsChecked: true, refusedRemovals: false, updated: 7, reshaped: 0, removed: 3, rendered: true };
   state.feed.calendars = { tv: { data: calendarOf(), source: 'fresh' }, anime: { data: calendarOf(), source: 'fresh' } };
-  state.feed.events = [];
+  // Real events, because this is the one suite that drives the shell: the
+  // wiring that hands them to the model answers to nothing else, and an empty
+  // list here lets a page that lost the feed entirely pass.
+  state.feed.events = [
+    { uid: 'a@simkl-ical', kind: 'tv', date: plainDateFrom('2099-08-20'), summary: 'Wired Show – S01E01', episodeTitle: 'Spoiler', detail: 'FX', runtime: '45m', url: null },
+  ];
   state.feed.renderedAt = ago(3 * MINUTE);
   state.feed.calendarsAt = ago(4 * MINUTE);
   state.feed.calendarsFreshAt = ago(4 * MINUTE);
   state.feed.calendarsChangedAt = ago(4 * MINUTE);
-  state.feed.movieReleases = new Map([[9, { simkl_id: 9, title: 'A Film', date: plainDateFrom('2026-12-18'), releaseType: 3, runtime: null, url: '' }]]);
+  state.feed.movieReleases = new Map([[9, { simkl_id: 9, title: 'A Film', runtime: null, url: '', dates: [{ date: plainDateFrom('2026-12-18'), type: 3, country: 'GB', stage: 'cinema' as const }] }]]);
   return state;
 };
 
@@ -97,5 +102,36 @@ test('the configured timezone and tab reach the page', async () => {
   await withConfig({ timezone: 'America/New_York', sheetName: 'Watchlist' }, () => {
     const page = renderStatus(wired(), { now: Temporal.Now.instant() });
     assert.match(page, /America\/New_York/);
+  });
+});
+
+// The shell's job is the mapping; a field it stops passing is invisible to
+// every model and render test, which build their input by hand.
+test('the rendered feed reaches the page through the shell', async () => {
+  await withConfig({ timezone: 'Europe/London' }, () => {
+    const page = renderStatus(wired(), { now: Temporal.Now.instant() });
+    assert.match(page, /Wired Show – S01E01/, 'the event itself');
+    assert.match(page, /1 event</, 'counted off the list rather than a second tally');
+    assert.ok(!page.includes('Spoiler'), 'but never the episode title');
+  });
+});
+
+// `Feed` restores the last render as an ICS string and never parses it back,
+// so a process serving a saved feed holds no events — and "nothing ahead"
+// would deny a feed subscribers are being served.
+test('a feed served from disk is not reported as an empty one', async () => {
+  await withConfig({ timezone: 'Europe/London' }, () => {
+    const state = wired();
+    state.feed.events = [];
+    state.feed.servingCached = true;
+    const page = renderStatus(state, { now: Temporal.Now.instant() });
+    assert.ok(!page.includes('Nothing ahead in the feed.'), 'the feed is not known to be empty');
+    assert.match(page, /not known until the next render/);
+  });
+});
+
+test('the library total is on the page, not left to be added up', async () => {
+  await withConfig({ timezone: 'Europe/London' }, () => {
+    assert.match(renderStatus(wired(), { now: Temporal.Now.instant() }), /2 items/);
   });
 });

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildModel, duration } from '../../src/status/1-model.ts';
 import type { SheetSyncStatus } from '../../src/sheet/sync.ts';
-import { before, countsWith, input, moved, request, COLD, DAY, HOUR, MINUTE, runRecord } from './fixtures.ts';
+import { before, countsWith, feedEvent, input, moved, request, COLD, DAY, HOUR, MINUTE, runRecord } from './fixtures.ts';
 
 test('duration reads at a glance rather than to the second', () => {
   assert.equal(duration(Temporal.Duration.from({ milliseconds: 30_000 })), '30s');
@@ -105,16 +105,34 @@ test('the gate line names what the pull carried', () => {
 
 // What the notModified plumbing is for: at an interval matched to the CDN's
 // regeneration cycle, "answered" and "regenerated" differ.
-test('the fetch step separates a fresh calendar from an unchanged one', () => {
+test('the calendars stage separates a fresh calendar from an unchanged one', () => {
   const at = before(2 * HOUR);
-  assert.match(buildModel(input({ calendarsAt: at, calendarsChangedAt: at })).feed.steps[0]!.detail, /new airdates/);
+  assert.match(buildModel(input({ calendarsAt: at, calendarsChangedAt: at })).feed.stages[0]!.detail, /new airdates/);
 
   const unchanged = buildModel(input({ calendarsAt: at, calendarsChangedAt: before(8 * HOUR) }));
-  assert.match(unchanged.feed.steps[0]!.detail, /unchanged since 8h ago/);
+  assert.match(unchanged.feed.stages[0]!.detail, /unchanged since 8h ago/);
 
   const failing = buildModel(input({ calendarsAt: at, calendarsChangedAt: at, calendarError: 'offline' }));
-  assert.match(failing.feed.steps[0]!.detail, /serving cache/);
-  assert.equal(failing.feed.steps[0]!.ok, false);
+  assert.match(failing.feed.stages[0]!.detail, /serving cache/);
+  assert.equal(failing.feed.stages[0]!.ok, false);
+});
+
+// One line, but each part still answers for itself: a failed render must not
+// be readable as a failed fetch, and the dot is the only thing that says so.
+test('each stage carries its own stamp and its own failure', () => {
+  const model = buildModel(input({ calendarsAt: before(2 * HOUR), films: 5, filmsResolvedAt: before(MINUTE), renderedAt: before(MINUTE), renderError: 'render blew up' }));
+  assert.deepEqual(
+    model.feed.stages.map((stage) => [stage.name, stage.ok]),
+    [['calendars', true], ['films', true], ['render', false]],
+  );
+  assert.equal(model.feed.stages[1]!.detail, '5 resolved');
+  assert.equal(model.feed.stages[0]!.at.label, '2h ago');
+});
+
+// Due is per-film, so no stamp plus interval re-derives it; the stage is the
+// one place on the page that can say it.
+test('the films stage says when more lookups are wanted', () => {
+  assert.match(buildModel(input({ films: 5, filmsDue: true })).feed.stages[1]!.detail, /5 resolved, more due/);
 });
 
 test('runs are newest first for reading, though the journal appends oldest first', () => {
@@ -261,47 +279,69 @@ test('a failing TVDB lookup reaches the promoted errors', () => {
   assert.match(model.requestErrors.join(' '), /episodes\/official.*boom/);
 });
 
-// --- the tiles -------------------------------------------------------------
+// --- the signal strip ------------------------------------------------------
 //
-// The header pill says something is wrong; the tiles say which half. Their
-// state comes from the areas `assess` tags, so a tile cannot light up over
+// The header pill says something is wrong; a signal says which half. Their
+// state comes from the areas `assess` tags, so one cannot light up over
 // something the problems box does not explain.
 
-test('all three tiles are quiet when nothing is wrong', () => {
+/** By name, so a reordering of the strip is not a failure in every case below. */
+const tile = (model: ReturnType<typeof buildModel>, name: string) => model.signals.find((t) => t.name === name)!;
+
+test('all three signals are quiet when nothing is wrong', () => {
   const model = buildModel(input({ problems: [] }));
   assert.deepEqual(
-    model.tiles.map((t) => [t.name, t.state]),
+    model.signals.map((t) => [t.name, t.state]),
     [
+      // In the order the sections run.
       ['library', 'ok'],
-      ['feed', 'ok'],
       ['sheet', 'mute'],
+      ['feed', 'ok'],
     ],
     'the sheet is muted rather than green: unconfigured is not a fault',
   );
 });
 
-test('a problem colours its own tile and leaves the others alone', () => {
+test('a problem colours its own signal and leaves the others alone', () => {
   const model = buildModel(input({ problems: [{ area: 'library', message: 'SIMKL rejected the token (401)' }] }));
   assert.deepEqual(
-    model.tiles.map((t) => t.state),
-    ['crit', 'ok', 'mute'],
+    model.signals.map((t) => [t.name, t.state]),
+    [['library', 'crit'], ['sheet', 'mute'], ['feed', 'ok']],
   );
 });
 
 // A stale CDN still renders yesterday's feed, so it warns where a render
 // failure is critical — the same ranking `assess` puts the lines in.
-test('a quiet CDN warns the feed tile where a render failure is critical', () => {
+test('a quiet CDN warns the feed signal where a render failure is critical', () => {
   const warned = buildModel(input({ problems: [{ area: 'calendars', message: 'the CDN has not answered' }] }));
-  assert.equal(warned.tiles[1]?.state, 'warn');
+  assert.equal(tile(warned, 'feed').state, 'warn');
 
   const failed = buildModel(input({ problems: [{ area: 'feed', message: 'nothing has been rendered yet' }] }));
-  assert.equal(failed.tiles[1]?.state, 'crit');
+  assert.equal(tile(failed, 'feed').state, 'crit');
+});
+
+// Why the strip exists at all: everything in the sections below is what has
+// already happened, and these two countdowns are read nowhere else.
+test('the signals carry the only forward-looking text on the page', () => {
+  const model = buildModel(input({ calendarsAt: before(2 * HOUR), polledAt: before(6 * MINUTE), sheetConfigured: true, sheetLastRunAt: before(6 * MINUTE) }));
+  assert.deepEqual(
+    model.signals.map((signal) => signal.next),
+    // calendarRefresh is 6h and activitiesPoll 2h in the fixture.
+    ['gate in 1h 54m', 'runs with the gate', 'calendars in 4h'],
+  );
+});
+
+// The sheet has no timer of its own — it runs on the back of the library poll.
+// "ran 6m ago" would be the section's own head said twice.
+test('an unconfigured sheet says why it will not run rather than when', () => {
+  assert.equal(tile(buildModel(input({ sheetConfigured: false })), 'sheet').next, 'off, no SHEET_ID');
+  assert.equal(tile(buildModel(input({ sheetConfigured: true, sheetLastRunAt: null })), 'sheet').next, 'not run yet');
 });
 
 test('a frozen sheet is critical however its last run ended', () => {
   const model = buildModel(input({ sheetConfigured: true, sheetStatus: 'applied', sheetFrozen: 'FROZEN: copy Backup back' }));
   assert.equal(model.sheet.state, 'crit');
-  assert.equal(model.tiles[2]?.state, 'crit', 'and the tile agrees with the section');
+  assert.equal(tile(model, 'sheet').state, 'crit', 'and the signal agrees with the section');
 });
 
 // A status read off disk could be any string, and one naming a prototype
@@ -529,4 +569,148 @@ test('a timestamp that will not parse reads as never, with no absolute time', ()
   const model = buildModel(input({ polledAt: 'not a date' }));
   assert.equal(model.library.polled.label, 'never');
   assert.equal(model.library.polled.title, null);
+});
+
+// --- the feed, as the page shows it ----------------------------------------
+//
+// NOW is 2026-08-16 in Europe/London, which every date below sits either side
+// of.
+
+/** The named group, or undefined where the feed gave it nothing. */
+const group = (model: ReturnType<typeof buildModel>, name: string) => model.feed.upcoming.find((g) => g.name === name);
+
+const film = (ymd: string, over: Partial<Parameters<typeof feedEvent>[1]> = {}) => feedEvent(ymd, { kind: 'movie', ...over });
+
+test('shows and films are separate groups, each in the order the render put it in', () => {
+  const model = buildModel(
+    input({
+      feedEvents: [
+        feedEvent('2026-08-16', { summary: 'The Bear \u2013 S04E03', detail: 'FX' }),
+        film('2026-08-20', { summary: 'Dune: Part Three', detail: 'In cinemas' }),
+      ],
+    }),
+  );
+
+  assert.deepEqual(model.feed.upcoming.map((g) => g.name), ['Shows', 'Films']);
+  assert.deepEqual(group(model, 'Shows')!.rows, [
+    { when: 'Sun 16 Aug', iso: '2026-08-16', kind: 'tv', summary: 'The Bear \u2013 S04E03', detail: 'FX' },
+  ]);
+  assert.deepEqual(group(model, 'Films')!.rows.map((r) => r.summary), ['Dune: Part Three']);
+});
+
+// A show is a stream of episodes and a film is one or two dates, so the count
+// and the next date are the two things a closed group has to carry.
+test('a group says its size and its next date without being opened', () => {
+  const model = buildModel(input({ feedEvents: [film('2026-11-20'), film('2026-12-18')] }));
+  assert.equal(group(model, 'Films')!.summary, '2 events \u00b7 next Fri 20 Nov');
+});
+
+// A heading over a zero is a gap a reader has to account for.
+test('a group with nothing ahead is dropped, not printed empty', () => {
+  const model = buildModel(input({ feedEvents: [feedEvent('2026-08-20')] }));
+  assert.deepEqual(model.feed.upcoming.map((g) => g.name), ['Shows']);
+});
+
+test('a page with nothing ahead has no groups at all', () => {
+  assert.deepEqual(buildModel(input({ feedEvents: [feedEvent('2026-08-10')] })).feed.upcoming, []);
+});
+
+// Anime is a separate SIMKL type but still a stream of episodes, and a third
+// group is empty on most feeds. The row keeps saying which it is.
+test('anime rides with shows, and the row still names it', () => {
+  const model = buildModel(input({ feedEvents: [feedEvent('2026-08-20', { kind: 'anime' })] }));
+  assert.deepEqual(model.feed.upcoming.map((g) => g.name), ['Shows']);
+  assert.equal(group(model, 'Shows')!.rows[0]!.kind, 'anime');
+});
+
+// An expander over a handful of rows reveals what its own summary line already
+// showed — the rule a sheet run of one write follows.
+test('a short group stays open and a long one folds away', () => {
+  const short = Array.from({ length: 8 }, (_, i) => Temporal.PlainDate.from('2026-08-20').add({ days: i }).toString());
+  assert.equal(group(buildModel(input({ feedEvents: short.map((d) => feedEvent(d)) })), 'Shows')!.collapsed, false);
+
+  const long = [...short, '2026-08-28'];
+  assert.equal(group(buildModel(input({ feedEvents: long.map((d) => feedEvent(d)) })), 'Shows')!.collapsed, true);
+});
+
+// The two fold on their own terms: a nightly show buries a five-date film
+// list, and one threshold over the pair would hide both or neither.
+test('groups collapse independently of each other', () => {
+  const shows = Array.from({ length: 20 }, (_, i) => feedEvent(Temporal.PlainDate.from('2026-08-20').add({ days: i }).toString()));
+  const model = buildModel(input({ feedEvents: [...shows, film('2026-11-20'), film('2026-12-18')] }));
+  assert.equal(group(model, 'Shows')!.collapsed, true);
+  assert.equal(group(model, 'Films')!.collapsed, false);
+});
+
+// The grace window keeps aired episodes in the feed, and a long one would fill
+// the list with what has already happened.
+test('an event already aired is counted, not listed', () => {
+  const model = buildModel(input({ feedEvents: [feedEvent('2026-08-10'), feedEvent('2026-08-14'), feedEvent('2026-08-20')] }));
+  assert.deepEqual(group(model, 'Shows')!.rows.map((row) => row.iso), ['2026-08-20']);
+  assert.equal(model.feed.aired, '2 events aired recently, still in the feed');
+});
+
+test('an event airing today is ahead, not behind', () => {
+  const model = buildModel(input({ feedEvents: [feedEvent('2026-08-16')] }));
+  assert.deepEqual(group(model, 'Shows')!.rows.map((row) => row.iso), ['2026-08-16']);
+  assert.equal(model.feed.aired, null);
+});
+
+// Naming the furthest date is what says how far the feed reaches without the
+// page printing every row to prove it.
+test('past the cap a group counts what it left out and how far it goes', () => {
+  const days = Array.from({ length: 55 }, (_, i) => Temporal.PlainDate.from('2026-08-20').add({ days: i }).toString());
+  const shows = group(buildModel(input({ feedEvents: days.map((ymd) => feedEvent(ymd)) })), 'Shows')!;
+
+  assert.equal(shows.rows.length, 50);
+  assert.equal(shows.rows.at(-1)!.iso, '2026-10-08');
+  assert.equal(shows.more, '5 more, to Tue 13 Oct');
+});
+
+// A feed reaches well over a year out, and `30 Apr` alone reads as four months
+// ago rather than eight ahead.
+test('a date outside the current year carries its year', () => {
+  const model = buildModel(input({ feedEvents: [film('2026-12-18'), film('2027-04-30')] }));
+  assert.deepEqual(group(model, 'Films')!.rows.map((row) => row.when), ['Fri 18 Dec', 'Fri 30 Apr 2027']);
+});
+
+// Episode titles are kept out of the ICS SUMMARY so a calendar cannot surface
+// a spoiler unasked. A page that prints them anyway gives that back.
+test('an episode title never reaches the page', () => {
+  const model = buildModel(input({ feedEvents: [feedEvent('2026-08-20', { episodeTitle: 'Who Dies In The Finale' })] }));
+  assert.equal(JSON.stringify(model.feed.upcoming).includes('Who Dies'), false);
+});
+
+// The zone decides which side of "today" an event falls on, and the feed's
+// dates are local calendar dates. Measured in UTC, a BST evening reads the
+// next day's events as already aired.
+test('what counts as ahead is decided in the configured zone', () => {
+  // 23:30 BST on the 16th is 22:30 UTC the same day, but an event dated the
+  // 17th is tomorrow in both; the 16th is what separates them.
+  const lateEvening = Temporal.Instant.from('2026-08-16T23:30:00+01:00[Europe/London]');
+  const events = [feedEvent('2026-08-16'), feedEvent('2026-08-17')];
+
+  const london = buildModel(input({ now: lateEvening, timezone: 'Europe/London', feedEvents: events }));
+  assert.deepEqual(group(london, 'Shows')!.rows.map((r) => r.iso), ['2026-08-16', '2026-08-17'], 'still the 16th in London');
+  assert.equal(london.feed.aired, null);
+
+  // The same instant is already the 17th in Auckland, so the 16th has aired.
+  const auckland = buildModel(input({ now: lateEvening, timezone: 'Pacific/Auckland', feedEvents: events }));
+  assert.deepEqual(group(auckland, 'Shows')!.rows.map((r) => r.iso), ['2026-08-17']);
+  assert.equal(auckland.feed.aired, '1 event aired recently, still in the feed');
+});
+
+// A saved feed holds events the process cannot enumerate; saying "nothing
+// ahead" there denies a feed subscribers are being served.
+test('an empty list says which kind of empty it is', () => {
+  assert.match(buildModel(input({ feedEvents: [] })).feed.emptyNote, /Nothing ahead/);
+  assert.match(buildModel(input({ feedEvents: [], servingCached: true })).feed.emptyNote, /not known until the next render/);
+});
+
+// Two tallies of one thing can disagree; only one of them is what the section
+// beneath the pill lists.
+test('the count is taken off the list the page shows', () => {
+  const model = buildModel(input({ events: 99, feedEvents: [feedEvent('2026-08-20')] }));
+  assert.equal(model.feed.events, 1);
+  assert.equal(model.feed.headline, '1 event');
 });

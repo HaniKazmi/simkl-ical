@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { escapeHtml, html, raw, renderPage, toHtml } from '../../src/status/2-html.ts';
 import { buildModel } from '../../src/status/1-model.ts';
-import { MINUTE, before, countsWith, input, moved, request, runRecord, type InputOver } from './fixtures.ts';
+import { MINUTE, before, countsWith, feedEvent, input, moved, request, runRecord, type InputOver } from './fixtures.ts';
 
 test('escapeHtml covers every character that can break out of markup', () => {
   assert.equal(escapeHtml(`<script>"x" & 'y'</script>`), '&lt;script&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/script&gt;');
@@ -75,12 +75,21 @@ const page = (over: InputOver = {}): string => renderPage(buildModel(input(over)
  * count of zero over the whole document passes just as well on a page that
  * dropped the section entirely.
  */
-const sheetSection = (rendered: string): string => {
-  const from = rendered.indexOf('>Sheet</h2>');
-  const to = rendered.indexOf('>Requests</h2>');
-  assert.ok(from > 0 && to > from, 'the Sheet section is on the page at all');
+/**
+ * One section alone, so an assertion cannot pass on another one's markup. The
+ * next heading bounds it, which is what makes the page's order load-bearing
+ * here: reordering the sections must move these together.
+ */
+const sectionBetween = (rendered: string, name: string, next: string): string => {
+  const from = rendered.indexOf(`>${name}</h2>`);
+  const to = rendered.indexOf(`>${next}</h2>`);
+  assert.ok(from > 0 && to > from, `the ${name} section is on the page, above ${next}`);
   return rendered.slice(from, to);
 };
+
+const feedSection = (rendered: string): string => sectionBetween(rendered, 'Feed', 'Requests');
+
+const sheetSection = (rendered: string): string => sectionBetween(rendered, 'Sheet', 'Feed');
 
 // The fresh-container page, and what the CI smoke test fetches.
 test('the cold page is a complete document with nothing missing rendered as text', () => {
@@ -99,6 +108,8 @@ test('hostile content from every untrusted source renders inert', () => {
   const rendered = page({
     problems: [{ area: 'library', message: payload }],
     libraryError: payload,
+    // A SIMKL title, straight off the CDN calendar and onto the page.
+    feedEvents: [feedEvent('2026-08-20', { summary: payload, detail: payload })],
     gate: { pull: 'none', updated: 0, removed: 0 },
     sheetConfigured: true,
     sheetFrozen: `FROZEN: copy ${payload} back`,
@@ -383,4 +394,59 @@ test('the summary says how much the sync is tracking, and says so when it is not
   assert.match(armed, /tracking <b class="mono">412<\/b> seasons/);
   assert.match(armed, /last moved/);
   assert.doesNotMatch(armed, /nothing tracked yet/);
+});
+
+// The section exists because everything else on the page counts the feed and
+// never shows one of it.
+test('the feed itself is in the Feed section, a row per event', () => {
+  const section = feedSection(
+    page({
+      events: 2,
+      feedEvents: [
+        feedEvent('2026-08-20', { summary: 'The Bear \u2013 S04E03', detail: 'FX' }),
+        feedEvent('2026-12-18', { kind: 'movie', summary: 'Dune: Part Three', detail: 'In cinemas' }),
+      ],
+    }),
+  );
+
+  assert.ok(section.includes('The Bear'), 'the episode');
+  assert.ok(section.includes('Dune: Part Three'), 'and the film');
+  assert.ok(section.includes('>In cinemas<'), 'each with what its date means');
+  assert.ok(section.includes('datetime="2026-12-18"'), 'the date is machine-readable as well as read');
+  assert.ok(section.includes('Fri 18 Dec'), 'and readable');
+  assert.ok(section.includes('>Shows<') && section.includes('>Films<'), 'under a heading each');
+});
+
+// `details` is the only expander the page can have: it needs no script, which
+// `default-src 'none'` requires.
+test('a long group folds behind a triangle and a short one does not', () => {
+  const shows = Array.from({ length: 20 }, (_, i) => feedEvent(Temporal.PlainDate.from('2026-08-20').add({ days: i }).toString()));
+  const section = feedSection(page({ feedEvents: [...shows, feedEvent('2026-11-20', { kind: 'movie' })] }));
+
+  const details = [...section.matchAll(/<details class="grp">[\s\S]*?<\/summary>/g)];
+  assert.equal(details.length, 1, 'one group folded');
+  assert.ok(details[0]![0].includes('>Shows<'), 'and it is the nightly one');
+  assert.ok(section.includes('<div class="grp"><div class="g-head"><span class="g-name">Films'), 'the films stay open');
+  assert.ok(!/<details class="grp"[^>]*\sopen/.test(section), 'a folded group starts closed');
+});
+
+test('a page with nothing ahead says so rather than showing an empty table', () => {
+  const section = feedSection(page({ feedEvents: [feedEvent('2026-08-10')] }));
+  assert.ok(!section.includes('<table'), 'no rows over no events');
+  assert.ok(section.includes('Nothing ahead in the feed.'));
+  assert.ok(section.includes('1 event aired recently'), 'but the feed is not empty, and the page says why');
+});
+
+// One line, but each part answers for itself: the dot is the only thing on the
+// page that says which part of the pipeline failed.
+test('the pipeline is one line, and a failed part is the only one marked', () => {
+  const section = feedSection(page({ calendarsAt: before(2 * MINUTE), renderError: 'render blew up' }));
+  const stages = [...section.matchAll(/<span class="stage ([a-z]*)"[\s\S]*?<b>([a-z]+)<\/b>/g)].map((m) => [m[2], m[1]]);
+  assert.deepEqual(stages, [['calendars', ''], ['films', ''], ['render', 'bad']]);
+});
+
+// The one thing on the page a reader came to click.
+test('the subscribe link sits in the head of the section, not under it', () => {
+  const head = feedSection(page()).split('</div>')[0]!;
+  assert.ok(head.includes('webcal://'), 'and it is the scheme that subscribes rather than downloads');
 });

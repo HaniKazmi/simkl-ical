@@ -6,7 +6,7 @@
 
 import { apiGet, classify } from '../../api/simkl/client.ts';
 import { lookupPool } from '../../api/pool.ts';
-import { pickReleaseDate, type MovieLookups, type MovieRelease } from '../1-films.ts';
+import { pickReleases, type MovieLookups, type MovieRelease } from '../1-films.ts';
 import type { MovieDetail } from '../../api/simkl/types.ts';
 
 /**
@@ -32,16 +32,15 @@ export const fetchMovieReleases = async (
     (id) => id,
     async (id) => {
       const movie = await fetchMovie(id, { signal });
-      const release = pickReleaseDate(movie);
+      const dates = pickReleases(movie);
       // No announced date is an answer, not a failure.
-      if (!release) return;
+      if (dates.length === 0) return;
       out.set(id, {
         simkl_id: id,
         title: movie.title,
-        date: release.date,
-        releaseType: release.type,
         runtime: movie.runtime ? `${movie.runtime}m` : null,
         url: `https://simkl.com/movies/${id}`,
+        dates,
       });
     },
     { concurrency, classify },

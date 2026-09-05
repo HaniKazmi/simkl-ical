@@ -16,7 +16,7 @@ import type {
   SyncType,
 } from '../api/simkl/types.ts';
 import type { Library } from '../library.ts';
-import type { MovieRelease } from './1-films.ts';
+import type { MovieRelease, PickedRelease } from './1-films.ts';
 
 /**
  * Statuses whose upcoming episodes do not belong in the feed.
@@ -177,13 +177,19 @@ const buildEpisodeEvent = ({ entry, meta, kind, date }: EpisodeEventInput): Feed
   });
 };
 
-const buildFilmEvent = (release: MovieRelease): FeedEvent =>
+/**
+ * One of a film's dates as an event. The stage keys the UID, so a film's
+ * cinema and home dates are two events a client updates independently — and
+ * a film that gains a home date later does not disturb the cinema one it is
+ * already showing.
+ */
+const buildFilmEvent = (release: MovieRelease, picked: PickedRelease): FeedEvent =>
   makeEvent({
-    uid: `simkl-movie-${release.simkl_id}@simkl-ical`,
+    uid: `simkl-movie-${release.simkl_id}-${picked.stage}@simkl-ical`,
     kind: 'movie',
-    date: release.date,
+    date: picked.date,
     title: release.title,
-    detail: releaseLabel(release.releaseType),
+    detail: releaseLabel(picked.type),
     runtime: release.runtime ?? null,
     url: release.url ?? null,
   });
@@ -271,13 +277,18 @@ export const join = (
 
   // Films come from per-title lookups, not the CDN calendar, so a release six
   // months out appears instead of waiting for the 33-day window to reach it.
+  //
+  // Each of a film's dates is cut off on its own, which is what carries a film
+  // out of cinemas: the cinema date falls past the window and the home date,
+  // still ahead, keeps the film in the feed.
   for (const id of sets.moviesPlanned) {
     const release = movieReleases.get(id);
     if (!release) continue;
-    if (Temporal.PlainDate.compare(release.date, cutoff) < 0) continue;
-
-    const event = buildFilmEvent(release);
-    events.set(event.uid, event);
+    for (const picked of release.dates) {
+      if (Temporal.PlainDate.compare(picked.date, cutoff) < 0) continue;
+      const event = buildFilmEvent(release, picked);
+      events.set(event.uid, event);
+    }
   }
 
   return [...events.values()].sort((a, b) => Temporal.PlainDate.compare(a.date, b.date) || a.summary.localeCompare(b.summary));

@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { FILM_HORIZON_DAYS, filmDue, pickReleaseDate, reconcileReleases } from '../../src/feed/1-films.ts';
+import { FILM_HORIZON_DAYS, filmDue, pickReleases, reconcileReleases } from '../../src/feed/1-films.ts';
 import { fetchMovieReleases } from '../../src/feed/io/movies.ts';
 import { releaseLabel } from '../../src/feed/2-join.ts';
 import type { MovieDetail } from '../../src/api/simkl/types.ts';
-import type { MovieRelease } from '../../src/feed/1-films.ts';
+import type { MovieRelease, PickedRelease, ReleaseStage } from '../../src/feed/1-films.ts';
 import { clearRequests, recentRequests } from '../../src/api/requests.ts';
 import { jsonResponse, withFetch } from '../helpers.ts';
 import { plainDateFrom, plainDateIn } from '../../src/shared/dates.ts';
@@ -22,15 +22,26 @@ const duneThree: MovieDetail = {
   ],
 };
 
+/**
+ * The one date a film resolves to. Asserting the count here is what keeps
+ * every case below a statement about *both* stages: a fixture that started
+ * answering twice would be a second event in the calendar, not a rewording.
+ */
+const only = (...args: Parameters<typeof pickReleases>): PickedRelease => {
+  const dates = pickReleases(...args);
+  assert.equal(dates.length, 1, `expected one date, got ${dates.length}`);
+  return dates[0]!;
+};
+
 test('the misleading top-level `released` field is not used', () => {
-  const picked = pickReleaseDate(duneThree, 'GB');
-  assert.equal(picked!.date.toString(), '2026-12-18');
-  assert.notEqual(picked!.date.toString(), duneThree.released);
+  const picked = only(duneThree, 'GB');
+  assert.equal(picked.date.toString(), '2026-12-18');
+  assert.notEqual(picked.date.toString(), duneThree.released);
 });
 
 test('the viewer country wins over other territories', () => {
-  assert.equal(pickReleaseDate(duneThree, 'BE')!.date.toString(), '2026-12-16');
-  assert.equal(pickReleaseDate(duneThree, 'GB')!.date.toString(), '2026-12-18');
+  assert.equal(only(duneThree, 'BE').date.toString(), '2026-12-16');
+  assert.equal(only(duneThree, 'GB').date.toString(), '2026-12-18');
 });
 
 test('theatrical is preferred over a premiere screening', () => {
@@ -40,20 +51,20 @@ test('theatrical is preferred over a premiere screening', () => {
     released: '2026-07-15',
     release_dates: [{ iso_3166_1: 'GB', results: [{ type: 3, release_date: '2026-07-17' }, { type: 1, release_date: '2026-07-06' }] }],
   };
-  const picked = pickReleaseDate(odyssey, 'GB');
-  assert.equal(picked!.date.toString(), '2026-07-17');
-  assert.equal(picked!.type, 3);
+  const picked = only(odyssey, 'GB');
+  assert.equal(picked.date.toString(), '2026-07-17');
+  assert.equal(picked.type, 3);
 });
 
 test('falls back to US when the viewer country is not listed', () => {
-  const picked = pickReleaseDate(duneThree, 'NZ');
-  assert.equal(picked!.date.toString(), '2026-12-18');
-  assert.equal(picked!.country, 'US');
+  const picked = only(duneThree, 'NZ');
+  assert.equal(picked.date.toString(), '2026-12-18');
+  assert.equal(picked.country, 'US');
 });
 
 test('a premiere is used when nothing better is listed', () => {
   const onlyPremiere: MovieDetail = { title: 'A Film', released: '2026-01-01', release_dates: [{ iso_3166_1: 'GB', results: [{ type: 1, release_date: '2026-03-04' }] }] };
-  assert.equal(pickReleaseDate(onlyPremiere, 'GB')!.date.toString(), '2026-03-04');
+  assert.equal(only(onlyPremiere, 'GB').date.toString(), '2026-03-04');
 });
 
 // A premiere is a last resort across all territories, not just within one.
@@ -66,10 +77,10 @@ test('a US theatrical date beats a home-country premiere', () => {
       { iso_3166_1: 'US', results: [{ type: 3, release_date: '2026-12-04' }] },
     ],
   };
-  const picked = pickReleaseDate(movie, 'GB');
-  assert.equal(picked!.date.toString(), '2026-12-04');
-  assert.equal(picked!.type, 3);
-  assert.equal(picked!.country, 'US');
+  const picked = only(movie, 'GB');
+  assert.equal(picked.date.toString(), '2026-12-04');
+  assert.equal(picked.type, 3);
+  assert.equal(picked.country, 'US');
 });
 
 test('the reported country matches where the date actually came from', () => {
@@ -78,18 +89,18 @@ test('the reported country matches where the date actually came from', () => {
     released: '2026-01-01',
     release_dates: [{ iso_3166_1: 'US', results: [{ type: 1, release_date: '2026-05-01' }] }],
   };
-  assert.equal(pickReleaseDate(premiereOnlyInUS, 'GB')!.country, 'US');
+  assert.equal(only(premiereOnlyInUS, 'GB').country, 'US');
 });
 
 test('falls back to `released` only when there is no per-country data at all', () => {
   const bare: MovieDetail = { title: 'A Film', released: '2026-05-05', release_dates: [] };
-  const picked = pickReleaseDate(bare, 'GB');
-  assert.equal(picked!.date.toString(), '2026-05-05');
-  assert.equal(picked!.type, null);
+  const picked = only(bare, 'GB');
+  assert.equal(picked.date.toString(), '2026-05-05');
+  assert.equal(picked.type, null);
 });
 
-test('returns null when a film has no dates whatsoever', () => {
-  assert.equal(pickReleaseDate({ title: 'Nothing', release_dates: [] }, 'GB'), null);
+test('a film with no dates whatsoever resolves to none', () => {
+  assert.deepEqual(pickReleases({ title: 'Nothing', release_dates: [] }, 'GB'), []);
 });
 
 test('release types are labelled for the event description', () => {
@@ -99,9 +110,169 @@ test('release types are labelled for the event description', () => {
   assert.equal(releaseLabel(undefined), 'Release');
 });
 
+// --- a film's two stages --------------------------------------------------
+//
+// A film has a life in cinemas and a life at home, and only the second is a
+// date most of a plan-to-watch list can still act on.
+
+const NOW = { now: Temporal.Instant.from('2026-08-15T12:00:00Z') };
+
+// The case the two stages exist for. Resolved down one list, the theatrical
+// date wins on being listed first and `relevantDate` answers with it however
+// long ago it was — so the film falls past the grace window and its digital
+// date, still ahead, is never reached.
+test('a film out of cinemas still offers the date it reaches home', () => {
+  const movie: MovieDetail = {
+    title: 'A Film',
+    release_dates: [{ iso_3166_1: 'GB', results: [{ type: 3, release_date: '2026-01-15' }, { type: 4, release_date: '2026-09-20' }] }],
+  };
+  const dates = pickReleases(movie, 'GB', NOW);
+  assert.deepEqual(dates.map((d) => [d.date.toString(), d.type, d.stage]), [
+    ['2026-01-15', 3, 'cinema'],
+    ['2026-09-20', 4, 'home'],
+  ]);
+});
+
+test('a film still to open carries both of its dates', () => {
+  const movie: MovieDetail = {
+    title: 'A Film',
+    release_dates: [{ iso_3166_1: 'GB', results: [{ type: 3, release_date: '2026-11-20' }, { type: 4, release_date: '2027-02-10' }] }],
+  };
+  assert.deepEqual(pickReleases(movie, 'GB', NOW).map((d) => d.date.toString()), ['2026-11-20', '2027-02-10']);
+});
+
+// The stage keys the UID, so a film with one date must land on the stage that
+// date belongs to rather than on whichever is written first.
+test('a film that only ever streams resolves at the home stage', () => {
+  const movie: MovieDetail = { title: 'A Film', release_dates: [{ iso_3166_1: 'GB', results: [{ type: 4, release_date: '2026-09-20' }] }] };
+  const picked = only(movie, 'GB', NOW);
+  assert.equal(picked.stage, 'home');
+  assert.equal(picked.type, 4);
+});
+
+test('a TV airing is a home date, not a cinema one', () => {
+  const movie: MovieDetail = { title: 'A Film', release_dates: [{ iso_3166_1: 'GB', results: [{ type: 6, release_date: '2026-09-20' }] }] };
+  assert.equal(only(movie, 'GB', NOW).stage, 'home');
+});
+
+// A day-and-date release lands on one day at both stages, and both are said:
+// the two rows differ in what they offer, and collapsing on an equal date
+// cannot tell a day-and-date film from a re-release that happens to fall on
+// the day a film starts streaming — where the row it drops is a real one.
+test('a film in cinemas and streaming on one day says both', () => {
+  const movie: MovieDetail = {
+    title: 'A Film',
+    release_dates: [{ iso_3166_1: 'GB', results: [{ type: 3, release_date: '2026-09-20' }, { type: 4, release_date: '2026-09-20' }] }],
+  };
+  assert.deepEqual(pickReleases(movie, 'GB', NOW).map((d) => [d.date.toString(), d.stage]), [
+    ['2026-09-20', 'cinema'],
+    ['2026-09-20', 'home'],
+  ]);
+});
+
+// `relevantDate` advances a stage as its dates pass, so the pair a film
+// resolves to changes over its life. A row must not disappear because the two
+// stages happen to meet.
+test('a re-release meeting the streaming date drops neither', () => {
+  const movie: MovieDetail = {
+    title: 'A Film',
+    release_dates: [{ iso_3166_1: 'GB', results: [
+      { type: 3, release_date: '2026-11-20' },
+      { type: 3, release_date: '2027-03-01' },
+      { type: 4, release_date: '2027-03-01' },
+    ] }],
+  };
+  const later = { now: Temporal.Instant.from('2026-11-25T12:00:00Z') };
+  assert.deepEqual(pickReleases(movie, 'GB', NOW).map((d) => d.stage), ['cinema', 'home'], 'before the first run');
+  assert.deepEqual(pickReleases(movie, 'GB', later).map((d) => d.stage), ['cinema', 'home'], 'and after it, on the same day');
+});
+
+// The last resorts are reached only when *neither* stage answered, so a
+// premiere never appears beside a real release.
+test('a premiere is no second event beside a real release', () => {
+  const movie: MovieDetail = {
+    title: 'A Film',
+    release_dates: [{ iso_3166_1: 'GB', results: [
+      { type: 1, release_date: '2026-11-01' },
+      { type: 3, release_date: '2026-11-20' },
+      { type: 4, release_date: '2027-02-10' },
+    ] }],
+  };
+  assert.deepEqual(pickReleases(movie, 'GB', NOW).map((d) => d.type), [3, 4]);
+});
+
+// A disc date is a date you can act on, so it is the last of the home stage
+// rather than a resort below it. Below the stage it is reachable only by a
+// film with no cinema date at all — so a film out of cinemas whose only home
+// release is a disc would have no event, which is the case the split exists
+// for.
+test('a disc date is a home date, behind digital and TV', () => {
+  const alone: MovieDetail = { title: 'A Film', release_dates: [{ iso_3166_1: 'GB', results: [{ type: 5, release_date: '2026-09-20' }] }] };
+  assert.equal(only(alone, 'GB', NOW).stage, 'home');
+
+  const outOfCinemas: MovieDetail = {
+    title: 'A Film',
+    release_dates: [{ iso_3166_1: 'GB', results: [{ type: 3, release_date: '2026-01-15' }, { type: 5, release_date: '2026-09-20' }] }],
+  };
+  assert.deepEqual(pickReleases(outOfCinemas, 'GB', NOW).map((d) => [d.type, d.stage]), [[3, 'cinema'], [5, 'home']]);
+
+  const streaming: MovieDetail = {
+    title: 'A Film',
+    release_dates: [{ iso_3166_1: 'GB', results: [{ type: 4, release_date: '2026-09-20' }, { type: 5, release_date: '2027-01-10' }] }],
+  };
+  assert.equal(only(streaming, 'GB', NOW).type, 4, 'digital still answers first');
+});
+
+// The two stages are picked independently, so the array order they arrive in
+// carries no meaning; the join reads them as dates, not as a sequence.
+test('the dates come back in date order, whichever stage is earlier', () => {
+  const movie: MovieDetail = {
+    title: 'A Film',
+    release_dates: [{ iso_3166_1: 'US', results: [{ type: 4, release_date: '2026-09-01' }, { type: 3, release_date: '2026-11-20' }] }],
+  };
+  assert.deepEqual(pickReleases(movie, 'US', NOW).map((d) => d.stage), ['home', 'cinema']);
+});
+
+// The event carries no country, so a US date reads as a local one. A
+// territory therefore answers with everything it has before the next is asked
+// at all — otherwise a GB viewer whose own country lists only a streaming date
+// gets a US cinema date labelled "In cinemas" on a day they cannot act on.
+test('a territory answers for both stages before the next is asked', () => {
+  const cinemaAtHome: MovieDetail = {
+    title: 'A Film',
+    release_dates: [
+      { iso_3166_1: 'GB', results: [{ type: 3, release_date: '2026-11-20' }] },
+      { iso_3166_1: 'US', results: [{ type: 4, release_date: '2027-02-10' }] },
+    ],
+  };
+  assert.deepEqual(pickReleases(cinemaAtHome, 'GB', NOW).map((d) => [d.country, d.stage]), [['GB', 'cinema']]);
+
+  const streamingAtHome: MovieDetail = {
+    title: 'A Film',
+    release_dates: [
+      { iso_3166_1: 'GB', results: [{ type: 4, release_date: '2026-09-20' }] },
+      { iso_3166_1: 'US', results: [{ type: 3, release_date: '2026-09-01' }] },
+    ],
+  };
+  assert.deepEqual(pickReleases(streamingAtHome, 'GB', NOW).map((d) => [d.country, d.stage]), [['GB', 'home']]);
+});
+
+// Both stages come from the fallback together, so a viewer with nothing listed
+// at home still gets the pair rather than half of it.
+test('a territory with nothing hands both stages to the next', () => {
+  const movie: MovieDetail = {
+    title: 'A Film',
+    release_dates: [{ iso_3166_1: 'US', results: [{ type: 3, release_date: '2026-01-15' }, { type: 4, release_date: '2026-09-20' }] }],
+  };
+  assert.deepEqual(pickReleases(movie, 'GB', NOW).map((d) => [d.country, d.stage]), [['US', 'cinema'], ['US', 'home']]);
+});
+
 // --- reconcileReleases ---------------------------------------------------
 
-const release = (id: number): MovieRelease => ({ simkl_id: id, title: `Film ${id}`, date: plainDateFrom('2026-12-18'), releaseType: 3, runtime: null, url: '' });
+/** One date, at the shape a picked one has. */
+const at = (date: Temporal.PlainDate, type = 3, stage: ReleaseStage = 'cinema'): PickedRelease => ({ date, type, country: 'GB', stage });
+
+const release = (id: number): MovieRelease => ({ simkl_id: id, title: `Film ${id}`, runtime: null, url: '', dates: [at(plainDateFrom('2026-12-18'))] });
 
 const lookups = (releases: Array<[number, MovieRelease]>, failed: number[] = [], unavailable: number[] = []) =>
   ({ releases: new Map(releases), failed, unavailable });
@@ -168,7 +339,6 @@ test('an empty film list yields an empty map and counts as complete', () => {
 
 // --- picking among several dates of the same type -------------------------
 
-const NOW = { now: Temporal.Instant.from('2026-08-15T12:00:00Z') };
 
 // An original run must not beat a re-release: the old date falls behind the
 // cutoff and the film disappears.
@@ -185,7 +355,7 @@ test('a re-release beats an original run that has already happened', () => {
       },
     ],
   };
-  assert.equal(pickReleaseDate(movie, 'GB', NOW)!.date.toString(), '2027-05-25');
+  assert.equal(only(movie, 'GB', NOW).date.toString(), '2027-05-25');
 });
 
 test('array order does not decide which date is chosen', () => {
@@ -195,7 +365,7 @@ test('array order does not decide which date is chosen', () => {
   ];
   const forwards: MovieDetail = { title: 'x', release_dates: [{ iso_3166_1: 'GB', results }] };
   const backwards: MovieDetail = { title: 'x', release_dates: [{ iso_3166_1: 'GB', results: [...results].reverse() }] };
-  assert.equal(pickReleaseDate(forwards, 'GB', NOW)!.date.toString(), pickReleaseDate(backwards, 'GB', NOW)!.date.toString());
+  assert.equal(only(forwards, 'GB', NOW).date.toString(), only(backwards, 'GB', NOW).date.toString());
 });
 
 test('the soonest upcoming date wins when several are still ahead', () => {
@@ -211,7 +381,7 @@ test('the soonest upcoming date wins when several are still ahead', () => {
       },
     ],
   };
-  assert.equal(pickReleaseDate(movie, 'GB', NOW)!.date.toString(), '2026-09-01');
+  assert.equal(only(movie, 'GB', NOW).date.toString(), '2026-09-01');
 });
 
 test('a film entirely in the past keeps its most recent date', () => {
@@ -227,7 +397,7 @@ test('a film entirely in the past keeps its most recent date', () => {
       },
     ],
   };
-  assert.equal(pickReleaseDate(movie, 'GB', NOW)!.date.toString(), '1997-01-31');
+  assert.equal(only(movie, 'GB', NOW).date.toString(), '1997-01-31');
 });
 
 // The last resort must choose by type too, not by whichever came first.
@@ -239,16 +409,16 @@ test('the last-resort choice is by type, not by position', () => {
   const forwards: MovieDetail = { title: 'x', release_dates: [{ iso_3166_1: 'GB', results }] };
   const backwards: MovieDetail = { title: 'x', release_dates: [{ iso_3166_1: 'GB', results: [...results].reverse() }] };
 
-  const a = pickReleaseDate(forwards, 'GB', NOW)!;
-  const b = pickReleaseDate(backwards, 'GB', NOW)!;
+  const a = only(forwards, 'GB', NOW);
+  const b = only(backwards, 'GB', NOW);
   assert.deepEqual(a, b, 'order must not change the answer');
   assert.equal(a.type, 5, 'physical is a date you can act on; a premiere is a screening');
 });
 
 // iso_3166_1 is matched exactly, so a lowercase value would fall through to US.
 test('the release country is matched case-insensitively', () => {
-  assert.equal(pickReleaseDate(duneThree, 'gb', NOW)!.date.toString(), pickReleaseDate(duneThree, 'GB', NOW)!.date.toString());
-  assert.equal(pickReleaseDate(duneThree, 'gb', NOW)!.country, 'GB');
+  assert.equal(only(duneThree, 'gb', NOW).date.toString(), only(duneThree, 'GB', NOW).date.toString());
+  assert.equal(only(duneThree, 'gb', NOW).country, 'GB');
 });
 
 // --- permanent versus transient lookup failures ---------------------------
@@ -390,7 +560,7 @@ test('an unrecognised release type still beats the unreliable released field', (
     released: '2026-12-16',
     release_dates: [{ iso_3166_1: 'GB', results: [{ type: 7, release_date: '2026-12-18' }] }],
   };
-  const picked = pickReleaseDate(movie, 'GB', NOW)!;
+  const picked = only(movie, 'GB', NOW);
   assert.equal(picked.date.toString(), '2026-12-18');
   assert.equal(picked.country, 'GB');
 });
@@ -408,7 +578,7 @@ test('a known type is still preferred over an unrecognised one', () => {
       },
     ],
   };
-  assert.equal(pickReleaseDate(movie, 'GB', NOW)!.type, 3);
+  assert.equal(only(movie, 'GB', NOW).type, 3);
 });
 
 // "Has this happened yet" is answered in the viewer's zone, as the join does:
@@ -431,12 +601,12 @@ test('whether a date has passed is judged in the viewer timezone, not UTC', () =
 
   // timezone is a parameter, so this needs no global mutation.
   assert.equal(
-    pickReleaseDate(movie, 'NZ', { ...now, timezone: 'Pacific/Auckland' })!.date.toString(),
+    only(movie, 'NZ', { ...now, timezone: 'Pacific/Auckland' }).date.toString(),
     '2026-08-20',
     'the 15th is yesterday in Auckland',
   );
   assert.equal(
-    pickReleaseDate(movie, 'NZ', { ...now, timezone: 'UTC' })!.date.toString(),
+    only(movie, 'NZ', { ...now, timezone: 'UTC' }).date.toString(),
     '2026-08-15',
     'but is still today in UTC',
   );
@@ -451,9 +621,9 @@ const DUE_NOW = Temporal.Instant.from('2026-08-15T12:00:00Z');
 const DAY = Temporal.Duration.from({ hours: 24 });
 const OPTS = { refresh: DAY, timezone: 'Europe/London' };
 /** A release `days` from NOW, so a fixture can sit either side of the horizon. */
-const dated = (days: number): MovieRelease => ({
+const dated = (...days: number[]): MovieRelease => ({
   ...release(1),
-  date: plainDateIn(DUE_NOW, OPTS.timezone).add({ days }),
+  dates: days.map((d) => at(plainDateIn(DUE_NOW, OPTS.timezone).add({ days: d }))),
 });
 
 test('a film never asked about is due', () => {
@@ -484,6 +654,15 @@ test('a release already past is still due', () => {
   assert.equal(filmDue(DUE_NOW.subtract({ hours: 24, seconds: 1 }), dated(-30), DUE_NOW, OPTS), true);
 });
 
+// The earliest is what the horizon is measured against, so a film whose
+// cinema date has passed keeps asking — and that is exactly the film whose
+// home date is unannounced or still moving.
+test('the earliest of a film\'s dates decides, not the furthest out', () => {
+  const aged = DUE_NOW.subtract({ hours: 24, seconds: 1 });
+  assert.equal(filmDue(aged, dated(-30, 200), DUE_NOW, OPTS), true, 'the cinema date has passed');
+  assert.equal(filmDue(aged, dated(200, 400), DUE_NOW, OPTS), false, 'both are far out');
+});
+
 // A film landing exactly on the horizon is still close enough for a studio to
 // move.
 test('the horizon boundary is inclusive', () => {
@@ -494,7 +673,7 @@ test('the horizon boundary is inclusive', () => {
 // a different local date for a fifth of the day.
 test('the horizon is measured in the viewer\'s timezone', () => {
   const aged = DUE_NOW.subtract({ hours: 24, seconds: 1 });
-  const onTheEdge = { ...release(1), date: plainDateFrom('2026-09-14') };
+  const onTheEdge = { ...release(1), dates: [at(plainDateFrom('2026-09-14'))] };
   assert.equal(filmDue(aged, onTheEdge, DUE_NOW, { ...OPTS, horizonDays: 30 }), true);
   assert.equal(filmDue(aged, onTheEdge, DUE_NOW, { ...OPTS, horizonDays: 29 }), false);
 });

@@ -80,6 +80,10 @@ export const renderStatus = (
         artwork === null
           ? null
           : { url: artwork.url, needing: artwork.summary?.needing ?? null, total: artwork.summary?.total ?? null, checkedAt: artwork.builtAt ? isoOf(artwork.builtAt) : null },
+      // The rendered feed's own events, straight off the half that holds
+      // them. Nothing is re-joined here: the page shows what the last render
+      // put in the file, which is what a subscriber is holding.
+      events: state.feed.events,
       requests: recentRequests(),
       runs: sheetRuns(),
       // In memory like the journal, so a hard refresh still touches no disk.
