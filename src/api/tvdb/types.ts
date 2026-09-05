@@ -30,3 +30,27 @@ export interface TvdbSeasonResponse {
 export interface TvdbLoginResponse {
   data?: { token?: string };
 }
+
+/**
+ * One artwork from `/series/{id}/artworks`. `type` is TVDB's own numbering:
+ * 1 banner, 2 poster (680×1000, thumbnail 340×500), 3 background, 5 icon,
+ * 22 clear art, 23 clear logo. `image` is a full `artworks.thetvdb.com`
+ * URL, and `thumbnail` its `_t` sibling.
+ */
+export interface TvdbArtwork {
+  id?: number;
+  image?: string;
+  thumbnail?: string;
+  language?: string | null;
+  type?: number;
+  score?: number;
+  width?: number;
+  height?: number;
+  includesText?: boolean;
+}
+
+/** `/series/{id}/artworks?lang=eng&type=2`. */
+export interface TvdbArtworksResponse {
+  status?: string;
+  data?: { id?: number; name?: string; artworks?: TvdbArtwork[] };
+}

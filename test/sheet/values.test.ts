@@ -8,6 +8,7 @@ import {
   dateSerial,
   plausibleRuntimeDays,
   runtimeDays,
+  serialDate,
   watchSerial,
 } from '../../src/sheet/values.ts';
 import { instantFrom, plainDateFrom } from '../../src/shared/dates.ts';
@@ -123,4 +124,12 @@ test('a link on another host, another bucket, or with no key is not this bucket\
 test('a remainder that does not percent-decode answers null', () => {
   assert.equal(artworkKeyOf(`${ARTWORK_HOST}/${BUCKET}/3%`, BUCKET), null);
   assert.equal(artworkKeyOf(`${ARTWORK_HOST}/${BUCKET}/100%zz`, BUCKET), null);
+});
+
+test('a serial round-trips to the date it stands for', () => {
+  assert.equal(serialDate(46249)?.toString(), '2026-08-15');
+  assert.equal(serialDate(0)?.toString(), '1899-12-30');
+  assert.equal(serialDate(46249.5)?.toString(), '2026-08-15');
+  assert.equal(serialDate(null), null);
+  assert.equal(serialDate(Number.NaN), null);
 });

@@ -288,6 +288,8 @@ export interface ItemSpec {
   seasons?: Record<number, Array<string | null>>;
   /** Films only: SIMKL sends the TMDB id as a string, the way it sends the TVDB one. */
   tmdb?: string | null;
+  /** Shows only: the TVDB id, as the string SIMKL sends. Absent by default, as it is off `simkl_ids_only`. */
+  tvdb?: string;
   /** Films only: the user's own score, and null where they have not rated it. */
   rating?: number | null;
   /** Films only: whole minutes, the figure the tab's `Runtime` column holds. */
@@ -310,6 +312,7 @@ export const libraryItem = ({
   notAired = 0,
   seasons = {},
   tmdb = String(id),
+  tvdb,
   rating = null,
   runtime = 100,
   animeType,
@@ -321,8 +324,8 @@ export const libraryItem = ({
   // test excluding an `ova` is testing the filter and not a missing field.
   const nested =
     type === 'anime'
-      ? { title, runtime, ids: { simkl: id, ...(tmdb === null ? {} : { tmdb }) } }
-      : { title, ids: { simkl: id } };
+      ? { title, runtime, ids: { simkl: id, ...(tmdb === null ? {} : { tmdb }), ...(tvdb === undefined ? {} : { tvdb }) } }
+      : { title, ids: { simkl: id, ...(tvdb === undefined ? {} : { tvdb }) } };
   if (type === 'movies') {
     return {
       movie: { title, runtime, ids: { simkl: id, ...(tmdb === null ? {} : { tmdb }) } },

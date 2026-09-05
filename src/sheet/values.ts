@@ -21,6 +21,10 @@ const SHEET_EPOCH = Temporal.PlainDate.from('1899-12-30');
  */
 export const dateSerial = (date: Temporal.PlainDate): number => SHEET_EPOCH.until(date, { largestUnit: 'day' }).days;
 
+/** The inverse: the calendar date a serial stands for. Null for anything not a finite number. */
+export const serialDate = (serial: number | null | undefined): Temporal.PlainDate | null =>
+  typeof serial === 'number' && Number.isFinite(serial) ? SHEET_EPOCH.add({ days: Math.floor(serial) }) : null;
+
 /**
  * The sheet serial for a watch timestamp, in the viewer's zone — never
  * `iso.slice(0, 10)`, which lands a US evening broadcast on the next day.

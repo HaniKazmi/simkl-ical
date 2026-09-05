@@ -52,3 +52,26 @@ export interface TmdbMovie {
   credits?: { crew?: TmdbCrew[] };
   images?: { backdrops?: TmdbBackdrop[] };
 }
+
+/**
+ * One image from `/movie/{id}/images`, which carries what the appended
+ * `images` on a film's detail does not: dimensions and the vote count.
+ * Written from live responses like the rest.
+ */
+export interface TmdbImage {
+  file_path?: string;
+  iso_639_1?: string | null;
+  width?: number;
+  height?: number;
+  aspect_ratio?: number;
+  vote_average?: number;
+  vote_count?: number;
+}
+
+/** `/movie/{id}/images?include_image_language=en,null`: posters, backdrops and logos. */
+export interface TmdbImages {
+  id?: number;
+  backdrops?: TmdbImage[];
+  posters?: TmdbImage[];
+  logos?: TmdbImage[];
+}
