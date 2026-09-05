@@ -244,8 +244,8 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   navigation the reader clicks is not a subresource, and `no-referrer` covers it either way.
 - **The artwork page is the one page that runs a script and loads images off-origin, and it does
   both under its own CSP.** `script-src 'self'` admits only `artwork/app.js`; `img-src` names the
-  two candidate CDNs and the bucket host and nothing else; `connect-src 'self'` is what the
-  script's fetches run under. Every `src` and `href` on it is relative or on those three hosts, so
+  three image CDNs and the bucket host and nothing else; `connect-src 'self'` is what the
+  script's fetches run under. Every `src` and `href` on it is relative or on those four hosts, so
   **no absolute URL on the page carries the feed token** — pinned by `4-html.test.ts` and
   `server-artwork.test.ts` — and the same `no-referrer` header keeps the page's URL out of the CDNs'
   logs. The script builds every node with `createElement` and `textContent`: no `innerHTML`, no

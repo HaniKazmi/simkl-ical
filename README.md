@@ -156,7 +156,7 @@ What it will not do: write a formula cell, write a cell that is not blank, a buc
 recognisable URL, or write at all while a sync run holds the sheet (it answers "busy" and the page
 retries). In `report` mode the object still uploads and the cell address is reported instead of
 written. Unlike the status page it runs a small script and loads images off-origin, under a
-Content-Security-Policy naming only its own script and the three image hosts; it sends no
+Content-Security-Policy naming only its own script and the four image hosts; it sends no
 referrer, and no absolute URL on it carries the token.
 
 It needs both tabs syncable, `TVDB_API_KEY`, and the two buckets:

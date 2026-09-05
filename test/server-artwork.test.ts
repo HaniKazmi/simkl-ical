@@ -115,7 +115,7 @@ test('the page carries its hardening headers, with the CSP pinned exactly', asyn
     assert.equal(res.headers['content-security-policy'], ARTWORK_CSP);
     assert.equal(
       ARTWORK_CSP,
-      "default-src 'none'; img-src 'self' https://image.tmdb.org https://artworks.thetvdb.com https://storage.googleapis.com; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
+      "default-src 'none'; img-src 'self' https://image.tmdb.org https://artworks.thetvdb.com https://assets.fanart.tv https://storage.googleapis.com; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
     );
     assert.equal(res.headers['referrer-policy'], 'no-referrer');
     assert.equal(res.headers['x-content-type-options'], 'nosniff');
@@ -145,7 +145,7 @@ test('no absolute URL on the page or in its script carries the feed token', asyn
     for (const match of page.body.matchAll(/(?:src|href)="([^"]+)"/g)) {
       const url = match[1] ?? '';
       if (!/^[a-z]+:/.test(url)) continue;
-      assert.match(url, /^https:\/\/(image\.tmdb\.org|artworks\.thetvdb\.com|storage\.googleapis\.com)\//, url);
+      assert.match(url, /^https:\/\/(image\.tmdb\.org|artworks\.thetvdb\.com|assets\.fanart\.tv|storage\.googleapis\.com)\//, url);
     }
   });
 });

@@ -7,7 +7,7 @@
  * interpolation.
  *
  * Every `src` and `href` is relative (`artwork/app.js`, `status`, the icons)
- * or on one of the three image hosts the CSP names. No absolute URL on this
+ * or on one of the image hosts the CSP names. No absolute URL on this
  * page carries the feed token: the page is reached through it, and the
  * `no-referrer` header the route sends is what keeps it off the image hosts.
  */

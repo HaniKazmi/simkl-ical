@@ -71,7 +71,7 @@ test('every src and href is relative, or on one of the three image hosts', () =>
   ]);
   for (const match of rendered.matchAll(/(?:src|href)="([^"]+)"/g)) {
     const url = match[1] ?? '';
-    if (/^[a-z]+:/.test(url)) assert.match(url, /^https:\/\/(image\.tmdb\.org|artworks\.thetvdb\.com|storage\.googleapis\.com)\//, url);
+    if (/^[a-z]+:/.test(url)) assert.match(url, /^https:\/\/(image\.tmdb\.org|artworks\.thetvdb\.com|assets\.fanart\.tv|storage\.googleapis\.com)\//, url);
   }
   assert.ok(!rendered.includes('wsrv.nl/?url'), 'a host the CSP would block is not even attempted');
   assert.ok(rendered.includes('href="status"'), 'the status page is linked relatively');
@@ -109,7 +109,7 @@ test('a mode other than apply is said on the page', () => {
 // script's check — and all three are built from one list. Pinned exactly so a
 // host added to one cannot be missing from another.
 test('the CSP, the page and the script agree on the image hosts', () => {
-  assert.deepEqual([...PAGE_IMAGE_HOSTS], ['image.tmdb.org', 'artworks.thetvdb.com', 'storage.googleapis.com']);
+  assert.deepEqual([...PAGE_IMAGE_HOSTS], ['image.tmdb.org', 'artworks.thetvdb.com', 'assets.fanart.tv', 'storage.googleapis.com']);
   const imgSrc = /img-src ([^;]+);/.exec(ARTWORK_CSP)?.[1]?.split(' ') ?? [];
   assert.deepEqual(imgSrc, ["'self'", ...PAGE_IMAGE_HOSTS.map((h) => `https://${h}`)]);
   assert.ok(CLIENT_SCRIPT.includes(JSON.stringify(PAGE_IMAGE_HOSTS)), 'the script carries the same list verbatim');

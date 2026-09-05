@@ -14,8 +14,13 @@ import { HttpError, requestBytes, type HttpSpec } from './http.ts';
 import { config } from '../shared/config.ts';
 import type { RequestComponent } from './requests.ts';
 
-/** The two CDNs candidates come from — TMDB's for films, TVDB's for shows. */
-export const IMAGE_HOSTS: readonly string[] = ['image.tmdb.org', 'artworks.thetvdb.com'];
+/**
+ * The CDNs an image may be fetched from: TMDB's for film candidates, TVDB's
+ * for show candidates, and fanart.tv's, which offers nothing here but is what
+ * five hand-picked `Banner` cells link — an adopt copies from wherever the
+ * cell points, and a host off this list is refused before any request.
+ */
+export const IMAGE_HOSTS: readonly string[] = ['image.tmdb.org', 'artworks.thetvdb.com', 'assets.fanart.tv'];
 
 /** Past this a candidate is not a backdrop; TMDB's largest original is under 6 MiB. */
 export const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
