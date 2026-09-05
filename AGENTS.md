@@ -64,6 +64,22 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   SIMKL timestamp from another machine.
 - **UIDs are derived, never random.** A fresh UID each render makes calendar clients duplicate
   events instead of updating them.
+- **A film has two lives, and the stages are resolved separately.** `CINEMA` and `HOME` in
+  `1-films.ts`, each answering with at most one date. Walked as one list, the theatrical date wins
+  for anything that has played a cinema — `relevantDate` answers with the most recent past date
+  when they have all passed — and the digital date is then unreachable for exactly the films where
+  it is the only date left to act on, which on a plan-to-watch list is most of them. Each date is
+  cut off against `GRACE_DAYS` on its own in `join`, so the cinema date ages out and the home date
+  carries the film. `PickedRelease.stage` keys the event's UID, so the two strings are load-bearing
+  and the pick decides the stage rather than the UID re-deriving it from `type` — the last resorts
+  answer with a type that names no stage, and `released` with no type at all. `LAST_RESORT` is
+  reached only when *neither* stage answered, so a premiere is never a second event beside a real
+  release, and a day-and-date film is one event rather than two rows on one day.
+- **`filmDue` measures a film's earliest date, not its furthest out.** A film whose cinema date has
+  passed stays due at the 24h floor, which is what lands its home date the day SIMKL announces one.
+  The rule is unchanged from a single past date, so the second event costs no request beyond the
+  ones already being made — a film out of cinemas was already being asked about daily and its
+  home date discarded.
 - **Nothing in the refresh path may be fatal.** Failures land in a per-subsystem error slot and are
   reported by `/healthz`; the process stays up and keeps serving the last good feed.
 - **The feed is only replaced when both halves of the join are present**, so a partial refresh
@@ -468,7 +484,7 @@ the process, and the rest carries its pipeline position in the filename, so `ls`
 
 | Step | Module |
 | --- | --- |
-| FILMS | `1-films.ts` — every rule about film release dates; the fetch is `io/movies.ts` |
+| FILMS | `1-films.ts` — every rule about film release dates, and the two stages a film resolves at; the fetch is `io/movies.ts` |
 | JOIN | `2-join.ts` — calendars × library × releases → events |
 | RENDER | `3-ics.ts` — events → an ICS string |
 | io | `io/calendar.ts` (CDN airdates), `io/movies.ts` (per-title film fetch), `io/store.ts` (the rendered feed on disk) |

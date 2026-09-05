@@ -5,7 +5,7 @@ import { itemSimklId } from '../../src/api/simkl/item.ts';
 import { plainDateFrom, releaseDate } from '../../src/shared/dates.ts';
 import type { CalendarEntry, CalendarFile, CalendarType, LibraryItem } from '../../src/api/simkl/types.ts';
 import type { Library, LibraryEntry } from '../../src/library.ts';
-import type { MovieRelease } from '../../src/feed/1-films.ts';
+import type { MovieRelease, PickedRelease, ReleaseStage } from '../../src/feed/1-films.ts';
 import { calendarOf } from '../helpers.ts';
 
 type Cals = Partial<Record<CalendarType, CalendarFile>>;
@@ -293,7 +293,7 @@ test('an already-watched episode still lingers', () => {
 });
 
 test('a recently released film lingers too', () => {
-  const events = join(calendars(), library, { timezone: 'Europe/London', now: NOW, graceDays: 14, movieReleases: filmReleases('2026-08-05') });
+  const events = join(calendars(), library, { timezone: 'Europe/London', now: NOW, graceDays: 14, movieReleases: filmReleases(cinema('2026-08-05')) });
   assert.equal(events.length, 1);
   assert.equal(String(events[0]?.date), '2026-08-05');
 });
@@ -309,11 +309,17 @@ test('episode titles stay out of the summary', () => {
   assert.equal(events[0]?.episodeTitle, 'Ep 3');
 });
 
-const filmReleases = (ymd: string): Map<number, MovieRelease> =>
-  new Map([[300, { simkl_id: 300, title: 'Planned Film', date: plainDateFrom(ymd), releaseType: 3, runtime: '140m', url: 'https://simkl.com/movies/300' }]]);
+const at = (ymd: string, type: number, stage: ReleaseStage): PickedRelease => ({ date: plainDateFrom(ymd), type, country: 'GB', stage });
+
+/** One planned film, with whichever of its two dates a case needs. */
+const filmReleases = (...dates: PickedRelease[]): Map<number, MovieRelease> =>
+  new Map([[300, { simkl_id: 300, title: 'Planned Film', runtime: '140m', url: 'https://simkl.com/movies/300', dates }]]);
+
+const cinema = (ymd: string): PickedRelease => at(ymd, 3, 'cinema');
+const home = (ymd: string): PickedRelease => at(ymd, 4, 'home');
 
 test('plan-to-watch films are included by release date', () => {
-  const events = join(calendars(), library, { timezone: 'Europe/London', now: NOW, movieReleases: filmReleases('2026-08-20') });
+  const events = join(calendars(), library, { timezone: 'Europe/London', now: NOW, movieReleases: filmReleases(cinema('2026-08-20')) });
   assert.equal(events.length, 1);
   assert.equal(events[0]?.kind, 'movie');
   assert.equal(String(events[0]?.date), '2026-08-20');
@@ -322,19 +328,69 @@ test('plan-to-watch films are included by release date', () => {
 });
 
 test('films far beyond the 33-day calendar window still appear', () => {
-  const events = join(calendars(), library, { timezone: 'Europe/London', now: NOW, movieReleases: filmReleases('2027-04-30') });
+  const events = join(calendars(), library, { timezone: 'Europe/London', now: NOW, movieReleases: filmReleases(cinema('2027-04-30')) });
   assert.equal(events.length, 1);
   assert.equal(String(events[0]?.date), '2027-04-30');
 });
 
 test('films already released are dropped', () => {
-  const events = join(calendars(), library, { timezone: 'Europe/London', now: NOW, movieReleases: filmReleases('2025-12-17') });
+  const events = join(calendars(), library, { timezone: 'Europe/London', now: NOW, movieReleases: filmReleases(cinema('2025-12-17')) });
   assert.equal(events.length, 0);
 });
 
 test('films with no resolvable release date are skipped', () => {
   const events = join(calendars(), library, { timezone: 'Europe/London', now: NOW, movieReleases: new Map() });
   assert.equal(events.length, 0);
+});
+
+test('a film with both dates is two events, each labelled for its own date', () => {
+  const events = join(calendars(), library, {
+    timezone: 'Europe/London',
+    now: NOW,
+    movieReleases: filmReleases(cinema('2026-08-20'), home('2026-11-14')),
+  });
+  assert.deepEqual(events.map((e) => [String(e.date), e.detail]), [
+    ['2026-08-20', 'In cinemas'],
+    ['2026-11-14', 'Digital release'],
+  ]);
+  assert.equal(new Set(events.map((e) => e.uid)).size, 2, 'a shared uid would collapse them to one');
+});
+
+// The whole point of two dates: down one list the cinema date is the film's
+// only answer, and it is months past the window by the time the film is
+// worth watching at home.
+test('a film long out of cinemas is carried by its home date', () => {
+  const events = join(calendars(), library, {
+    timezone: 'Europe/London',
+    now: NOW,
+    graceDays: 14,
+    movieReleases: filmReleases(cinema('2026-01-15'), home('2026-09-12')),
+  });
+  assert.equal(events.length, 1, 'the cinema date is long gone; the home date is not');
+  assert.equal(String(events[0]?.date), '2026-09-12');
+  assert.equal(events[0]?.detail, 'Digital release');
+});
+
+test('a film past both of its dates is out of the feed entirely', () => {
+  const events = join(calendars(), library, {
+    timezone: 'Europe/London',
+    now: NOW,
+    graceDays: 14,
+    movieReleases: filmReleases(cinema('2026-01-15'), home('2026-04-02')),
+  });
+  assert.equal(events.length, 0);
+});
+
+// Derived from the stage, not from position: a film that gains a home date
+// must not disturb the cinema event a client is already showing.
+test('a film\'s uid is stable in the date it names', () => {
+  const before = join(calendars(), library, { timezone: 'Europe/London', now: NOW, movieReleases: filmReleases(cinema('2026-08-20')) });
+  const after = join(calendars(), library, {
+    timezone: 'Europe/London',
+    now: NOW,
+    movieReleases: filmReleases(cinema('2026-08-20'), home('2026-11-14')),
+  });
+  assert.equal(before[0]?.uid, after[0]?.uid);
 });
 
 test('events are deduplicated by uid and sorted by date', () => {

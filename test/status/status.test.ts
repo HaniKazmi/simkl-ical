@@ -31,7 +31,7 @@ const wired = (): Orchestrator => {
   state.feed.calendarsAt = ago(4 * MINUTE);
   state.feed.calendarsFreshAt = ago(4 * MINUTE);
   state.feed.calendarsChangedAt = ago(4 * MINUTE);
-  state.feed.movieReleases = new Map([[9, { simkl_id: 9, title: 'A Film', date: plainDateFrom('2026-12-18'), releaseType: 3, runtime: null, url: '' }]]);
+  state.feed.movieReleases = new Map([[9, { simkl_id: 9, title: 'A Film', runtime: null, url: '', dates: [{ date: plainDateFrom('2026-12-18'), type: 3, country: 'GB', stage: 'cinema' as const }] }]]);
   return state;
 };
 

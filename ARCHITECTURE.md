@@ -48,14 +48,15 @@ what the poll does not.
 | --- | --- | --- |
 | fetch airdates | The rolling file per type, plus one monthly archive per month the grace window reaches. Archives merge first, rolling last, so the freshest wins on overlap. | `GET data.simkl.in/calendar/v2/{tv,anime}.json` and `…/{year}/{month}/{type}.json` — conditional, mostly `304` |
 | fetch films | Per title, because the CDN's `movie_release.json` covers a rolling 33-day window with placeholder times, so a release six months out never appears in it. | `GET /movies/{id}?extended=full`, one per plan-to-watch film, 4 at a time |
-| FILMS | Which of a film's many dates counts, and when one is worth re-reading | none |
+| FILMS | Which of a film's many dates count — up to two, its cinema date and its home date — and when one is worth re-reading | none |
 | JOIN | Calendars × library × releases → events | none |
 | RENDER | Events → an ICS string; saved to disk, and loaded back on boot | none |
 
 What the join encodes: `completed` counts as watching, because SIMKL marks an ongoing show completed
 the moment you catch up. Plan-to-watch contributes premieres only. Aired episodes linger for
-`GRACE_DAYS`, deliberately *not* filtered by watch state — the feed records what aired. Anime is a
-separate SIMKL type rather than a genre, and carries no season number.
+`GRACE_DAYS`, deliberately *not* filtered by watch state — the feed records what aired. A film
+contributes an event per date it has, each cut off on its own. Anime is a separate SIMKL type rather
+than a genre, and carries no season number.
 
 ### The sheet sync — INDEX → READ/PARSE → (PLAN ⇄ FETCH) → GUARD → BUILD → APPLY → VERIFY → ROLLBACK
 
@@ -130,7 +131,7 @@ expensive or the thing it fetches rarely changes.
 | Library delta | a status timestamp moved in the gate above | `GET /sync/all-items?date_from={watermark − 1s}&extended=full&episode_watched_at=yes&include_all_episodes=yes` |
 | Whole library | cold start, or a forced poll | the same call without `date_from` |
 | Membership set | `removed_from_list` moved | `GET /sync/all-items?extended=simkl_ids_only` — ids alone, to diff against |
-| Film release date | a film is new, undated, or dated inside **30 days**; at most once per **24h** each | `GET /movies/{id}` — 4 at a time |
+| Film release date | a film is new, undated, or its **earliest** date is inside **30 days**; at most once per **24h** each. A film out of cinemas is therefore asked daily, which is what lands its streaming date the day SIMKL learns it | `GET /movies/{id}` — 4 at a time |
 | A title's episode list | that title's `lastWatchedAt` moved, else after **24h** | `GET /tv/episodes/{id}` |
 | A title's status | same trigger as its episode list | `GET /tv/{id}`, or `/anime/{id}` for a cour |
 | A season's episode lengths | that season is completing with a blank runtime cell, or has finished airing on the run that adds its row — then never again | `GET api4.thetvdb.com/v4/series/{id}/episodes/official?season={n}` — one call is one whole season |
