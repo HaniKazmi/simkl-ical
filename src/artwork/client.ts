@@ -170,20 +170,35 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
 
   // --- candidates ------------------------------------------------------------
   const strips = new Map();
-  const openDialog = (cand, onUse) => {
+  /** Full size. No onUse means the image is only being looked at, so the button is hidden. */
+  const openDialog = (url, caption, onUse) => {
     if (!dialog || !dialog.showModal) return;
     const img = dialog.querySelector('[data-dialog-image]');
-    const caption = dialog.querySelector('[data-dialog-caption]');
-    img.src = loadable(cand.url) ? cand.url : '';
-    caption.textContent = cand.width + '×' + cand.height + (cand.votes !== null ? ' · ' + cand.votes + ' votes' : '') + ' · ' + cand.source;
+    img.src = loadable(url) ? url : '';
+    dialog.querySelector('[data-dialog-caption]').textContent = caption;
     const use = dialog.querySelector('[data-dialog-use]');
+    use.hidden = !onUse;
     use.onclick = () => {
       dialog.close();
-      onUse();
+      if (onUse) onUse();
     };
     dialog.showModal();
   };
-  if (dialog) dialog.querySelector('[data-dialog-close]').addEventListener('click', () => dialog.close());
+  if (dialog) {
+    dialog.querySelector('[data-dialog-close]').addEventListener('click', () => dialog.close());
+    // Click on the backdrop closes too: the dialog's own box is the only thing the click can miss.
+    dialog.addEventListener('click', (event) => {
+      if (event.target === dialog) dialog.close();
+    });
+  }
+  const describe = (cand) => cand.width + '×' + cand.height + (cand.votes !== null ? ' · ' + cand.votes + ' votes' : ' · score ' + cand.score) + ' · ' + cand.source;
+
+  // The row's current image enlarges the same way; the URL is the cell's.
+  for (const row of rows) {
+    const current = row.querySelector('img.th');
+    if (!current) continue;
+    current.addEventListener('click', () => openDialog(current.src, row.dataset.title + ' · current image', null));
+  }
 
   const renderStrip = (row, listing, panel) => {
     panel.replaceChildren();
@@ -191,7 +206,7 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
     const kind = row.dataset.kind;
     const what = kind === 'movie' ? ' backdrops from TMDb' : ' posters from TVDB';
     label.appendChild(el('span', '', listing.candidates.length + what));
-    label.appendChild(el('span', 'dim', kind === 'movie' ? '16:9 only · English first, ranked by votes' : 'English first, 680×1000 next, then by score'));
+    label.appendChild(el('span', 'dim', (kind === 'movie' ? '16:9 only · English first, ranked by votes' : 'English first, 680×1000 next, then by score') + ' · click to enlarge, double-click to use'));
     if (listing.error) label.appendChild(el('span', 'err', listing.error));
     panel.appendChild(label);
     const strip = el('div', 'strip');
@@ -217,7 +232,7 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
         progress.textContent = 'uploading…';
         progress.textContent = await pick(row, { kind, id: Number(row.dataset.id), url: cand.url }, progress);
       };
-      button.addEventListener('click', () => openDialog(cand, use));
+      button.addEventListener('click', () => openDialog(cand.url, row.dataset.title + ' · ' + describe(cand), use));
       button.addEventListener('dblclick', use);
       strip.appendChild(item);
     });

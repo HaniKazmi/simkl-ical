@@ -150,7 +150,7 @@ const STYLE = `${BASE_STYLE}
 .row{border:1px solid var(--line);border-radius:8px;background:var(--bg);overflow:hidden}
 .row[hidden]{display:none}
 .rh{display:grid;grid-template-columns:3.75rem auto minmax(0,1fr) auto auto auto;gap:.75rem;align-items:center;padding:.5rem .75rem}
-.rh .th{width:3.75rem;height:2.1rem;border-radius:4px;background:var(--line);object-fit:cover;display:block}
+.rh .th{width:3.75rem;height:2.1rem;border-radius:4px;background:var(--line);object-fit:cover;display:block;cursor:zoom-in}
 .rh .th.portrait{width:1.45rem;height:2.1rem;margin:0 auto}
 .rh .ph{width:3.75rem;height:2.1rem;border-radius:4px;border:1px dashed var(--line)}
 .kind{font-size:.6875rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--faint);width:2.6rem}
@@ -164,7 +164,7 @@ const STYLE = `${BASE_STYLE}
 .cands .lbl .dim{text-transform:none;letter-spacing:0;font-weight:400}
 .strip{display:flex;gap:.625rem;overflow-x:auto;padding-bottom:.5rem}
 .cand{flex:none;display:grid;gap:.3rem}
-.cand button{padding:0;border:0;background:none;cursor:pointer;border-radius:6px;overflow:hidden;line-height:0;box-shadow:0 0 0 1px var(--line);position:relative}
+.cand button{padding:0;border:0;background:none;cursor:zoom-in;border-radius:6px;overflow:hidden;line-height:0;box-shadow:0 0 0 1px var(--line);position:relative}
 .cand button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .cand img{display:block;background:var(--bg)}
 .cand.land img{width:240px;height:135px;object-fit:cover}
@@ -205,7 +205,7 @@ export const loadableImage = (url: string | null): boolean => {
 
 const thumb = (row: ArtworkRow): SafeHtml =>
   row.image && loadableImage(row.image)
-    ? html`<img class="th${row.kind === 'show' ? ' portrait' : ''}" src="${row.image}" alt="" loading="lazy" decoding="async">`
+    ? html`<img class="th${row.kind === 'show' ? ' portrait' : ''}" src="${row.image}" alt="" title="enlarge" loading="lazy" decoding="async">`
     : html`<div class="ph"></div>`;
 
 const rowHtml = (row: ArtworkRow): SafeHtml => {
