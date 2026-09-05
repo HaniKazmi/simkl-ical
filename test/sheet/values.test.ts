@@ -1,6 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dateSerial, plausibleRuntimeDays, runtimeDays, watchSerial } from '../../src/sheet/values.ts';
+import {
+  ARTWORK_HOST,
+  artworkKeyFor,
+  artworkKeyOf,
+  artworkLink,
+  dateSerial,
+  plausibleRuntimeDays,
+  runtimeDays,
+  watchSerial,
+} from '../../src/sheet/values.ts';
 import { instantFrom, plainDateFrom } from '../../src/shared/dates.ts';
 
 test('a date serial counts days from the sheet epoch', () => {
@@ -60,4 +69,58 @@ test('every day fraction the conversion produces is one the guard accepts', () =
   assert.equal(plausibleRuntimeDays(undefined), false);
   assert.equal(plausibleRuntimeDays(1), false, 'a whole day is minutes in the wrong column');
   assert.equal(plausibleRuntimeDays(0.4 / 1440), false, 'under half a minute renders as nothing');
+});
+
+// --- Artwork links -----------------------------------------------------------
+
+const BUCKET = 'hanikazmi_plotdevice_show';
+
+// The show tab's formula is `prefix & Name`, so the link for an ordinary title
+// must be byte-identical to what that formula produces: spaces and slashes
+// literal, nothing else touched.
+test('a link is the prefix plus the key verbatim, as the formula cells produce it', () => {
+  assert.equal(artworkLink(BUCKET, 'Finding Nemo'), `${ARTWORK_HOST}/${BUCKET}/Finding Nemo`);
+  assert.equal(artworkLink(BUCKET, 'Fate/Apocrypha'), `${ARTWORK_HOST}/${BUCKET}/Fate/Apocrypha`);
+  assert.equal(artworkLink(BUCKET, 'Pokémon: Mewtwo Returns'), `${ARTWORK_HOST}/${BUCKET}/Pokémon: Mewtwo Returns`);
+});
+
+// The three characters that cannot survive literally in a path: `#` and `?`
+// end it, `%` starts an escape.
+test('a link escapes only the characters a URL parser would consume', () => {
+  assert.equal(artworkLink(BUCKET, '3%'), `${ARTWORK_HOST}/${BUCKET}/3%25`);
+  assert.equal(artworkLink(BUCKET, 'What If...?'), `${ARTWORK_HOST}/${BUCKET}/What If...%3F`);
+  assert.equal(artworkLink(BUCKET, 'Show #1'), `${ARTWORK_HOST}/${BUCKET}/Show %231`);
+});
+
+test('a key is the title exactly, with nothing normalised', () => {
+  assert.equal(artworkKeyFor(' Trailing '), ' Trailing ');
+  // Composed and decomposed forms are different keys — the bucket keys on
+  // bytes, and so must this.
+  assert.notEqual(artworkKeyFor('Pokémon'), artworkKeyFor('Pokémon'));
+});
+
+test('the key round-trips through the link, for the formula and the hand-written cells alike', () => {
+  for (const key of ['Finding Nemo', '3%', 'Fate/Apocrypha', 'What If...?', 'Pokémon: Mewtwo Returns', 'Aquarian Evol']) {
+    assert.equal(artworkKeyOf(artworkLink(BUCKET, key), BUCKET), key, key);
+  }
+  // A hand-written cell that percent-encodes more than the link would.
+  assert.equal(artworkKeyOf(`${ARTWORK_HOST}/${BUCKET}/Fate%20Apocrypha`, BUCKET), 'Fate Apocrypha');
+  assert.equal(artworkKeyOf(`${ARTWORK_HOST}/${BUCKET}/Inside%20No%209`, BUCKET), 'Inside No 9');
+});
+
+test('a link on another host, another bucket, or with no key is not this bucket\'s', () => {
+  assert.equal(artworkKeyOf(`${ARTWORK_HOST}/hanikazmi_plotdevice_movie/Finding Nemo`, BUCKET), null);
+  assert.equal(artworkKeyOf('https://image.tmdb.org/t/p/w1280/abc.jpg', BUCKET), null);
+  assert.equal(artworkKeyOf(`${ARTWORK_HOST}/${BUCKET}/`, BUCKET), null);
+  assert.equal(artworkKeyOf(`${ARTWORK_HOST}/${BUCKET}`, BUCKET), null);
+  assert.equal(artworkKeyOf(`${ARTWORK_HOST}/${BUCKET}_other/x`, BUCKET), null);
+  assert.equal(artworkKeyOf('', BUCKET), null);
+  assert.equal(artworkKeyOf(null, BUCKET), null);
+});
+
+// A `=CONCAT` over `3%` yields a remainder no key can be recovered from;
+// answering null rather than throwing is what lets the page report the row.
+test('a remainder that does not percent-decode answers null', () => {
+  assert.equal(artworkKeyOf(`${ARTWORK_HOST}/${BUCKET}/3%`, BUCKET), null);
+  assert.equal(artworkKeyOf(`${ARTWORK_HOST}/${BUCKET}/100%zz`, BUCKET), null);
 });

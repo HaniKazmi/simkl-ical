@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  bannerFor,
   bannerOf,
   certificateOf,
   CINEMA_WINDOW_DAYS,
@@ -198,4 +199,19 @@ test('a film with no English backdrop gets no banner rather than a foreign one',
   assert.equal(bannerOf({ images: { backdrops: [{ file_path: '/x.jpg', iso_639_1: null, vote_average: 9 }] } }), null);
   assert.equal(bannerOf({ images: { backdrops: [] } }), null);
   assert.equal(bannerOf(undefined), null);
+});
+
+// The row is written once and never revisited, so the cell has to hold the
+// address a later upload will land at rather than whatever TMDB ranks first
+// today.
+test('with a bucket the banner is the static link for the title, whatever TMDB offers', () => {
+  const movie: TmdbMovie = { images: { backdrops: [{ file_path: '/best.jpg', iso_639_1: 'en', vote_average: 8 }] } };
+  assert.equal(bannerFor(movie, 'Finding Nemo', { movieBucket: 'bucket' }), 'https://storage.googleapis.com/bucket/Finding Nemo');
+  assert.equal(bannerFor(undefined, 'What If...?', { movieBucket: 'bucket' }), 'https://storage.googleapis.com/bucket/What If...%3F');
+});
+
+test('without a bucket the banner is the TMDB backdrop, and blank where there is none', () => {
+  const movie: TmdbMovie = { images: { backdrops: [{ file_path: '/best.jpg', iso_639_1: 'en', vote_average: 8 }] } };
+  assert.equal(bannerFor(movie, 'Finding Nemo', { movieBucket: undefined }), 'https://image.tmdb.org/t/p/w1280/best.jpg');
+  assert.equal(bannerFor(undefined, 'Finding Nemo', { movieBucket: undefined }), null);
 });

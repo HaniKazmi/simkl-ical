@@ -69,7 +69,7 @@ const oneCell = (sheetId: number, row: number, column: number): GridRange => ({
 });
 
 /** `fields: 'userEnteredValue'` so number formats and conditional formatting survive. */
-const writeCell = (sheetId: number, row: number, column: number, value: ExtendedValue | undefined): SheetRequest => ({
+export const writeCell = (sheetId: number, row: number, column: number, value: ExtendedValue | undefined): SheetRequest => ({
   updateCells: {
     range: oneCell(sheetId, row, column),
     // An absent value clears the cell. Its one caller is a closing season row

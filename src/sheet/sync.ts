@@ -37,6 +37,7 @@ import type { Logger } from '../shared/logger.ts';
 import { SheetsAccessError } from '../api/google/client.ts';
 import type { Library } from '../library.ts';
 import { readSnapshot, type SheetSnapshot } from './io/spreadsheet.ts';
+import { withSheetLock } from './io/lock.ts';
 import { fetchCatalogue, type CatalogueRequest } from './io/catalogue.ts';
 import { fetchSeasonRuntimes, runtimeKeyOf, type RuntimeRequest } from './io/runtimes.ts';
 import { classify } from '../api/tvdb/client.ts';
@@ -381,7 +382,16 @@ export class SheetSync {
    * A snapshot is read per attempt and the plan is thrown away with it when
    * FRESH sends the loop back to the read — re-planning is the point.
    */
-  private async runTab<G extends { snapshot: SheetSnapshot }, P extends TabPlan>(spec: TabSpec<G, P>, poll: Poll): Promise<SheetSyncResult> {
+  private runTab<G extends { snapshot: SheetSnapshot }, P extends TabPlan>(spec: TabSpec<G, P>, poll: Poll): Promise<SheetSyncResult> {
+    // Under the sheet lock from the first read to the last verify: a page
+    // write landing in between is a `Banner` cell the verifier did not plan,
+    // and it would roll the tab back. Per tab rather than per run, so the
+    // early-outs above never hold it — and a wait on an upstream lookup inside
+    // the fixpoint is held through, since the plan is against this snapshot.
+    return withSheetLock(() => this.attempts(spec, poll));
+  }
+
+  private async attempts<G extends { snapshot: SheetSnapshot }, P extends TabPlan>(spec: TabSpec<G, P>, poll: Poll): Promise<SheetSyncResult> {
     // Held across attempts so the exhausted path below reports the plan it
     // built rather than an empty one — the run whose detail matters most.
     let record: PlanRecord | undefined;

@@ -8,6 +8,7 @@ import { clearTokenCache as clearTvdbTokenCache } from '../../src/api/tvdb/auth.
 import { cellOf, daysAgo, jsonResponse, libraryOf, quiet, recorder, SHEET_HEADERS, todaySerial, withConfig, withFetch, withFreshJournal, type CellSpec, seasonRow, showRow } from '../helpers.ts';
 import { CREDENTIAL, DEFAULT_GRID, fakeSheets, type FakeSheetsOptions } from './fake-sheets.ts';
 import { sheetRuns } from '../../src/sheet/io/journal.ts';
+import { withSheetLock } from '../../src/sheet/io/lock.ts';
 import type { Library } from '../../src/library.ts';
 import { plainDateIn } from '../../src/shared/dates.ts';
 
@@ -220,6 +221,52 @@ test('the sync is inert with no library, and off by mode', async () => {
         });
       },
     ),
+  );
+});
+
+// A page write holds the lock from its read to its verify; the sync's own
+// read must not begin until it is released, or the sync verifies a tab the
+// page changed under it and rolls the page's write back.
+test('a run waits for the sheet lock before its first read', async () => {
+  clearTokenCache();
+  const sheet = server();
+  await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL, timezone: 'Europe/London' }, () =>
+    withFetch(sheet.handler, async (calls) => {
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const holder = withSheetLock(() => held);
+      const running = new SheetSync({ logger: quiet }).run(LIBRARY);
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+      assert.deepEqual(
+        calls.filter((c) => c.includes('/spreadsheets/')),
+        [],
+        'the sync read nothing while the lock was held',
+      );
+      release();
+      await holder;
+      const result = await running;
+      assert.equal(result.status, 'applied');
+    }),
+  );
+});
+
+// The lock is held across the whole attempt, lookups included: releasing it
+// between the read and the write is exactly the gap it exists to close.
+test('a run holds the sheet lock until its verify has completed', async () => {
+  clearTokenCache();
+  const sheet = server();
+  await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL, timezone: 'Europe/London' }, () =>
+    withFetch(sheet.handler, async (calls) => {
+      const running = new SheetSync({ logger: quiet }).run(LIBRARY);
+      // Queued behind the run: it runs only once the run has released.
+      const after = withSheetLock(async () => calls.length);
+      const result = await running;
+      assert.equal(result.status, 'applied');
+      assert.equal(await after, calls.length, 'every request of the run had been made before the lock passed on');
+      assert.ok(calls.some((c) => c.includes(':batchUpdate')));
+    }),
   );
 });
 

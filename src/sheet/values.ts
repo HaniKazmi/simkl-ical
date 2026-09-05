@@ -208,3 +208,53 @@ export const movieKey = (id: number): string => `${MOVIE_PREFIX}${id}`;
  */
 export const recordedSerial = (recorded: string | null | undefined, timezone: string): number | null =>
   watchSerial(instantFrom(recorded), timezone);
+
+// --- Artwork links -----------------------------------------------------------
+
+/**
+ * Where both tabs' artwork lives. A `Banner` cell holds a public object URL
+ * on this host, and the site uses the cell verbatim as an image source.
+ */
+export const ARTWORK_HOST = 'https://storage.googleapis.com';
+
+/**
+ * An object's key for a title: the title, exactly. No trim, no case-fold, no
+ * normalisation — the show tab's 291 formula cells build the link as
+ * `prefix & Name` and the objects behind them are named the same way, so any
+ * rule but identity would break the link between a key derived here and one
+ * the sheet already holds.
+ */
+export const artworkKeyFor = (title: string): string => title;
+
+/**
+ * The static link the sheet holds for a key. Only `%`, `#` and `?` are
+ * escaped: `#` and `?` end the path in any URL parser and `%` would start an
+ * escape, so those three cannot survive literally, while a space or a `/` is
+ * something every browser encodes on its own — and encoding them here would
+ * make the link differ from the formula's output for the same key, so that a
+ * row written by hand and one written by the sync could point at one object
+ * two ways.
+ */
+export const artworkLink = (bucket: string, key: string): string => `${ARTWORK_HOST}/${bucket}/${key.replace(/[%#?]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}`;
+
+/**
+ * The key a cell's link addresses, or null where it links anything else.
+ *
+ * The cell decides the key, not the title: 18 show rows hold a hand-written
+ * link where the name breaks a URL (`3%` → `3%25`, `Fate/Apocrypha` → `Fate
+ * Apocrypha`) or the object was named with a typo the cell reproduces, and
+ * every one of them serves an image today. A link on another host, or under
+ * another bucket, is not this bucket's and answers null; so does a remainder
+ * that does not percent-decode, since no key can be recovered from it.
+ */
+export const artworkKeyOf = (url: string | null | undefined, bucket: string): string | null => {
+  const prefix = `${ARTWORK_HOST}/${bucket}/`;
+  if (!url || !url.startsWith(prefix)) return null;
+  const rest = url.slice(prefix.length);
+  if (rest === '') return null;
+  try {
+    return decodeURIComponent(rest);
+  } catch {
+    return null;
+  }
+};

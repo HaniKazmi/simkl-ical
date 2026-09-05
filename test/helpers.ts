@@ -39,6 +39,11 @@ config.tvdbPin = undefined;
 // so a test that forgot `withFetch` fails loudly rather than reaching the live
 // API on someone's quota.
 config.tmdbApiKey = undefined;
+// Same guard, and one with a golden behind it: with a bucket set the films
+// insert writes a static bucket link rather than a TMDB URL, so a leaked
+// ARTWORK_MOVIE_BUCKET would fail the films golden for the wrong reason.
+config.artworkMovieBucket = undefined;
+config.artworkShowBucket = undefined;
 // Same guard, for writes: everything that persists lands under config.dataDir,
 // which defaults to ./data and holds a live token on a real checkout. The
 // default moves somewhere harmless; `withTempDataDir` stays for tests that

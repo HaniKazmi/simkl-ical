@@ -127,6 +127,14 @@ export interface Config {
    * worse than no row.
    */
   tmdbApiKey: string | undefined;
+
+  /**
+   * The Cloud Storage buckets the artwork page uploads into — one per tab,
+   * because the site reads them as two separate prefixes and an object's key
+   * is the title alone. Absent either, the page is inert.
+   */
+  artworkMovieBucket: string | undefined;
+  artworkShowBucket: string | undefined;
 }
 
 /**
@@ -198,6 +206,10 @@ export const buildConfig = (env: NodeJS.ProcessEnv): Config => ({
   // --- Film metadata. Absent TMDB_API_KEY, the films tab is left entirely
   // alone; the show grid is unaffected.
   tmdbApiKey: env.TMDB_API_KEY,
+
+  // --- Artwork. Absent either bucket, the page is not served at all.
+  artworkMovieBucket: env.ARTWORK_MOVIE_BUCKET || undefined,
+  artworkShowBucket: env.ARTWORK_SHOW_BUCKET || undefined,
 });
 
 /**
@@ -276,6 +288,15 @@ export const tvdbConfigured = (c: Config = config): boolean => Boolean(c.tvdbApi
  * "a tab was named" on every machine, the way `googleCredentialsPath` would.
  */
 export const moviesSyncConfigured = (c: Config = config): boolean => sheetSyncConfigured(c) && Boolean(c.tmdbApiKey);
+
+/**
+ * Whether the artwork page can be served: both tabs syncable (it reads and
+ * writes both), TVDB for show posters, and a bucket for each tab. All-or-
+ * nothing rather than per-kind, because a page listing shows it cannot act on
+ * would read as broken rather than as half-configured.
+ */
+export const artworkConfigured = (c: Config = config): boolean =>
+  moviesSyncConfigured(c) && tvdbConfigured(c) && Boolean(c.artworkMovieBucket) && Boolean(c.artworkShowBucket);
 
 export const requireClientId = (): string => {
   if (!config.clientId) {
