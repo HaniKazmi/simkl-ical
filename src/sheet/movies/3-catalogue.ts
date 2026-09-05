@@ -18,7 +18,7 @@
 import type { TmdbMovie } from '../../api/tmdb/types.ts';
 import type { FilmProgress } from './1-index.ts';
 import {
-  bannerOf,
+  bannerFor,
   certificateOf,
   directorOf,
   franchiseOf,
@@ -45,12 +45,18 @@ export interface FilmFacts {
   banner: string | null;
 }
 
+/** `movieBucket` is threaded rather than read mid-body, the way every numbered module takes config. */
+export interface FilmFactsOptions {
+  /** `null` for no bucket; absent falls through to the config default. */
+  movieBucket?: string | null;
+}
+
 /**
  * A payload reduced. `title` is SIMKL's, not TMDB's: the `Name` column is what
  * the rest of the sheet and the library are keyed to a reader by, and the two
  * disagree on 18 of 347 rows.
  */
-export const filmFacts = (movie: TmdbMovie | undefined, title: string): FilmFacts => {
+export const filmFacts = (movie: TmdbMovie | undefined, title: string, options: FilmFactsOptions = {}): FilmFacts => {
   const genres = mappedGenres(movie);
   return {
     genre: genres[0] ?? null,
@@ -60,7 +66,7 @@ export const filmFacts = (movie: TmdbMovie | undefined, title: string): FilmFact
     openedInCinemas: openedInCinemas(movie),
     franchise: franchiseOf(movie, title),
     director: directorOf(movie),
-    banner: bannerOf(movie),
+    banner: bannerFor(movie, title, options),
   };
 };
 
@@ -83,10 +89,11 @@ export class FilmStore {
   fold(
     requests: readonly { id: number; title: string }[],
     { films, unavailable }: { films: Map<number, TmdbMovie>; unavailable: readonly number[] },
+    options: FilmFactsOptions = {},
   ): void {
     for (const request of requests) {
       const movie = films.get(request.id);
-      if (movie) this.films.set(request.id, filmFacts(movie, request.title));
+      if (movie) this.films.set(request.id, filmFacts(movie, request.title, options));
     }
     // A 404 is TMDB not knowing this film, which no amount of asking changes.
     for (const id of unavailable) if (!this.films.has(id)) this.films.set(id, null);

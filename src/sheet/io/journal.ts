@@ -37,6 +37,14 @@ export interface SheetRunRecord {
    * `tab` reads correctly rather than being dropped for a version bump.
    */
   tab?: SheetTab;
+  /**
+   * Who wrote. Absent is the sync's poll; `artwork` is a link write from the
+   * page. Kept apart because the cap below is per source: the page writes
+   * one record per pick, and a bulk adopt would otherwise push every sync
+   * run out of the file — the operator's only durable record of what the
+   * poll wrote, and the insert records the page's own ordering reads.
+   */
+  source?: 'artwork';
   /** The mode at the time: a `reported` run wrote nothing by design. */
   mode: SheetSyncMode;
   edits: RecordedEdit[];
@@ -144,7 +152,16 @@ export const loadSheetRuns = async ({ log }: { log?: Logger } = {}): Promise<voi
 
   // Per-record rather than all-or-nothing: one bad entry must not cost the
   // rest of the history.
-  runs = file.runs.filter(isRecord).slice(-MAX_RUNS);
+  runs = trimmed(file.runs.filter(isRecord));
+};
+
+/** The last `MAX_RUNS` of each source, in the order they were written. */
+const trimmed = (all: SheetRunRecord[]): SheetRunRecord[] => {
+  const kept = new Set<SheetRunRecord>();
+  for (const source of [undefined, 'artwork'] as const) {
+    for (const run of all.filter((r) => r.source === source).slice(-MAX_RUNS)) kept.add(run);
+  }
+  return all.filter((r) => kept.has(r));
 };
 
 /** Whether a run said anything worth a line in the history. */
@@ -184,6 +201,7 @@ const sameAs = (a: SheetRunRecord, b: NewSheetRun): boolean =>
   // 500 on the read. Without this the second collapses into the first, takes
   // its label, and the first tab's run is gone from the history entirely.
   tabOf(a) === tabOf(b) &&
+  a.source === b.source &&
   a.status === b.status &&
   a.mode === b.mode &&
   a.error === b.error &&
@@ -210,7 +228,7 @@ export const appendSheetRun = (run: NewSheetRun, { log }: { log?: Logger } = {})
   // record per tab, so the record before a show run is nearly always a films
   // run: compared against that, a state repeating on both tabs never collapses
   // and two records a poll evict the real history in 25 polls.
-  const at = runs.findLastIndex((r) => tabOf(r) === tabOf(run));
+  const at = runs.findLastIndex((r) => tabOf(r) === tabOf(run) && r.source === run.source);
   const previous = runs[at];
   // Only this module can know a run repeated, so only it sets `repeats`. The
   // *first* `at` is kept: "frozen, 37 polls, since 14:02" needs when the
@@ -219,7 +237,7 @@ export const appendSheetRun = (run: NewSheetRun, { log }: { log?: Logger } = {})
     runs[at] = { ...run, at: previous.at, repeats: previous.repeats + 1 };
   } else {
     runs.push({ ...run, repeats: 1 });
-    if (runs.length > MAX_RUNS) runs = runs.slice(-MAX_RUNS);
+    runs = trimmed(runs);
   }
 
   return save(log);

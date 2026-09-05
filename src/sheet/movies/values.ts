@@ -9,7 +9,8 @@
  */
 
 import { plainDateIn, releaseDate } from '../../shared/dates.ts';
-import { dateSerial, MAX_RUNTIME_MINUTES, MIN_RUNTIME_MINUTES } from '../values.ts';
+import { artworkKeyFor, artworkLink, dateSerial, MAX_RUNTIME_MINUTES, MIN_RUNTIME_MINUTES } from '../values.ts';
+import { config } from '../../shared/config.ts';
 import type { TmdbBackdrop, TmdbMovie, TmdbRelease } from '../../api/tmdb/types.ts';
 
 // --- Genres ----------------------------------------------------------------
@@ -274,7 +275,7 @@ export const franchiseOf = (movie: TmdbMovie | undefined, title: string): string
 const BANNER_WIDTH = 'w1280';
 
 /**
- * The highest-voted English backdrop.
+ * The highest-voted English backdrop, as a TMDB URL.
  *
  * English specifically: a null-language backdrop is a frame carrying no text,
  * which is often a poster crop, and a foreign-language one carries the wrong
@@ -293,6 +294,27 @@ export const bannerOf = (movie: TmdbMovie | undefined): string | null => {
   }
   return best?.file_path ? `https://image.tmdb.org/t/p/${BANNER_WIDTH}${best.file_path}` : null;
 };
+
+/**
+ * The `Banner` cell for a new row.
+ *
+ * With a movie bucket configured it is the static link for the title — the
+ * convention the show tab already follows — and holds whether or not an
+ * object exists behind it yet: the site renders a stand-in until one is
+ * uploaded, and the link never needs revisiting once it is. The cell is
+ * written once, at insert, so a TMDB URL here would be the one column a
+ * re-pick could not follow without editing the sheet. Without a bucket the
+ * cell falls back to `bannerOf`, so a deployment with no artwork page still
+ * gets an image.
+ */
+export const bannerFor = (
+  movie: TmdbMovie | undefined,
+  title: string,
+  // `null` says "no bucket" out loud; an `undefined` would fall through to
+  // the config default, and a caller meaning "write the TMDB URL" would get
+  // the bucket link whenever the process has one configured.
+  { movieBucket = config.artworkMovieBucket ?? null }: { movieBucket?: string | null } = {},
+): string | null => (movieBucket ? artworkLink(movieBucket, artworkKeyFor(title)) : bannerOf(movie));
 
 // --- Bounds ----------------------------------------------------------------
 

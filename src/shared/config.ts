@@ -50,6 +50,9 @@ const oneOf = <T extends string>(value: string | undefined, allowed: readonly T[
   return allowed.find((a) => a === candidate) ?? fallback;
 };
 
+/** A switch from the environment: `1`, `true` or `yes`, and off for anything else. */
+const flag = (value: string | undefined): boolean => ['1', 'true', 'yes'].includes(value?.trim().toLowerCase() ?? '');
+
 /**
  * `~/x` → `$HOME/x`. A shell expands this, but a value from `.env` or a
  * compose file arrives verbatim — and `.env.example` suggests a `~/` path for
@@ -127,6 +130,23 @@ export interface Config {
    * worse than no row.
    */
   tmdbApiKey: string | undefined;
+
+  /**
+   * The Cloud Storage buckets the artwork page uploads into — one per tab,
+   * because the site reads them as two separate prefixes and an object's key
+   * is the title alone. Absent either, the page is inert.
+   */
+  artworkMovieBucket: string | undefined;
+  artworkShowBucket: string | undefined;
+  /**
+   * Whether an upload asks for `allUsers` read on the object. Needed on a
+   * bucket with legacy ACLs, where a new object is otherwise private; a 400
+   * on one with uniform bucket-level access, where the bucket's own policy
+   * already makes every object public. Off by default: a bucket created in
+   * the console has uniform access, and the wrong setting there fails loudly
+   * where the other direction fails silently.
+   */
+  artworkPublicAcl: boolean;
 }
 
 /**
@@ -198,6 +218,11 @@ export const buildConfig = (env: NodeJS.ProcessEnv): Config => ({
   // --- Film metadata. Absent TMDB_API_KEY, the films tab is left entirely
   // alone; the show grid is unaffected.
   tmdbApiKey: env.TMDB_API_KEY,
+
+  // --- Artwork. Absent either bucket, the page is not served at all.
+  artworkMovieBucket: env.ARTWORK_MOVIE_BUCKET || undefined,
+  artworkShowBucket: env.ARTWORK_SHOW_BUCKET || undefined,
+  artworkPublicAcl: flag(env.ARTWORK_PUBLIC_ACL),
 });
 
 /**
@@ -276,6 +301,15 @@ export const tvdbConfigured = (c: Config = config): boolean => Boolean(c.tvdbApi
  * "a tab was named" on every machine, the way `googleCredentialsPath` would.
  */
 export const moviesSyncConfigured = (c: Config = config): boolean => sheetSyncConfigured(c) && Boolean(c.tmdbApiKey);
+
+/**
+ * Whether the artwork page can be served: both tabs syncable (it reads and
+ * writes both), TVDB for show posters, and a bucket for each tab. All-or-
+ * nothing rather than per-kind, because a page listing shows it cannot act on
+ * would read as broken rather than as half-configured.
+ */
+export const artworkConfigured = (c: Config = config): boolean =>
+  moviesSyncConfigured(c) && tvdbConfigured(c) && Boolean(c.artworkMovieBucket) && Boolean(c.artworkShowBucket);
 
 export const requireClientId = (): string => {
   if (!config.clientId) {

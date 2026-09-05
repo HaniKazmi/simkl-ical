@@ -1,0 +1,341 @@
+/**
+ * The page's script, served as `artwork/app.js` under the page's own CSP
+ * (`script-src 'self'`). Kept as a string beside the renderer so the two
+ * agree on every `data-` hook, and so the server has one artefact to serve.
+ *
+ * Rules the script keeps, and the tests pin: no `innerHTML` and no inline
+ * handlers — every node is built with `createElement` and `textContent`, so a
+ * title or an upstream error cannot become markup; an `<img>` gets a `src`
+ * only when it is an https URL, the same bound the CSP's `img-src` enforces,
+ * so a bad URL fails here with a message rather than silently in the console;
+ * every request is relative, so the feed token never appears in the script.
+ */
+
+
+export const CLIENT_SCRIPT = String.raw`'use strict';
+(() => {
+  const NEEDS = new Set(['missing-object', 'unlinked', 'adopt']);
+  const rows = Array.from(document.querySelectorAll('.row'));
+  const chips = Array.from(document.querySelectorAll('[data-filter]'));
+  const search = document.querySelector('[data-search]');
+  const showing = document.querySelector('[data-showing]');
+  const dialog = document.querySelector('[data-dialog]');
+  let filter = 'all';
+  let query = '';
+
+  const loadable = (url) => {
+    try {
+      return new URL(url).protocol === 'https:';
+    } catch {
+      return false;
+    }
+  };
+  const el = (tag, cls, text) => {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+
+  // --- filtering -----------------------------------------------------------
+  const matchesFilter = (row, name) => {
+    const state = row.dataset.state;
+    const kind = row.dataset.kind;
+    return (
+      name === 'all' ||
+      (name === 'needs' && NEEDS.has(state)) ||
+      (name === 'recent' && row.dataset.recent === '1') ||
+      (name === 'show' && kind === 'show') ||
+      (name === 'movie' && kind === 'movie') ||
+      (name === 'adopt' && state === 'adopt') ||
+      (name === 'no-id' && state === 'no-id')
+    );
+  };
+  const matches = (row) => matchesFilter(row, filter) && (!query || row.dataset.q.includes(query));
+  const applyFilter = () => {
+    let shown = 0;
+    for (const row of rows) {
+      const ok = matches(row);
+      row.hidden = !ok;
+      if (ok) shown += 1;
+    }
+    // A franchise heading with nothing visible under it goes too.
+    for (const heading of document.querySelectorAll('.grp')) {
+      let any = false;
+      for (let next = heading.nextElementSibling; next && !next.classList.contains('grp'); next = next.nextElementSibling) {
+        if (!next.hidden) any = true;
+      }
+      heading.hidden = !any;
+    }
+    if (showing) showing.textContent = 'showing ' + shown + ' of ' + rows.length;
+  };
+
+  // --- ordering ------------------------------------------------------------
+  // The server's order is needs-first, then most recently touched. By
+  // franchise regroups the same rows under headings, films in release order
+  // and shows by title, and a title with no franchise stands as its own.
+  const list = document.querySelector('.rows');
+  const serverOrder = rows.slice();
+  const franchiseOf = (row) => row.dataset.franchise || row.dataset.title;
+  const byFranchise = (a, b) =>
+    franchiseOf(a).localeCompare(franchiseOf(b), undefined, { sensitivity: 'base' }) ||
+    (a.dataset.kind === 'movie' ? 0 : 1) - (b.dataset.kind === 'movie' ? 0 : 1) ||
+    (a.dataset.released || '9999').localeCompare(b.dataset.released || '9999') ||
+    a.dataset.title.localeCompare(b.dataset.title, undefined, { sensitivity: 'base' });
+  const reorder = (mode) => {
+    if (!list) return;
+    for (const heading of list.querySelectorAll('.grp')) heading.remove();
+    if (mode === 'franchise') {
+      let last = null;
+      for (const row of rows.slice().sort(byFranchise)) {
+        const group = franchiseOf(row);
+        if (group !== last) {
+          list.appendChild(el('div', 'grp', group));
+          last = group;
+        }
+        list.appendChild(row);
+      }
+    } else {
+      for (const row of serverOrder) list.appendChild(row);
+    }
+    applyFilter();
+  };
+  const sorts = Array.from(document.querySelectorAll('[data-sort]'));
+  for (const button of sorts) {
+    button.addEventListener('click', () => {
+      for (const other of sorts) other.setAttribute('aria-pressed', String(other === button));
+      reorder(button.dataset.sort);
+    });
+  }
+  for (const chip of chips) {
+    chip.addEventListener('click', () => {
+      for (const other of chips) other.setAttribute('aria-pressed', String(other === chip));
+      filter = chip.dataset.filter;
+      applyFilter();
+    });
+  }
+  if (search) search.addEventListener('input', () => {
+    query = search.value.trim().toLowerCase();
+    applyFilter();
+  });
+  applyFilter();
+
+  // --- state after a pick ----------------------------------------------------
+  // The chip counts and the two headline numbers follow the rows, so a pick
+  // is reflected without a reload; the tiles the server computed are left
+  // for the next read.
+  const recount = () => {
+    const count = (name) => rows.filter((row) => matchesFilter(row, name)).length;
+    for (const chip of chips) {
+      const b = chip.querySelector('b');
+      if (b) b.textContent = String(count(chip.dataset.filter));
+    }
+    const needing = count('needs');
+    const headline = document.querySelector('[data-needing]');
+    if (headline) headline.textContent = String(needing);
+    const pill = document.querySelector('[data-needing-pill]');
+    if (pill) {
+      pill.textContent = needing + ' need artwork';
+      pill.className = 'pill ' + (needing ? 'warn' : 'ok');
+    }
+  };
+  const setPill = (row, state, text, cls) => {
+    row.dataset.state = state;
+    const pill = row.querySelector('[data-pill]');
+    if (pill) {
+      pill.className = 'pill ' + cls;
+      pill.textContent = text;
+    }
+    recount();
+  };
+  const setThumb = (row, url) => {
+    if (!loadable(url)) return;
+    const old = row.querySelector('.th, .ph');
+    const img = el('img', 'th' + (row.dataset.kind === 'show' ? ' portrait' : ''));
+    img.alt = '';
+    img.loading = 'lazy';
+    img.src = url + (url.includes('?') ? '&' : '?') + 't=' + Date.now();
+    if (old) old.replaceWith(img);
+  };
+  const settle = (row, result) => {
+    const link = result.link;
+    if (link.status === 'written' || link.status === 'kept') {
+      setPill(row, 'done', 'done', 'ok');
+      setThumb(row, link.link);
+      return 'uploaded';
+    }
+    if (link.status === 'reported') {
+      setThumb(row, link.link);
+      return 'uploaded; link reported for ' + link.address + ' (mode is not apply)';
+    }
+    if (link.status === 'refused') return 'uploaded; link refused: ' + link.detail;
+    if (link.status === 'unverified') return 'uploaded; link written at ' + link.address + ' but not read back: ' + link.detail + ' — re-read the page to see whether it landed';
+    return 'uploaded; link failed at ' + link.address + ': ' + link.detail;
+  };
+
+  // --- the API ---------------------------------------------------------------
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const read = async (response) => {
+    const text = await response.text();
+    try {
+      return JSON.parse(text);
+    } catch {
+      return { error: text || response.statusText };
+    }
+  };
+  /** POST a pick; a 503 while the sheet is held waits Retry-After and tries once more. */
+  const post = async (body, retried) => {
+    const response = await fetch('artwork/pick', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (response.status === 503 && !retried) {
+      const wait = Number(response.headers.get('retry-after')) || 10;
+      await sleep(wait * 1000);
+      return post(body, true);
+    }
+    return { status: response.status, body: await read(response) };
+  };
+  const pick = async (row, body, progress) => {
+    let result = await post(body, false);
+    if (result.status === 409 && !body.adopt) {
+      const current = result.body && result.body.detail ? result.body.detail : 'the cell links another host';
+      if (!window.confirm(row.dataset.title + ': ' + current + '.\n\nReplace it with this image?')) return 'kept the current image';
+      result = await post(Object.assign({}, body, { adopt: true }), false);
+    }
+    if (result.status !== 200) return 'refused: ' + (result.body && (result.body.detail || result.body.error) ? result.body.detail || result.body.error : 'HTTP ' + result.status);
+    return settle(row, result.body);
+  };
+
+  // --- candidates ------------------------------------------------------------
+  const strips = new Map();
+  /** Full size. No onUse means the image is only being looked at, so the button is hidden. */
+  const openDialog = (url, caption, onUse) => {
+    if (!dialog || !dialog.showModal) return;
+    const img = dialog.querySelector('[data-dialog-image]');
+    img.src = loadable(url) ? url : '';
+    dialog.querySelector('[data-dialog-caption]').textContent = caption;
+    const use = dialog.querySelector('[data-dialog-use]');
+    use.hidden = !onUse;
+    use.onclick = () => {
+      dialog.close();
+      if (onUse) onUse();
+    };
+    dialog.showModal();
+  };
+  if (dialog) {
+    dialog.querySelector('[data-dialog-close]').addEventListener('click', () => dialog.close());
+    // Click on the backdrop closes too: the dialog's own box is the only thing the click can miss.
+    dialog.addEventListener('click', (event) => {
+      if (event.target === dialog) dialog.close();
+    });
+  }
+  const describe = (cand) => cand.width + '×' + cand.height + (cand.votes !== null ? ' · ' + cand.votes + ' votes' : ' · score ' + cand.score) + ' · ' + cand.source;
+
+  // The row's current image enlarges the same way; the URL is the cell's.
+  for (const row of rows) {
+    const current = row.querySelector('img.th');
+    if (!current) continue;
+    current.addEventListener('click', () => openDialog(current.src, row.dataset.title + ' · current image', null));
+  }
+
+  const renderStrip = (row, listing, panel) => {
+    panel.replaceChildren();
+    const label = el('div', 'lbl');
+    const kind = row.dataset.kind;
+    const what = kind === 'movie' ? ' backdrops from TMDb' : ' posters from TVDB';
+    label.appendChild(el('span', '', listing.candidates.length + what));
+    label.appendChild(el('span', 'dim', (kind === 'movie' ? '16:9 only · English first, ranked by votes' : 'English first, 680×1000 next, then by score') + ' · click a tile to enlarge and use it'));
+    if (listing.error) label.appendChild(el('span', 'err', listing.error));
+    panel.appendChild(label);
+    const strip = el('div', 'strip');
+    const progress = el('div', 'prog');
+    listing.candidates.forEach((cand, i) => {
+      const item = el('div', 'cand ' + (kind === 'movie' ? 'land' : 'port') + (i === 0 ? ' pick' : ''));
+      const button = el('button');
+      button.type = 'button';
+      const img = el('img');
+      img.alt = '';
+      img.loading = 'lazy';
+      if (loadable(cand.thumb)) img.src = cand.thumb;
+      button.appendChild(img);
+      button.appendChild(el('span', 'badge', i === 0 ? 'top' : cand.language === null ? 'textless' : cand.language));
+      const cap = el('div', 'cap');
+      cap.appendChild(el('span', '', cand.width + '×' + cand.height));
+      cap.appendChild(el('span', '', cand.votes !== null ? cand.votes + ' votes' : 'score ' + cand.score));
+      item.appendChild(button);
+      item.appendChild(cap);
+      const use = async () => {
+        for (const other of strip.querySelectorAll('.cand')) other.classList.remove('pick');
+        item.classList.add('pick');
+        progress.textContent = 'uploading…';
+        progress.textContent = await pick(row, { kind, id: Number(row.dataset.id), url: cand.url }, progress);
+      };
+      button.addEventListener('click', () => openDialog(cand.url, row.dataset.title + ' · ' + describe(cand), use));
+      strip.appendChild(item);
+    });
+    panel.appendChild(strip);
+    panel.appendChild(progress);
+    if (row.dataset.state === 'adopt') {
+      const adopt = el('button', 'btn quiet', 'Adopt the current image instead');
+      adopt.type = 'button';
+      adopt.addEventListener('click', async () => {
+        progress.textContent = 'adopting…';
+        progress.textContent = await pick(row, { kind, id: Number(row.dataset.id), adopt: true }, progress);
+      });
+      progress.before(adopt);
+    }
+  };
+
+  for (const row of rows) {
+    const button = row.querySelector('[data-choose]');
+    if (!button) continue;
+    button.addEventListener('click', async () => {
+      const open = strips.get(row);
+      if (open) {
+        open.hidden = !open.hidden;
+        button.textContent = open.hidden ? 'choose artwork' : 'close';
+        return;
+      }
+      const panel = el('div', 'cands');
+      panel.appendChild(el('div', 'prog', 'loading candidates…'));
+      row.appendChild(panel);
+      strips.set(row, panel);
+      button.textContent = 'close';
+      const params = new URLSearchParams({ kind: row.dataset.kind, id: row.dataset.id });
+      try {
+        const response = await fetch('artwork/candidates?' + params.toString());
+        const listing = await read(response);
+        if (response.status !== 200) throw new Error(listing.detail || listing.error || 'HTTP ' + response.status);
+        renderStrip(row, listing, panel);
+      } catch (err) {
+        panel.replaceChildren(el('div', 'prog err', 'could not load candidates: ' + (err && err.message ? err.message : String(err))));
+      }
+    });
+  }
+
+  // --- adopt all ---------------------------------------------------------------
+  const adoptAll = document.querySelector('[data-adopt-all]');
+  const adoptProgress = document.querySelector('[data-adopt-progress]');
+  if (adoptAll) adoptAll.addEventListener('click', async () => {
+    const targets = rows.filter((row) => row.dataset.state === 'adopt' && row.dataset.id);
+    if (!targets.length) return;
+    if (!window.confirm('Copy the image behind ' + targets.length + ' rows into the bucket and rewrite each cell to the static link?')) return;
+    adoptAll.disabled = true;
+    let done = 0;
+    const failures = [];
+    // Paced: a pick is three Sheets requests, and the API allows sixty a
+    // minute per user. Faster than this and the write — which is never
+    // retried — starts meeting 429s.
+    const PACE_MS = 3500;
+    for (const row of targets) {
+      done += 1;
+      const started = Date.now();
+      adoptProgress.textContent = 'adopting ' + done + ' of ' + targets.length + ' · ' + row.dataset.title;
+      const outcome = await pick(row, { kind: row.dataset.kind, id: Number(row.dataset.id), adopt: true });
+      if (!outcome.startsWith('uploaded')) failures.push(row.dataset.title + ': ' + outcome);
+      const remaining = PACE_MS - (Date.now() - started);
+      if (remaining > 0 && done < targets.length) await sleep(remaining);
+    }
+    adoptProgress.textContent = 'adopted ' + (targets.length - failures.length) + ' of ' + targets.length + (failures.length ? ' · ' + failures.length + ' failed: ' + failures.join('; ') : '');
+    adoptAll.disabled = false;
+  });
+})();
+`;

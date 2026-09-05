@@ -183,9 +183,10 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   whole-plan refusal waiting to fire on good data. The films tab's `Runtime` is a different column
   under a different rule: it follows SIMKL for the life of the row, and checks against the same two
   constants.
-- **Never write a formula cell, and never write a show row except `Status`.** Every derived cell on
-  a show row rolls up from the season rows beneath it. Writing one replaces a live roll-up with a
-  frozen number, and nothing would ever notice.
+- **Never write a formula cell, and never write a show row except `Status`** — and, from the
+  artwork page only, `Banner`, under the conditions above. Every derived cell on a show row rolls
+  up from the season rows beneath it. Writing one replaces a live roll-up with a frozen number, and
+  nothing would ever notice.
 - **`Status` means one thing on a show row and another on a season row** — the derived state above,
   the date the season was last watched below — so which row a write landed on picks the rule, in
   `4-plan.ts` and `5-guard.ts` both. The note is written and moved on while the row is open, and the
@@ -228,17 +229,61 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
 - **One inserted row per run is carried by the plan's type** — `SheetPlan.insert` is a single value,
   because plan indices are pre-write and `insertDimension` applies cumulatively, so a second insert
   would land a row high. Do not widen it back to an array.
-- **Every value interpolated into the status page goes through the `html` tag.** Show titles,
-  spreadsheet contents and upstream error bodies all reach it, so `2-html.ts` escapes by default and
-  `raw()` is reserved for the stylesheet. The safe-HTML brand is a module-private `Symbol` because a
-  `{ html: string }` duck type is forgeable by any object with that key — including one parsed out of
-  `sheet-runs.json`, which the page renders verbatim. That file is the only one to audit for this.
+- **Every value interpolated into either page goes through the `html` tag.** Show titles,
+  spreadsheet contents and upstream error bodies all reach both, so `shared/html.ts` escapes by
+  default and `raw()` is reserved for the stylesheets. The safe-HTML brand is a module-private
+  `Symbol` because a `{ html: string }` duck type is forgeable by any object with that key —
+  including one parsed out of `sheet-runs.json`, which the status page renders verbatim. That file
+  is the only one to audit for the brand; `status/2-html.ts` and `artwork/4-html.ts` are the two to
+  audit for interpolation.
 - **The status page fetches nothing, and sends `Referrer-Policy: no-referrer`.** The feed token is
   in the page's own URL, so any subresource — script, font, image, stylesheet — would carry it to a
   third party in a `Referer` header. That is about who else sees the token, not about the page
   showing it: the logs, `/healthz` and this page are all trusted surfaces, and printing the token or
-  the spreadsheet id in them is fine. The page does carry two links, which is a different thing: a
+  the spreadsheet id in them is fine. The page does carry three links, which is a different thing: a
   navigation the reader clicks is not a subresource, and `no-referrer` covers it either way.
+- **The artwork page is the one page that runs a script and loads images off-origin, and it does
+  both under its own CSP.** `script-src 'self'` admits only `artwork/app.js`; `img-src` is
+  `'self' https:`, because a `Banner` cell may link any public host and the row shows what it
+  links; `connect-src 'self'` is what the script's fetches run under. Every `src` and `href` on it
+  is relative or an https URL, so **no absolute URL on the page carries the feed token** — pinned by
+  `4-html.test.ts` and `server-artwork.test.ts` — and the `no-referrer` header keeps the page's URL
+  out of every image host's logs. The script builds every node with `createElement` and
+  `textContent`: no `innerHTML`, no inline handlers, and an `<img>` gets a `src` only when it is
+  https, the same bound the CSP enforces, so a bad URL fails with a message rather than silently.
+- **An adopt may download from any public https host, and what makes that safe is the address,
+  not a host list.** The URL comes from a hand-edited cell, so `fetchImage` resolves the hostname
+  first and refuses any answer that is loopback, private, link-local or the metadata range — that
+  is what stops a cell naming `https://169.254.169.254/…` from making this process fetch it — never
+  follows a redirect, which would land wherever the first hop pointed, and checks `image/*` after,
+  because a 200 carrying an HTML error page is what would put a web page in the bucket under an
+  image's name. The resolver is injectable (`Artwork`'s `resolve`), and the suite passes one that
+  answers every name publicly, so no test touches DNS. `CANDIDATE_HOSTS` is a different list: where
+  the page's own candidates come from, not what it may fetch.
+- **A page write and a sync run never overlap — `withSheetLock`.** The films verifier inspects every
+  column but `id`, `Banner` included, so a `Banner` cell written between the sync's read and its
+  verify is one the sync did not plan: VERIFY rolls the whole tab back, taking the page's write with
+  it and refusing the sync's own. The sync holds the lock per tab from its first read to its last
+  verify (lookups included — the plan is against that snapshot); a page write holds it for
+  read → decide → write → verify and gives up with `SheetBusyError` after `LINK_WAIT`, which the
+  route answers as a 503 with `Retry-After`. The object is already uploaded by then, and a re-pick
+  puts the same bytes under the same key, so nothing is lost.
+- **A `Banner` cell is the one cell on a show row the page may write, and only ever through
+  `decideLink`.** The show-row rule below protects roll-up formulas; `Banner` is hand-maintained,
+  not derived. The checklist: a formula is never written, unconditionally — kept where its value
+  already links the bucket, refused otherwise; blank takes the static link for the title; a link
+  into this bucket is kept under the key **the cell** names, so the 18 hand-written show rows and the
+  two typo'd object names keep serving; a URL on another host is replaced only on `adopt`; anything
+  else is refused. The write additionally requires the live cell to still hold what the page
+  showed, the row to be found again by SIMKL id under the lock, and that row to still carry the
+  title acted on. Not through the sync's planner or guard: their whitelists are the poll's.
+- **The static link is one convention for both tabs, in `sheet/values.ts`.** `artworkKeyFor` is
+  identity — the show tab's 291 `=CONCAT($Z$2,A#)` rows and the objects behind them are named by
+  the title verbatim, so any normalisation breaks the link between a key derived here and one the
+  sheet already holds — and `artworkLink` escapes only `%`, `#` and `?`, so a link the sync writes
+  is byte-identical to the formula's output for the same title. With a movie bucket configured the
+  films insert writes that link rather than a TMDB URL; the suite pins both buckets undefined so
+  the films golden is unchanged.
 - **The subscribe link is `webcal:`, and it is the one click target built from a request header.**
   Following the `https:` address downloads a snapshot, which a client imports once and never
   refreshes; only `webcal:` asks it to subscribe. That scheme needs a full authority, so the href
@@ -399,19 +444,22 @@ needs it**, and **is it transport or business logic**.
 | Path | Role |
 | --- | --- |
 | `src/orchestrator.ts` | `Orchestrator` — the poll, the timers, and `snapshot()`, the one export of state; owns the library and drives both halves. The poll's consequences are named predicates (`feedChanged`, `filmsNeedResolving`, `libraryMoved`) over one `PollOutcome` |
-| `src/server.ts`, `src/index.ts`, `src/login.ts` | Fastify (three routes, no state of its own), boot, and the device-flow CLI |
+| `src/server.ts`, `src/index.ts`, `src/login.ts` | Fastify (seven routes, no state of its own beyond the artwork shell it builds), boot, and the device-flow CLI |
 | `src/shared/` | Used by both halves, and with no feature knowledge at all: config, dates, errors, logger, signals, atomic-write |
 | `src/health.ts` | What the state *means*: `assess` (restart-worthiness, the `/healthz` status code) and `pageHealthy` (the page's stricter question), plus the `/healthz` body |
 | `src/library.ts` | How the library is gated, merged and read: the signatures, the delta merge, the removal diff |
 | `src/library-counts.ts` | The library, counted — the status page's totals and movement deltas |
-| `src/api/` | Every HTTP client, and no domain rules. `http.ts` is the one retrying transport; `simkl/`, `google/`, `tvdb/` are specs over it; `token-cache.ts` the one bearer cache; `pool.ts`, `requests.ts`, `cdn.ts` shared. `requests.ts` is the one exception to "no domain rules": `RequestComponent` names the callers, because which part of the service asked is not a fact any transport holds |
+| `src/api/` | Every HTTP client, and no domain rules. `http.ts` is the one retrying transport, for JSON and for bytes (`requestBytes`, bounded); `simkl/`, `google/` (`client.ts` for Sheets, `storage.ts` for Cloud Storage, one `auth.ts` minting a token per scope), `tvdb/`, `tmdb/` are specs over it; `images.ts` the bounded download from any public https host, private addresses refused; `token-cache.ts` the one bearer cache; `pool.ts`, `requests.ts`, `cdn.ts` shared. `requests.ts` is the one exception to "no domain rules": `RequestComponent` names the callers, because which part of the service asked is not a fact any transport holds |
 | `src/feed/` | iCal only |
 | `src/sheet/` | Google Sheet sync only |
 | `src/status/` | The HTML status page. Reads the snapshot and the request log; `server.ts` is its only reader |
+| `src/artwork/` | The artwork page: both tabs and both buckets indexed, candidates from TMDB and TVDB, a pick that uploads and links. `server.ts` is its only reader |
 
-`src/status/` is a **layer**, not a fourth peer: it sits above both halves and below `server.ts`,
-and names `Orchestrator` as a *type only*. **Nothing in `feed/`, `sheet/`, `api/`, `shared/` or
-`orchestrator.ts` may import from it.** Layering still runs downward only.
+`src/status/` and `src/artwork/` are **layers**, not peers of the halves: each sits above both
+halves and below `server.ts`, and names `Orchestrator` only where it must (`status/` as a type,
+`artwork/artwork.ts` for the library and the logger). **Nothing in `feed/`, `sheet/`, `api/`,
+`shared/` or `orchestrator.ts` may import from either, and neither imports the other** — the
+status page's artwork line is handed in by `server.ts`. Layering still runs downward only.
 
 Each half is an **impure shell around a numbered pure core**: `io/` holds whatever talks outside
 the process, and the rest carries its pipeline position in the filename, so `ls` prints the order.
@@ -466,6 +514,18 @@ name and so needs no films copy.
 | RENDER | `2-html.ts` — a `StatusModel` → one self-contained page. Pure; owns `html`/`raw`/`escapeHtml` |
 | — | `status.ts` — the shell: the only file here that names `Orchestrator`, reads the clock, the request ring and the journal |
 
+`src/artwork/` — INDEX → CANDIDATES → DECIDE → RENDER
+
+| Step | Module |
+| --- | --- |
+| INDEX | `1-index.ts` — both grids, the library, the run history and both bucket listings → one `ArtworkTitle` per row with a state a pick can act on, plus `summarise` |
+| CANDIDATES | `2-candidates.ts` — a TMDB images payload or a TVDB artworks payload → `Candidate[]`, at the site's shape, ranked as a starting point |
+| DECIDE | `3-decide.ts` — a `Banner` cell → `keep` / `write` / `refuse`; the whole of the page's guard, as a checklist |
+| RENDER | `4-html.ts` — the model and the page; every value through `html` |
+| — | `client.ts` — the page's script, served as `artwork/app.js`; `page.ts` — the read shell, index → model → page |
+| io | `io/tmdb-images.ts`, `io/tvdb-art.ts` (fetch only), `io/sheet-link.ts` (`ensureLink`: the authoritative pass under the lock, one `updateCells`, one verify read, one journal record) |
+| — | `artwork.ts` — the shell: the index cache (60 s, `?fresh=1` bypasses), the candidate cache (15 min, 200 titles, what lets a pick name a URL), the pick flow in its fixed order, and `summary()` for the status page |
+
 Everything numbered stays pure (the catalogue store is stateful but I/O-free) — numbered modules
 take options with config-backed defaults rather than reading `config` mid-body. Renumbering on
 insertion is the cost of the scheme, and the right move when it comes up: appending a step out of
@@ -494,7 +554,9 @@ Where a sheet run stopped is `SheetSyncStatus`, which `/healthz` reports as `she
 - `withTempDataDir(fn)` — `config.dataDir` defaults to `./data`, which on a real checkout holds a
   live OAuth token.
 - On import it sets `config.retryBase` to 1ms, so a retry path takes microseconds rather than 15
-  seconds, and blanks the sheet and TVDB credentials as described above.
+  seconds, and blanks the sheet, TVDB and TMDB credentials as described above — and both artwork
+  buckets, which have a golden behind them: with a movie bucket set the films insert writes a
+  bucket link, and a leaked `ARTWORK_MOVIE_BUCKET` would fail `film-plan.json` for the wrong reason.
 - `sheetSnapshot(rows)`, `cellOf(spec)`, `showRow`/`seasonRow` and `libraryOf(...items)` build sheet
   and library fixtures. A cell spec of `{ formula }` is the one that matters: only
   `userEnteredValue.formulaValue` distinguishes a formula, and a formula target must be refused
@@ -512,9 +574,14 @@ bare index that re-points silently when a row is added — and `test/sheet/fake-
 in-memory Sheets server every whole-run suite drives. One fake, deliberately: it is coupled to the
 Google client's URL shapes, and a second copy is a second place that coupling breaks silently.
 
+`test/artwork/fake-bucket.ts` is the in-memory Cloud Storage plus the image CDNs, composed
+**in front of** `fakeSheets` (`next: sheet.handler`) for the whole-run suites: it answers what it
+knows and hands the rest on. One fake, for the reason the Sheets one is one.
+
 `api/cdn.ts` keeps a module-level cache; call its `clearCache()` in tests that touch a calendar,
-and `clearTokenCache()` from `api/google/auth.ts` in tests that reach Google — and the one from
-`api/tvdb/auth.ts` in tests that reach TVDB. `api/cdn.ts` has no test file of its own: every path
+and `clearTokenCache()` from `api/google/auth.ts` in tests that reach Google — it clears every
+scope's cache, Sheets and Storage both — and the one from `api/tvdb/auth.ts` in tests that reach
+TVDB. `api/cdn.ts` has no test file of its own: every path
 through it is exercised by `test/feed/io/calendar.test.ts`, its only caller.
 
 The sheet sync's tests are weighted towards `5-guard.test.ts` and `sync.test.ts` on purpose: a
@@ -575,3 +642,19 @@ Google's Sheets API is at <https://developers.google.com/workspace/sheets/api/re
 Two things it does not offer, checked rather than assumed: there is no revision surface at all, and
 Drive's revisions can be listed, fetched, deleted or pinned but never named, created or reverted to.
 That is why the sync snapshots a tab before writing instead of using version history.
+
+The artwork page's three upstreams. TMDB's `/movie/{id}/images?include_image_language=en,null`
+lists backdrops with dimensions and vote counts — the appended `images` on a film's detail carries
+neither — and `en` backdrops carry the title across the frame while `null` ones are textless. TVDB's
+`/series/{id}/artworks?type=2` lists posters, 680×1000 with a `_t` thumbnail and a `score`, in every
+language — an anime often has only a Japanese one, so the page ranks English first rather than filtering;
+type numbers are 1 banner, 2 poster, 3 background, 5 icon, 22 clear art, 23 clear logo. Cloud
+Storage's JSON API is at <https://cloud.google.com/storage/docs/json_api>: a listing is
+`GET /storage/v1/b/{bucket}/o` and an upload `POST /upload/storage/v1/b/{bucket}/o?uploadType=multipart`
+— multipart because it is the one form that carries `cacheControl`, and without it a public object
+is cached for an hour by default. The service account needs `roles/storage.objectAdmin` on both
+buckets: `objectCreator` lets the first upload through and refuses the overwrite a re-pick needs.
+Whether an upload must also ask for `predefinedAcl=publicRead` depends on the bucket: needed under
+legacy ACLs, a 400 under uniform bucket-level access; `ARTWORK_PUBLIC_ACL` says which.
+`storage.googleapis.com` sends `Access-Control-Allow-Origin: *` on a `GET` and not on a `HEAD`, so
+verify CORS with a `GET`.

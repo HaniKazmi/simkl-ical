@@ -138,6 +138,48 @@ button that starts work — requests never trigger a fetch. It never displays yo
 If a sheet sync ever freezes, this is where the repair instructions are: which backup tab to
 copy back and which rows to delete. `/healthz` only reports *that* it froze.
 
+## Artwork page
+
+`https://…/<FEED_TOKEN>/artwork` is the one page that does work: it lists every title on both
+tabs of the spreadsheet — needs-artwork first, then whatever the sync touched most recently — and
+lets you pick a TMDB backdrop for a film or a TVDB poster for a show. A pick downloads that image
+through the service, uploads it to a Cloud Storage bucket under the title's name, and writes a
+static link into the row's `Banner` cell. The link is the same shape the show tab's formula cells
+already produce, so a re-pick later touches the bucket and never the sheet again.
+
+Rows whose `Banner` still links another host are **adoptable**: a pick may replace the image, or
+**Adopt** copies the current one into the bucket as-is. **Adopt all** does that over every such
+row, one at a time, with progress on the page — the migration from a tab of TMDB URLs to a tab of
+bucket links, resumable if it is interrupted.
+
+What it will not do: write a formula cell, write a cell that is not blank, a bucket link or a
+recognisable URL, or write at all while a sync run holds the sheet (it answers "busy" and the page
+retries). In `report` mode the object still uploads and the cell address is reported instead of
+written. Unlike the status page it runs a small script and loads images off-origin, under a
+Content-Security-Policy naming only its own script and https images; it sends no referrer, and
+no absolute URL on it carries the token.
+
+A `Banner` cell may link any public https host, and adopting copies from wherever it points. The
+service refuses a host that resolves to a private or local address, never follows a redirect, and
+refuses anything that is not an image, so a mistyped cell cannot make it fetch from its own
+network or put a web page in the bucket.
+
+It needs both tabs syncable, `TVDB_API_KEY`, and the two buckets:
+
+```
+ARTWORK_MOVIE_BUCKET=hanikazmi_plotdevice_movie
+ARTWORK_SHOW_BUCKET=hanikazmi_plotdevice_show
+```
+
+Setting both is also what switches a newly inserted film row's `Banner` from a TMDB URL to the
+static bucket link; the sync writes that column once, so it only does so where this page exists to
+put an object behind the link.
+
+The service account needs `roles/storage.objectAdmin` on both — `objectCreator` cannot overwrite,
+and a re-pick overwrites. If a bucket uses legacy ACLs rather than uniform bucket-level access,
+set `ARTWORK_PUBLIC_ACL=1` so each upload asks for public read; under uniform access that request
+is a 400 and the bucket's own policy already makes objects public.
+
 ## Subscribing
 
 Use the full `https://…/<FEED_TOKEN>/feed.ics` URL as a *subscribed calendar*, not an import.
@@ -284,7 +326,9 @@ or decorators. `erasableSyntaxOnly` in `tsconfig.json` makes any of those a comp
 rather than a runtime failure. Import specifiers carry the real extension
 (`import './config.ts'`), as Node requires.
 
-Routes: `GET /:token/feed.ics`, `GET /:token/status` and `GET /healthz`. Health is
+Routes: `GET /:token/feed.ics`, `GET /:token/status`, `GET /:token/artwork` (with
+`artwork/app.js`, `artwork/candidates` and `POST artwork/pick` beneath it, all 404 unless the
+artwork page is configured) and `GET /healthz`. Health is
 unauthenticated, and answers `503` rather than `200` whenever the feed has stopped moving —
 a revoked token, a CDN that has stopped answering, or a render that keeps throwing — so "the
 container is up" and "the feed is current" are not the same signal.

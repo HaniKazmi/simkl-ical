@@ -107,3 +107,19 @@ export const ageOf = (iso: string | null): number => {
   // `>`, so answering zero would claim the thing it stamps is up to date.
   return at === null ? Infinity : Temporal.Now.instant().epochMilliseconds - at.epochMilliseconds;
 };
+
+/**
+ * Coarse on purpose: two units read at a glance, and `4d 6h 12m 3s` reports
+ * precision the timers do not have. `round` splits the units; the only
+ * arithmetic left is choosing which two to print. Days and below throughout,
+ * so no `relativeTo` anchor is needed and a day is exactly 24 hours.
+ */
+export const duration = (span: Temporal.Duration): string => {
+  const total = span.total('milliseconds');
+  if (total <= 0) return '0s';
+  const { days, hours, minutes, seconds } = span.round({ largestUnit: 'day', smallestUnit: 'second' });
+  if (days) return hours ? `${days}d ${hours}h` : `${days}d`;
+  if (hours) return minutes ? `${hours}h ${minutes}m` : `${hours}h`;
+  if (minutes) return `${minutes}m`;
+  return `${seconds}s`;
+};

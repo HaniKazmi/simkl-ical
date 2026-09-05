@@ -11,7 +11,7 @@
  */
 
 import { config, tvdbConfigured } from '../shared/config.ts';
-import type { EpisodeDetail, ShowDetail } from '../api/simkl/types.ts';
+import type { EpisodeDetail } from '../api/simkl/types.ts';
 import type { TvdbEpisode } from '../api/tvdb/types.ts';
 import type { TitleProgress } from './1-index.ts';
 import type { Catalogue, CatalogueRequest } from './io/catalogue.ts';
@@ -75,13 +75,13 @@ export const seasonComplete = (shape: SeasonShape | undefined, watched: number):
   seasonAired(shape) && watched >= shape.total;
 
 /**
- * The TVDB id off a SIMKL detail record, or null.
+ * The TVDB id off a SIMKL record — a detail, or a library title — or null.
  *
  * SIMKL sends it as a string. A non-numeric or absent one is "no TVDB id",
  * never an error: the runtime lookup is additive, and a title without one
  * keeps its `Episodes` cell blank.
  */
-export const tvdbIdOf = (detail: ShowDetail | undefined): number | null => {
+export const tvdbIdOf = (detail: { ids?: { tvdb?: string } } | undefined): number | null => {
   const raw = detail?.ids?.tvdb;
   if (typeof raw !== 'string') return null;
   const id = Number(raw.trim());

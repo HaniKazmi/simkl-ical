@@ -190,6 +190,33 @@ test('a new film is inserted below the last row, fully filled, and verifies', as
   });
 });
 
+// The one production change the artwork feature makes to the poll: a new
+// row's Banner is the bucket link, which the guard has to accept as text and
+// the verifier has to find. Exercised here because the suite pins the bucket
+// undefined everywhere else to keep the golden. The whole feature has to be
+// configured, not the bucket alone: the column is written once, and a link
+// nothing can put an object behind is a broken image for the life of the row.
+test('with the artwork page configured a new film\'s Banner is the static link, and the insert still verifies', async () => {
+  const insert = async (over: Record<string, unknown>): Promise<unknown> => {
+    clearTokenCache();
+    const sheet = fakeSheets({ movies: DEFAULT_MOVIES, tmdb: tmdb() });
+    let banner: unknown;
+    await withFreshJournal(() =>
+      withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL, timezone: 'UTC', tmdbApiKey: 'tmdb-token', moviesSheetName: 'Movies', ...over }, () =>
+        withFetch(sheet.handler, async () => {
+          const library = filmsOnly(...ON_TAB, film({ id: 999, title: 'What If...?', lastWatchedAt: '2026-08-25T20:00:00Z', rating: 7, runtime: 110 }));
+          const result = await new SheetSync({ logger: quiet }).run(library);
+          assert.equal(result.status, 'applied', result.error ?? '');
+          banner = sheet.films?.[3]?.[13]?.userEnteredValue;
+        }),
+      ),
+    );
+    return banner;
+  };
+  assert.deepEqual(await insert({ artworkMovieBucket: 'movies-bucket', artworkShowBucket: 'shows-bucket', tvdbApiKey: 'tvdb-key' }), { stringValue: 'https://storage.googleapis.com/movies-bucket/What If...%3F' });
+  assert.deepEqual(await insert({ artworkMovieBucket: 'movies-bucket' }), { stringValue: 'https://image.tmdb.org/t/p/w1280/a.jpg' }, 'the bucket alone is not the feature');
+});
+
 test('the insert goes out as insertDimension, so the row inherits its number formats', async () => {
   // Written straight into the blank tail instead, a date serial renders as
   // `28486`: the rows past the data carry a different format on Watch Date and

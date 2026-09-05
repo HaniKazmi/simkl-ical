@@ -73,6 +73,7 @@ export const COLD: StatusInput = {
   feedUrl: `http://localhost:3000/${TOKEN}/feed.ics`,
   feedSubscribeUrl: `webcal://localhost:3000/${TOKEN}/feed.ics`,
   sheetUrl: null,
+  artwork: null,
   requests: [],
   runs: [],
   baseline: { seasons: 0, films: 0, at: null },
@@ -92,6 +93,7 @@ export interface InputOver {
   sheetTab?: string;
   filmsTab?: string;
   sheetUrl?: string | null;
+  artwork?: StatusInput['artwork'];
   requests?: RequestRecord[];
   runs?: SheetRunRecord[];
   baseline?: BaselineSummary;
@@ -152,6 +154,7 @@ export const input = (over: InputOver = {}): StatusInput => {
     filmsConfigured: over.filmsConfigured ?? COLD.filmsConfigured,
     sheetMode: over.sheetMode ?? COLD.sheetMode,
     sheetUrl: over.sheetUrl === undefined ? COLD.sheetUrl : over.sheetUrl,
+    artwork: over.artwork === undefined ? COLD.artwork : over.artwork,
     sheetTab: over.sheetTab ?? COLD.sheetTab,
     filmsTab: over.filmsTab ?? COLD.filmsTab,
     requests: over.requests ?? [],

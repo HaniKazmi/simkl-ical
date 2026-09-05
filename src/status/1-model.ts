@@ -12,7 +12,9 @@
  * subsystem is in, whether it is one insert or two.
  */
 
-import { instantFrom, plainDateIn } from '../shared/dates.ts';
+import { duration, instantFrom, plainDateIn } from '../shared/dates.ts';
+
+export { duration } from '../shared/dates.ts';
 import type { SheetSyncMode } from '../shared/config.ts';
 import { totalCount, totalsByType, type LibraryCounts } from '../library-counts.ts';
 import { pageHealthy, type Assessment } from '../health.ts';
@@ -56,6 +58,12 @@ export interface StatusInput {
   feedSubscribeUrl: string;
   /** The spreadsheet, or null when none is configured. */
   sheetUrl: string | null;
+  /**
+   * The artwork page: where it is, and what its last index counted. Null when
+   * the feature is off; `needing` null until the page has been opened, since
+   * the status page fetches nothing and the index is built on demand there.
+   */
+  artwork: { url: string; needing: number | null; total: number | null; checkedAt: string | null } | null;
   requests: RequestRecord[];
   runs: SheetRunRecord[];
   /**
@@ -225,27 +233,13 @@ export interface StatusModel {
      * moment an operator needs to tell those apart.
      */
     baseline: { seasons: number; films: number; movedAt: Stamp };
+    /** The artwork page's line, or null when the feature is off. */
+    artwork: { url: string; label: string; checkedAt: Stamp | null } | null;
   };
   requests: RequestView[];
   /** The recent failures worth putting in front of a reader, already capped. */
   requestErrors: string[];
 }
-
-/**
- * Coarse on purpose: two units read at a glance, and `4d 6h 12m 3s` reports
- * precision the timers do not have. `round` splits the units; the only
- * arithmetic left is choosing which two to print. Days and below throughout,
- * so no `relativeTo` anchor is needed and a day is exactly 24 hours.
- */
-export const duration = (span: Temporal.Duration): string => {
-  const total = span.total('milliseconds');
-  if (total <= 0) return '0s';
-  const { days, hours, minutes, seconds } = span.round({ largestUnit: 'day', smallestUnit: 'second' });
-  if (days) return hours ? `${days}d ${hours}h` : `${days}d`;
-  if (hours) return minutes ? `${hours}h ${minutes}m` : `${hours}h`;
-  if (minutes) return `${minutes}m`;
-  return `${seconds}s`;
-};
 
 const pad = (n: number): string => String(n).padStart(2, '0');
 
@@ -650,6 +644,14 @@ export const buildModel = (input: StatusInput): StatusModel => {
       error: sheet.error === sheet.frozen || sheet.error === (runs[0]?.error ?? null) ? null : sheet.error,
       runs,
       baseline: { seasons: input.baseline.seasons, films: input.baseline.films, movedAt: at(input.baseline.at) },
+      artwork:
+        input.artwork === null
+          ? null
+          : {
+              url: input.artwork.url,
+              label: input.artwork.needing === null ? 'not checked yet — open the page' : `${input.artwork.needing} of ${input.artwork.total} need artwork`,
+              checkedAt: input.artwork.checkedAt === null ? null : at(input.artwork.checkedAt),
+            },
     },
   };
 

@@ -215,3 +215,19 @@ test('an identical run a long time later is a new record, not a repeat', async (
     assert.equal(sheetRuns()[0]?.repeats, 2, 'and the first episode keeps its count');
   });
 });
+
+// The page writes one record per pick, and a bulk adopt would otherwise push
+// every sync run out of the file — the operator's only durable record of
+// what the poll wrote.
+test('page writes and sync runs are capped apart', async () => {
+  await withFreshJournal(async () => {
+    for (let i = 0; i < 10; i += 1) await appendSheetRun(run({ at: poll(i), edits: [{ address: `B${i}`, field: 'Episode', note: `sync ${i}` }] }));
+    for (let i = 0; i < 60; i += 1) await appendSheetRun(run({ at: poll(10 + i), source: 'artwork', edits: [{ address: `N${i}`, field: 'Banner', note: `artwork ${i}` }] }));
+    const recorded = sheetRuns();
+    assert.equal(recorded.filter((r) => r.source === undefined).length, 10, 'every sync run survives');
+    assert.equal(recorded.filter((r) => r.source === 'artwork').length, 50, 'page writes keep their own last fifty');
+    assert.equal(recorded[0]?.edits[0]?.note, 'sync 0');
+    await loadSheetRuns();
+    assert.equal(sheetRuns().filter((r) => r.source === undefined).length, 10, 'and the cap is the same on reload');
+  });
+});
