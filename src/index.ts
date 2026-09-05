@@ -1,4 +1,4 @@
-import { config, requireClientId, requireValidTimezone } from './shared/config.ts';
+import { artworkConfigured, config, requireClientId, requireValidTimezone } from './shared/config.ts';
 import { errorMessage } from './shared/errors.ts';
 import { Orchestrator } from './orchestrator.ts';
 import { buildServer } from './server.ts';
@@ -30,9 +30,10 @@ app.log.info(`listening on :${config.port} in ${config.timezone}, warming up`);
 // full. `buildServer` still redacts `req.url` so the same string does not
 // repeat once per request.
 for (const [name, path] of [
-  ['feed  ', `/${config.feedToken}/feed.ics`],
-  ['status', `/${config.feedToken}/status`],
-  ['health', '/healthz'],
+  ['feed   ', `/${config.feedToken}/feed.ics`],
+  ['status ', `/${config.feedToken}/status`],
+  ['artwork', artworkConfigured() ? `/${config.feedToken}/artwork` : 'off — needs both tabs, TVDB and ARTWORK_MOVIE_BUCKET/ARTWORK_SHOW_BUCKET'],
+  ['health ', '/healthz'],
 ] as const) {
   app.log.info(`  ${name}  http://localhost:${config.port}${path}`);
 }

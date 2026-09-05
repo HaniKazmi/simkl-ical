@@ -257,6 +257,19 @@ test('the spreadsheet is the only host the page links out to', () => {
   assert.deepEqual([...hosts].sort(), ['docs.google.com', 'localhost:3000']);
 });
 
+// The artwork page's link carries the token like the feed links do, and is
+// held to the same rule: it addresses this service and nowhere else.
+test('the artwork line links the page on this host, and says what the last index counted', () => {
+  const url = 'http://localhost:3000/fixture-token/artwork';
+  const unread = page({ sheetConfigured: true, artwork: { url, needing: null, total: null, checkedAt: null } });
+  assert.match(unread, /not checked yet — open the page/);
+  const read = page({ sheetConfigured: true, artwork: { url, needing: 12, total: 660, checkedAt: before(MINUTE) } });
+  assert.match(read, /12 of 660 need artwork/);
+  const hosts = new Set([...read.matchAll(/<a [^>]*href="([^"]*)"/g)].map((m) => hostOf(m[1]!)));
+  assert.deepEqual([...hosts].sort(), ['localhost:3000']);
+  assert.ok(!page({ sheetConfigured: true, artwork: null }).includes('/artwork'), 'off, the page does not mention it');
+});
+
 // Following the http address downloads a snapshot, which a client imports once
 // and never refreshes. Only `webcal:` asks it to subscribe.
 test('the subscribe link asks for a subscription, not a download', () => {

@@ -91,8 +91,8 @@ const tabOf = (kind: ArtworkKind): { title: string; tab: 'shows' | 'films'; buck
  * Ensure the cell links the bucket. Throws `SheetBusyError` when the sheet
  * is held past `LINK_WAIT`; every other outcome is a value.
  */
-export const ensureLink = (request: LinkRequest, { log }: { log: Logger }): Promise<LinkOutcome> =>
-  withSheetLock(() => linkUnderLock(request, log), { wait: LINK_WAIT });
+export const ensureLink = (request: LinkRequest, { log, wait = LINK_WAIT }: { log: Logger; wait?: Temporal.Duration }): Promise<LinkOutcome> =>
+  withSheetLock(() => linkUnderLock(request, log), { wait });
 
 const linkUnderLock = async ({ kind, id, title, adopt, expectPrevious, signal }: LinkRequest, log: Logger): Promise<LinkOutcome> => {
   const tab = tabOf(kind);

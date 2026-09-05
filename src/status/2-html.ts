@@ -232,6 +232,7 @@ const sheetBody = (model: StatusModel) => {
   return html`
     ${sheet.frozen === null ? null : html`<div class="freeze"><b>Frozen — no further writes this process</b>${sheet.frozen}</div>`}
     ${sheet.error === null ? null : html`<div class="msg">${sheet.error}</div>`}
+    ${sheet.artwork === null ? null : html`<div class="subscribe"><span class="k">artwork</span><span>${sheet.artwork.label}${sheet.artwork.checkedAt ? html` · read ${time(sheet.artwork.checkedAt)}` : null} · <a href="${sheet.artwork.url}" rel="noopener noreferrer">open <span class="ext">↗</span></a></span></div>`}
     ${sheet.runs.length ? runs(model) : html`<p class="dim">Nothing written yet.</p>`}`;
 };
 
@@ -349,7 +350,7 @@ ${model.problems.length === 0 ? null : html`<div class="problems"><ul>${model.pr
   ${model.requestErrors.map((error) => html`<div class="msg">${error}</div>`)}
 </section>
 
-<footer>Read-only. The page loads nothing but its own icon; the two links are yours to click.</footer>
+<footer>Read-only. The page loads nothing but its own icon; the links are yours to click.</footer>
 
 </div>`,
   });

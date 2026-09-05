@@ -12,6 +12,7 @@
  */
 
 import { config, moviesSyncConfigured, tvdbConfigured } from '../shared/config.ts';
+import { isoOf } from '../shared/dates.ts';
 import { recentRequests } from '../api/requests.ts';
 import { assess } from '../health.ts';
 import { sheetRuns } from '../sheet/io/journal.ts';
@@ -27,6 +28,12 @@ const spreadsheetUrl = (): string | null =>
 export interface RenderOptions {
   now?: Temporal.Instant;
   /**
+   * The artwork page's summary, handed in by `server.ts`: this layer may not
+   * import from `artwork/`, and the page fetches nothing, so what it shows is
+   * whatever index that shell last built. Null when the feature is off.
+   */
+  artwork?: { url: string; summary?: { needing: number; total: number }; builtAt?: Temporal.Instant } | null;
+  /**
    * The origin the reader reached this page on, which both feed links are
    * built from. `webcal:` needs a full authority, so unlike the rest of the
    * page this is a click target and not only text.
@@ -36,7 +43,7 @@ export interface RenderOptions {
 
 export const renderStatus = (
   state: Orchestrator,
-  { now = Temporal.Now.instant(), origin = `http://localhost:${config.port}` }: RenderOptions = {},
+  { now = Temporal.Now.instant(), origin = `http://localhost:${config.port}`, artwork = null }: RenderOptions = {},
 ): string => {
   const snapshot = state.snapshot();
   // Only reachable behind the route's token check, so the token is set; the
@@ -69,6 +76,10 @@ export const renderStatus = (
       // never updates. `webcal:` is what asks a client to subscribe.
       feedSubscribeUrl: feedUrl.replace(/^https?:/, 'webcal:'),
       sheetUrl: spreadsheetUrl(),
+      artwork:
+        artwork === null
+          ? null
+          : { url: artwork.url, needing: artwork.summary?.needing ?? null, total: artwork.summary?.total ?? null, checkedAt: artwork.builtAt ? isoOf(artwork.builtAt) : null },
       requests: recentRequests(),
       runs: sheetRuns(),
       // In memory like the journal, so a hard refresh still touches no disk.

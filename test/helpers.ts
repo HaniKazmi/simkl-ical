@@ -44,6 +44,7 @@ config.tmdbApiKey = undefined;
 // ARTWORK_MOVIE_BUCKET would fail the films golden for the wrong reason.
 config.artworkMovieBucket = undefined;
 config.artworkShowBucket = undefined;
+config.artworkPublicAcl = false;
 // Same guard, for writes: everything that persists lands under config.dataDir,
 // which defaults to ./data and holds a live token on a real checkout. The
 // default moves somewhere harmless; `withTempDataDir` stays for tests that

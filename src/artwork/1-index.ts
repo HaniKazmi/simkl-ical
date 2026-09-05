@@ -61,7 +61,7 @@ export interface ArtworkTitle {
   lastWatchedAt: Temporal.Instant | null;
   /** The later of the two above; what the page sorts by. */
   recentAt: Temporal.Instant | null;
-  /** Film only: the `Franchise` cell, searched alongside the title. */
+  /** A film's `Franchise` cell, a show's `Status`; shown beside the title and searched with it. */
   context: string | null;
 }
 
@@ -208,7 +208,7 @@ export const indexArtwork = (input: IndexInput, { timezone }: IndexOptions): Art
             row: block.row,
             address: banner === null ? null : a1(block.row, banner),
             lastWatchedAt: instantFrom(item?.last_watched_at),
-            context: null,
+            context: block.status,
           },
           banner === null ? undefined : shows.snapshot.rows[block.row]?.[banner],
           buckets.show,
