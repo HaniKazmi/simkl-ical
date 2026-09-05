@@ -41,19 +41,20 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
   };
 
   // --- filtering -----------------------------------------------------------
-  const matches = (row) => {
+  const matchesFilter = (row, name) => {
     const state = row.dataset.state;
     const kind = row.dataset.kind;
-    const byChip =
-      filter === 'all' ||
-      (filter === 'needs' && NEEDS.has(state)) ||
-      (filter === 'recent' && row.dataset.recent === '1') ||
-      (filter === 'show' && kind === 'show') ||
-      (filter === 'movie' && kind === 'movie') ||
-      (filter === 'adopt' && state === 'adopt') ||
-      (filter === 'no-id' && state === 'no-id');
-    return byChip && (!query || row.dataset.q.includes(query));
+    return (
+      name === 'all' ||
+      (name === 'needs' && NEEDS.has(state)) ||
+      (name === 'recent' && row.dataset.recent === '1') ||
+      (name === 'show' && kind === 'show') ||
+      (name === 'movie' && kind === 'movie') ||
+      (name === 'adopt' && state === 'adopt') ||
+      (name === 'no-id' && state === 'no-id')
+    );
   };
+  const matches = (row) => matchesFilter(row, filter) && (!query || row.dataset.q.includes(query));
   const applyFilter = () => {
     let shown = 0;
     for (const row of rows) {
@@ -77,6 +78,24 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
   applyFilter();
 
   // --- state after a pick ----------------------------------------------------
+  // The chip counts and the two headline numbers follow the rows, so a pick
+  // is reflected without a reload; the tiles the server computed are left
+  // for the next read.
+  const recount = () => {
+    const count = (name) => rows.filter((row) => matchesFilter(row, name)).length;
+    for (const chip of chips) {
+      const b = chip.querySelector('b');
+      if (b) b.textContent = String(count(chip.dataset.filter));
+    }
+    const needing = count('needs');
+    const headline = document.querySelector('[data-needing]');
+    if (headline) headline.textContent = String(needing);
+    const pill = document.querySelector('[data-needing-pill]');
+    if (pill) {
+      pill.textContent = needing + ' need artwork';
+      pill.className = 'pill ' + (needing ? 'warn' : 'ok');
+    }
+  };
   const setPill = (row, state, text, cls) => {
     row.dataset.state = state;
     const pill = row.querySelector('[data-pill]');
@@ -84,6 +103,7 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
       pill.className = 'pill ' + cls;
       pill.textContent = text;
     }
+    recount();
   };
   const setThumb = (row, url) => {
     if (!loadable(url)) return;

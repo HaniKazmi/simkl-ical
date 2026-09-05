@@ -235,7 +235,7 @@ export const renderArtworkPage = (model: ArtworkModel): string =>
 <header><div class="bar">
   <span class="mark"></span>
   <h1>${model.appName}</h1>
-  <span class="pill ${model.summary.needing ? 'warn' : 'ok'}">${model.summary.needing} need artwork</span>
+  <span class="pill ${model.summary.needing ? 'warn' : 'ok'}" data-needing-pill>${model.summary.needing} need artwork</span>
   <span class="meta">v${model.version} · ${model.timezone}<br>artwork · ${model.summary.total} titles · <a href="status" rel="noopener noreferrer">status</a></span>
 </div></header>
 
@@ -246,7 +246,7 @@ ${model.mode === 'apply' ? null : html`<div class="problems"><ul><li>Sheet mode 
 
 <div class="tiles">
   <div class="tile"><span class="t-name">titles</span><span class="t-head">${model.summary.total}</span><span class="t-next">${model.summary.shows} shows · ${model.summary.films} films</span></div>
-  <div class="tile${model.summary.needing ? ' warn' : ''}"><span class="t-name">need artwork</span><span class="t-head">${model.summary.needing}</span><span class="t-next">no object behind the link, or no link</span></div>
+  <div class="tile${model.summary.needing ? ' warn' : ''}"><span class="t-name">need artwork</span><span class="t-head" data-needing>${model.summary.needing}</span><span class="t-next">no object behind the link, or no link</span></div>
   <div class="tile"><span class="t-name">added by the sync</span><span class="t-head">${model.summary.addedRecently}</span><span class="t-next">in the last ${model.recentWindow}</span></div>
   <div class="tile act"><div><span class="t-name">adoptable</span><span class="t-head" style="display:block">${model.summary.adoptable}</span><span class="t-next" data-adopt-progress>still linking another host</span></div><button class="btn" type="button" data-adopt-all ${model.summary.adoptable ? '' : 'disabled'}>Adopt all</button></div>
 </div>
