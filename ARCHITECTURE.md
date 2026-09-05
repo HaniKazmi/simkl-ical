@@ -12,6 +12,10 @@ api.simkl.com/movies/{id}          (per-film release dates)                ─�
 
 api4.thetvdb.com/v4/series/{id}/episodes/official   (per-episode runtimes)  ─→ the sheet only
 api.themoviedb.org/3/movie/{id}                     (a film's genres, certificate, dates, crew, backdrop) ─→ the sheet only
+
+api.themoviedb.org/3/movie/{id}/images              (a film's backdrops)     ─┐
+api4.thetvdb.com/v4/series/{id}/artworks            (a show's posters)       ─┤─ the artwork page only
+storage.googleapis.com                              (where a pick is put)    ─┘
 ```
 
 The fourth and fifth are not part of the join. TVDB answers one question the other three cannot —
@@ -24,8 +28,12 @@ both halves need — plus the timers, and hands the library to `Feed` and `Sheet
 Neither knows the other exists. The orchestrator's `snapshot()` is the one export of state; both
 `/healthz` and the status page project from it, and `health.ts` holds both definitions of healthy.
 
-**Requests never trigger a fetch.** A client polling hard cannot amplify into SIMKL traffic, and a
-SIMKL outage degrades to a stale feed rather than an empty one.
+**Requests never trigger a fetch** — on the feed, `/healthz` and the status page. A client polling
+hard cannot amplify into SIMKL traffic, and a SIMKL outage degrades to a stale feed rather than an
+empty one. The artwork page is the stated exception: it is a tool, not a projection, and a pick
+is a request that downloads, uploads and writes. What bounds it is the token, an index cache, and
+that none of its upstreams is SIMKL — the one per-title SIMKL read it can make, a show's TVDB id,
+happens once per opened row and never at index time.
 
 ---
 
@@ -158,14 +166,17 @@ against contains them too, and because a film moving `plantowatch → completed`
 
 ## Where the code lives
 
-Five buckets — `shared/`, `api/`, `feed/`, `sheet/`, `status/` — so the folder a file is in answers two
-questions: which half of the project needs it, and is it transport or business logic. Each half is
-an `io/` shell around a pure core numbered in pipeline order. AGENTS.md has the file-by-file map;
+Six buckets — `shared/`, `api/`, `feed/`, `sheet/`, `status/`, `artwork/` — so the folder a file is
+in answers two questions: which half of the project needs it, and is it transport or business logic.
+Each half is an `io/` shell around a pure core numbered in pipeline order, and the two pages are
+layers above both halves that never import each other. AGENTS.md has the file-by-file map;
 layering runs downward only.
 
-`api/` is one retrying JSON transport (`http.ts`) under four thin per-upstream specs — base URL,
-credential headers, and what each status means are exactly what differ between SIMKL, Sheets, TVDB
-and TMDB, so they are all a spec holds. `cdn.ts` is deliberately not on the engine: conditional-GET
+`api/` is one retrying transport (`http.ts`) under thin per-upstream specs — base URL, credential
+headers, and what each status means are exactly what differ between SIMKL, Sheets, Cloud Storage,
+TVDB, TMDB and an image CDN, so they are all a spec holds. What a body *is* — JSON to parse, or
+bytes to keep — is the one thing the loop delegates, to a consumer that says whether its failure is
+the transfer's (retried) or the payload's (terminal). `cdn.ts` is deliberately not on the engine: conditional-GET
 plus serve-stale-on-failure is a different protocol from retry-to-success. The lookup pool and the
 request log are shared for the same reason the engine is: each encodes a rule that drifts silently
 when copied — an account-level failure is not a fact about the item that hit it, and a body that
@@ -205,6 +216,16 @@ died mid-download must not surface as a 200 carrying unparseable JSON.
   would drop most of a category is refused and answered with a full pull: a truncated response and a
   cleared account are the same bytes, and applying the wrong one empties the feed.
 - **UIDs are derived, never random**, or clients duplicate events instead of updating them.
+- **A sync run and an artwork page write never overlap.** Both hold `withSheetLock` from their
+  first read of the sheet to their last verify. The films verifier inspects `Banner`, so a page
+  write landing inside a sync run is a cell the sync did not plan, and VERIFY would roll the whole
+  tab back over it. The page's write is the one cell on a show row written outside `Status`, and it
+  goes through its own checklist rather than the sync's guard: the sync's whitelists are the
+  poll's, and widening them for a click is how one rule ends up holding two jobs.
+- **A pick uploads before it links, and pre-decides before it uploads.** The object is what the
+  site shows and is idempotent, so an upload that outruns a refused link costs nothing; a link
+  that outran a failed upload would point at nothing. The pre-decision off the cached cell stops
+  the obvious refusals — a formula, a foreign link with no `adopt` — before any bytes move.
 - **Three files are persisted**, all 0600 through `writeFileAtomic`: `token.json`, `feed.ics`, and
   `sheet-runs.json`. The third is **observational, never control** — written by the sheet half and
   read only by the status page. *Nothing in `src/` may read it to decide what to do.* No control
