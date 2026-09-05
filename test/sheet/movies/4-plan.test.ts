@@ -70,6 +70,13 @@ test('a value that moved away from what was recorded is written', () => {
   // set that is recorded whatever happened.
   assert.deepEqual(writing.get(movieKey(1)), { 'Watch Date': watchedOn(41000), Score: '9', Runtime: '120' });
   assert.deepEqual(observed.get(movieKey(1)), {});
+  // The note says both sides as a reader would write them — a date in the
+  // viewer's zone, never the serial the cell holds — the way the show grid's
+  // note does; `41000` on a status page says nothing to anyone.
+  assert.deepEqual(
+    p.edits.map((e) => e.note),
+    ['Show 1: Watch Date moved from 2009-07-06 to 2012-04-01', 'Show 1: Score moved from 5 to 9', 'Show 1: Runtime moved from 90 to 120'],
+  );
 });
 
 test('an unmoved value is recorded and not written', () => {
@@ -93,6 +100,7 @@ test('a score SIMKL did not hold before is written once it does', () => {
     { baseline },
   );
   assert.deepEqual(p.edits.map((e) => [e.field, e.value]), [['Score', { numberValue: 8 }]]);
+  assert.equal(p.edits[0]?.note, 'Show 1: Score moved from none to 8');
 });
 
 test('a score SIMKL stopped holding empties nothing — the cell keeps what it has', () => {

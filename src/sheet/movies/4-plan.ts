@@ -20,10 +20,10 @@
  */
 
 import { config } from '../../shared/config.ts';
-import { isoOf, plainDateIn } from '../../shared/dates.ts';
+import { instantFrom, isoOf, plainDateIn } from '../../shared/dates.ts';
 import type { ExtendedValue } from '../../api/google/types.ts';
 import { isFormula } from '../2-grid.ts';
-import { dateSerial, maxSerial, movieKey, plausibleSerial, recordedSerial, watchSerial, type Baseline } from '../values.ts';
+import { dateSerial, maxSerial, movieKey, plausibleSerial, recordedSerial, watchedNote, watchSerial, type Baseline } from '../values.ts';
 import { movieAddress, movieCellAt, nextFilmRow, type MovieGrid, type MovieHeaderName } from './2-grid.ts';
 import { filmIsWatched, type FilmProgress } from './1-index.ts';
 import type { FilmFacts } from './3-catalogue.ts';
@@ -384,7 +384,12 @@ export const planFilms = (
         continue;
       }
 
-      plan.edits.push(edit(grid, row.row, film.id, field, num(wanted), `${film.title}: ${field} moved to ${wanted}`));
+      // Both sides as a reader would write them — a date in the viewer's zone,
+      // not the serial the cell holds — the way the show grid's note reads.
+      const before =
+        field === 'Watch Date' ? watchedNote(instantFrom(entry[field]), timezone) : recorded === null ? null : String(recorded);
+      const after = field === 'Watch Date' ? watchedNote(film.watchedAt, timezone) : String(wanted);
+      plan.edits.push(edit(grid, row.row, film.id, field, num(wanted), `${film.title}: ${field} moved from ${before ?? 'none'} to ${after}`));
       willWrite(key, field, field === 'Watch Date' ? isoOf(film.watchedAt as Temporal.Instant) : String(wanted));
     }
   }
@@ -570,14 +575,6 @@ const buildInsert = (
 
 // --- What survives ---------------------------------------------------------
 
-const rendered = (value: ExtendedValue | undefined): string | null => {
-  if (value === undefined) return null;
-  if (value.stringValue !== undefined) return value.stringValue;
-  if (value.numberValue !== undefined) return String(value.numberValue);
-  if (value.boolValue !== undefined) return String(value.boolValue);
-  return value.formulaValue ?? null;
-};
-
 /**
  * A plan reduced to what survives the run, in the show half's shape — the
  * journal and the status page ask the same three questions of a films edit as
@@ -591,7 +588,9 @@ export const filmPlanRecord = (plan: FilmPlan): PlanRecord => ({
 });
 
 export const describeFilmPlan = (plan: FilmPlan): string[] => [
-  ...plan.edits.map((cell) => `  ${cell.address} ${cell.field} = ${rendered(cell.value) ?? '(blank)'} — ${cell.note}`),
+  // The note carries both sides of the move as a reader would write them, so
+  // the cell's own value — a date serial — would only repeat it less legibly.
+  ...plan.edits.map((cell) => `  edit   ${cell.address.padEnd(7)} ${cell.note}`),
   ...(plan.insert ? [`  insert row ${plan.insert.row + 1}: ${plan.insert.note} (${plan.insert.fill.length} cells)`] : []),
   ...plan.skips.map((s) => `  skipped (${s.code}): ${s.reason}`),
   ...plan.notes.map((n) => `  ${n}`),
