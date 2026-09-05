@@ -26,6 +26,9 @@ export interface ArtworkRow {
   rowNumber: number;
   address: string | null;
   context: string | null;
+  franchise: string | null;
+  /** ISO date, for ordering inside a franchise; empty for a show or an undated film. */
+  released: string;
   state: ArtworkState;
   /** The image the row shows today, when its host is one the page may load from. */
   image: string | null;
@@ -118,6 +121,8 @@ export const artworkModel = (
         rowNumber: title.row + 1,
         address: title.address,
         context: title.context,
+        franchise: title.franchise,
+        released: title.releasedOn?.toString() ?? '',
         state: title.state,
         // A bucket link with nothing behind it would render as a broken image.
         image: title.cell.kind === 'foreign' ? title.cell.url : title.stored.exists === false ? null : title.cell.url,
@@ -137,6 +142,9 @@ const STYLE = `${BASE_STYLE}
 .tool{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}
 .tool input{font:inherit;padding:.4rem .6rem;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink);min-width:16rem}
 .tool input:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.sortby{margin-left:auto;display:inline-flex;gap:.375rem;align-items:center}
+.grp{font-size:.6875rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);padding:.6rem 0 .1rem}
+.grp[hidden]{display:none}
 .chip{font:inherit;font-size:.75rem;padding:.25rem .6rem;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--muted);cursor:pointer;font-variant-numeric:tabular-nums}
 .chip b{color:var(--ink);font-weight:600;margin-left:.3rem}
 .chip[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
@@ -211,11 +219,11 @@ const thumb = (row: ArtworkRow): SafeHtml =>
 const rowHtml = (row: ArtworkRow): SafeHtml => {
   const label = STATE_LABEL[row.state];
   const actionable = row.id !== null && row.state !== 'no-id';
-  return html`<div class="row" data-kind="${row.kind}" data-id="${row.id ?? ''}" data-state="${row.state}" data-title="${row.title}" data-recent="${row.recent ? '1' : ''}" data-q="${`${row.title} ${row.context ?? ''}`.toLowerCase()}">
+  return html`<div class="row" data-kind="${row.kind}" data-id="${row.id ?? ''}" data-state="${row.state}" data-title="${row.title}" data-recent="${row.recent ? '1' : ''}" data-franchise="${row.franchise ?? ''}" data-released="${row.released}" data-q="${`${row.title} ${row.franchise ?? ''} ${row.context ?? ''}`.toLowerCase()}">
   <div class="rh">
     ${thumb(row)}
     <span class="kind">${row.kind === 'movie' ? 'film' : 'show'}</span>
-    <div><div class="ttl">${row.title}</div><div class="ctx">${row.context ? html`${row.context} · ` : null}row ${row.rowNumber}${row.address ? html` · <span class="mono">${row.address}</span>` : null} · ${row.cell}</div></div>
+    <div><div class="ttl">${row.title}</div><div class="ctx">${row.franchise && row.franchise !== row.title ? html`${row.franchise} · ` : null}${row.context ? html`${row.context} · ` : null}row ${row.rowNumber}${row.address ? html` · <span class="mono">${row.address}</span>` : null} · ${row.cell}</div></div>
     <span class="pill ${label.pill}" data-pill>${label.text}</span>
     <span class="rec">${row.touched ? html`<b>${row.touched.label}</b>${row.touched.because}` : null}</span>
     ${actionable ? html`<button class="btn quiet" type="button" data-choose>choose artwork</button>` : html`<span></span>`}
@@ -259,6 +267,10 @@ ${model.mode === 'apply' ? null : html`<div class="problems"><ul><li>Sheet mode 
   ${chip('movie', 'Films', model.summary.films)}
   ${chip('adopt', 'Adoptable', model.summary.adoptable)}
   ${chip('no-id', 'No id', model.summary.noId)}
+  <span class="sortby"><span class="lbl">sort</span>
+    <button class="chip" type="button" data-sort="needs" aria-pressed="true">needs first</button>
+    <button class="chip" type="button" data-sort="franchise" aria-pressed="false">by franchise</button>
+  </span>
 </div>
 
 <section>

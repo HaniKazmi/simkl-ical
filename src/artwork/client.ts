@@ -26,7 +26,7 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
   const HOSTS = ${JSON.stringify(PAGE_IMAGE_HOSTS)};
   const NEEDS = new Set(['missing-object', 'unlinked', 'adopt']);
   const rows = Array.from(document.querySelectorAll('.row'));
-  const chips = Array.from(document.querySelectorAll('.chip'));
+  const chips = Array.from(document.querySelectorAll('[data-filter]'));
   const search = document.querySelector('[data-search]');
   const showing = document.querySelector('[data-showing]');
   const dialog = document.querySelector('[data-dialog]');
@@ -70,8 +70,54 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
       row.hidden = !ok;
       if (ok) shown += 1;
     }
+    // A franchise heading with nothing visible under it goes too.
+    for (const heading of document.querySelectorAll('.grp')) {
+      let any = false;
+      for (let next = heading.nextElementSibling; next && !next.classList.contains('grp'); next = next.nextElementSibling) {
+        if (!next.hidden) any = true;
+      }
+      heading.hidden = !any;
+    }
     if (showing) showing.textContent = 'showing ' + shown + ' of ' + rows.length;
   };
+
+  // --- ordering ------------------------------------------------------------
+  // The server's order is needs-first, then most recently touched. By
+  // franchise regroups the same rows under headings, films in release order
+  // and shows by title, and a title with no franchise stands as its own.
+  const list = document.querySelector('.rows');
+  const serverOrder = rows.slice();
+  const franchiseOf = (row) => row.dataset.franchise || row.dataset.title;
+  const byFranchise = (a, b) =>
+    franchiseOf(a).localeCompare(franchiseOf(b), undefined, { sensitivity: 'base' }) ||
+    (a.dataset.kind === 'movie' ? 0 : 1) - (b.dataset.kind === 'movie' ? 0 : 1) ||
+    (a.dataset.released || '9999').localeCompare(b.dataset.released || '9999') ||
+    a.dataset.title.localeCompare(b.dataset.title, undefined, { sensitivity: 'base' });
+  const reorder = (mode) => {
+    if (!list) return;
+    for (const heading of list.querySelectorAll('.grp')) heading.remove();
+    if (mode === 'franchise') {
+      let last = null;
+      for (const row of rows.slice().sort(byFranchise)) {
+        const group = franchiseOf(row);
+        if (group !== last) {
+          list.appendChild(el('div', 'grp', group));
+          last = group;
+        }
+        list.appendChild(row);
+      }
+    } else {
+      for (const row of serverOrder) list.appendChild(row);
+    }
+    applyFilter();
+  };
+  const sorts = Array.from(document.querySelectorAll('[data-sort]'));
+  for (const button of sorts) {
+    button.addEventListener('click', () => {
+      for (const other of sorts) other.setAttribute('aria-pressed', String(other === button));
+      reorder(button.dataset.sort);
+    });
+  }
   for (const chip of chips) {
     chip.addEventListener('click', () => {
       for (const other of chips) other.setAttribute('aria-pressed', String(other === chip));

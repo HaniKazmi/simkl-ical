@@ -61,8 +61,12 @@ export interface ArtworkTitle {
   lastWatchedAt: Temporal.Instant | null;
   /** The later of the two above; what the page sorts by. */
   recentAt: Temporal.Instant | null;
-  /** A film's `Franchise` cell, a show's `Status`; shown beside the title and searched with it. */
+  /** A show's `Status`, shown beside the title. Films carry none; their franchise is below. */
   context: string | null;
+  /** The `Franchise` cell, which both tabs carry; what the page groups by on request. */
+  franchise: string | null;
+  /** A film's `Release Date`; the order within a franchise. Null for shows. */
+  releasedOn: Temporal.PlainDate | null;
 }
 
 export interface ArtworkSummary {
@@ -93,19 +97,27 @@ export interface IndexOptions {
 }
 
 /**
- * The show tab's `Banner` column, resolved on its own: it is not one of the
- * sync's headers, and a tab without it degrades to "link writes off for
- * shows" rather than a page that will not render.
+ * A show-tab column the sync does not name, resolved on its own. A tab
+ * without it degrades — no link writes for shows, no franchise grouping —
+ * rather than a page that will not render.
  */
-export const showBannerColumn = (grid: Grid): number | null => {
+const showColumn = (grid: Grid, header: string): number | null => {
   const { rows, columnCount } = grid.snapshot;
   try {
     const headerRow = findHeaderRow(rows, ['Show', 'Season']);
     const width = Math.max(columnCount, ...rows.map((r) => r.length));
-    return resolveColumns(rows[headerRow] ?? [], width, ['Banner'] as const).Banner;
+    return resolveColumns(rows[headerRow] ?? [], width, [header] as const)[header] ?? null;
   } catch {
     return null;
   }
+};
+
+export const showBannerColumn = (grid: Grid): number | null => showColumn(grid, 'Banner');
+
+/** A cell's text, a formula's computed value included. */
+const cellText = (cell: CellData | undefined): string | null => {
+  const text = cell?.effectiveValue?.stringValue ?? cell?.userEnteredValue?.stringValue ?? null;
+  return text?.trim() || null;
 };
 
 /** The id a block is keyed by: the show row's, else the first season row's (a cour block). */
@@ -152,7 +164,7 @@ const stateOf = (
 };
 
 const entry = (
-  base: Pick<ArtworkTitle, 'kind' | 'id' | 'providerId' | 'title' | 'row' | 'address' | 'lastWatchedAt' | 'context'>,
+  base: Pick<ArtworkTitle, 'kind' | 'id' | 'providerId' | 'title' | 'row' | 'address' | 'lastWatchedAt' | 'context' | 'franchise' | 'releasedOn'>,
   cellData: CellData | undefined,
   bucket: string,
   stored: Map<string, StoredObject> | null,
@@ -193,6 +205,7 @@ export const indexArtwork = (input: IndexInput, { timezone }: IndexOptions): Art
 
   if (shows) {
     const banner = showBannerColumn(shows);
+    const franchise = showColumn(shows, 'Franchise');
     const dupes = duplicateIds(shows.blocks);
     for (const block of shows.blocks) {
       const candidate = blockId(block);
@@ -209,6 +222,8 @@ export const indexArtwork = (input: IndexInput, { timezone }: IndexOptions): Art
             address: banner === null ? null : a1(block.row, banner),
             lastWatchedAt: instantFrom(item?.last_watched_at),
             context: block.status,
+            franchise: franchise === null ? null : cellText(shows.snapshot.rows[block.row]?.[franchise]),
+            releasedOn: null,
           },
           banner === null ? undefined : shows.snapshot.rows[block.row]?.[banner],
           buckets.show,
@@ -229,7 +244,6 @@ export const indexArtwork = (input: IndexInput, { timezone }: IndexOptions): Art
       // watched before the library was pulled still sorts by when.
       const watchDate = serialDate(numberOf(movieCellAt(films, row.row, films.columns['Watch Date'])));
       const lastWatchedAt = instantFrom(item?.last_watched_at) ?? watchDate?.toZonedDateTime({ timeZone: timezone }).toInstant() ?? null;
-      const franchise = films.snapshot.rows[row.row]?.[films.columns.Franchise];
       out.push(
         entry(
           {
@@ -241,7 +255,9 @@ export const indexArtwork = (input: IndexInput, { timezone }: IndexOptions): Art
             row: row.row,
             address: a1(row.row, films.columns.Banner),
             lastWatchedAt,
-            context: franchise?.effectiveValue?.stringValue ?? franchise?.userEnteredValue?.stringValue ?? null,
+            context: null,
+            franchise: cellText(movieCellAt(films, row.row, films.columns.Franchise)),
+            releasedOn: serialDate(numberOf(movieCellAt(films, row.row, films.columns['Release Date']))),
           },
           movieCellAt(films, row.row, films.columns.Banner),
           buckets.movie,

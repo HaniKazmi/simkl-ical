@@ -21,7 +21,9 @@ const title = (over: Partial<ArtworkTitle> = {}): ArtworkTitle => ({
   addedBySync: null,
   lastWatchedAt: null,
   recentAt: null,
-  context: 'Pixar',
+  context: null,
+  franchise: 'Pixar',
+  releasedOn: Temporal.PlainDate.from('2003-10-10'),
   ...over,
 });
 
@@ -41,7 +43,7 @@ const page = (titles: ArtworkTitle[], over: Partial<ArtworkModel> = {}): string 
 // through every slot must come out inert.
 test('a hostile title, context and error render inert', () => {
   const evil = `"><img src=x onerror=alert(1)><script>alert(2)</script>`;
-  const rendered = page([title({ title: evil, context: evil })], { errors: [evil] });
+  const rendered = page([title({ title: evil, context: evil, franchise: evil })], { errors: [evil] });
   assert.ok(!rendered.includes('<script>alert'), 'no script tag opened');
   assert.ok(!/<img[^>]*onerror/.test(rendered), 'no attribute escaped its quotes');
   assert.match(rendered, /&lt;script&gt;alert\(2\)/);
@@ -89,7 +91,7 @@ test('rows carry what the client filters on, and the relative labels read from t
     title({ addedBySync: NOW.subtract({ hours: 49 }), recentAt: NOW.subtract({ hours: 49 }) }),
     title({ id: 2, kind: 'show', title: 'Severance', context: 'Watching', state: 'no-id', lastWatchedAt: NOW.subtract({ hours: 3 }), recentAt: NOW.subtract({ hours: 3 }) }),
   ]);
-  assert.match(rendered, /data-kind="movie" data-id="1" data-state="unlinked" data-title="Finding Nemo" data-recent="1" data-q="finding nemo pixar"/);
+  assert.match(rendered, /data-kind="movie" data-id="1" data-state="unlinked" data-title="Finding Nemo" data-recent="1" data-franchise="Pixar" data-released="2003-10-10" data-q="finding nemo pixar "/);
   assert.match(rendered, /<b>2d 1h ago<\/b>added by the sync/);
   assert.match(rendered, /<b>3h ago<\/b>watched/);
   assert.match(rendered, /data-kind="show" data-id="2" data-state="no-id"/);

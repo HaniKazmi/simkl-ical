@@ -74,6 +74,16 @@ test('every cell kind has a state, and the key follows the cell where it links t
   assert.equal(byTitle['Done']?.address, 'K2');
 });
 
+test('a show\'s franchise comes from its own tab\'s column, and a tab without one degrades', () => {
+  const withColumn = parseGrid(sheetSnapshot([[...SHEET_HEADERS, 'Banner', 'Franchise'], [...showRow('Loki', 'Ended', 1), null, 'Marvel']]));
+  const [loki] = indexArtwork(input({ shows: withColumn }), { timezone: 'Europe/London' });
+  assert.equal(loki?.franchise, 'Marvel');
+  assert.equal(loki?.context, 'Ended');
+  assert.equal(loki?.releasedOn, null);
+  const without = parseGrid(sheetSnapshot([[...SHEET_HEADERS, 'Banner'], ...block('Loki', 1, null)]));
+  assert.equal(indexArtwork(input({ shows: without }), { timezone: 'Europe/London' })[0]?.franchise, null);
+});
+
 test('a cour block is keyed by its first season row\'s id, and a duplicated id is no id', () => {
   const shows = parseGrid(
     sheetSnapshot([
@@ -93,11 +103,11 @@ test('a cour block is keyed by its first season row\'s id, and a duplicated id i
   );
 });
 
-test('films take their provider id from the library and their context from the Franchise cell', () => {
+test('films take their provider id from the library and their franchise from the tab', () => {
   const films = parseMovieGrid(
     sheetSnapshot([
       MOVIE_SHEET_HEADERS,
-      filmRow({ name: 'Finding Nemo', id: '100', franchise: 'Pixar', banner: MOVIE_LINK('Finding Nemo') }),
+      filmRow({ name: 'Finding Nemo', id: '100', franchise: 'Pixar', released: 37904, banner: MOVIE_LINK('Finding Nemo') }),
       filmRow({ name: 'Unfiled', id: '101', banner: null }),
       filmRow({ name: 'Old Way', id: '102', banner: 'https://image.tmdb.org/t/p/w1280/x.jpg' }),
       filmRow({ name: 'Anime Film', id: '104', banner: null }),
@@ -117,7 +127,9 @@ test('films take their provider id from the library and their context from the F
   const byTitle = Object.fromEntries(titles.map((t) => [t.title, t]));
   assert.equal(byTitle['Finding Nemo']?.state, 'done');
   assert.equal(byTitle['Finding Nemo']?.providerId, 12);
-  assert.equal(byTitle['Finding Nemo']?.context, 'Pixar');
+  assert.equal(byTitle['Finding Nemo']?.franchise, 'Pixar');
+  assert.equal(byTitle['Finding Nemo']?.releasedOn?.toString(), '2003-10-10');
+  assert.equal(byTitle['Finding Nemo']?.context, null);
   assert.equal(byTitle['Finding Nemo']?.address, 'N2');
   assert.equal(byTitle['Unfiled']?.state, 'unlinked');
   assert.equal(byTitle['Unfiled']?.providerId, null);
