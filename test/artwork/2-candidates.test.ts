@@ -55,7 +55,7 @@ const poster = (over: Partial<TvdbArtwork> = {}): TvdbArtwork => ({
   ...over,
 });
 
-test('show candidates are English posters, the authored size first, then by score', () => {
+test('show candidates are posters, English first, the authored size next, then by score', () => {
   const got = showCandidates({
     data: {
       artworks: [
@@ -70,7 +70,7 @@ test('show candidates are English posters, the authored size first, then by scor
   });
   assert.deepEqual(
     got.map((c) => c.url.split('/').at(-1)),
-    ['high.jpg', 'low.jpg', 'big.jpg'],
+    ['high.jpg', 'low.jpg', 'big.jpg', 'jpn.jpg'],
   );
   assert.equal(got[0]?.thumb, 'https://artworks.thetvdb.com/banners/v4/series/1/posters/a_t.jpg');
   assert.equal(got[0]?.votes, null);

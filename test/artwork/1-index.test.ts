@@ -100,12 +100,20 @@ test('films take their provider id from the library and their context from the F
       filmRow({ name: 'Finding Nemo', id: '100', franchise: 'Pixar', banner: MOVIE_LINK('Finding Nemo') }),
       filmRow({ name: 'Unfiled', id: '101', banner: null }),
       filmRow({ name: 'Old Way', id: '102', banner: 'https://image.tmdb.org/t/p/w1280/x.jpg' }),
+      filmRow({ name: 'Anime Film', id: '104', banner: null }),
       filmRow({ name: 'Dupe', id: '103' }),
       filmRow({ name: 'Dupe Again', id: '103' }),
       filmRow({ name: 'No Id Yet', id: null }),
     ]),
   );
-  const titles = indexArtwork(input({ films, library: libraryOf({ id: 100, type: 'movies', tmdb: '12' }, { id: 101, type: 'movies', tmdb: null }), stored: stored(['Finding Nemo'], []) }), { timezone: 'Europe/London' });
+  const titles = indexArtwork(
+    input({
+      films,
+      library: libraryOf({ id: 100, type: 'movies', tmdb: '12' }, { id: 101, type: 'movies', tmdb: null }, { id: 104, type: 'anime', animeType: 'movie', tmdb: '77' }),
+      stored: stored(['Finding Nemo'], []),
+    }),
+    { timezone: 'Europe/London' },
+  );
   const byTitle = Object.fromEntries(titles.map((t) => [t.title, t]));
   assert.equal(byTitle['Finding Nemo']?.state, 'done');
   assert.equal(byTitle['Finding Nemo']?.providerId, 12);
@@ -114,6 +122,8 @@ test('films take their provider id from the library and their context from the F
   assert.equal(byTitle['Unfiled']?.state, 'unlinked');
   assert.equal(byTitle['Unfiled']?.providerId, null);
   assert.equal(byTitle['Old Way']?.state, 'adopt');
+  // An anime film is a show record with a film's shape; its TMDB id sits under `show`.
+  assert.equal(byTitle['Anime Film']?.providerId, 77);
   assert.deepEqual([byTitle['Dupe']?.state, byTitle['Dupe Again']?.state, byTitle['No Id Yet']?.state], ['no-id', 'no-id', 'no-id']);
 });
 

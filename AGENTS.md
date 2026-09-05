@@ -637,7 +637,8 @@ That is why the sync snapshots a tab before writing instead of using version his
 The artwork page's three upstreams. TMDB's `/movie/{id}/images?include_image_language=en,null`
 lists backdrops with dimensions and vote counts — the appended `images` on a film's detail carries
 neither — and `en` backdrops carry the title across the frame while `null` ones are textless. TVDB's
-`/series/{id}/artworks?lang=eng&type=2` lists posters, 680×1000 with a `_t` thumbnail and a `score`;
+`/series/{id}/artworks?type=2` lists posters, 680×1000 with a `_t` thumbnail and a `score`, in every
+language — an anime often has only a Japanese one, so the page ranks English first rather than filtering;
 type numbers are 1 banner, 2 poster, 3 background, 5 icon, 22 clear art, 23 clear logo. Cloud
 Storage's JSON API is at <https://cloud.google.com/storage/docs/json_api>: a listing is
 `GET /storage/v1/b/{bucket}/o` and an upload `POST /upload/storage/v1/b/{bucket}/o?uploadType=multipart`

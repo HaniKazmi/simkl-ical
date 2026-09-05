@@ -69,14 +69,16 @@ export const filmCandidates = (images: TmdbImages | undefined): Candidate[] => {
 };
 
 /**
- * English posters at the authored size first — 680×1000 exactly, which is
- * what the site renders — then any other 0.68 poster by TVDB's score.
+ * Posters at the authored size first — 680×1000 exactly, which is what the
+ * site renders — English before any other language, then TVDB's score. Other
+ * languages are offered rather than dropped because for an anime the Japanese
+ * poster is often the only one there is, and the choice is the reader's.
  */
 export const showCandidates = (artworks: TvdbArtworksResponse | undefined): Candidate[] => {
   const out: Candidate[] = [];
   for (const art of artworks?.data?.artworks ?? []) {
     if (!art.image || !art.width || !art.height) continue;
-    if (art.type !== TVDB_POSTER || art.language !== 'eng') continue;
+    if (art.type !== TVDB_POSTER) continue;
     if (!near(art.width / art.height, SHOW_RATIO)) continue;
     out.push({
       url: art.image,
@@ -85,10 +87,11 @@ export const showCandidates = (artworks: TvdbArtworksResponse | undefined): Cand
       height: art.height,
       score: art.score ?? 0,
       votes: null,
-      language: art.language,
+      language: art.language ?? null,
       source: 'tvdb',
     });
   }
   const authored = (c: Candidate): number => Number(c.width === 680 && c.height === 1000);
-  return out.sort((a, b) => authored(b) - authored(a) || b.score - a.score);
+  const english = (c: Candidate): number => Number(c.language === 'eng');
+  return out.sort((a, b) => english(b) - english(a) || authored(b) - authored(a) || b.score - a.score);
 };

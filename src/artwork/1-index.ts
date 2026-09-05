@@ -235,7 +235,8 @@ export const indexArtwork = (input: IndexInput, { timezone }: IndexOptions): Art
           {
             kind: 'movie',
             id,
-            providerId: tmdbIdOf(item?.movie?.ids.tmdb),
+            // An anime film nests its title under `show`, the way `indexFilms` reads it.
+            providerId: tmdbIdOf((item?.movie ?? item?.show)?.ids.tmdb),
             title: row.name,
             row: row.row,
             address: a1(row.row, films.columns.Banner),

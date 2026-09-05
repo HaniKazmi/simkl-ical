@@ -191,7 +191,7 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
     const kind = row.dataset.kind;
     const what = kind === 'movie' ? ' backdrops from TMDb' : ' posters from TVDB';
     label.appendChild(el('span', '', listing.candidates.length + what));
-    label.appendChild(el('span', 'dim', kind === 'movie' ? '16:9 only · English first, ranked by votes' : '680×1000 first, then by score'));
+    label.appendChild(el('span', 'dim', kind === 'movie' ? '16:9 only · English first, ranked by votes' : 'English first, 680×1000 next, then by score'));
     if (listing.error) label.appendChild(el('span', 'err', listing.error));
     panel.appendChild(label);
     const strip = el('div', 'strip');
@@ -271,11 +271,18 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
     adoptAll.disabled = true;
     let done = 0;
     const failures = [];
+    // Paced: a pick is three Sheets requests, and the API allows sixty a
+    // minute per user. Faster than this and the write — which is never
+    // retried — starts meeting 429s.
+    const PACE_MS = 3500;
     for (const row of targets) {
       done += 1;
+      const started = Date.now();
       adoptProgress.textContent = 'adopting ' + done + ' of ' + targets.length + ' · ' + row.dataset.title;
       const outcome = await pick(row, { kind: row.dataset.kind, id: Number(row.dataset.id), adopt: true });
       if (!outcome.startsWith('uploaded')) failures.push(row.dataset.title + ': ' + outcome);
+      const remaining = PACE_MS - (Date.now() - started);
+      if (remaining > 0 && done < targets.length) await sleep(remaining);
     }
     adoptProgress.textContent = 'adopted ' + (targets.length - failures.length) + ' of ' + targets.length + (failures.length ? ' · ' + failures.length + ' failed: ' + failures.join('; ') : '');
     adoptAll.disabled = false;
