@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { artworkModel, loadableImage, renderArtworkPage, type ArtworkModel } from '../../src/artwork/4-html.ts';
 import type { ArtworkTitle } from '../../src/artwork/1-index.ts';
-import { CLIENT_SCRIPT } from '../../src/artwork/client.ts';
+import { CLIENT_SCRIPT, PAGE_IMAGE_HOSTS } from '../../src/artwork/client.ts';
+import { ARTWORK_CSP } from '../../src/server.ts';
 
 const NOW = Temporal.Instant.from('2026-09-05T12:00:00Z');
 
@@ -100,4 +101,15 @@ test('rows carry what the client filters on, and the relative labels read from t
 test('a mode other than apply is said on the page', () => {
   assert.match(page([title()], { mode: 'report' }), /Sheet mode is <span class="mono">report<\/span>/);
   assert.ok(!page([title()]).includes('Sheet mode is'));
+});
+
+// Three places name the image hosts — the CSP, the renderer's check, the
+// script's check — and all three are built from one list. Pinned exactly so a
+// host added to one cannot be missing from another.
+test('the CSP, the page and the script agree on the image hosts', () => {
+  assert.deepEqual([...PAGE_IMAGE_HOSTS], ['image.tmdb.org', 'artworks.thetvdb.com', 'storage.googleapis.com']);
+  const imgSrc = /img-src ([^;]+);/.exec(ARTWORK_CSP)?.[1]?.split(' ') ?? [];
+  assert.deepEqual(imgSrc, ["'self'", ...PAGE_IMAGE_HOSTS.map((h) => `https://${h}`)]);
+  assert.ok(CLIENT_SCRIPT.includes(JSON.stringify(PAGE_IMAGE_HOSTS)), 'the script carries the same list verbatim');
+  for (const host of PAGE_IMAGE_HOSTS) assert.equal(loadableImage(`https://${host}/x`), true);
 });

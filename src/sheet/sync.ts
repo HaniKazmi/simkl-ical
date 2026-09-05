@@ -742,7 +742,9 @@ export class SheetSync {
 
       try {
         const fetched = await fetchFilms(wanted, { signal: poll.signal });
-        this.films.fold(wanted, fetched);
+        // The bucket is read here, in the shell, and handed down: with one
+        // configured a new row's Banner is the static link, not a TMDB URL.
+        this.films.fold(wanted, fetched, { movieBucket: config.artworkMovieBucket });
         made.failures += fetched.failed.length;
         if (fetched.unavailable.length) {
           this.log.warn(`TMDB has no record for ${fetched.unavailable.length} film(s): ${fetched.unavailable.join(', ')}`);

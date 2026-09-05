@@ -8,7 +8,7 @@ import { renderStatus } from './status/status.ts';
 import { ICON_APPLE, ICON_ICO, ICON_SVG } from './status/icons.ts';
 import { Artwork, PickRefused } from './artwork/artwork.ts';
 import { renderArtwork } from './artwork/page.ts';
-import { CLIENT_SCRIPT } from './artwork/client.ts';
+import { CLIENT_SCRIPT, PAGE_IMAGE_HOSTS } from './artwork/client.ts';
 import { SheetBusyError } from './sheet/io/lock.ts';
 
 /** Constant-time compare so the token cannot be recovered by timing the 404s. */
@@ -59,7 +59,7 @@ export interface ServerOptions {
  * Pinned exactly by `server.test.ts`.
  */
 export const ARTWORK_CSP =
-  "default-src 'none'; img-src 'self' https://image.tmdb.org https://artworks.thetvdb.com https://storage.googleapis.com; " +
+  `default-src 'none'; img-src 'self' ${PAGE_IMAGE_HOSTS.map((host) => `https://${host}`).join(' ')}; ` +
   "script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'";
 
 /** The statuses a pick's refusal maps to. */

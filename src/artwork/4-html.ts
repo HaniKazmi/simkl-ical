@@ -14,9 +14,8 @@
 
 import { BASE_STYLE, document, html, type SafeHtml } from '../shared/html.ts';
 import { duration } from '../shared/dates.ts';
-import { IMAGE_HOSTS } from '../api/images.ts';
-import { ARTWORK_HOST } from '../sheet/values.ts';
 import type { ArtworkKind, ArtworkState, ArtworkSummary, ArtworkTitle } from './1-index.ts';
+import { PAGE_IMAGE_HOSTS } from './client.ts';
 
 /** One row as the page shows it; built by the shell from an `ArtworkTitle` and the clock. */
 export interface ArtworkRow {
@@ -198,7 +197,7 @@ export const loadableImage = (url: string | null): boolean => {
   if (!url) return false;
   try {
     const parsed = new URL(url);
-    return parsed.protocol === 'https:' && (IMAGE_HOSTS.includes(parsed.hostname) || `${parsed.protocol}//${parsed.hostname}` === ARTWORK_HOST);
+    return parsed.protocol === 'https:' && PAGE_IMAGE_HOSTS.includes(parsed.hostname);
   } catch {
     return false;
   }

@@ -11,11 +11,19 @@
  * request is relative, so the feed token never appears in the script.
  */
 
-export const IMAGE_HOSTS_CLIENT = ['image.tmdb.org', 'artworks.thetvdb.com', 'storage.googleapis.com'];
+import { IMAGE_HOSTS } from '../api/images.ts';
+import { ARTWORK_HOST } from '../sheet/values.ts';
+
+/**
+ * The hosts an `<img>` may load from: the candidate CDNs and the bucket host.
+ * One list, from which the page's CSP and the script's own check are both
+ * built, so the two cannot drift into a silently blocked image.
+ */
+export const PAGE_IMAGE_HOSTS: readonly string[] = [...IMAGE_HOSTS, new URL(ARTWORK_HOST).hostname];
 
 export const CLIENT_SCRIPT = String.raw`'use strict';
 (() => {
-  const HOSTS = ${JSON.stringify(IMAGE_HOSTS_CLIENT)};
+  const HOSTS = ${JSON.stringify(PAGE_IMAGE_HOSTS)};
   const NEEDS = new Set(['missing-object', 'unlinked', 'adopt']);
   const rows = Array.from(document.querySelectorAll('.row'));
   const chips = Array.from(document.querySelectorAll('.chip'));
