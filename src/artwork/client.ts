@@ -180,6 +180,7 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
       return 'uploaded; link reported for ' + link.address + ' (mode is not apply)';
     }
     if (link.status === 'refused') return 'uploaded; link refused: ' + link.detail;
+    if (link.status === 'unverified') return 'uploaded; link written at ' + link.address + ' but not read back: ' + link.detail + ' — re-read the page to see whether it landed';
     return 'uploaded; link failed at ' + link.address + ': ' + link.detail;
   };
 
@@ -252,7 +253,7 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
     const kind = row.dataset.kind;
     const what = kind === 'movie' ? ' backdrops from TMDb' : ' posters from TVDB';
     label.appendChild(el('span', '', listing.candidates.length + what));
-    label.appendChild(el('span', 'dim', (kind === 'movie' ? '16:9 only · English first, ranked by votes' : 'English first, 680×1000 next, then by score') + ' · click to enlarge, double-click to use'));
+    label.appendChild(el('span', 'dim', (kind === 'movie' ? '16:9 only · English first, ranked by votes' : 'English first, 680×1000 next, then by score') + ' · click a tile to enlarge and use it'));
     if (listing.error) label.appendChild(el('span', 'err', listing.error));
     panel.appendChild(label);
     const strip = el('div', 'strip');
@@ -279,7 +280,6 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
         progress.textContent = await pick(row, { kind, id: Number(row.dataset.id), url: cand.url }, progress);
       };
       button.addEventListener('click', () => openDialog(cand.url, row.dataset.title + ' · ' + describe(cand), use));
-      button.addEventListener('dblclick', use);
       strip.appendChild(item);
     });
     panel.appendChild(strip);

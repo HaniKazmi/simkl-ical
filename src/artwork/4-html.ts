@@ -71,7 +71,7 @@ const describeCell = (title: ArtworkTitle): string => {
     case 'blank':
       return title.stored.exists ? 'cell is blank, object already uploaded' : 'cell is blank';
     case 'foreign':
-      return `links ${host(title.cell.url)}`;
+      return title.state === 'adopt' ? `links ${host(title.cell.url)}` : `links ${host(title.cell.url)}, which the page cannot fetch from`;
     case 'other':
       return 'cell holds text that is not a link';
   }

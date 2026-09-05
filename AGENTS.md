@@ -565,7 +565,7 @@ bare index that re-points silently when a row is added — and `test/sheet/fake-
 in-memory Sheets server every whole-run suite drives. One fake, deliberately: it is coupled to the
 Google client's URL shapes, and a second copy is a second place that coupling breaks silently.
 
-`test/artwork/fake-bucket.ts` is the in-memory Cloud Storage plus the two image CDNs, composed
+`test/artwork/fake-bucket.ts` is the in-memory Cloud Storage plus the image CDNs, composed
 **in front of** `fakeSheets` (`next: sheet.handler`) for the whole-run suites: it answers what it
 knows and hands the rest on. One fake, for the reason the Sheets one is one.
 

@@ -31,7 +31,7 @@
  * `errors.sheet` and `/healthz`.
  */
 
-import { config, moviesSyncConfigured } from '../shared/config.ts';
+import { artworkConfigured, config, moviesSyncConfigured } from '../shared/config.ts';
 import { errorMessage } from '../shared/errors.ts';
 import type { Logger } from '../shared/logger.ts';
 import { SheetsAccessError } from '../api/google/client.ts';
@@ -742,9 +742,12 @@ export class SheetSync {
 
       try {
         const fetched = await fetchFilms(wanted, { signal: poll.signal });
-        // The bucket is read here, in the shell, and handed down: with one
-        // configured a new row's Banner is the static link, not a TMDB URL.
-        this.films.fold(wanted, fetched, { movieBucket: config.artworkMovieBucket });
+        // The bucket is read here, in the shell, and handed down: with the
+        // artwork page configured a new row's Banner is the static link, not
+        // a TMDB URL. The whole feature, not the bucket alone: the column is
+        // written once, and a link nothing can put an object behind is a
+        // broken image for the life of the row.
+        this.films.fold(wanted, fetched, { movieBucket: artworkConfigured() ? (config.artworkMovieBucket ?? null) : null });
         made.failures += fetched.failed.length;
         if (fetched.unavailable.length) {
           this.log.warn(`TMDB has no record for ${fetched.unavailable.length} film(s): ${fetched.unavailable.join(', ')}`);

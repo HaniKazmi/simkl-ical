@@ -76,7 +76,8 @@ test('report mode decides in full and writes nothing', async () => {
 });
 
 test('a formula is never written, whichever way it resolves', async () => {
-  await run('apply', { movies: movies({ formula: '=CONCAT($O$1,A3)', value: NEMO_LINK }) }, request({ adopt: true }), (outcome, _sheet, calls) => {
+  const formula = { formula: '=CONCAT($O$1,A3)', value: NEMO_LINK };
+  await run('apply', { movies: movies(formula) }, request({ adopt: true, expectPrevious: cellOf(formula) }), (outcome, _sheet, calls) => {
     assert.deepEqual(outcome, { status: 'kept', address: 'N3', key: 'Finding Nemo', link: NEMO_LINK });
     assert.deepEqual(batches(calls), []);
   });
@@ -122,11 +123,56 @@ test('a row that moved, went, or was duplicated is refused by id, not written by
 });
 
 // The page showed one value; a hand edited the cell since. The write is
-// refused rather than made over whatever is there now.
-test('a cell that no longer holds what the page showed is refused', async () => {
+// refused rather than made over whatever is there now — and so is a keep:
+// the object went up under the key the page's cell implied, and a cell that
+// now names another key would be reported done for a link nothing was
+// uploaded to.
+test('a cell that no longer holds what the page showed is refused, for a keep as for a write', async () => {
   await run('apply', { movies: movies(null) }, request({ expectPrevious: cellOf('https://image.tmdb.org/t/p/w1280/old.jpg') }), (outcome, _sheet, calls) => {
     assert.equal(outcome.status === 'refused' && outcome.reason, 'cell-changed');
     assert.deepEqual(batches(calls), []);
+  });
+  const typo = 'https://storage.googleapis.com/movies-bucket/Finding Nemoo';
+  await run('apply', { movies: movies(typo) }, request({ expectPrevious: cellOf(null) }), (outcome, _sheet, calls) => {
+    assert.equal(outcome.status === 'refused' && outcome.reason, 'cell-changed');
+    assert.deepEqual(batches(calls), []);
+  });
+});
+
+// The batch is out; a read that fails after it must not say the write did
+// not land. The same split the sync's apply protocol makes.
+test('a read-back that fails after the write is unverified, not failed', async () => {
+  const sheet = fakeSheets({ movies: movies(null) });
+  clearTokenCache();
+  await withFreshJournal(() =>
+    withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL, artworkMovieBucket: MOVIE_BUCKET, artworkShowBucket: SHOW_BUCKET }, () =>
+      withFetch(
+        (url, init) => {
+          if (url.includes(':batchUpdate')) {
+            const response = sheet.handler(url, init);
+            sheet.stopServing('Movies');
+            return response;
+          }
+          return sheet.handler(url, init);
+        },
+        async (calls) => {
+          const outcome = await ensureLink(request(), { log: quiet });
+          assert.equal(outcome.status, 'unverified');
+          assert.match(outcome.status === 'unverified' ? outcome.detail : '', /could not be read back after the write/);
+          assert.equal(batches(calls).length, 1);
+          assert.equal(sheet.films![2]?.[MOVIE_SHEET_HEADERS.indexOf('Banner')]?.userEnteredValue?.stringValue, NEMO_LINK, 'the write did land');
+          assert.equal(sheetRuns()[0]?.status, 'failed');
+          assert.equal(sheetRuns()[0]?.source, 'artwork');
+          assert.match(sheetRuns()[0]?.error ?? '', /read back/);
+        },
+      ),
+    ),
+  );
+});
+
+test('a page write is journalled under its own source', async () => {
+  await run('apply', { movies: movies(null) }, request(), () => {
+    assert.equal(sheetRuns()[0]?.source, 'artwork');
   });
 });
 

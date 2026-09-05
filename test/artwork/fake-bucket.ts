@@ -1,5 +1,5 @@
 /**
- * An in-memory Cloud Storage plus the two image CDNs, composed **in front of**
+ * An in-memory Cloud Storage plus the image CDNs, composed **in front of**
  * `fakeSheets` for the whole-run suites: it answers what it knows and hands
  * the rest on. One fake, like the Sheets one, because it is coupled to the
  * client's URL shapes and a second copy is a second place that breaks quietly.

@@ -310,7 +310,10 @@ export const bannerOf = (movie: TmdbMovie | undefined): string | null => {
 export const bannerFor = (
   movie: TmdbMovie | undefined,
   title: string,
-  { movieBucket = config.artworkMovieBucket }: { movieBucket?: string | undefined } = {},
+  // `null` says "no bucket" out loud; an `undefined` would fall through to
+  // the config default, and a caller meaning "write the TMDB URL" would get
+  // the bucket link whenever the process has one configured.
+  { movieBucket = config.artworkMovieBucket ?? null }: { movieBucket?: string | null } = {},
 ): string | null => (movieBucket ? artworkLink(movieBucket, artworkKeyFor(title)) : bannerOf(movie));
 
 // --- Bounds ----------------------------------------------------------------

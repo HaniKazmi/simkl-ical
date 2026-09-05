@@ -52,6 +52,7 @@ test('every cell kind has a state, and the key follows the cell where it links t
       ...block('Typo', 3, SHOW_LINK('Typoo')),
       ...block('Blank', 4, null),
       ...block('Foreign', 5, 'https://artworks.thetvdb.com/x.jpg'),
+      ...block('Proxy', 9, 'https://wsrv.nl/?url=x'),
       ...block('Formula Elsewhere', 6, { formula: '=CONCAT($Z$2,A7)', value: 'Formula Elsewhere' }),
       ...block('Text', 7, 'ask'),
       ...block('No Id', null, null, seasonRow(1, 3, null)),
@@ -67,6 +68,7 @@ test('every cell kind has a state, and the key follows the cell where it links t
   assert.equal(byTitle['Blank']?.state, 'unlinked');
   assert.equal(byTitle['Blank']?.key, 'Blank');
   assert.equal(byTitle['Foreign']?.state, 'adopt');
+  assert.equal(byTitle['Proxy']?.state, 'unrecognised', 'a link on a host the page cannot fetch from is not adoptable');
   assert.equal(byTitle['Formula Elsewhere']?.state, 'unrecognised');
   assert.equal(byTitle['Text']?.state, 'unrecognised');
   assert.equal(byTitle['No Id']?.state, 'no-id');
@@ -165,6 +167,24 @@ test('titles sort needs-first, then by when they were last touched, then by name
 
 // The journal is read for order only, and per tab: a show and a film of the
 // same name are inserted by different halves.
+// A reported or refused run records the insert it planned and did not make,
+// and a page write is not a sync run; neither is "added by the sync".
+test('only an applied sync run counts as the sync adding a row', () => {
+  const films = parseMovieGrid(sheetSnapshot([MOVIE_SHEET_HEADERS, filmRow({ name: 'Planned', id: '1' }), filmRow({ name: 'Linked', id: '2' })]));
+  const runs = [
+    run({ tab: 'films', status: 'reported', mode: 'report', inserts: [{ address: 'row 2', title: 'Planned', note: '' }] }),
+    run({ tab: 'films', status: 'applied', source: 'artwork', inserts: [{ address: 'row 3', title: 'Linked', note: '' }] }),
+  ];
+  const titles = indexArtwork(input({ films, runs }), { timezone: 'Europe/London' });
+  assert.deepEqual(
+    titles.map((t) => [t.title, t.addedBySync]),
+    [
+      ['Linked', null],
+      ['Planned', null],
+    ],
+  );
+});
+
 test('an insert is matched to a title on its own tab', () => {
   const shows = parseGrid(sheetSnapshot([[...SHEET_HEADERS, 'Banner'], ...block('Twin', 1, null)]));
   const films = parseMovieGrid(sheetSnapshot([MOVIE_SHEET_HEADERS, filmRow({ name: 'Twin', id: '2' })]));

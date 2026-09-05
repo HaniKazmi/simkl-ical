@@ -13,6 +13,7 @@ import { Orchestrator } from '../src/orchestrator.ts';
 import { clearTokenCache } from '../src/api/google/auth.ts';
 import { clearTokenCache as clearTvdbTokenCache } from '../src/api/tvdb/auth.ts';
 import { withSheetLock } from '../src/sheet/io/lock.ts';
+import { SheetSync } from '../src/sheet/sync.ts';
 import { filmRow, jsonResponse, libraryOf, MOVIE_SHEET_HEADERS, quiet, SHEET_HEADERS, showRow, withConfig, withFetch, withFreshJournal, type CellSpec } from './helpers.ts';
 import { CREDENTIAL, fakeSheets, type FakeSheetsOptions } from './sheet/fake-sheets.ts';
 import { fakeBucket, JPEG, type FakeBucketOptions } from './artwork/fake-bucket.ts';
@@ -29,6 +30,7 @@ const MOVIES: CellSpec[][] = [
 const SHOWS: CellSpec[][] = [
   [...SHEET_HEADERS, 'Banner'],
   [...showRow('Severance', 'Watching', 3381), null],
+  [...showRow('Unmapped', 'Watching', 3382), null],
 ];
 
 const tmdb = (url: string): Response =>
@@ -48,12 +50,13 @@ interface Case {
 }
 
 const serve = async (
-  fn: (app: ReturnType<typeof buildServer>, doubles: { sheet: ReturnType<typeof fakeSheets>; bucket: ReturnType<typeof fakeBucket>; calls: string[] }) => Promise<void>,
+  fn: (app: ReturnType<typeof buildServer>, doubles: { sheet: ReturnType<typeof fakeSheets>; bucket: ReturnType<typeof fakeBucket>; calls: string[]; sync: SheetSync }) => Promise<void>,
   { configured = true, mode = 'apply', sheets = {}, bucket = {} }: Case = {},
 ): Promise<void> => {
   clearTokenCache();
   clearTvdbTokenCache();
-  const sheet = fakeSheets({ movies: MOVIES, grid: SHOWS, tmdb, tvdb, ...sheets });
+  // The SIMKL detail a show without a library TVDB id is asked for on demand.
+  const sheet = fakeSheets({ movies: MOVIES, grid: SHOWS, tmdb, tvdb, detail: { ids: { tvdb: '371980' } }, ...sheets });
   const store = fakeBucket({ buckets: { movies: {}, shows: {} }, images: { [BACKDROP]: { bytes: JPEG, contentType: 'image/jpeg' }, [POSTER]: { bytes: JPEG, contentType: 'image/jpeg' } }, next: sheet.handler, ...bucket });
   await withFreshJournal(() =>
     withConfig(
@@ -70,10 +73,12 @@ const serve = async (
       () =>
         withFetch(store.handler, async (calls) => {
           const state = new Orchestrator({ logger: quiet });
-          state.library = libraryOf({ id: 53080, type: 'movies', title: 'Finding Nemo', tmdb: '12' }, { id: 3381, title: 'Severance', tvdb: '371980' });
+          state.library = libraryOf({ id: 53080, type: 'movies', title: 'Finding Nemo', tmdb: '12' }, { id: 3381, title: 'Severance', tvdb: '371980' }, { id: 3382, title: 'Unmapped' });
+          const sync = new SheetSync({ logger: quiet });
+          state.sheetSync = sync;
           const app = buildServer(state, { logger: false, artwork: new Artwork(state, { linkWait: Temporal.Duration.from({ milliseconds: 100 }) }) });
           try {
-            await fn(app, { sheet, bucket: store, calls });
+            await fn(app, { sheet, bucket: store, calls, sync });
           } finally {
             await app.close();
           }
@@ -141,7 +146,7 @@ test('no absolute URL on the page or in its script carries the feed token', asyn
       assert.deepEqual(carrying, []);
       assert.ok(!body.includes(TOKEN), 'the token appears nowhere in the body');
     }
-    // What the page does load, it loads relatively or from the three hosts.
+    // What the page does load, it loads relatively or from the hosts the CSP names.
     for (const match of page.body.matchAll(/(?:src|href)="([^"]+)"/g)) {
       const url = match[1] ?? '';
       if (!/^[a-z]+:/.test(url)) continue;
@@ -262,5 +267,55 @@ test('a pick while the sheet is held answers 503 with Retry-After, after the upl
     assert.equal(again.statusCode, 200);
     assert.equal(again.json().link.status, 'written');
     assert.equal(bucket.uploads.length, 2);
+  });
+});
+
+// The freeze latch is the sync's "no further writes this process": the tab
+// is in a state nobody has verified, and the repair copies a backup over it.
+test('a pick is refused while the sheet sync is frozen, before anything is uploaded', async () => {
+  await serve(async (app, { bucket, calls, sync }) => {
+    await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=movie&id=53080` });
+    const before = calls.length;
+    sync.frozen = 'FROZEN: copy _sync-REPAIR back over Movies';
+    try {
+      const res = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: { kind: 'movie', id: 53080, url: BACKDROP } });
+      assert.equal(res.statusCode, 409);
+      assert.equal(res.json().error, 'frozen');
+      assert.match(res.json().detail, /_sync-REPAIR/);
+      assert.deepEqual(bucket.uploads, []);
+      assert.equal(calls.length, before, 'nothing was fetched or written');
+    } finally {
+      sync.frozen = null;
+    }
+  });
+});
+
+// A show whose library record lacks a TVDB id is asked of SIMKL once, and the
+// answer outlives the index: asked per open, the per-title calls are the
+// burst SIMKL answers with a 401.
+test('a TVDB id resolved on demand survives an index rebuild', async () => {
+  await serve(async (app, { calls }) => {
+    const detailCalls = () => calls.filter((c) => c.includes('api.simkl.com/tv/')).length;
+    const first = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=show&id=3382` });
+    assert.equal(first.statusCode, 200);
+    assert.equal(first.json().providerId, 371980);
+    assert.equal(detailCalls(), 1);
+    await app.inject({ method: 'GET', url: `/${TOKEN}/artwork?fresh=1` });
+    const again = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=show&id=3382` });
+    assert.equal(again.json().providerId, 371980);
+    assert.equal(detailCalls(), 1, 'not asked again after the rebuild');
+  });
+});
+
+// A candidates or pick request past the index TTL must not pay a rebuild:
+// the row was rendered from some index, and the pick re-reads under the lock.
+test('candidates and picks use the index that stands rather than rebuilding it', async () => {
+  await serve(async (app, { calls }) => {
+    await app.inject({ method: 'GET', url: `/${TOKEN}/artwork` });
+    const reads = () => calls.filter((c) => c.includes('/spreadsheets/') || c.includes('/storage/v1/b/')).length;
+    const after = reads();
+    await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=movie&id=53080` });
+    await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=movie&id=53080` });
+    assert.equal(reads(), after, 'no tab read and no bucket listing for a candidate request');
   });
 });

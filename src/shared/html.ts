@@ -128,9 +128,9 @@ footer{color:var(--faint);font-size:.8125rem;padding:.25rem .25rem 0}
 
 /**
  * The document shell around a page's body: the head every page shares, the
- * icon links, and one inlined stylesheet. The icons are root-relative through
- * the `<base>`-free relative form the status page established, so they
- * resolve under the token segment without naming it.
+ * icon links, and one inlined stylesheet. The icon hrefs are document-relative
+ * — `favicon.ico`, not `/favicon.ico` — which is what makes them resolve under
+ * the token segment of the page's own URL without the page naming it.
  */
 export const document = ({ title, style, head = null, body }: { title: string; style: string; head?: SafeHtml | null; body: SafeHtml }): string =>
   toHtml(html`<!doctype html>

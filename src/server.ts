@@ -54,9 +54,10 @@ export interface ServerOptions {
 /**
  * The artwork page's CSP. Unlike the status page it runs a script and loads
  * images off-origin, so both are named: the script is `'self'` only, and
- * images may come from the two candidate CDNs and the buckets and nowhere
- * else. `connect-src 'self'` is what the script's own fetches run under.
- * Pinned exactly by `server.test.ts`.
+ * images may come from the image CDNs and the buckets and nowhere else.
+ * `connect-src 'self'` is what the script's own fetches run under. Built from
+ * the one host list the script and the renderer also use, and pinned exactly
+ * by `server-artwork.test.ts`.
  */
 export const ARTWORK_CSP =
   `default-src 'none'; img-src 'self' ${PAGE_IMAGE_HOSTS.map((host) => `https://${host}`).join(' ')}; ` +
@@ -71,6 +72,7 @@ const PICK_STATUS: Record<PickRefused['code'], number> = {
   unrecognised: 422,
   'no-id': 422,
   'nothing-to-adopt': 400,
+  frozen: 409,
 };
 
 export const buildServer = (state: Orchestrator, { logger = true, logStream, artwork = new Artwork(state) }: ServerOptions = {}): FastifyInstance => {

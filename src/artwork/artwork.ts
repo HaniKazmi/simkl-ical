@@ -73,7 +73,7 @@ export interface CandidateListing {
   error: string | null;
 }
 
-export type PickError = 'unknown-title' | 'not-offered' | 'formula' | 'needs-adopt' | 'unrecognised' | 'no-id' | 'nothing-to-adopt';
+export type PickError = 'unknown-title' | 'not-offered' | 'formula' | 'needs-adopt' | 'unrecognised' | 'no-id' | 'nothing-to-adopt' | 'frozen';
 
 export class PickRefused extends Error {
   readonly code: PickError;
@@ -100,6 +100,12 @@ export class Artwork {
   private index: ArtworkIndex | null = null;
   private building: Promise<ArtworkIndex> | null = null;
   private readonly listings = new Map<string, { listing: CandidateListing; expires: Temporal.Instant }>();
+  /**
+   * Provider ids resolved on demand, kept across index rebuilds: the library
+   * record that lacked a TVDB id still lacks it after a rebuild, and asking
+   * SIMKL again per open is the burst pattern it answers with a 401.
+   */
+  private readonly resolved = new Map<string, number | null>();
   /** How long a link write waits for the sheet; the io module's default, shortened by tests. */
   private readonly linkWait: Temporal.Duration | undefined;
 
@@ -140,6 +146,9 @@ export class Artwork {
       { shows, films, library: this.state.library, runs: sheetRuns(), stored: { movie: storedMovie, show: storedShow }, buckets },
       { timezone: config.timezone },
     );
+    for (const title of titles) {
+      if (title.providerId === null && title.id !== null) title.providerId = this.resolved.get(cacheKey(title.kind, title.id)) ?? null;
+    }
     this.index = { titles, summary: summarise(titles), errors, builtAt: Temporal.Now.instant() };
     return this.index;
   }
@@ -153,15 +162,27 @@ export class Artwork {
     return index.titles.find((t) => t.kind === kind && t.id === id);
   }
 
+  /**
+   * The index as it stands, building one only when there is none: the row a
+   * caller names was rendered from some index, and a pick re-reads the sheet
+   * under the lock, so staleness here costs nothing and a rebuild would cost
+   * four Google reads on every request past the TTL.
+   */
+  private current({ signal }: { signal?: AbortSignal } = {}): Promise<ArtworkIndex> {
+    return this.index ? Promise.resolve(this.index) : this.load({ signal });
+  }
+
   /** The candidates for a title, cached so a pick can name one by URL. */
   async candidates(kind: ArtworkKind, id: number, { signal }: { signal?: AbortSignal } = {}): Promise<CandidateListing> {
-    const index = await this.load({ signal });
-    const title = this.titleOf(index, kind, id);
-    if (!title) throw new PickRefused('unknown-title', `no ${kind} with id ${id} is on the sheet`);
-
     const now = Temporal.Now.instant();
     const cached = this.listings.get(cacheKey(kind, id));
-    if (cached && Temporal.Instant.compare(now, cached.expires) < 0 && cached.listing.error === null) return cached.listing;
+    // A listing that failed on the upstream is asked again; one that failed
+    // for want of an id is an answer, and asking again cannot change it.
+    if (cached && Temporal.Instant.compare(now, cached.expires) < 0 && (cached.listing.error === null || cached.listing.providerId === null)) return cached.listing;
+
+    const index = await this.current({ signal });
+    const title = this.titleOf(index, kind, id);
+    if (!title) throw new PickRefused('unknown-title', `no ${kind} with id ${id} is on the sheet`);
 
     let providerId = title.providerId;
     let error: string | null = null;
@@ -170,10 +191,16 @@ export class Artwork {
       // A show's TVDB id is off the library only under `extended=full`; a
       // title without one is asked for on demand, once, when its row is
       // opened — never for every row at index time.
-      if (kind === 'show' && providerId === null) {
+      if (kind === 'show' && providerId === null && !this.resolved.has(cacheKey(kind, id))) {
         const detail = await fetchCatalogue([{ id, detail: true, anime: this.state.library?.get(id)?.type === 'anime' }], { signal });
-        providerId = tvdbIdOf(detail.details.get(id));
-        if (providerId !== null) title.providerId = providerId;
+        // Recorded either way, null included: SIMKL answered, and an answer
+        // of "no id" is not one to ask for again on every open. A lookup
+        // that failed is not recorded, so the next open asks again.
+        if (!detail.failed.includes(id)) {
+          providerId = tvdbIdOf(detail.details.get(id));
+          this.resolved.set(cacheKey(kind, id), providerId);
+          title.providerId = providerId;
+        }
       }
       if (providerId === null) {
         error = kind === 'movie' ? 'SIMKL holds no TMDB id for this film' : 'SIMKL holds no TVDB id for this show';
@@ -216,7 +243,12 @@ export class Artwork {
    * `SheetBusyError` from the link step when the sheet is held.
    */
   async pick(kind: ArtworkKind, id: number, { url, adopt = false, signal }: { url?: string; adopt?: boolean; signal?: AbortSignal }): Promise<PickResult> {
-    const index = await this.load({ signal });
+    // The sync's freeze latch is process-wide: a rollback did not complete,
+    // the tab is in a state nobody has verified, and the repair copies a
+    // backup over it — taking any cell written in between with it.
+    const frozen = this.state.snapshot().sheet.frozen;
+    if (frozen) throw new PickRefused('frozen', `the sheet sync is frozen and no write may be made until it is repaired: ${frozen}`);
+    const index = await this.current({ signal });
     const title = this.titleOf(index, kind, id);
     if (!title) throw new PickRefused('unknown-title', `no ${kind} with id ${id} is on the sheet`);
     if (title.id === null || title.state === 'no-id') throw new PickRefused('no-id', `${title.title} has no usable SIMKL id`);
@@ -258,6 +290,9 @@ export class Artwork {
   /** Patch the cached row after a pick, so the page reflects it before the next rebuild. */
   private settle(title: ArtworkTitle, link: LinkOutcome): void {
     title.stored = { exists: true, updated: Temporal.Now.instant() };
+    // `unverified` and `failed` leave the cached row alone too: whether the
+    // cell holds the link is exactly what is not known, and the next rebuild
+    // reads it.
     if (link.status === 'written' || link.status === 'kept') {
       title.cell = { kind: 'bucket', url: link.link, previous: { userEnteredValue: { stringValue: link.link }, effectiveValue: { stringValue: link.link } } };
       title.key = link.key;

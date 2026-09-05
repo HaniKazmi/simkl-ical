@@ -133,3 +133,13 @@ test('a serial round-trips to the date it stands for', () => {
   assert.equal(serialDate(null), null);
   assert.equal(serialDate(Number.NaN), null);
 });
+
+// A pasted epoch-millisecond timestamp is a serial of 1.7e12, past what a
+// calendar date can stand for; the cell the sync leaves alone must not be
+// able to take a page down.
+test('a serial no date can stand for answers null rather than throwing', () => {
+  assert.equal(serialDate(1.7e12), null);
+  assert.equal(serialDate(1e9), null);
+  assert.equal(serialDate(-1e9), null);
+  assert.equal(serialDate(46249)?.toString(), '2026-08-15');
+});

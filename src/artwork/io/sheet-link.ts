@@ -51,12 +51,14 @@ export type LinkRefusal = RefusalReason | 'not-found' | 'duplicate' | 'title-mov
  * the bucket and was left alone. `reported`: it would have been written, and
  * the mode is not `apply`. `refused`: nothing was written, for the reason
  * named. `failed`: the write went out and the verify read did not find it;
- * nothing is reverted, and the address says where to look.
+ * nothing is reverted, and the address says where to look. `unverified`: the
+ * write went out and the read-back itself failed, so whether it landed is
+ * unknown — the next index read settles it, and the address says where.
  */
 export type LinkOutcome =
   | { status: 'written' | 'kept' | 'reported'; address: string; key: string; link: string }
   | { status: 'refused'; reason: LinkRefusal; address: string | null; key: string | null; detail: string }
-  | { status: 'failed'; address: string; key: string; link: string; detail: string };
+  | { status: 'failed' | 'unverified'; address: string; key: string; link: string; detail: string };
 
 interface Located {
   row: number;
@@ -110,11 +112,13 @@ const linkUnderLock = async ({ kind, id, title, adopt, expectPrevious, signal }:
   const cell = snapshot.rows[found.row]?.[found.column];
   const decision = decideLink(cell, { title, bucket, adopt });
   if (decision.action === 'refuse') return { status: 'refused', reason: decision.reason, address, key: decision.key, detail: decision.detail };
-  if (decision.action === 'keep') return { status: 'kept', address, key: decision.key, link: decision.link };
-
+  // Before `keep` as well as `write`: the object was uploaded under the key
+  // the page's cell implied, and a cell that changed since may name another
+  // key. Kept, that would report done for a link nothing was uploaded to.
   if (!sameValue(cell?.userEnteredValue, expectPrevious?.userEnteredValue)) {
     return { status: 'refused', reason: 'cell-changed', address, key: decision.key, detail: `${address} no longer holds what the page showed (${textOf(cell) ?? 'blank'})` };
   }
+  if (decision.action === 'keep') return { status: 'kept', address, key: decision.key, link: decision.link };
   if (config.sheetSyncMode !== 'apply') return { status: 'reported', address, key: decision.key, link: decision.link };
 
   const at = nowIso();
@@ -125,20 +129,35 @@ const linkUnderLock = async ({ kind, id, title, adopt, expectPrevious, signal }:
   let error: string | null = null;
   try {
     await applyRequests([writeCell(snapshot.sheetId, found.row, found.column, { stringValue: decision.link })], { signal });
+  } catch (err) {
+    outcome = { status: 'failed', address, key: decision.key, link: decision.link, detail: `the write failed: ${errorMessage(err)}` };
+    error = outcome.detail;
+    log.error(`artwork: ${address} on ${tab.title}: ${error}`);
+    await appendSheetRun(
+      { at, status: 'failed', tab: tab.tab, source: 'artwork', mode: config.sheetSyncMode, edits: [{ address, field: 'Banner', note }], inserts: [], error },
+      { log },
+    );
+    return outcome;
+  }
+  // The batch is out. A read that fails here must not be reported as a
+  // write that did not land: the cell may well hold the link, and the next
+  // index read is what settles it. Same split the sync's apply protocol
+  // makes.
+  try {
     const after = await readSnapshot(tab.title, { signal });
     const landed = after.rows[found.row]?.[found.column]?.userEnteredValue?.stringValue === decision.link;
     outcome = landed
       ? { status: 'written', address, key: decision.key, link: decision.link }
       : { status: 'failed', address, key: decision.key, link: decision.link, detail: `${address} does not hold the link after the write; it holds ${textOf(after.rows[found.row]?.[found.column]) ?? 'blank'}` };
   } catch (err) {
-    outcome = { status: 'failed', address, key: decision.key, link: decision.link, detail: errorMessage(err) };
+    outcome = { status: 'unverified', address, key: decision.key, link: decision.link, detail: `the sheet could not be read back after the write: ${errorMessage(err)}` };
   }
-  if (outcome.status === 'failed') {
+  if (outcome.status === 'failed' || outcome.status === 'unverified') {
     error = outcome.detail;
     log.error(`artwork: ${address} on ${tab.title}: ${error}`);
   }
   await appendSheetRun(
-    { at, status: outcome.status === 'written' ? 'applied' : 'failed', tab: tab.tab, mode: config.sheetSyncMode, edits: [{ address, field: 'Banner', note }], inserts: [], error },
+    { at, status: outcome.status === 'written' ? 'applied' : 'failed', tab: tab.tab, source: 'artwork', mode: config.sheetSyncMode, edits: [{ address, field: 'Banner', note }], inserts: [], error },
     { log },
   );
   return outcome;

@@ -72,8 +72,9 @@ const oneCell = (sheetId: number, row: number, column: number): GridRange => ({
 export const writeCell = (sheetId: number, row: number, column: number, value: ExtendedValue | undefined): SheetRequest => ({
   updateCells: {
     range: oneCell(sheetId, row, column),
-    // An absent value clears the cell. Its one caller is a closing season row
-    // giving up its last-watched note, and an empty `userEnteredValue` is what
+    // An absent value clears the cell. The one caller that passes one is a
+    // closing season row giving up its last-watched note (the artwork page's
+    // link write always carries a value), and an empty `userEnteredValue` is what
     // leaves a cell a later read calls blank — an empty string would leave the
     // cell holding something.
     rows: [{ values: [value === undefined ? {} : { userEnteredValue: value }] }],

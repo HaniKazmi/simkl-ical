@@ -166,6 +166,10 @@ ARTWORK_MOVIE_BUCKET=hanikazmi_plotdevice_movie
 ARTWORK_SHOW_BUCKET=hanikazmi_plotdevice_show
 ```
 
+Setting both is also what switches a newly inserted film row's `Banner` from a TMDB URL to the
+static bucket link; the sync writes that column once, so it only does so where this page exists to
+put an object behind the link.
+
 The service account needs `roles/storage.objectAdmin` on both — `objectCreator` cannot overwrite,
 and a re-pick overwrites. If a bucket uses legacy ACLs rather than uniform bucket-level access,
 set `ARTWORK_PUBLIC_ACL=1` so each upload asks for public read; under uniform access that request

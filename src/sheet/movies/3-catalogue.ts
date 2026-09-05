@@ -47,7 +47,8 @@ export interface FilmFacts {
 
 /** `movieBucket` is threaded rather than read mid-body, the way every numbered module takes config. */
 export interface FilmFactsOptions {
-  movieBucket?: string | undefined;
+  /** `null` for no bucket; absent falls through to the config default. */
+  movieBucket?: string | null;
 }
 
 /**

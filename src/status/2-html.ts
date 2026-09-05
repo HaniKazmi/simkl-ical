@@ -94,8 +94,8 @@ table.counts tr{border:0;padding:0;margin:0}
 .run-head.sole{display:flex;flex-wrap:wrap}
 .run-head.sole::before{display:none}
 .run-head.sole .note{flex-basis:100%}
-.run-head:not(.sole) .tab:empty{display:none}
 }
+.run-head:not(.sole) .tab:empty{display:none}
 `;
 
 /**

@@ -228,7 +228,8 @@ died mid-download must not surface as a 200 carrying unparseable JSON.
   the obvious refusals — a formula, a foreign link with no `adopt` — before any bytes move.
 - **Three files are persisted**, all 0600 through `writeFileAtomic`: `token.json`, `feed.ics`, and
   `sheet-runs.json`. The third is **observational, never control** — written by the sheet half and
-  read only by the status page. *Nothing in `src/` may read it to decide what to do.* No control
+  by the artwork page's link writes, read by the status page and, for the order it lists rows in,
+  by the artwork page. *Nothing in `src/` may read it to decide what to do.* No control
   state outlives the process, so a restart still resyncs everything: two library requests, plus one
   `/movies/{id}` per plan-to-watch film.
 - **Every numeric setting is clamped** rather than validated fatally: a running feed beats a

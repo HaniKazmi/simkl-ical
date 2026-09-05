@@ -5,9 +5,12 @@
  * The allowlist is checked **before** any request leaves: the URL a download
  * is asked for comes from a candidate record or from a `Banner` cell, and a
  * cell is hand-editable, so without the check the page would be a fetch proxy
- * for whatever a cell named. The content type is checked **after**, because
- * a CDN answering a 200 with an HTML error page is the failure that would
- * otherwise put a web page in the bucket under an image's name.
+ * for whatever a cell named. A redirect is not followed, for the same reason:
+ * followed, the bytes would come from wherever the listed host pointed, and
+ * the check would have covered only the first hop. The content type is
+ * checked **after**, because a CDN answering a 200 with an HTML error page is
+ * the failure that would otherwise put a web page in the bucket under an
+ * image's name.
  */
 
 import { HttpError, requestBytes, type HttpSpec } from './http.ts';
@@ -40,7 +43,12 @@ const SPEC: HttpSpec = {
   maxAttempts: 3,
   timeoutMs: 60_000,
   errorFor: (message, status, body) => new ImageError(message, status, body),
-  onStatus: (status, _body, path) => (RETRYABLE.has(status) ? 'retry' : new ImageError(`Image CDN ${status} for ${path}`, status)),
+  onStatus: (status, _body, path) =>
+    RETRYABLE.has(status)
+      ? 'retry'
+      : status >= 300 && status < 400
+        ? new ImageError(`Image CDN answered ${path} with a ${status} redirect, which is not followed off the host`, status)
+        : new ImageError(`Image CDN ${status} for ${path}`, status),
 };
 
 export interface FetchedImage {
@@ -70,6 +78,7 @@ export const fetchImage = async (
     component,
     maxBytes,
     signal,
+    redirect: 'manual',
     headers: () => ({ Accept: 'image/*', 'User-Agent': `${config.appName}/${config.appVersion}` }),
   });
   const contentType = got.contentType?.split(';')[0]?.trim().toLowerCase() ?? '';

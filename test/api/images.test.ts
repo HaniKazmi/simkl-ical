@@ -80,3 +80,19 @@ test('an over-size body is refused by the transport, under the caller\'s limit',
     },
   );
 });
+
+// A redirect is judged by its status rather than followed: followed, the
+// bytes would come from wherever the listed host pointed, and the allowlist
+// would have covered the first hop only.
+test('a redirect from an allowlisted host is refused rather than followed', async () => {
+  await withFetch(
+    (_url, init) => {
+      assert.equal(init?.redirect, 'manual');
+      return new Response(null, { status: 302, headers: { location: 'https://evil.example/x.jpg' } });
+    },
+    async (calls) => {
+      await assert.rejects(() => fetchImage(TMDB, { component: 'artwork' }), (err: unknown) => err instanceof ImageError && err.status === 302 && /redirect/.test(err.message));
+      assert.equal(calls.length, 1, 'neither followed nor retried');
+    },
+  );
+});

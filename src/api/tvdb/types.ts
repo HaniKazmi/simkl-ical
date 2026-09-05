@@ -49,7 +49,7 @@ export interface TvdbArtwork {
   includesText?: boolean;
 }
 
-/** `/series/{id}/artworks?lang=eng&type=2`. */
+/** `/series/{id}/artworks?type=2`: every language, since an anime often has only a Japanese poster. */
 export interface TvdbArtworksResponse {
   status?: string;
   data?: { id?: number; name?: string; artworks?: TvdbArtwork[] };

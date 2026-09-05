@@ -62,12 +62,12 @@ test('the one script is the page\'s own, and it builds no markup from data', () 
 });
 
 // Every request the page makes is relative, so the token never appears in
-// the page; the images it does load come from the three hosts the CSP names.
-test('every src and href is relative, or on one of the three image hosts', () => {
+// the page; the images it does load come from the hosts the CSP names.
+test('every src and href is relative, or on one of the image hosts the CSP names', () => {
   const rendered = page([
     title({ cell: { kind: 'bucket', url: 'https://storage.googleapis.com/movies/Finding Nemo', previous: {} }, stored: { exists: true, updated: null }, state: 'done' }),
     title({ id: 2, title: 'Old', cell: { kind: 'foreign', url: 'https://image.tmdb.org/t/p/w1280/x.jpg', previous: {} }, state: 'adopt' }),
-    title({ id: 3, title: 'Proxy', cell: { kind: 'foreign', url: 'https://wsrv.nl/?url=x', previous: {} }, state: 'adopt' }),
+    title({ id: 3, title: 'Proxy', cell: { kind: 'foreign', url: 'https://wsrv.nl/?url=x', previous: {} }, state: 'unrecognised' }),
   ]);
   for (const match of rendered.matchAll(/(?:src|href)="([^"]+)"/g)) {
     const url = match[1] ?? '';

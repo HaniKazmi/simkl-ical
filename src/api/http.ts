@@ -93,6 +93,12 @@ export interface HttpRequestOptions {
    * `body`.
    */
   rawBody?: { bytes: Uint8Array<ArrayBuffer>; contentType: string };
+  /**
+   * What to do with a 3xx. `follow` everywhere but the image download, which
+   * passes `manual` so a redirect surfaces as its own status and is judged by
+   * `onStatus` rather than silently fetched from wherever it points.
+   */
+  redirect?: RequestRedirect;
   /** Per-call override: a non-idempotent write passes 1 rather than the spec's budget. */
   maxAttempts?: number;
   /** Names the call in failure messages; defaults to the URL's path. */
@@ -119,7 +125,7 @@ type Consumer<T> = (res: Response, describe: { spec: HttpSpec; path: string }) =
 const request = async <T>(
   spec: HttpSpec,
   url: URL,
-  { component, method = 'GET', headers, body, rawBody, maxAttempts = spec.maxAttempts, path = url.pathname, signal }: HttpRequestOptions,
+  { component, method = 'GET', headers, body, rawBody, redirect = 'follow', maxAttempts = spec.maxAttempts, path = url.pathname, signal }: HttpRequestOptions,
   consume: Consumer<T>,
 ): Promise<T> => {
   const finish = beginRequest({ service: spec.service, component, method, url });
@@ -154,6 +160,7 @@ const request = async <T>(
           method,
           headers: requestHeaders,
           body: rawBody ? rawBody.bytes : body === undefined ? undefined : JSON.stringify(body),
+          redirect,
           signal: withTimeout(signal, spec.timeoutMs),
         });
       } catch (err) {

@@ -21,9 +21,21 @@ const SHEET_EPOCH = Temporal.PlainDate.from('1899-12-30');
  */
 export const dateSerial = (date: Temporal.PlainDate): number => SHEET_EPOCH.until(date, { largestUnit: 'day' }).days;
 
-/** The inverse: the calendar date a serial stands for. Null for anything not a finite number. */
-export const serialDate = (serial: number | null | undefined): Temporal.PlainDate | null =>
-  typeof serial === 'number' && Number.isFinite(serial) ? SHEET_EPOCH.add({ days: Math.floor(serial) }) : null;
+/**
+ * The inverse: the calendar date a serial stands for. Null for anything that
+ * is not a finite number, and for a number no date can stand for — a pasted
+ * epoch-millisecond timestamp is a serial of 1.7e12, and `PlainDate` throws
+ * past ±271,821 years rather than wrapping. A cell the sync would leave alone
+ * must not be able to take a page down.
+ */
+export const serialDate = (serial: number | null | undefined): Temporal.PlainDate | null => {
+  if (typeof serial !== 'number' || !Number.isFinite(serial)) return null;
+  try {
+    return SHEET_EPOCH.add({ days: Math.floor(serial) });
+  } catch {
+    return null;
+  }
+};
 
 /**
  * The sheet serial for a watch timestamp, in the viewer's zone — never

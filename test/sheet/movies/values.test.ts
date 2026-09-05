@@ -212,6 +212,6 @@ test('with a bucket the banner is the static link for the title, whatever TMDB o
 
 test('without a bucket the banner is the TMDB backdrop, and blank where there is none', () => {
   const movie: TmdbMovie = { images: { backdrops: [{ file_path: '/best.jpg', iso_639_1: 'en', vote_average: 8 }] } };
-  assert.equal(bannerFor(movie, 'Finding Nemo', { movieBucket: undefined }), 'https://image.tmdb.org/t/p/w1280/best.jpg');
-  assert.equal(bannerFor(undefined, 'Finding Nemo', { movieBucket: undefined }), null);
+  assert.equal(bannerFor(movie, 'Finding Nemo', { movieBucket: null }), 'https://image.tmdb.org/t/p/w1280/best.jpg');
+  assert.equal(bannerFor(undefined, 'Finding Nemo', { movieBucket: null }), null);
 });
