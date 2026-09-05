@@ -108,8 +108,6 @@ font-weight:600;color:var(--muted)}
 .t-next{color:var(--muted);font-size:.85rem}
 .problems{padding:.75rem .9rem;border:1px solid var(--crit);background:var(--critbg);border-radius:8px}
 .problems ul{margin:0;padding-left:1.1rem}.problems li{margin:.125rem 0}
-.grid{display:grid;gap:.75rem;grid-template-columns:1fr}
-@media(min-width:900px){.grid{grid-template-columns:1fr 1fr}}
 section{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:.9rem 1.1rem 1rem;min-width:0}
 .head{display:flex;flex-wrap:wrap;align-items:baseline;gap:.625rem;margin-bottom:.75rem}
 h2.name{font-size:.75rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600;margin:0}

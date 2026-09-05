@@ -70,7 +70,7 @@ export interface StatusInput {
    * the `Snapshot`: that is what `/healthz` answers with, and the feed's
    * titles belong on a page behind the token rather than in a health probe.
    */
-  events: FeedEvent[];
+  events: readonly FeedEvent[];
   requests: RequestRecord[];
   runs: SheetRunRecord[];
   /**
@@ -143,11 +143,6 @@ export interface Stage {
 }
 
 /**
- * One line of the feed, as the page prints it. No `episodeTitle`: it is kept
- * out of the ICS `SUMMARY` so a calendar cannot surface a spoiler unasked,
- * and a page that prints it anyway gives that back.
- */
-/**
  * A run of the feed's events under one heading. A show is a stream of episodes
  * and a film is one or two dates, so a single count over both answers neither
  * question — and the two collapse on their own terms.
@@ -167,6 +162,11 @@ export interface UpcomingGroup {
   more: string | null;
 }
 
+/**
+ * One line of the feed, as the page prints it. No `episodeTitle`: it is kept
+ * out of the ICS `SUMMARY` so a calendar cannot surface a spoiler unasked,
+ * and a page that prints it anyway gives that back.
+ */
 export interface UpcomingRow {
   /** `Wed 12 Aug`, carrying the year where it is not this one. */
   when: string;
@@ -254,15 +254,24 @@ export interface StatusModel {
     due: Due;
   };
   feed: {
+    /** Counted off the list the section shows, so the pill cannot contradict it. */
     events: number;
+    /** `45 events`, `1 event` — the pill's own text. */
+    headline: string;
     rendered: Stamp;
     error: string | null;
     stages: Stage[];
     calendarsDue: Due;
-    filmsDue: boolean;
     subscribe: { href: string; url: string };
     /** What the calendar shows next, from today, in groups. Empty when nothing is ahead. */
     upcoming: UpcomingGroup[];
+    /**
+     * What to say instead of a list. `Feed` restores the last render from disk
+     * as an ICS string and never parses it back, so a process serving a saved
+     * feed holds no events to show — and "nothing ahead" would deny a feed
+     * subscribers are being served. The page says which of the two it is.
+     */
+    emptyNote: string;
     /**
      * `3 events aired recently, still in the feed` — the grace window, made
      * visible. Null when nothing in the feed is behind today.
@@ -463,7 +472,6 @@ const shorten = (path: string): string => {
  * `Feed.refreshCalendars` assigns `calendarsChangedAt` the very value it just
  * put in `calendarsAt`.
  */
-/** The calendars' own state. The stage beside it is named, so this does not name it again. */
 const calendarDetail = (calendars: Snapshot['feed']['calendars'], at: Stamped): string => {
   // `attemptedAt` is stamped only after a fetch returns, so a failure with
   // none means the CDN has never answered this process and nothing is cached.
@@ -559,7 +567,6 @@ const movementView = (movement: LibraryMovement | null, at: Stamped): MovementVi
   };
 };
 
-/** `21K`, `2.4M`, or `—` for a response that carried no body. */
 /**
  * How many rows a group prints before it starts counting instead. Fifty, the
  * journal's number: it bounds the page without cutting a real feed short — an
@@ -593,23 +600,31 @@ const dayLabel = (date: Temporal.PlainDate, today: Temporal.PlainDate): string =
 };
 
 /**
- * The two groups, and which kinds fall in each. Anime sits with shows: it is a
- * separate SIMKL type rather than a genre, but it is still a stream of
- * episodes, and a third group is empty on most feeds — a heading over nothing
- * is a gap a reader has to account for. The row's own `kind` still names it.
+ * Which heading each kind falls under. A `Record` over `EventKind` rather than
+ * a list of kinds per group: a fourth kind then fails `tsc`, which is the only
+ * build step there is, instead of vanishing from every group while the count
+ * beside them still includes it.
+ *
+ * Anime sits with shows — it is a separate SIMKL type rather than a genre, but
+ * it is still a stream of episodes, and a third group is empty on most feeds.
+ * The row's own `kind` still names it.
  */
-const GROUPS: ReadonlyArray<{ name: string; kinds: ReadonlyArray<EventKind> }> = [
-  { name: 'Shows', kinds: ['tv', 'anime'] },
-  { name: 'Films', kinds: ['movie'] },
-];
+const GROUP_OF: Record<EventKind, string> = { tv: 'Shows', anime: 'Shows', movie: 'Films' };
+
+/** The order the headings appear in, which `GROUP_OF` does not carry. */
+const GROUP_ORDER = ['Shows', 'Films'];
 
 /**
  * The feed, grouped, as far ahead as the page prints it.
  *
  * `events` arrives in the order `join` sorted it — by date, then summary — so
- * filtering preserves it and each group's first row is its next. Sorting again
+ * one pass preserves it and each group's first row is its next. Sorting again
  * here would be a second copy of that rule, and a looser one: a re-sort on date
  * alone reorders a day's events against the feed a client actually holds.
+ *
+ * One pass, and a group keeps only the rows it will print: the page is capped
+ * at `UPCOMING_LIMIT` rows a group however long the feed is, and this runs
+ * synchronously on every request for the page.
  *
  * Events behind today are counted rather than listed. They are in the feed on
  * the grace window and a long one would otherwise fill the list with what has
@@ -618,41 +633,69 @@ const GROUPS: ReadonlyArray<{ name: string; kinds: ReadonlyArray<EventKind> }> =
  * A group with nothing ahead is dropped rather than printed empty — a feed
  * with no films on plan-to-watch should not carry a Films heading over a zero.
  */
-const upcomingOf = (events: FeedEvent[], now: Temporal.Instant, timeZone: string): Pick<StatusModel['feed'], 'upcoming' | 'aired'> => {
+const upcomingOf = (
+  events: readonly FeedEvent[],
+  now: Temporal.Instant,
+  timeZone: string,
+  servingCached: boolean,
+): Pick<StatusModel['feed'], 'upcoming' | 'aired' | 'emptyNote'> => {
   const today = plainDateIn(now, timeZone);
-  const ahead = events.filter((event) => Temporal.PlainDate.compare(event.date, today) >= 0);
-  const behind = events.length - ahead.length;
+  const groups = new Map<string, { rows: UpcomingRow[]; count: number; first: Temporal.PlainDate; last: Temporal.PlainDate }>();
+  let behind = 0;
 
-  const upcoming: UpcomingGroup[] = [];
-  for (const { name, kinds } of GROUPS) {
-    const mine = ahead.filter((event) => kinds.includes(event.kind));
-    const first = mine[0];
-    const last = mine.at(-1);
-    if (!first || !last) continue;
-    const hidden = Math.max(mine.length - UPCOMING_LIMIT, 0);
-
-    upcoming.push({
-      name,
-      rows: mine.slice(0, UPCOMING_LIMIT).map((event) => ({
+  for (const event of events) {
+    if (Temporal.PlainDate.compare(event.date, today) < 0) {
+      behind += 1;
+      continue;
+    }
+    const name = GROUP_OF[event.kind];
+    const group = groups.get(name);
+    if (!group) {
+      groups.set(name, { rows: [], count: 0, first: event.date, last: event.date });
+    }
+    const into = groups.get(name)!;
+    into.count += 1;
+    into.last = event.date;
+    if (into.rows.length < UPCOMING_LIMIT) {
+      into.rows.push({
         when: dayLabel(event.date, today),
         iso: event.date.toString(),
         kind: event.kind,
         summary: event.summary,
         detail: event.detail,
-      })),
-      // Closed, this is the whole of what the group says, so it carries both
-      // the size of the list and the one date a reader came for.
-      summary: `${plural(mine.length, 'event')} \u00b7 next ${dayLabel(first.date, today)}`,
-      collapsed: mine.length > UPCOMING_COLLAPSE,
-      // The furthest date is named, so a reader knows how far the feed reaches
-      // without the page printing every row to prove it.
-      more: hidden > 0 ? `${hidden} more, to ${dayLabel(last.date, today)}` : null,
-    });
+      });
+    }
   }
 
-  return { upcoming, aired: behind > 0 ? `${plural(behind, 'event')} aired recently, still in the feed` : null };
+  const upcoming = GROUP_ORDER.flatMap((name) => {
+    const group = groups.get(name);
+    if (!group) return [];
+    const hidden = group.count - group.rows.length;
+    return [
+      {
+        name,
+        rows: group.rows,
+        // Closed, this is the whole of what the group says, so it carries both
+        // the size of the list and the one date a reader came for.
+        summary: `${plural(group.count, 'event')} \u00b7 next ${dayLabel(group.first, today)}`,
+        collapsed: group.count > UPCOMING_COLLAPSE,
+        // The furthest date is named, so a reader knows how far the feed reaches
+        // without the page printing every row to prove it.
+        more: hidden > 0 ? `${hidden} more, to ${dayLabel(group.last, today)}` : null,
+      },
+    ];
+  });
+
+  return {
+    upcoming,
+    aired: behind > 0 ? `${plural(behind, 'event')} aired recently, still in the feed` : null,
+    emptyNote: servingCached
+      ? 'Serving the last saved feed — what is in it is not known until the next render.'
+      : 'Nothing ahead in the feed.',
+  };
 };
 
+/** `21K`, `2.4M`, or `—` for a response that carried no body. */
 const size = (bytes: number | null): string => {
   if (bytes === null) return '—';
   if (bytes < 1024) return `${bytes}B`;
@@ -731,11 +774,15 @@ export const buildModel = (input: StatusInput): StatusModel => {
     },
 
     feed: {
-      events: feed.events,
+      // Off the list the page shows, not the snapshot's own tally: two counts
+      // of one thing can disagree, and only one of them is what the section
+      // beneath the pill lists.
+      events: input.events.length,
+      headline: plural(input.events.length, 'event'),
       rendered,
       error: feed.error,
-      // Three, not four: JOIN's whole detail was the event count, which is
-      // the section's own subject now that the events are in it.
+      // No stage for the join: its whole detail is the event count, and the
+      // section states that itself, above the events.
       stages: [
         { name: 'calendars', detail: calendarDetail(feed.calendars, at), at: at(feed.calendars.attemptedAt), ok: feed.calendars.error === null },
         {
@@ -754,12 +801,8 @@ export const buildModel = (input: StatusInput): StatusModel => {
         },
       ],
       calendarsDue: due(feed.calendars.attemptedAt, input.calendarRefresh, now),
-      // A boolean, not a countdown: due is per-film — a new or undated one is
-      // due now, a date most of a year out is not — so no single instant says
-      // when the next one falls due.
-      filmsDue: input.filmsDue,
       subscribe: { href: input.feedSubscribeUrl, url: input.feedUrl },
-      ...upcomingOf(input.events, now, input.timezone),
+      ...upcomingOf(input.events, now, input.timezone, feed.servingCached),
     },
 
     // No reverse: the request log is already newest first, unlike the run

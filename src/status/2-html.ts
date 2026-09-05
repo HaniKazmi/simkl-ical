@@ -58,15 +58,21 @@ display:flex;gap:.875rem;flex-wrap:wrap}
 .next b{color:var(--ink);font-weight:600}
 .kv{display:grid;grid-template-columns:5rem minmax(0,1fr);gap:.75rem;margin-top:.5rem;padding-top:.6rem;
 border-top:1px solid var(--line)}
-.run,.grp{border:1px solid var(--line);border-radius:8px;margin-bottom:.5rem;overflow:hidden}
-.run:last-child,.grp:last-of-type{margin-bottom:0}
+.kv a{overflow-wrap:anywhere;font-family:var(--mono);font-size:.8125rem}
+.run,.grp{border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.run{margin-bottom:.5rem}
+.run:last-child{margin-bottom:0}
+/* A group is a <details> when it folds and a <div> when it does not, so the gap
+   goes between them rather than under each: :last-of-type is per element type
+   and would match whichever group happened to fold. */
+.grp+.grp{margin-top:.5rem}
 .run-head,.g-head,details.run>summary,details.grp>summary{display:flex;flex-wrap:wrap;align-items:center;gap:.625rem;padding:.6rem .9rem;background:var(--bg)}
 .run-head{border-bottom:1px solid var(--line)}
 .run-head.bare{border-bottom:0}
 .run-count{margin-left:auto;color:var(--muted);font-size:.8125rem}
 details.run>summary,details.grp>summary{list-style:none;cursor:pointer}
 details.run>summary::-webkit-details-marker,details.grp>summary::-webkit-details-marker{display:none}
-details.run>summary::before,details.grp>summary::before,.run-head.sole::before{content:"\\25B8";color:var(--muted);font-size:.8rem;line-height:1;display:inline-block;transition:transform .12s ease}
+details.run>summary::before,details.grp>summary::before,.run-head.sole::before,.g-head::before{content:"\\25B8";color:var(--muted);font-size:.8rem;line-height:1;display:inline-block;transition:transform .12s ease}
 details.run[open]>summary::before,details.grp[open]>summary::before{transform:rotate(90deg)}
 details.run[open]>summary,details.grp[open]>summary,.g-head{border-bottom:1px solid var(--line)}
 details.run:hover,details.grp:hover{border-color:var(--accent)}
@@ -78,7 +84,7 @@ details.run>summary:focus-visible,details.grp>summary:focus-visible{outline:2px 
 .edit.ins .addr{color:var(--ok)}
 .fld{color:var(--muted)}
 .run-head.sole{display:grid;grid-template-columns:auto 5.5rem 6rem 2.5rem 4.5rem 5rem minmax(0,1fr) auto;gap:.625rem;align-items:center}
-.run-head.sole::before{visibility:hidden}
+.run-head.sole::before,.g-head::before{visibility:hidden}
 .run-head.sole .addr,.run-head.sole .fld,.note{font-size:.8125rem;overflow-wrap:anywhere}
 .run-head.sole .run-count{margin-left:0;text-align:right}
 .freeze{border:1px solid var(--crit);background:var(--critbg);border-radius:8px;padding:.75rem .9rem;margin-bottom:.75rem;
@@ -93,8 +99,9 @@ td.path{overflow-wrap:anywhere;font-family:var(--mono);color:var(--muted)}
 th.st,td.st{width:4rem}th.sz,td.sz{width:3.5rem}th.ms,td.ms{width:4rem}
 td.when{color:var(--faint);text-align:right;white-space:nowrap}
 table.up td.day{color:var(--ink);text-align:left;width:7.5rem}
-table.up th.day{text-align:left}
 table.up td.what{overflow-wrap:anywhere}
+.grp .t-wrap{padding:.15rem .9rem .45rem}
+.grp .more{padding:0 .9rem .5rem}
 table.up td.kind{color:var(--faint);white-space:nowrap;width:3.5rem}
 .more{color:var(--muted);font-size:.8125rem;padding-top:.5rem}
 th.wh{text-align:right;padding-right:0}
@@ -108,6 +115,8 @@ td{border-bottom:0;padding:0}
 td.src,td.svc,td.st,td.sz,td.ms,td.when{display:inline;text-align:left;font-size:.75rem}
 td.src::after,td.svc::after,td.st::after,td.sz::after,td.ms::after{content:" \\00B7 ";color:var(--line)}
 td.path{display:block;margin-top:.2rem;color:var(--ink)}
+table.up tr{border:0;border-radius:0;padding:.3rem 0;margin-bottom:0;border-bottom:1px solid var(--bg)}
+table.up tr:last-child{border-bottom:0}
 table.up td.day,table.up td.kind{display:inline;text-align:left;font-size:.75rem;width:auto}
 table.up td.day::after{content:" \\00B7 ";color:var(--line)}
 table.up td.what{display:block;margin-top:.2rem;color:var(--ink)}
@@ -206,7 +215,7 @@ const requestRows = (model: StatusModel) =>
  */
 const eventRows = (group: UpcomingGroup) => html`<div class="t-wrap"><table class="up"><tbody>${group.rows.map(
   (row) => html`<tr>
-    <td class="day"><time datetime="${row.iso}">${row.when}</time></td>
+    <td class="day"><time datetime="${row.iso}" title="${row.iso}">${row.when}</time></td>
     <td class="kind">${row.kind}</td>
     <td class="what">${row.summary}</td>
     <td class="dim">${row.detail}</td>
@@ -227,9 +236,8 @@ const groupBlock = (group: UpcomingGroup) => {
 };
 
 /**
- * The pipeline, on one line. The parts were four rows under a pill spelling
- * the same four words; what is theirs alone is a stamp and whether they
- * failed, which is what a chip carries.
+ * The pipeline, on one line. A part's name says nothing a heading cannot;
+ * what is its own is a stamp and whether it failed, and a chip carries both.
  */
 const stages = (model: StatusModel) =>
   html`<div class="stages">${model.feed.stages.map(
@@ -354,7 +362,7 @@ ${model.problems.length === 0 ? null : html`<div class="problems"><ul>${model.pr
   <div class="head">
     <h2 class="name">Library</h2>
     <span class="pill mute">${model.library.gate}</span>
-    <span class="sum">gated ${time(model.library.polled)}</span>
+    <span class="sum">gated ${time(model.library.polled)} · ${model.library.total} items</span>
   </div>
   <div class="lib">
     ${counts(model)}
@@ -380,11 +388,11 @@ ${model.problems.length === 0 ? null : html`<div class="problems"><ul>${model.pr
 <section>
   <div class="head">
     <h2 class="name">Feed</h2>
-    <span class="pill mute">${model.feed.events} events</span>
+    <span class="pill mute">${model.feed.headline}</span>
     <span class="sum">rendered ${time(model.feed.rendered)} · <a href="${model.feed.subscribe.href}" title="${model.feed.subscribe.url}" rel="noopener noreferrer">subscribe <span class="ext">↗</span></a></span>
   </div>
   ${model.feed.upcoming.length === 0
-    ? html`<p class="dim">Nothing ahead in the feed.</p>`
+    ? html`<p class="dim">${model.feed.emptyNote}</p>`
     : model.feed.upcoming.map(groupBlock)}
   ${model.feed.aired === null ? null : html`<div class="more">${model.feed.aired}</div>`}
   ${stages(model)}

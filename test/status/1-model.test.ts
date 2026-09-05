@@ -680,3 +680,37 @@ test('an episode title never reaches the page', () => {
   const model = buildModel(input({ feedEvents: [feedEvent('2026-08-20', { episodeTitle: 'Who Dies In The Finale' })] }));
   assert.equal(JSON.stringify(model.feed.upcoming).includes('Who Dies'), false);
 });
+
+// The zone decides which side of "today" an event falls on, and the feed's
+// dates are local calendar dates. Measured in UTC, a BST evening reads the
+// next day's events as already aired.
+test('what counts as ahead is decided in the configured zone', () => {
+  // 23:30 BST on the 16th is 22:30 UTC the same day, but an event dated the
+  // 17th is tomorrow in both; the 16th is what separates them.
+  const lateEvening = Temporal.Instant.from('2026-08-16T23:30:00+01:00[Europe/London]');
+  const events = [feedEvent('2026-08-16'), feedEvent('2026-08-17')];
+
+  const london = buildModel(input({ now: lateEvening, timezone: 'Europe/London', feedEvents: events }));
+  assert.deepEqual(group(london, 'Shows')!.rows.map((r) => r.iso), ['2026-08-16', '2026-08-17'], 'still the 16th in London');
+  assert.equal(london.feed.aired, null);
+
+  // The same instant is already the 17th in Auckland, so the 16th has aired.
+  const auckland = buildModel(input({ now: lateEvening, timezone: 'Pacific/Auckland', feedEvents: events }));
+  assert.deepEqual(group(auckland, 'Shows')!.rows.map((r) => r.iso), ['2026-08-17']);
+  assert.equal(auckland.feed.aired, '1 event aired recently, still in the feed');
+});
+
+// A saved feed holds events the process cannot enumerate; saying "nothing
+// ahead" there denies a feed subscribers are being served.
+test('an empty list says which kind of empty it is', () => {
+  assert.match(buildModel(input({ feedEvents: [] })).feed.emptyNote, /Nothing ahead/);
+  assert.match(buildModel(input({ feedEvents: [], servingCached: true })).feed.emptyNote, /not known until the next render/);
+});
+
+// Two tallies of one thing can disagree; only one of them is what the section
+// beneath the pill lists.
+test('the count is taken off the list the page shows', () => {
+  const model = buildModel(input({ events: 99, feedEvents: [feedEvent('2026-08-20')] }));
+  assert.equal(model.feed.events, 1);
+  assert.equal(model.feed.headline, '1 event');
+});

@@ -155,15 +155,36 @@ test('a TV airing is a home date, not a cinema one', () => {
   assert.equal(only(movie, 'GB', NOW).stage, 'home');
 });
 
-// Both are the same day for a day-and-date release. Two rows on one day for
-// one film say less than one.
-test('a film released to cinemas and streaming at once is one event', () => {
+// A day-and-date release lands on one day at both stages, and both are said:
+// the two rows differ in what they offer, and collapsing on an equal date
+// cannot tell a day-and-date film from a re-release that happens to fall on
+// the day a film starts streaming — where the row it drops is a real one.
+test('a film in cinemas and streaming on one day says both', () => {
   const movie: MovieDetail = {
     title: 'A Film',
     release_dates: [{ iso_3166_1: 'GB', results: [{ type: 3, release_date: '2026-09-20' }, { type: 4, release_date: '2026-09-20' }] }],
   };
-  const picked = only(movie, 'GB', NOW);
-  assert.equal(picked.stage, 'cinema', 'the cinema date carries it');
+  assert.deepEqual(pickReleases(movie, 'GB', NOW).map((d) => [d.date.toString(), d.stage]), [
+    ['2026-09-20', 'cinema'],
+    ['2026-09-20', 'home'],
+  ]);
+});
+
+// `relevantDate` advances a stage as its dates pass, so the pair a film
+// resolves to changes over its life. A row must not disappear because the two
+// stages happen to meet.
+test('a re-release meeting the streaming date drops neither', () => {
+  const movie: MovieDetail = {
+    title: 'A Film',
+    release_dates: [{ iso_3166_1: 'GB', results: [
+      { type: 3, release_date: '2026-11-20' },
+      { type: 3, release_date: '2027-03-01' },
+      { type: 4, release_date: '2027-03-01' },
+    ] }],
+  };
+  const later = { now: Temporal.Instant.from('2026-11-25T12:00:00Z') };
+  assert.deepEqual(pickReleases(movie, 'GB', NOW).map((d) => d.stage), ['cinema', 'home'], 'before the first run');
+  assert.deepEqual(pickReleases(movie, 'GB', later).map((d) => d.stage), ['cinema', 'home'], 'and after it, on the same day');
 });
 
 // The last resorts are reached only when *neither* stage answered, so a
@@ -180,17 +201,26 @@ test('a premiere is no second event beside a real release', () => {
   assert.deepEqual(pickReleases(movie, 'GB', NOW).map((d) => d.type), [3, 4]);
 });
 
-// A physical release is a last resort, not the home stage: reached only by a
-// film with neither a digital nor a TV date, so it is that film's one event.
-test('a physical release is the only date or none at all', () => {
+// A disc date is a date you can act on, so it is the last of the home stage
+// rather than a resort below it. Below the stage it is reachable only by a
+// film with no cinema date at all — so a film out of cinemas whose only home
+// release is a disc would have no event, which is the case the split exists
+// for.
+test('a disc date is a home date, behind digital and TV', () => {
   const alone: MovieDetail = { title: 'A Film', release_dates: [{ iso_3166_1: 'GB', results: [{ type: 5, release_date: '2026-09-20' }] }] };
-  assert.equal(only(alone, 'GB', NOW).type, 5);
+  assert.equal(only(alone, 'GB', NOW).stage, 'home');
 
-  const beside: MovieDetail = {
+  const outOfCinemas: MovieDetail = {
     title: 'A Film',
     release_dates: [{ iso_3166_1: 'GB', results: [{ type: 3, release_date: '2026-01-15' }, { type: 5, release_date: '2026-09-20' }] }],
   };
-  assert.equal(only(beside, 'GB', NOW).type, 3);
+  assert.deepEqual(pickReleases(outOfCinemas, 'GB', NOW).map((d) => [d.type, d.stage]), [[3, 'cinema'], [5, 'home']]);
+
+  const streaming: MovieDetail = {
+    title: 'A Film',
+    release_dates: [{ iso_3166_1: 'GB', results: [{ type: 4, release_date: '2026-09-20' }, { type: 5, release_date: '2027-01-10' }] }],
+  };
+  assert.equal(only(streaming, 'GB', NOW).type, 4, 'digital still answers first');
 });
 
 // The two stages are picked independently, so the array order they arrive in
@@ -203,17 +233,38 @@ test('the dates come back in date order, whichever stage is earlier', () => {
   assert.deepEqual(pickReleases(movie, 'US', NOW).map((d) => d.stage), ['home', 'cinema']);
 });
 
-// Each stage falls back on its own, so a home date listed only in the US
-// reaches a GB viewer whose own territory has the cinema date.
-test('the stages fall back to US separately', () => {
-  const movie: MovieDetail = {
+// The event carries no country, so a US date reads as a local one. A
+// territory therefore answers with everything it has before the next is asked
+// at all — otherwise a GB viewer whose own country lists only a streaming date
+// gets a US cinema date labelled "In cinemas" on a day they cannot act on.
+test('a territory answers for both stages before the next is asked', () => {
+  const cinemaAtHome: MovieDetail = {
     title: 'A Film',
     release_dates: [
       { iso_3166_1: 'GB', results: [{ type: 3, release_date: '2026-11-20' }] },
       { iso_3166_1: 'US', results: [{ type: 4, release_date: '2027-02-10' }] },
     ],
   };
-  assert.deepEqual(pickReleases(movie, 'GB', NOW).map((d) => d.country), ['GB', 'US']);
+  assert.deepEqual(pickReleases(cinemaAtHome, 'GB', NOW).map((d) => [d.country, d.stage]), [['GB', 'cinema']]);
+
+  const streamingAtHome: MovieDetail = {
+    title: 'A Film',
+    release_dates: [
+      { iso_3166_1: 'GB', results: [{ type: 4, release_date: '2026-09-20' }] },
+      { iso_3166_1: 'US', results: [{ type: 3, release_date: '2026-09-01' }] },
+    ],
+  };
+  assert.deepEqual(pickReleases(streamingAtHome, 'GB', NOW).map((d) => [d.country, d.stage]), [['GB', 'home']]);
+});
+
+// Both stages come from the fallback together, so a viewer with nothing listed
+// at home still gets the pair rather than half of it.
+test('a territory with nothing hands both stages to the next', () => {
+  const movie: MovieDetail = {
+    title: 'A Film',
+    release_dates: [{ iso_3166_1: 'US', results: [{ type: 3, release_date: '2026-01-15' }, { type: 4, release_date: '2026-09-20' }] }],
+  };
+  assert.deepEqual(pickReleases(movie, 'GB', NOW).map((d) => [d.country, d.stage]), [['US', 'cinema'], ['US', 'home']]);
 });
 
 // --- reconcileReleases ---------------------------------------------------

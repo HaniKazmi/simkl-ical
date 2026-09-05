@@ -437,13 +437,12 @@ test('a page with nothing ahead says so rather than showing an empty table', () 
   assert.ok(section.includes('1 event aired recently'), 'but the feed is not empty, and the page says why');
 });
 
-// The pipeline was four rows under a pill spelling the same four words. What a
-// part still owns is a stamp and whether it failed.
+// One line, but each part answers for itself: the dot is the only thing on the
+// page that says which part of the pipeline failed.
 test('the pipeline is one line, and a failed part is the only one marked', () => {
   const section = feedSection(page({ calendarsAt: before(2 * MINUTE), renderError: 'render blew up' }));
   const stages = [...section.matchAll(/<span class="stage ([a-z]*)"[\s\S]*?<b>([a-z]+)<\/b>/g)].map((m) => [m[2], m[1]]);
   assert.deepEqual(stages, [['calendars', ''], ['films', ''], ['render', 'bad']]);
-  assert.ok(!section.includes('FETCH \u2192 JOIN'), 'and the pill that spelled the same words is gone');
 });
 
 // The one thing on the page a reader came to click.

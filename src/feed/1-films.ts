@@ -61,23 +61,36 @@ const RELEASE_TYPE = { PREMIERE: 1, LIMITED: 2, THEATRICAL: 3, DIGITAL: 4, PHYSI
  *
  * One list would answer with the theatrical date for anything that has played
  * a cinema — `relevantDate` falls back to the most recent past date — and the
- * digital date would then be unreachable for exactly the films where it is
- * the only date left to act on. Plan-to-watch is mostly films already missed,
- * so that is most of the list.
+ * home date would then be unreachable for exactly the films where it is the
+ * only date left to act on. Plan-to-watch is mostly films already missed, so
+ * that is most of the list.
+ *
+ * Physical is the last of `HOME` rather than a resort below it: a disc date is
+ * a date you can act on, and below the stage it is reachable only by a film
+ * with no cinema date at all — so a film out of cinemas whose only home
+ * release is a disc has no event, which is the case the split exists for.
  */
 const CINEMA = [RELEASE_TYPE.THEATRICAL, RELEASE_TYPE.LIMITED];
-const HOME = [RELEASE_TYPE.DIGITAL, RELEASE_TYPE.TV];
+const HOME = [RELEASE_TYPE.DIGITAL, RELEASE_TYPE.TV, RELEASE_TYPE.PHYSICAL];
 
 /**
- * Tried only when neither stage answered, so a film reaching these has
- * exactly one date and the two stages cannot collide. Physical is a date you
- * can act on; a premiere is invite-only, so it stays last.
+ * A premiere is invite-only, so it is not a date either stage may answer with
+ * — only what a film with no other date at all falls back to.
  */
-const LAST_RESORT: ReadonlyArray<readonly [number, ReleaseStage]> = [
-  [RELEASE_TYPE.PHYSICAL, 'home'],
-  [RELEASE_TYPE.PREMIERE, 'cinema'],
-];
-const NAMED_TYPES = new Set<number>([...CINEMA, ...HOME, ...LAST_RESORT.map(([type]) => type)]);
+const LAST_RESORT = [RELEASE_TYPE.PREMIERE];
+
+/**
+ * Which stage a type belongs to, as one total lookup rather than a stage
+ * argument at each site. The stage keys the event's UID, so a type classified
+ * in two places is a UID that can disagree with the label printed beside it;
+ * and a type SIMKL adds later is one entry here rather than an edit at every
+ * site that assigns a stage.
+ */
+const STAGE_OF = new Map<number, ReleaseStage>([
+  ...CINEMA.map((type) => [type, 'cinema'] as const),
+  ...HOME.map((type) => [type, 'home'] as const),
+  ...LAST_RESORT.map((type) => [type, 'cinema'] as const),
+]);
 
 const datesFor = (movie: MovieDetail, country: string): ReleaseDateResult[] =>
   movie.release_dates?.find((c) => c.iso_3166_1 === country)?.results ?? [];
@@ -117,45 +130,42 @@ export const pickReleases = (
   // The viewer's local date, not UTC — the same question the join asks.
   const today = plainDateIn(now, timezone);
 
-  // Territory outside type: the viewer's own country answers with whatever it
-  // has before another territory is asked at all.
-  const pickStage = (types: readonly number[], stage: ReleaseStage): PickedRelease | null => {
-    for (const territory of territories) {
-      for (const type of types) {
-        const date = relevantDate(territory.results, type, today);
-        if (date) return { date, type, country: territory.code, stage };
-      }
+  const pick = (results: ReleaseDateResult[], types: readonly number[], code: string): PickedRelease | null => {
+    for (const type of types) {
+      const date = relevantDate(results, type, today);
+      if (date) return { date, type, country: code, stage: STAGE_OF.get(type) ?? 'cinema' };
     }
     return null;
   };
 
-  const cinema = pickStage(CINEMA, 'cinema');
-  const home = pickStage(HOME, 'home');
-  // A day-and-date release lists the same day under both stages. Two rows on
-  // one day for one film say less than one, so the cinema date carries it.
-  if (cinema && home && cinema.date.equals(home.date)) return [cinema];
-  if (cinema || home) {
-    return [cinema, home].filter((r): r is PickedRelease => r !== null).sort((a, b) => Temporal.PlainDate.compare(a.date, b.date));
+  // A territory answers with everything it has before the next is asked at
+  // all: a date from elsewhere is one the viewer cannot act on, and the event
+  // carries no country, so a US theatrical date beside a home date reads as a
+  // local cinema release. Both stages inside the loop is what makes that true
+  // of the pair rather than of each stage separately.
+  for (const { code, results } of territories) {
+    const found = [pick(results, CINEMA, code), pick(results, HOME, code)].filter((r): r is PickedRelease => r !== null);
+    // Ascending, because the two stages are picked independently and a
+    // streaming-first film can list its home date before its cinema run.
+    if (found.length) return found.sort((a, b) => Temporal.PlainDate.compare(a.date, b.date));
   }
 
-  // A real release anywhere beats a premiere anywhere, so both territories are
-  // exhausted at both stages before these are tried.
-  for (const territory of territories) {
-    for (const [type, stage] of LAST_RESORT) {
-      const date = relevantDate(territory.results, type, today);
-      if (date) return [{ date, type, country: territory.code, stage }];
-    }
+  // A real release anywhere beats a premiere anywhere, so every territory is
+  // exhausted at both stages before this is tried.
+  for (const { code, results } of territories) {
+    const found = pick(results, LAST_RESORT, code);
+    if (found) return [found];
   }
 
   // `type` is a number, not a union, so an unrecognised one is real data with
-  // no name — still better than the unreliable `released`. It names no stage
-  // either, and a film here has one date, so `cinema` is the whole answer:
-  // "when does this film exist", which is the question a lone date answers.
-  for (const territory of territories) {
-    const other = territory.results.find((r) => r.release_date && !NAMED_TYPES.has(r.type));
+  // no name — still better than the unreliable `released`. `STAGE_OF` cannot
+  // place it and a film reaching here has one date, so it takes `cinema`: the
+  // question a lone date answers is "when does this film exist".
+  for (const { code, results } of territories) {
+    const other = results.find((r) => r.release_date && !STAGE_OF.has(r.type));
     if (other) {
       const date = releaseDate(other.release_date);
-      if (date) return [{ date, type: other.type ?? null, country: territory.code, stage: 'cinema' }];
+      if (date) return [{ date, type: other.type ?? null, country: code, stage: 'cinema' }];
     }
   }
 

@@ -64,22 +64,33 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   SIMKL timestamp from another machine.
 - **UIDs are derived, never random.** A fresh UID each render makes calendar clients duplicate
   events instead of updating them.
-- **A film has two lives, and the stages are resolved separately.** `CINEMA` and `HOME` in
-  `1-films.ts`, each answering with at most one date. Walked as one list, the theatrical date wins
+- **A film has two lives, and one territory answers for both.** `CINEMA` and `HOME` in
+  `1-films.ts`, each answering with at most one date. Down a single list the theatrical date wins
   for anything that has played a cinema — `relevantDate` answers with the most recent past date
-  when they have all passed — and the digital date is then unreachable for exactly the films where
-  it is the only date left to act on, which on a plan-to-watch list is most of them. Each date is
-  cut off against `GRACE_DAYS` on its own in `join`, so the cinema date ages out and the home date
-  carries the film. `PickedRelease.stage` keys the event's UID, so the two strings are load-bearing
-  and the pick decides the stage rather than the UID re-deriving it from `type` — the last resorts
-  answer with a type that names no stage, and `released` with no type at all. `LAST_RESORT` is
-  reached only when *neither* stage answered, so a premiere is never a second event beside a real
-  release, and a day-and-date film is one event rather than two rows on one day.
+  when they have all passed — and the home date is unreachable for exactly the films where it is
+  the only one left to act on, which on a plan-to-watch list is most of them. Each date is cut off
+  against `GRACE_DAYS` on its own in `join`, so the cinema date ages out and the home date carries
+  the film. **The territory is the outer loop and both stages sit inside it**: the event carries no
+  country, so a date from elsewhere reads as a local one, and a viewer whose own country lists only
+  a streaming date would otherwise get a US cinema date labelled "In cinemas" on a day they cannot
+  act on. Physical is the last of `HOME` rather than a resort beneath it — below the stage it is
+  reachable only by a film with no cinema date at all, so a film out of cinemas whose only home
+  release is a disc would have no event. `LAST_RESORT` is the premiere alone.
+- **Two dates on one day are two events.** A day-and-date release lands on the same day at both
+  stages and both are said. Collapsing on an equal date cannot tell that film from one whose
+  cinema stage has advanced to a re-release that happens to fall on the day it starts streaming —
+  `relevantDate` moves a stage on as its dates pass — and there the row dropped is real, so a
+  subscriber's home event is withdrawn months after it was published.
+- **`PickedRelease.stage` keys the event's UID, and `STAGE_OF` is the one place a type gets one.**
+  Assigned per call site, a type can be classified two ways and the UID then disagrees with the
+  label printed beside it; and a type SIMKL adds later is one entry here rather than an edit
+  wherever a stage is named. An unrecognised type is not in the map: a film reaching that fallback
+  has one date, which takes `cinema` — the question a lone date answers is "when does this film
+  exist".
 - **`filmDue` measures a film's earliest date, not its furthest out.** A film whose cinema date has
   passed stays due at the 24h floor, which is what lands its home date the day SIMKL announces one.
-  The rule is unchanged from a single past date, so the second event costs no request beyond the
-  ones already being made — a film out of cinemas was already being asked about daily and its
-  home date discarded.
+  A film out of cinemas is asked about daily either way, so the home date costs no request beyond
+  the ones already made.
 - **Nothing in the refresh path may be fatal.** Failures land in a per-subsystem error slot and are
   reported by `/healthz`; the process stays up and keeps serving the last good feed.
 - **The feed is only replaced when both halves of the join are present**, so a partial refresh
@@ -258,19 +269,26 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   looks wrong is wrong in the file a subscriber holds — and it prints no `episodeTitle`, which the
   ICS keeps out of `SUMMARY` so a calendar cannot surface a spoiler unasked. Events behind today
   are counted, not listed: they are in the feed on the grace window, and a 90-day one would fill
-  the list with what has already happened.
-- **A fact appears once on the status page.** The page is four sections — library, sheet, feed,
-  requests — above a strip of one chip per half, in that same order. The chip carries
+  the list with what has already happened. **An empty list is two different claims** — `Feed`
+  restores the last render from disk as an ICS string and never parses it back, so a process
+  serving a saved feed holds no events to show, and "nothing ahead" there denies a feed
+  subscribers are being served. `emptyNote` says which of the two it is. The count comes off the
+  same list, not off the snapshot's own tally: two counts of one thing can disagree, and only one
+  of them is what the section lists.
+- **A fact appears once on the status page.** A strip of one chip per half sits above four
+  sections — library, sheet, feed, requests — in that same order. The chip carries
   *only* what nothing else says: `feed.calendarsDue` and `library.due` are the page's whole supply
   of forward-looking text, and a headline there would be the section's own pill an inch below.
-  Same rule flattened the feed's pipeline: four rows under a pill spelling the same four words,
-  where a part owns nothing but a stamp and an `ok`, are one line of chips — and `Stage` keeps the
-  `ok`, because a red dot is how a failed fetch is told from a failed render.
+  Same rule holds the feed's pipeline to one line of chips: a part's name says nothing its heading
+  cannot, and what it owns is a stamp and an `ok`. `Stage` keeps the `ok`, because a red dot is how
+  a failed fetch is told from a failed render.
 - **A group of events folds only where the fold hides something.** `UPCOMING_COLLAPSE` in
   `status/1-model.ts`: past it a `<details>`, below it open, which is the rule a sheet run of one
   write already follows — an expander revealing the summary line beside it is worse than none.
   Shows and films fold separately, or a nightly show buries a five-row film list. Anime rides with
-  shows: a third group is empty on most feeds, and the row's `kind` still names it.
+  shows: a third group is empty on most feeds, and the row's `kind` still names it. `GROUP_OF` is
+  a `Record` over `EventKind` rather than a list of kinds per group, so a fourth kind fails `tsc`
+  instead of vanishing from every group while the count beside them still includes it.
 - **The status page fetches nothing, and sends `Referrer-Policy: no-referrer`.** The feed token is
   in the page's own URL, so any subresource — script, font, image, stylesheet — would carry it to a
   third party in a `Referer` header. That is about who else sees the token, not about the page

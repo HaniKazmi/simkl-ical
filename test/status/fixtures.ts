@@ -84,6 +84,8 @@ export const COLD: StatusInput = {
 /** The page's knobs, by flat name, placed onto the nested input by `input()`. */
 export interface InputOver {
   now?: Temporal.Instant;
+  /** The zone the page reads dates in — what decides "ahead" from "aired". */
+  timezone?: string;
   ok?: boolean;
   problems?: Problem[];
   activitiesPoll?: Temporal.Duration;
@@ -110,6 +112,7 @@ export interface InputOver {
   gate?: Partial<PollOutcome> | null;
   movement?: LibraryMovement | null;
 
+  /** Defaults to the length of `feedEvents`; the two are one fact. */
   events?: number;
   renderedAt?: string | null;
   servingCached?: boolean;
@@ -150,6 +153,7 @@ export const input = (over: InputOver = {}): StatusInput => {
   return {
     ...COLD,
     now: over.now ?? NOW,
+    timezone: over.timezone ?? COLD.timezone,
     assessment: { ok: over.ok ?? COLD.assessment.ok, problems: over.problems ?? COLD.assessment.problems },
     activitiesPoll: over.activitiesPoll ?? COLD.activitiesPoll,
     calendarRefresh: over.calendarRefresh ?? COLD.calendarRefresh,
@@ -176,7 +180,7 @@ export const input = (over: InputOver = {}): StatusInput => {
         movement: over.movement ?? null,
       },
       feed: {
-        events: over.events ?? 0,
+        events: over.events ?? over.feedEvents?.length ?? 0,
         renderedAt: over.renderedAt ?? null,
         servingCached: over.servingCached ?? false,
         error: over.renderError ?? null,

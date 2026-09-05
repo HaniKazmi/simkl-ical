@@ -77,7 +77,7 @@ Under Compose, the first two go in `simkl.secrets.env` and the rest are set dire
 | `SIMKL_CLIENT_ID`     | —               | **Required, secret.** From simkl.com/settings/developer       |
 | `FEED_TOKEN`          | —               | **Required, secret.** Path segment of the feed URL. `openssl rand -hex 24` |
 | `TZ`                  | `Europe/London` | **Set this.** Airdates are converted to local dates; a wrong zone shifts events by a day |
-| `RELEASE_COUNTRY`     | `GB`            | ISO 3166-1 alpha-2, case-insensitive. Which country's release dates to use for films |
+| `RELEASE_COUNTRY`     | `GB`            | ISO 3166-1 alpha-2, case-insensitive. Which country's release dates to use for films. US is the fallback, used only when your country lists nothing at all |
 | `GRACE_DAYS`          | `14`            | How long an aired episode stays in the feed. Capped at 90     |
 | `PORT`                | `3000`          | Port inside the container                                     |
 | `DATA_DIR`            | `/data`         | Holds `token.json`, the last rendered `feed.ics`, and the sheet run log. `./data` outside Docker |
@@ -111,12 +111,14 @@ Four rules worth knowing:
 - **Recently aired episodes linger** for `GRACE_DAYS` so nothing vanishes the moment it airs.
   This is *not* filtered by watch state — the feed is a record of what aired, not a to-do
   list. A deep backlog stays in SIMKL where it belongs.
-- **A film gets up to two events**: the day it reaches cinemas and the day it reaches home,
-  each labelled with the release type SIMKL lists it under — *In cinemas* or *Limited release*
-  for the first, *Digital release* or *TV* for the second. Each ages out of the feed on its own,
-  so a film you missed in the cinema comes back when it starts streaming rather than
-  disappearing for good. A film released to cinemas and streaming on the same day is one event,
-  not two.
+- **A film gets up to two events**: the day it reaches cinemas and the day it reaches home, each
+  labelled with the release type SIMKL lists it under — *In cinemas* or *Limited release* for the
+  first, *Digital release*, *TV* or *Physical release* for the second, and *Premiere* or a bare
+  *Release* for a film with nothing better listed. Each ages out of the feed on its own, so a film
+  you missed in the cinema comes back when it starts streaming rather than disappearing for good.
+  A film out in cinemas and at home on the same day gets both events: they offer different things,
+  and one date standing for the pair would silently swallow the second whenever a re-release
+  happened to land on the day a film started streaming.
 
 Events are all-day and marked transparent, so they never make you look busy. Episode titles
 go in `DESCRIPTION` rather than `SUMMARY`, so the calendar doesn't surface a spoiler you
@@ -139,7 +141,8 @@ with the subscribe link beside them; and the **requests** it has made recently. 
 the top says what each half does next.
 
 The event list is the rendered feed, not a fresh join, so a row that looks wrong is wrong in
-the file your calendar is subscribed to. Episode titles are left off it for the same reason
+the file your calendar is subscribed to. Straight after a restart the service serves the feed it
+saved to disk without knowing what is in it, and the page says so rather than reporting it empty. Episode titles are left off it for the same reason
 they are kept out of the calendar's `SUMMARY`. A group folds away once it is more than a
 handful of rows — a nightly show would otherwise bury the films — and stays open below that,
 where an expander would only hide the line beside it. Events that have already aired are
