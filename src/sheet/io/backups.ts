@@ -37,8 +37,8 @@ const REPAIR_PREFIX = '_sync-REPAIR-';
  * clean says the sheet is known good — but only the tab it verified. The films
  * tab and the show grid are written by different runs of one poll and are
  * failed, kept and swept independently; a sweep that took every snapshot
- * would let a films write delete the pre-write copy of `Sheet1` that a failed
- * show write left for the operator, without `Sheet1` having been re-read. A
+ * would let a films write delete the pre-write copy of the show tab that a failed
+ * show write left for the operator, without that tab having been re-read. A
  * latch in the process cannot hold that rule either: it is reset by a
  * restart, and the snapshot is not.
  */

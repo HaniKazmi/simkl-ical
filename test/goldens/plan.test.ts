@@ -27,9 +27,9 @@ test('the reference grid plans the committed write set', async () => {
       SHEET_HEADERS,
       showRow('Fargo', 'Watching', 1),
       seasonRow(1, 6, 44000),
-      // The open season about to close: Episodes blank, so the runtime write
-      // has a cell to fill in the same batch that dates the row.
-      seasonRow(2, 3, null, { episodes: null }),
+      // The open season about to close: Episode Length blank, so the runtime
+      // write has a cell to fill in the same batch that dates the row.
+      seasonRow(2, 3, null, { runtime: null }),
       showRow('Alien', 'Watching', 2),
       seasonRow(1, 2, null),
     ]),

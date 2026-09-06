@@ -79,7 +79,7 @@ test('the sweep takes every backup of its own tab and nothing else, and never th
   sheet.tabs.set(9, []);
   await withSheet(sheet, async () => {
     await sweepBackups(1, quiet, undefined);
-    assert.deepEqual([...sheet.titles.values()], ['Sheet1', '_sync-REPAIR-1-kept', '_sync-backup-2-kept']);
+    assert.deepEqual([...sheet.titles.values()], ['Shows', '_sync-REPAIR-1-kept', '_sync-backup-2-kept']);
   });
 
   const dark = fakeSheets({ failTabLists: 99 });

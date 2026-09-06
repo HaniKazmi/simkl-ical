@@ -61,11 +61,11 @@ than a genre, and carries no season number.
 ### The sheet sync — INDEX → READ/PARSE → (PLAN ⇄ FETCH) → GUARD → BUILD → APPLY → VERIFY → ROLLBACK
 
 Inert unless `SHEET_ID` **and** a Google credential are both set. It writes exactly six things —
-a season row's `Episode` count, its `Start` and `End` dates, its `Episodes` runtime *into a blank
-cell only*, a show row's `Status`, and a season row's `Status`, which dates that `Episode` count and
-moves only when it does, until `End` arrives to say it better — and inserts a season row when a new
-season is started. Nothing else, ever. The runtime additionally needs `TVDB_API_KEY`; without it the
-other five behave exactly as they do with it.
+a season row's `Episode` count, its `Start` and `End` dates, its `Runtime` in whole minutes *into a
+blank cell only*, a season row's `Note`, which dates that `Episode` count and moves only when it
+does, until `End` arrives to say it better, and a show row's `Status` — and inserts a season row
+when a new season is started. Nothing else, ever. The runtime additionally needs `TVDB_API_KEY`;
+without it the other five behave exactly as they do with it.
 
 `Start` and `End` are the two that **follow SIMKL**, the only two written to a row already dated,
 and the only two that ignore the activity window — a corrected watch date is a recent change that
@@ -103,10 +103,12 @@ produced it.
 
 The same poll keeps a second, flat tab current — one row per film, no blocks, no formulas — through
 a sibling numbered core in `src/sheet/movies/`. It is inert without `TMDB_API_KEY`: eight of the
-tab's fourteen columns come from TMDB, and a row inserted with those blank is worse than no row.
+tab's sixteen columns come from TMDB, and a row inserted with those blank is worse than no row.
 Three columns follow SIMKL for the life of a row — `Watch Date`, `Score`, `Runtime` — off the
 library alone and against the same baseline file; the rest are written once when the row is
-created, one row per run, below the last row the tab holds.
+created, one row per run, below the last row the tab holds. `Format` (`Cinema`/`Home`) and `Type`
+(`film`/`anime`) are always written on that one insert; `Series` and `Series #` are hand columns
+the sync never writes.
 
 `sync.ts` runs both tabs through one loop. What the loop holds — the read, the freshness budget,
 the report/refuse/apply branches, the freeze latch, the journal — holds no rule about what may be
@@ -114,7 +116,7 @@ written, so it exists once; what differs between the tabs is how a grid is parse
 described and verified, and each half supplies those as a `TabSpec`. The shows half runs first,
 and what it *sent* is charged against the films half's budget, because `SHEET_MAX_EDITS` bounds a
 poll rather than a tab. A snapshot tab is named after the tab it copies and a sweep takes only its
-own, so a films write verifying clean cannot delete the copy of `Sheet1` a failed show write left
+own, so a films write verifying clean cannot delete the copy of `Shows` a failed show write left
 for the operator.
 
 ---
@@ -137,7 +139,7 @@ expensive or the thing it fetches rarely changes.
 | A season's episode lengths | that season is completing with a blank runtime cell, or has finished airing on the run that adds its row — then never again | `GET api4.thetvdb.com/v4/series/{id}/episodes/official?season={n}` — one call is one whole season |
 | TVDB access token | first runtime lookup, then every **20 days**, or after any `401` | `POST api4.thetvdb.com/v4/login` |
 | A film's TMDB record | the film is completed and has no row on the films tab; at most **8** per run, and none once the run has chosen the one row it inserts — the rest are the next poll's; never again once answered, for the life of the process | `GET api.themoviedb.org/3/movie/{tmdb}?append_to_response=release_dates,credits,images` — 4 at a time, bearer token from config |
-| Read the spreadsheet | start of every sheet-sync run, per tab, and again to verify a write | `GET sheets.googleapis.com/v4/spreadsheets/{id}?ranges='Sheet1'&fields=…`, and the same for the films tab |
+| Read the spreadsheet | start of every sheet-sync run, per tab, and again to verify a write | `GET sheets.googleapis.com/v4/spreadsheets/{id}?ranges='Shows'&fields=…`, and the same for the films tab |
 | Write the spreadsheet | a plan passed the guard, in `apply` mode only | `POST …/spreadsheets/{id}:batchUpdate` |
 | List the tabs | after a write, to find or sweep the snapshot tab | `GET …/spreadsheets/{id}?fields=sheets.properties(sheetId,title)` |
 | Google access token | within **5 minutes** of expiry | `POST oauth2.googleapis.com/token` — a locally-signed RS256 assertion |
@@ -218,7 +220,7 @@ died mid-download must not surface as a 200 carrying unparseable JSON.
   cleared account are the same bytes, and applying the wrong one empties the feed.
 - **UIDs are derived, never random**, or clients duplicate events instead of updating them.
 - **A sync run and an artwork page write never overlap.** Both hold `withSheetLock` from their
-  first read of the sheet to their last verify. The films verifier inspects `Banner`, so a page
+  first read of the sheet to their last verify. The films verifier inspects `Artwork`, so a page
   write landing inside a sync run is a cell the sync did not plan, and VERIFY would roll the whole
   tab back over it. The page's write is the one cell on a show row written outside `Status`, and it
   goes through its own checklist rather than the sync's guard: the sync's whitelists are the
@@ -257,18 +259,20 @@ that no code can derive.
   resolved by header, never position.
 - Which SIMKL entry a row means is decided by **where its id sits**, never by `Type`: a season row's
   own id wins, a blank one inherits the show row's. Both exceptions exist in the live sheet.
-- `Episode` on a season row is a **count**, not an episode number — `Length = Episodes × Episode`,
-  and the two coincide for in-order viewing, which is exactly why the wrong one would survive
-  testing.
-- `Episodes` on a season row is the per-episode runtime as a **day fraction**, minutes ÷ 1440,
-  despite the plural. That identity forces the season average to be the arithmetic mean
-  (`averageRuntime` in `3-catalogue.ts` carries the arithmetic).
+- `Episode` on a season row is a **count**, not an episode number.
+- `Runtime` on a season row is the per-episode runtime in **whole minutes**, written once into a
+  blank cell only — 793 of 796 season rows carry one. The season average is the arithmetic mean
+  (`averageRuntime` in `3-catalogue.ts` carries the arithmetic) and is rounded to the nearest minute
+  before it is written.
 - A non-blank `End` closes the row even if it does not parse as a date: a hand-typed `TBD` is not a
   missing end date. A dated row is revisited **only** by `Start` and `End` following SIMKL; for
   every other cell it is closed for good, which is the fact almost every conservative rule
   downstream traces back to.
+- `Note` is a season-row cell only, holding the sync's own `YYYY-MM-DD` last-watched date on an
+  open row and blank on a closed one; `Status` is a show-row cell only, holding the derived state
+  the sync writes. Which rule applies is decided by the column, not by the row.
 
-**What may be written** is the guard's checklist (`5-guard.ts`): five whitelisted cells, one
+**What may be written** is the guard's checklist (`5-guard.ts`): six whitelisted cells, one
 inserted row per run, nothing but the tracked dates on a closed row, never a formula. The bounds it checks are the same
 constants the planner writes with (`values.ts`), so a value one emits and the other refuses is
 unrepresentable; the alignment checks — is this address the row the plan thinks it is — stay

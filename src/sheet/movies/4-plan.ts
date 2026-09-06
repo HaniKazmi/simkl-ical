@@ -23,12 +23,12 @@ import { config } from '../../shared/config.ts';
 import { instantFrom, isoOf, plainDateIn } from '../../shared/dates.ts';
 import type { ExtendedValue } from '../../api/google/types.ts';
 import { isFormula } from '../2-grid.ts';
-import { dateSerial, maxSerial, movieKey, plausibleSerial, recordedSerial, watchedNote, watchSerial, type Baseline } from '../values.ts';
-import { movieAddress, movieCellAt, nextFilmRow, type MovieGrid, type MovieHeaderName } from './2-grid.ts';
+import { dateSerial, maxSerial, movieKey, plausibleRuntime, plausibleSerial, recordedSerial, watchedNote, watchSerial, type Baseline } from '../values.ts';
+import { movieAddress, movieCellAt, MOVIE_LABELS, nextFilmRow, type MovieGrid, type MovieHeaderName } from './2-grid.ts';
 import { filmIsWatched, type FilmProgress } from './1-index.ts';
 import type { FilmFacts } from './3-catalogue.ts';
 import type { PlanRecord } from '../4-plan.ts';
-import { plausibleReleaseSerial, plausibleRuntime, plausibleScore, releaseCeiling, watchedInCinema } from './values.ts';
+import { formatCell, plausibleReleaseSerial, plausibleScore, releaseCeiling, typeCell, watchedInCinema } from './values.ts';
 
 // --- The plan --------------------------------------------------------------
 
@@ -144,10 +144,10 @@ export interface PlanFilmsOptions {
    * Every SIMKL id the show grid holds, or null when no show grid was parsed
    * this poll.
    *
-   * An anime film may belong on this tab or embedded in a `Sheet1` block, and
+   * An anime film may belong on this tab or embedded in a show-tab block, and
    * nothing in the record says which — so the sheet's own placement decides:
-   * already on `Sheet1` means leave it there. Null fails closed and inserts no
-   * anime film at all, which costs one poll's delay on a newly-completed one
+   * already on the show tab means leave it there. Null fails closed and inserts
+   * no anime film at all, which costs one poll's delay on a newly-completed one
    * against a duplicate row that stands.
    */
   onShowGrid?: Set<number> | null;
@@ -216,7 +216,6 @@ export const observeFilms = (index: Map<number, FilmProgress>): Baseline => {
 
 const str = (value: string): ExtendedValue => ({ stringValue: value });
 const num = (value: number): ExtendedValue => ({ numberValue: value });
-const bool = (value: boolean): ExtendedValue => ({ boolValue: value });
 
 const edit = (
   grid: MovieGrid,
@@ -371,11 +370,11 @@ export const planFilms = (
       // SIMKL dropped a value it used to hold. Nothing on this tab is ever
       // emptied, so this is recorded and left: the cell keeps what it has.
       if (wanted === null) {
-        skip('unusable-value', row.row, `${film.title}: SIMKL no longer holds a ${field}, and this tab empties no cell`);
+        skip('unusable-value', row.row, `${film.title}: SIMKL no longer holds a ${MOVIE_LABELS[field]}, and this tab empties no cell`);
         continue;
       }
       if (!withinBounds(field, wanted, ceiling)) {
-        skip('unusable-value', row.row, `${film.title}: ${field} of ${wanted} is outside the range this column accepts`);
+        skip('unusable-value', row.row, `${film.title}: ${MOVIE_LABELS[field]} of ${wanted} is outside the range this column accepts`);
         continue;
       }
       const cell = movieCellAt(grid, row.row, grid.columns[field]);
@@ -389,7 +388,7 @@ export const planFilms = (
       const before =
         field === 'Watch Date' ? watchedNote(instantFrom(entry[field]), timezone) : recorded === null ? null : String(recorded);
       const after = field === 'Watch Date' ? watchedNote(film.watchedAt, timezone) : String(wanted);
-      plan.edits.push(edit(grid, row.row, film.id, field, num(wanted), `${film.title}: ${field} moved from ${before ?? 'none'} to ${after}`));
+      plan.edits.push(edit(grid, row.row, film.id, field, num(wanted), `${film.title}: ${MOVIE_LABELS[field]} moved from ${before ?? 'none'} to ${after}`));
       willWrite(key, field, field === 'Watch Date' ? isoOf(film.watchedAt as Temporal.Instant) : String(wanted));
     }
   }
@@ -541,22 +540,22 @@ const buildInsert = (
   // one renders as `28486`.
   const row = nextFilmRow(grid);
   const note = `${film.title} (${film.id})`;
+  const watchedOn = film.watchedAt ? plainDateIn(film.watchedAt, timezone) : null;
   const fill: FilmCellEdit[] = [
     fillCell(grid, row, film.id, 'Name', str(film.title), note),
     fillCell(grid, row, film.id, 'Watch Date', num(watched), note),
-    // Text, matching what all 348 rows hold. A number here would compare
+    // Text, matching what all 366 rows hold. A number here would compare
     // unequal to every other id cell on the tab.
     fillCell(grid, row, film.id, 'id', str(String(film.id)), note),
+    // Both columns are filled on every row the tab holds, so both are written
+    // unconditionally: a blank here is an unfinished row, not a "no", and
+    // neither cell is ever revisited to say so later.
+    fillCell(grid, row, film.id, 'Format', str(formatCell(watchedInCinema(facts.openedInCinemas, watchedOn))), note),
+    fillCell(grid, row, film.id, 'Type', str(typeCell(film.anime)), note),
   ];
 
   if (film.rating !== null && plausibleScore(film.rating)) fill.push(fillCell(grid, row, film.id, 'Score', num(film.rating), note));
   if (film.runtime !== null && plausibleRuntime(film.runtime)) fill.push(fillCell(grid, row, film.id, 'Runtime', num(film.runtime), note));
-
-  // Only ever `true`. The tab spells "no" as an absent cell, never as FALSE.
-  const watchedOn = film.watchedAt ? plainDateIn(film.watchedAt, timezone) : null;
-  if (watchedInCinema(facts.openedInCinemas, watchedOn)) fill.push(fillCell(grid, row, film.id, 'Cinema', bool(true), note));
-  // Likewise only ever `true`, and on the same convention.
-  if (film.anime) fill.push(fillCell(grid, row, film.id, 'Anime', bool(true), note));
 
   if (facts.genre) fill.push(fillCell(grid, row, film.id, 'Genre', str(facts.genre), note));
   if (facts.genres) fill.push(fillCell(grid, row, film.id, 'Genres', str(facts.genres), note));
@@ -582,7 +581,7 @@ const buildInsert = (
  * gain. `season` is simply absent on a film row.
  */
 export const filmPlanRecord = (plan: FilmPlan): PlanRecord => ({
-  edits: plan.edits.map(({ address, field, note }) => ({ address, field, note })),
+  edits: plan.edits.map(({ address, field, note }) => ({ address, field: MOVIE_LABELS[field], note })),
   inserts:
     plan.insert === null ? [] : [{ address: `row ${plan.insert.row + 1}`, title: plan.insert.title, note: plan.insert.note }],
 });

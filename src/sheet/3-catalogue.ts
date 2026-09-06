@@ -79,7 +79,7 @@ export const seasonComplete = (shape: SeasonShape | undefined, watched: number):
  *
  * SIMKL sends it as a string. A non-numeric or absent one is "no TVDB id",
  * never an error: the runtime lookup is additive, and a title without one
- * keeps its `Episodes` cell blank.
+ * keeps its runtime cell blank.
  */
 export const tvdbIdOf = (detail: { ids?: { tvdb?: string } } | undefined): number | null => {
   const raw = detail?.ids?.tvdb;
@@ -92,11 +92,11 @@ export const tvdbIdOf = (detail: { ids?: { tvdb?: string } } | undefined): numbe
  * A season's average episode runtime in whole minutes, or null with no usable
  * answer.
  *
- * **The arithmetic mean, forced rather than chosen.** The sheet computes
- * `Length = Episodes x Episode` with `Episode` the count watched, so for the
- * season's total to come out right `Episodes` must be total minutes divided by
- * the count — the mean and nothing else. 21 episodes at 22m plus a 44m finale
- * is 506 minutes; the mean is exactly 23, and 23 x 22 = 506. A median would be
+ * **The arithmetic mean, forced rather than chosen.** The runtime sits beside
+ * the episode count, and a season's total is the two multiplied — so for that
+ * total to come out right the cell must be total minutes divided by the count,
+ * which is the mean and nothing else. 21 episodes at 22m plus a 44m finale is
+ * 506 minutes; the mean is exactly 23, and 23 x 22 = 506. A median would be
  * robust to that finale and make the total wrong.
  *
  * `expected` is SIMKL's own count for the season, from `seasonShapes`.
@@ -142,7 +142,7 @@ export const averageRuntime = (episodes: TvdbEpisode[] | null | undefined, expec
 
   // Whole minutes, so the cell matches every other row and a reader can check
   // it against TVDB by eye. Rounding also fails closed for free: a mean under
-  // 30 seconds rounds to 0, and `runtimeDays` returns null at zero.
+  // 30 seconds rounds to 0, which `plausibleRuntime` refuses.
   return Math.round(total / byNumber.size);
 };
 

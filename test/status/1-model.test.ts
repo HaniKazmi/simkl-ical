@@ -386,14 +386,14 @@ test('a count and the note dating it read as the one change they are', () => {
       runs: [
         runRecord({
           edits: [
-            { address: 'F378', field: 'Episode', note: 'Frieren S1: 16 -> 17 episodes' },
-            { address: 'B378', field: 'Status', note: 'Frieren S1: last watched 2026-09-01' },
+            { address: 'K378', field: 'Episodes', note: 'Frieren S1: 16 -> 17 episodes' },
+            { address: 'O378', field: 'Seasons / Last Watched', note: 'Frieren S1: last watched 2026-09-01' },
           ],
         }),
       ],
     }),
   );
-  assert.deepEqual(model.sheet.runs[0]?.sole, { address: 'F378', field: 'Episode', note: 'Frieren S1: 16 -> 17 episodes, last watched 2026-09-01' });
+  assert.deepEqual(model.sheet.runs[0]?.sole, { address: 'K378', field: 'Episodes', note: 'Frieren S1: 16 -> 17 episodes, last watched 2026-09-01' });
   assert.equal(model.sheet.runs[0]?.count, null, 'and no size beside it, which would only repeat the line');
 });
 
@@ -406,14 +406,14 @@ test('the pair is recognised with the note first', () => {
       runs: [
         runRecord({
           edits: [
-            { address: 'B378', field: 'Status', note: 'Frieren S1: last watched 2026-09-01' },
-            { address: 'F378', field: 'Episode', note: 'Frieren S1: 16 -> 17 episodes' },
+            { address: 'O378', field: 'Seasons / Last Watched', note: 'Frieren S1: last watched 2026-09-01' },
+            { address: 'K378', field: 'Episodes', note: 'Frieren S1: 16 -> 17 episodes' },
           ],
         }),
       ],
     }),
   );
-  assert.deepEqual(model.sheet.runs[0]?.sole, { address: 'F378', field: 'Episode', note: 'Frieren S1: 16 -> 17 episodes, last watched 2026-09-01' });
+  assert.deepEqual(model.sheet.runs[0]?.sole, { address: 'K378', field: 'Episodes', note: 'Frieren S1: 16 -> 17 episodes, last watched 2026-09-01' });
 });
 
 // Two rows is two changes: a note dates the count *beside* it, so a `Status`
@@ -425,8 +425,8 @@ test('a count and a note on different rows keep their expander', () => {
       runs: [
         runRecord({
           edits: [
-            { address: 'F378', field: 'Episode', note: 'Frieren S1: 16 -> 17 episodes' },
-            { address: 'B412', field: 'Status', note: 'Fargo S2: last watched 2026-09-01' },
+            { address: 'K378', field: 'Episodes', note: 'Frieren S1: 16 -> 17 episodes' },
+            { address: 'O412', field: 'Seasons / Last Watched', note: 'Fargo S2: last watched 2026-09-01' },
           ],
         }),
       ],
@@ -447,8 +447,8 @@ test('a Status write that is not a watch date does not pair with a count', () =>
       runs: [
         runRecord({
           edits: [
-            { address: 'F378', field: 'Episode', note: 'Frieren S1: 16 -> 17 episodes' },
-            { address: 'B378', field: 'Status', note: 'Frieren S1: dated, so its last-watched note is cleared' },
+            { address: 'K378', field: 'Episodes', note: 'Frieren S1: 16 -> 17 episodes' },
+            { address: 'O378', field: 'Seasons / Last Watched', note: 'Frieren S1: dated, so its last-watched note is cleared' },
           ],
         }),
       ],
@@ -484,7 +484,7 @@ test('a run of several writes keeps its size and its expander', () => {
       sheetConfigured: true,
       runs: [
         runRecord({
-          edits: [{ address: 'B2', field: 'Status', note: 'x' }, { address: 'B3', field: 'End', note: 'y' }],
+          edits: [{ address: 'H2', field: 'Status', note: 'x' }, { address: 'N3', field: 'End', note: 'y' }],
           inserts: [{ address: 'row 4', title: 'T', season: 1, note: 'z' }],
         }),
       ],

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { SheetSync } from '../../src/sheet/sync.ts';
 import { clearTokenCache } from '../../src/api/google/auth.ts';
 import { clearTokenCache as clearTvdbTokenCache } from '../../src/api/tvdb/auth.ts';
-import { cellOf, daysAgo, jsonResponse, libraryOf, quiet, recorder, SHEET_HEADERS, todaySerial, withConfig, withFetch, withFreshJournal, type CellSpec, seasonRow, showRow } from '../helpers.ts';
+import { cellOf, col, daysAgo, jsonResponse, libraryOf, quiet, recorder, SHEET_HEADERS, todaySerial, withConfig, withFetch, withFreshJournal, type CellSpec, seasonRow, showRow } from '../helpers.ts';
 import { CREDENTIAL, DEFAULT_GRID, fakeSheets, type FakeSheetsOptions } from './fake-sheets.ts';
 import { sheetRuns } from '../../src/sheet/io/journal.ts';
 import { withSheetLock } from '../../src/sheet/io/lock.ts';
@@ -57,7 +57,7 @@ test('report mode plans in full and makes no mutating request', async () => {
   await run('report', {}, (result, calls, _sheet, _sync, log) => {
     assert.equal(result.status, 'reported');
     // The count, and the note of when the season was last watched.
-    assert.deepEqual(result.record.edits.map((e) => e.field), ['Episode', 'Status']);
+    assert.deepEqual(result.record.edits.map((e) => e.field), ['Episodes', 'Seasons / Last Watched']);
     assert.ok(log.lines.some((l) => /Fargo S2: 3 -> 5 episodes/.test(l)), 'the report itself is logged');
     assert.deepEqual(calls.filter((c) => c.includes(':batchUpdate')), []);
   });
@@ -67,8 +67,8 @@ test('apply mode writes exactly what it planned and verifies it', async () => {
   await run('apply', {}, (result, calls, sheet) => {
     assert.equal(result.status, 'applied', result.error ?? '');
     assert.equal(result.error, null);
-    assert.equal(sheet.state[3]?.[3]?.userEnteredValue?.numberValue, 5);
-    assert.equal(sheet.state[3]?.[1]?.userEnteredValue?.stringValue, LAST_WATCHED, 'and the row says when it was last watched');
+    assert.equal(sheet.state[3]?.[col(H, 'Episodes')]?.userEnteredValue?.numberValue, 5);
+    assert.equal(sheet.state[3]?.[col(H, 'Seasons / Last Watched')]?.userEnteredValue?.stringValue, LAST_WATCHED, 'and the row says when it was last watched');
     // Snapshot and write in one atomic batch, a verify read, then the snapshot
     // is dropped.
     assert.deepEqual(sheet.batches, [['duplicateSheet', 'updateCells', 'updateCells'], ['deleteSheet']]);
@@ -83,7 +83,7 @@ test('apply mode writes exactly what it planned and verifies it', async () => {
 // Rollback exists for one failure: the plan was wrong. So the rollback set
 // comes from the observed diff, not the suspect plan.
 test('a write that does not verify is rolled back exactly once', async () => {
-  await run('apply', { meddle: (state) => void (state[2]![3] = cellOf(99)) }, (result, _calls, sheet) => {
+  await run('apply', { meddle: (state) => void (state[2]![col(H, 'Episodes')] = cellOf(99)) }, (result, _calls, sheet) => {
     assert.equal(result.status, 'rolled-back');
     assert.match(result.error ?? '', /changed without being planned/);
     // The undone run reports what it planned rather than nothing.
@@ -93,14 +93,14 @@ test('a write that does not verify is rolled back exactly once', async () => {
     assert.deepEqual(sheet.batches, [['duplicateSheet', 'updateCells', 'updateCells'], ['copyPaste'], ['deleteSheet']]);
     // The restore undoes the whole write — the meddled cell and the planned
     // edit both.
-    assert.equal(sheet.state[2]?.[3]?.userEnteredValue?.numberValue, 6);
-    assert.equal(sheet.state[3]?.[3]?.userEnteredValue?.numberValue, 3, 'the planned edit is undone too');
-    assert.equal(sheet.state[3]?.[1]?.userEnteredValue, undefined, 'note included');
+    assert.equal(sheet.state[2]?.[col(H, 'Episodes')]?.userEnteredValue?.numberValue, 6);
+    assert.equal(sheet.state[3]?.[col(H, 'Episodes')]?.userEnteredValue?.numberValue, 3, 'the planned edit is undone too');
+    assert.equal(sheet.state[3]?.[col(H, 'Seasons / Last Watched')]?.userEnteredValue, undefined, 'note included');
   });
 });
 
 test('a failed rollback freezes the process rather than writing again', async () => {
-  await run('apply', { meddle: (state) => void (state[2]![3] = cellOf(99)), failRollback: true }, async (result, _calls, sheet, sync) => {
+  await run('apply', { meddle: (state) => void (state[2]![col(H, 'Episodes')] = cellOf(99)), failRollback: true }, async (result, _calls, sheet, sync) => {
     assert.equal(result.status, 'frozen');
     assert.match(result.error ?? '', /^FROZEN:/);
     assert.equal(result.record.edits.length, 2, 'the freeze reports the plan it froze on');
@@ -122,7 +122,7 @@ test('a 500 on the write is never retried, and the re-read settles what happened
     assert.equal(result.retry, true, 'the next poll tries again');
     assert.equal(result.record.edits.length, 2, 'a batch that never landed still had a plan');
     assert.equal(calls.filter((c) => c.includes(':batchUpdate')).length, 1);
-    assert.equal(sheet.state[3]?.[3]?.userEnteredValue?.numberValue, 3, 'unchanged');
+    assert.equal(sheet.state[3]?.[col(H, 'Episodes')]?.userEnteredValue?.numberValue, 3, 'unchanged');
   });
 });
 
@@ -131,7 +131,7 @@ test('a 500 on the write is never retried, and the re-read settles what happened
 // recognise the emptied cell as the write it planned rather than as a
 // concurrent hand — the difference between a clean run and a rollback.
 test('closing a season empties its watch note, and the run verifies', async () => {
-  const grid: CellSpec[][] = [H, show('Fargo', 'Watching', 3381), season(1, 6, 44000), season(2, 3, null, { status: '2024-01-01', episodes: null })];
+  const grid: CellSpec[][] = [H, show('Fargo', 'Watching', 3381), season(1, 6, 44000), season(2, 3, null, { note: '2024-01-01', runtime: null })];
   const episodes = [
     { season: 1, episode: 1, type: 'episode', aired: true },
     ...Array.from({ length: 2 }, (_, i) => ({ season: 2, episode: i + 1, type: 'episode', aired: true })),
@@ -150,8 +150,8 @@ test('closing a season empties its watch note, and the run verifies', async () =
     { grid, episodes },
     (result, _calls, sheet) => {
       assert.equal(result.status, 'applied', result.error ?? '');
-      assert.ok(sheet.state[3]?.[5]?.userEnteredValue?.numberValue, 'the row is dated');
-      assert.equal(sheet.state[3]?.[1]?.userEnteredValue, undefined, 'and the note is gone, not blanked to an empty string');
+      assert.ok(sheet.state[3]?.[col(H, 'End Date')]?.userEnteredValue?.numberValue, 'the row is dated');
+      assert.equal(sheet.state[3]?.[col(H, 'Seasons / Last Watched')]?.userEnteredValue, undefined, 'and the note is gone, not blanked to an empty string');
     },
     watchedOut,
   );
@@ -198,7 +198,7 @@ test('a run with nothing to write is idle and writes nothing', async () => {
   // The sheet already holds what SIMKL says. The blank Status cell is part of
   // the assertion: a note dates a count, so a row whose count does not move
   // gets none, and this run has nothing at all to write.
-  sheet.state[3]![3] = cellOf(5);
+  sheet.state[3]![col(H, 'Episodes')] = cellOf(5);
   await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL, timezone: 'Europe/London' }, () =>
     withFetch(sheet.handler, async (calls) => {
       const result = await new SheetSync({ logger: quiet }).run(LIBRARY);
@@ -383,7 +383,7 @@ test('a rollback involving an insert deletes first, then restores from the backu
     { season: 3, episode: 1, type: 'episode', aired: true },
   ];
 
-  const sheet = server({ grid: rows, episodes, meddle: (state) => void (state[5]![3] = cellOf(999)) });
+  const sheet = server({ grid: rows, episodes, meddle: (state) => void (state[5]![col(H, 'Episodes')] = cellOf(999)) });
   const typed = () => JSON.stringify((sheet.tabs.get(1) ?? []).map((row) => row.map((cell) => cell.userEnteredValue ?? null)));
   const original = typed();
 
@@ -401,7 +401,7 @@ test('a rollback involving an insert deletes first, then restores from the backu
       assert.deepEqual(sheet.batches[3], ['deleteSheet'], 'and the snapshot is cleaned up');
 
       assert.equal(typed(), original, 'every cell holds exactly what it held before the write');
-      assert.deepEqual([...sheet.titles.values()], ['Sheet1'], 'no backup tab left behind');
+      assert.deepEqual([...sheet.titles.values()], ['Shows'], 'no backup tab left behind');
     }),
   );
 });
@@ -412,7 +412,7 @@ test('a rollback involving an insert deletes first, then restores from the backu
 // forgets.
 test('a failed rollback keeps the backup tab, renames it for repair, and names it', async () => {
   clearTokenCache();
-  const sheet = server({ meddle: (state) => void (state[2]![3] = cellOf(99)), failRollback: true });
+  const sheet = server({ meddle: (state) => void (state[2]![col(H, 'Episodes')] = cellOf(99)), failRollback: true });
   await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL }, () =>
     withFetch(sheet.handler, async () => {
       const result = await new SheetSync({ logger: quiet }).run(LIBRARY);
@@ -422,7 +422,7 @@ test('a failed rollback keeps the backup tab, renames it for repair, and names i
       assert.ok(repair, 'the snapshot tab survives a failed rollback');
       assert.deepEqual(titles.filter((t) => t.startsWith('_sync-backup-')), [], 'and is out of the swept namespace');
       assert.ok(result.error?.includes(repair), 'and the frozen message names it by its new name');
-      assert.match(result.error ?? '', /copy it back over Sheet1/);
+      assert.match(result.error ?? '', /copy it back over Shows/);
     }),
   );
 });
@@ -432,7 +432,7 @@ test('a failed rollback keeps the backup tab, renames it for repair, and names i
 // target is deleted by the next clean run.
 test('a snapshot whose id was lost is still found and renamed', async () => {
   clearTokenCache();
-  const sheet = server({ meddle: (state) => void (state[2]![3] = cellOf(99)), hideReplies: true, failTabLists: 4 });
+  const sheet = server({ meddle: (state) => void (state[2]![col(H, 'Episodes')] = cellOf(99)), hideReplies: true, failTabLists: 4 });
   await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL }, () =>
     withFetch(sheet.handler, async () => {
       const result = await new SheetSync({ logger: quiet }).run(LIBRARY);
@@ -449,7 +449,7 @@ test('a snapshot whose id was lost is still found and renamed', async () => {
 // imply the tab will keep.
 test('a snapshot that could not be renamed says so, and says to hurry', async () => {
   clearTokenCache();
-  const sheet = server({ meddle: (state) => void (state[2]![3] = cellOf(99)), hideReplies: true, failTabLists: 8 });
+  const sheet = server({ meddle: (state) => void (state[2]![col(H, 'Episodes')] = cellOf(99)), hideReplies: true, failTabLists: 8 });
   await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL }, () =>
     withFetch(sheet.handler, async () => {
       const result = await new SheetSync({ logger: quiet }).run(LIBRARY);
@@ -474,7 +474,7 @@ test('a repair snapshot survives a later clean run, which sweeps everything else
   await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL }, () =>
     withFetch(sheet.handler, async () => {
       assert.equal((await new SheetSync({ logger: quiet }).run(LIBRARY)).status, 'applied');
-      assert.deepEqual([...sheet.titles.values()], ['Sheet1', '_sync-REPAIR-1-2020-01-01T00-00-00-000Z']);
+      assert.deepEqual([...sheet.titles.values()], ['Shows', '_sync-REPAIR-1-2020-01-01T00-00-00-000Z']);
     }),
   );
 });
@@ -485,7 +485,7 @@ test('a clean run leaves no backup tab behind', async () => {
   await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL }, () =>
     withFetch(sheet.handler, async () => {
       assert.equal((await new SheetSync({ logger: quiet }).run(LIBRARY)).status, 'applied');
-      assert.deepEqual([...sheet.titles.values()], ['Sheet1']);
+      assert.deepEqual([...sheet.titles.values()], ['Shows']);
     }),
   );
 });
@@ -501,7 +501,7 @@ test('a clean run sweeps snapshot tabs an earlier run left behind', async () => 
   await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL }, () =>
     withFetch(sheet.handler, async () => {
       assert.equal((await new SheetSync({ logger: quiet }).run(LIBRARY)).status, 'applied');
-      assert.deepEqual([...sheet.titles.values()], ['Sheet1'], 'the orphan goes too');
+      assert.deepEqual([...sheet.titles.values()], ['Shows'], 'the orphan goes too');
     }),
   );
 });
@@ -563,7 +563,7 @@ test('a run is recorded in the journal with what it planned', async () => {
         assert.equal(recorded?.mode, 'apply');
         assert.equal(recorded?.error, null);
         assert.match(recorded?.edits[0]?.note ?? '', /Fargo S2: 3 -> 5 episodes/);
-      assert.equal(recorded?.edits[0]?.address, 'D4');
+      assert.equal(recorded?.edits[0]?.address, 'K4');
     });
   });
 });
@@ -623,7 +623,7 @@ test('a snapshot that ages past the freshness window is re-read, never written a
 // --- season runtimes -------------------------------------------------------
 
 /** Fargo season 2 fully aired and fully watched, with a blank runtime cell. */
-const CLOSING_GRID: CellSpec[][] = [H, show('Fargo', 'Watching', 3381), season(1, 6, 44000), seasonRow(2, 3, null, { episodes: null })];
+const CLOSING_GRID: CellSpec[][] = [H, show('Fargo', 'Watching', 3381), season(1, 6, 44000), seasonRow(2, 3, null, { runtime: null })];
 
 const CLOSING_LIBRARY = libraryOf({
   id: 3381,
@@ -658,8 +658,8 @@ test('a season closing writes its end date and its runtime in one verified batch
     withFetch(sheet.handler, async () => {
       assert.equal((await new SheetSync({ logger: quiet }).run(CLOSING_LIBRARY)).status, 'applied');
       const row = sheet.tabs.get(1)![3]!;
-      assert.ok(row[H.indexOf('End')]?.userEnteredValue?.numberValue, 'dated');
-      assert.equal(row[H.indexOf('Episodes')]?.userEnteredValue?.numberValue, 54 / 1440, 'and carries the average');
+      assert.ok(row[col(H, 'End Date')]?.userEnteredValue?.numberValue, 'dated');
+      assert.equal(row[col(H, 'Episode Length (min)')]?.userEnteredValue?.numberValue, 54, 'and carries the average');
     }),
   );
 });
@@ -675,8 +675,8 @@ test('a TVDB outage leaves the row open and asks for another poll', async () => 
       const result = await new SheetSync({ logger: quiet }).run(CLOSING_LIBRARY);
       assert.equal(result.retry, true, 'the work is known to be waiting');
       const row = sheet.tabs.get(1)![3]!;
-      assert.equal(row[H.indexOf('End')]?.userEnteredValue?.numberValue, undefined, 'still open');
-      assert.equal(row[H.indexOf('Episodes')]?.userEnteredValue, undefined, 'and still blank');
+      assert.equal(row[col(H, 'End Date')]?.userEnteredValue?.numberValue, undefined, 'still open');
+      assert.equal(row[col(H, 'Episode Length (min)')]?.userEnteredValue, undefined, 'and still blank');
     }),
   );
 });
@@ -705,8 +705,8 @@ test('a rejected TVDB key settles: the season closes on the show-wide runtime', 
       assert.notEqual(result.status, 'failed', 'the run is not sunk by an optional lookup');
       assert.equal(result.retry, false, 'and does not re-ask for a poll that cannot help');
       const row = sheet.tabs.get(1)![3]!;
-      assert.ok(row[H.indexOf('End')]?.userEnteredValue?.numberValue, 'the season is dated');
-      assert.equal(row[H.indexOf('Episodes')]?.userEnteredValue?.numberValue, 48 / 1440, 'on the show-wide length, since no average is coming');
+      assert.ok(row[col(H, 'End Date')]?.userEnteredValue?.numberValue, 'the season is dated');
+      assert.equal(row[col(H, 'Episode Length (min)')]?.userEnteredValue?.numberValue, 48, 'on the show-wide length, since no average is coming');
     }),
   );
 });
@@ -722,8 +722,8 @@ test('a login outage leaves the row open rather than settling it', async () => {
       const result = await new SheetSync({ logger: quiet }).run(CLOSING_LIBRARY);
       assert.equal(result.retry, true, 'worth asking again');
       const row = sheet.tabs.get(1)![3]!;
-      assert.equal(row[H.indexOf('End')]?.userEnteredValue?.numberValue, undefined, 'that row waits');
-      assert.equal(row[H.indexOf('Episode')]?.userEnteredValue?.numberValue, 10, 'but its count still advanced');
+      assert.equal(row[col(H, 'End Date')]?.userEnteredValue?.numberValue, undefined, 'that row waits');
+      assert.equal(row[col(H, 'Episodes')]?.userEnteredValue?.numberValue, 10, 'but its count still advanced');
     }),
   );
 });
@@ -739,8 +739,8 @@ test('with no TVDB key the season closes on the show-wide runtime', async () => 
       assert.equal((await new SheetSync({ logger: quiet }).run(CLOSING_LIBRARY)).status, 'applied');
       assert.equal(calls.filter((c) => c.includes('thetvdb.com')).length, 0);
       const row = sheet.tabs.get(1)![3]!;
-      assert.ok(row[H.indexOf('End')]?.userEnteredValue?.numberValue, 'dated all the same');
-      assert.equal(row[H.indexOf('Episodes')]?.userEnteredValue?.numberValue, 48 / 1440, 'on the show-wide length');
+      assert.ok(row[col(H, 'End Date')]?.userEnteredValue?.numberValue, 'dated all the same');
+      assert.equal(row[col(H, 'Episode Length (min)')]?.userEnteredValue?.numberValue, 48, 'on the show-wide length');
     }),
   );
 });
@@ -807,9 +807,9 @@ test('a season still running is added with a blank runtime cell, and nothing is 
     withFetch(sheet.handler, async (calls) => {
       assert.equal((await new SheetSync({ logger: quiet }).run(LIBRARY)).status, 'applied');
       const row = addedRow(sheet);
-      assert.equal(row[H.indexOf('Season')]?.userEnteredValue?.numberValue, 2, 'the row went in');
-      assert.equal(row[H.indexOf('Episodes')]?.userEnteredValue, undefined, 'left for the close to fill');
-      assert.equal(row[H.indexOf('End')]?.userEnteredValue, undefined, 'and not dated, because it is still running');
+      assert.equal(row[col(H, 'Season')]?.userEnteredValue?.numberValue, 2, 'the row went in');
+      assert.equal(row[col(H, 'Episode Length (min)')]?.userEnteredValue, undefined, 'left for the close to fill');
+      assert.equal(row[col(H, 'End Date')]?.userEnteredValue, undefined, 'and not dated, because it is still running');
       assert.deepEqual(calls.filter((c) => c.includes('/episodes/official')), []);
     }),
   );
@@ -823,8 +823,8 @@ test('a season already over when its row is added is dated and averaged in the s
     withFetch(sheet.handler, async (calls) => {
       assert.equal((await new SheetSync({ logger: quiet }).run(CLOSING_LIBRARY)).status, 'applied');
       const row = addedRow(sheet);
-      assert.ok(row[H.indexOf('End')]?.userEnteredValue?.numberValue, 'dated');
-      assert.equal(row[H.indexOf('Episodes')]?.userEnteredValue?.numberValue, 54 / 1440, 'and carries its own average, not the show-wide 48');
+      assert.ok(row[col(H, 'End Date')]?.userEnteredValue?.numberValue, 'dated');
+      assert.equal(row[col(H, 'Episode Length (min)')]?.userEnteredValue?.numberValue, 54, 'and carries its own average, not the show-wide 48');
       assert.equal(calls.filter((c) => c.includes('/episodes/official')).length, 1, 'asked about the row it was about to create');
     }),
   );
@@ -849,16 +849,16 @@ test('a TVDB outage adds the row open, and the next poll dates it and fills the 
       const sync = new SheetSync({ logger: quiet });
       assert.equal((await sync.run(CLOSING_LIBRARY)).status, 'applied');
       const open = addedRow(sheet);
-      assert.equal(open[H.indexOf('Season')]?.userEnteredValue?.numberValue, 2, 'the row still went in');
-      assert.equal(open[H.indexOf('End')]?.userEnteredValue, undefined, 'undated, so the cell is still fillable');
-      assert.equal(open[H.indexOf('Episodes')]?.userEnteredValue, undefined);
+      assert.equal(open[col(H, 'Season')]?.userEnteredValue?.numberValue, 2, 'the row still went in');
+      assert.equal(open[col(H, 'End Date')]?.userEnteredValue, undefined, 'undated, so the cell is still fillable');
+      assert.equal(open[col(H, 'Episode Length (min)')]?.userEnteredValue, undefined);
 
       answering = true;
       clearTvdbTokenCache();
       assert.equal((await sync.run(CLOSING_LIBRARY)).status, 'applied');
       const closed = addedRow(sheet);
-      assert.ok(closed[H.indexOf('End')]?.userEnteredValue?.numberValue, 'dated on the second poll');
-      assert.equal(closed[H.indexOf('Episodes')]?.userEnteredValue?.numberValue, 54 / 1440, 'with the average beside it');
+      assert.ok(closed[col(H, 'End Date')]?.userEnteredValue?.numberValue, 'dated on the second poll');
+      assert.equal(closed[col(H, 'Episode Length (min)')]?.userEnteredValue?.numberValue, 54, 'with the average beside it');
     }),
   );
 });
@@ -870,7 +870,7 @@ test('with no TVDB key a new row keeps SIMKL’s show-wide runtime', async () =>
   await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL, tvdbApiKey: undefined }, () =>
     withFetch(sheet.handler, async (calls) => {
       assert.equal((await new SheetSync({ logger: quiet }).run(LIBRARY)).status, 'applied');
-      assert.equal(addedRow(sheet)[H.indexOf('Episodes')]?.userEnteredValue?.numberValue, 48 / 1440);
+      assert.equal(addedRow(sheet)[col(H, 'Episode Length (min)')]?.userEnteredValue?.numberValue, 48);
       assert.equal(calls.filter((c) => c.includes('thetvdb.com')).length, 0);
     }),
   );
@@ -905,7 +905,7 @@ const fargo = (first: number): Library =>
 const DATED = DEFAULT_GRID.map((row, i) => (i === 2 ? season(1, 6, todaySerial('Europe/London')) : row));
 
 /** Where season 1's `Start` cell sits in that grid. */
-const S1_START = 'E3';
+const S1_START = 'M3';
 
 test('a change is written only once the value before it has been observed', async () => {
   await run(
@@ -914,12 +914,12 @@ test('a change is written only once the value before it has been observed', asyn
     async (first, _calls, _sheet, sync) => {
       // First sight of season 1: recorded, and nothing written about it —
       // whatever its Start cell already held.
-      assert.deepEqual(first.record.edits.map((e) => e.field), ['Episode', 'Status']);
+      assert.deepEqual(first.record.edits.map((e) => e.field), ['Episodes', 'Seasons / Last Watched']);
 
       // Now it moves, and the dated row takes the new date.
       const second = await sync.run(fargo(31));
       assert.equal(second.status, 'applied');
-      assert.deepEqual(second.record.edits.map((e) => [e.address, e.field]), [[S1_START, 'Start']]);
+      assert.deepEqual(second.record.edits.map((e) => [e.address, e.field]), [[S1_START, 'Start Date']]);
 
       // Applied, so the new value is recorded and the same edit is not planned
       // a second time.

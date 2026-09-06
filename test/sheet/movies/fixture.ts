@@ -92,10 +92,15 @@ export const filmGrid = (...named: NamedFilmRow[]): FilmGridFixture => {
   };
 
   const insert = ({ row = rows.length, id = 999, title = 'A New Film', extra = [], without }: FilmInsertOptions = {}): FilmRowInsert => {
+    // `Format` and `Type` are filled by default, the way every real insert
+    // fills them — `without: 'Format'`/`'Type'` is what proves the guard's
+    // mandate that a film row must say both.
     const fields: Array<[MovieHeaderName, ExtendedValue]> = [
       ['Name', { stringValue: title }],
       ['Watch Date', { numberValue: TODAY - 1 }],
       ['id', { stringValue: String(id) }],
+      ['Format', { stringValue: 'Home' }],
+      ['Type', { stringValue: 'film' }],
       ...extra,
     ].filter(([field]) => field !== without) as Array<[MovieHeaderName, ExtendedValue]>;
 

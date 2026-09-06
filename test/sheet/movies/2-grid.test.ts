@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { GridError, parseMovieGrid, parseMovieId } from '../../../src/sheet/movies/2-grid.ts';
-import { cellOf, filmRow, MOVIE_SHEET_HEADERS, sheetSnapshot } from '../../helpers.ts';
+import { cellOf, filmRow, MOVIE_SHEET_HEADERS, rowByLabel, sheetSnapshot } from '../../helpers.ts';
 import { film, filmGrid, rawFilm } from './fixture.ts';
 
 test('a film row is one row, matched by the id its cell holds as text', () => {
@@ -37,12 +37,12 @@ test('columns are resolved by label, so reordering them changes nothing', () => 
 });
 
 test('a missing column is refused rather than guessed at', () => {
-  const rows = [MOVIE_SHEET_HEADERS.map((h) => (h === 'Banner' ? 'Backdrop' : h)), filmRow({ id: 1 })];
-  assert.throws(() => parseMovieGrid(sheetSnapshot(rows)), /Banner is missing/);
+  const rows = [MOVIE_SHEET_HEADERS.map((h) => (h === 'Artwork' ? 'Backdrop' : h)), filmRow({ id: 1 })];
+  assert.throws(() => parseMovieGrid(sheetSnapshot(rows)), /Artwork is missing/);
 });
 
 test('a duplicated column is refused: which one holds Score is unanswerable', () => {
-  const rows = [MOVIE_SHEET_HEADERS.map((h) => (h === 'Runtime' ? 'Score' : h)), filmRow({ id: 1 })];
+  const rows = [MOVIE_SHEET_HEADERS.map((h) => (h === 'Runtime (min)' ? 'Score' : h)), filmRow({ id: 1 })];
   assert.throws(() => parseMovieGrid(sheetSnapshot(rows)), /Score appears in/);
 });
 
@@ -51,7 +51,7 @@ test('a tab with no recognisable header row fails closed', () => {
 });
 
 test('the blank tail is not data, but a row with only a name is', () => {
-  const fx = filmGrid(film('real', { id: 1 }), rawFilm('started', ['Half Typed', null, null, null, null, null, null, null, null, null, null, null, null, null]));
+  const fx = filmGrid(film('real', { id: 1 }), rawFilm('started', rowByLabel(MOVIE_SHEET_HEADERS, { Title: 'Half Typed' })));
   assert.equal(fx.grid.rows.length, 2);
   // A row someone began by hand must be seen, or the sync inserts a second
   // row for the same film beneath it.

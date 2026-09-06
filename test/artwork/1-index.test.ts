@@ -4,17 +4,25 @@ import { indexArtwork, showBannerColumn, summarise, type IndexInput } from '../.
 import { parseGrid } from '../../src/sheet/2-grid.ts';
 import { parseMovieGrid } from '../../src/sheet/movies/2-grid.ts';
 import type { SheetRunRecord } from '../../src/sheet/io/journal.ts';
-import { daysAgo, filmRow, libraryOf, MOVIE_SHEET_HEADERS, seasonRow, SHEET_HEADERS, sheetSnapshot, showRow, type CellSpec } from '../helpers.ts';
+import { col, daysAgo, filmRow, libraryOf, MOVIE_SHEET_HEADERS, rowByLabel, seasonRow, SHEET_HEADERS, sheetSnapshot, showRow, type CellSpec } from '../helpers.ts';
 
 const BUCKETS = { movie: 'movies-bucket', show: 'shows-bucket' };
 const SHOW_LINK = (key: string) => `https://storage.googleapis.com/shows-bucket/${key}`;
 const MOVIE_LINK = (key: string) => `https://storage.googleapis.com/movies-bucket/${key}`;
 
-/** A show block: the show row with a `Banner` cell, then season rows. */
-const block = (title: string, id: number | null, banner: CellSpec, ...seasons: CellSpec[][]): CellSpec[][] => [
-  [...showRow(title, 'Ended', id), banner],
-  ...seasons.map((s) => [...s, null]),
-];
+const ARTWORK_COL = col(SHEET_HEADERS, 'Artwork');
+
+/**
+ * A show block: the show row with an `Artwork` cell, then season rows. The
+ * cell is set directly rather than through `showRow`'s `artwork` option so a
+ * formula object can go there too, the way the real sheet's 291 formula rows
+ * do.
+ */
+const block = (title: string, id: number | null, artwork: CellSpec, ...seasons: CellSpec[][]): CellSpec[][] => {
+  const show = showRow(title, 'Ended', id);
+  show[ARTWORK_COL] = artwork;
+  return [show, ...seasons];
+};
 
 const stored = (movie: string[], show: string[]) => ({
   movie: new Map(movie.map((k) => [k, { size: 1, updated: Temporal.Instant.from('2026-08-01T00:00:00Z') }])),
@@ -33,10 +41,11 @@ const input = (over: Partial<IndexInput> = {}): IndexInput => ({
   ...over,
 });
 
-test('the show tab\'s Banner column is resolved apart from the sync\'s headers, and its absence degrades', () => {
-  const withBanner = parseGrid(sheetSnapshot([[...SHEET_HEADERS, 'Banner'], ...block('Severance', 1, null)]));
-  assert.equal(showBannerColumn(withBanner), SHEET_HEADERS.length);
-  const without = parseGrid(sheetSnapshot([SHEET_HEADERS, showRow('Severance', 'Ended', 1)]));
+test('the show tab\'s Artwork column is resolved apart from the sync\'s headers, and its absence degrades', () => {
+  const withBanner = parseGrid(sheetSnapshot([SHEET_HEADERS, ...block('Severance', 1, null)]));
+  assert.equal(showBannerColumn(withBanner), ARTWORK_COL);
+  const noArtwork = SHEET_HEADERS.filter((h) => h !== 'Artwork');
+  const without = parseGrid(sheetSnapshot([noArtwork, rowByLabel(noArtwork, { Title: 'Severance', Status: 'Ended', ID: 1, Type: 'show' })]));
   assert.equal(showBannerColumn(without), null);
   const [title] = indexArtwork(input({ shows: without }), { timezone: 'Europe/London' });
   assert.equal(title?.address, null);
@@ -46,8 +55,8 @@ test('the show tab\'s Banner column is resolved apart from the sync\'s headers, 
 test('every cell kind has a state, and the key follows the cell where it links the bucket', () => {
   const shows = parseGrid(
     sheetSnapshot([
-      [...SHEET_HEADERS, 'Banner'],
-      ...block('Done', 1, { formula: '=CONCAT($Z$2,A2)', value: SHOW_LINK('Done') }),
+      SHEET_HEADERS,
+      ...block('Done', 1, { formula: '=CONCAT("https://storage.googleapis.com/shows-bucket/",A2)', value: SHOW_LINK('Done') }),
       ...block('Missing', 2, SHOW_LINK('Missing')),
       ...block('Typo', 3, SHOW_LINK('Typoo')),
       ...block('Blank', 4, null),
@@ -55,7 +64,7 @@ test('every cell kind has a state, and the key follows the cell where it links t
       ...block('Proxy', 9, 'https://wsrv.nl/?url=x'),
       ...block('Local', 10, 'https://192.168.1.4/x.jpg'),
       ...block('Plain', 11, 'http://example.com/x.jpg'),
-      ...block('Formula Elsewhere', 6, { formula: '=CONCAT($Z$2,A7)', value: 'Formula Elsewhere' }),
+      ...block('Formula Elsewhere', 6, { formula: '=CONCAT("https://storage.googleapis.com/shows-bucket/",A99)', value: 'Formula Elsewhere' }),
       ...block('Text', 7, 'ask'),
       ...block('No Id', null, null, seasonRow(1, 3, null)),
     ]),
@@ -77,23 +86,24 @@ test('every cell kind has a state, and the key follows the cell where it links t
   assert.equal(byTitle['Text']?.state, 'unrecognised');
   assert.equal(byTitle['No Id']?.state, 'no-id');
   assert.equal(byTitle['No Id']?.id, null);
-  assert.equal(byTitle['Done']?.address, 'K2');
+  assert.equal(byTitle['Done']?.address, 'Q2');
 });
 
 test('a show\'s franchise comes from its own tab\'s column, and a tab without one degrades', () => {
-  const withColumn = parseGrid(sheetSnapshot([[...SHEET_HEADERS, 'Banner', 'Franchise'], [...showRow('Loki', 'Ended', 1), null, 'Marvel']]));
+  const withColumn = parseGrid(sheetSnapshot([SHEET_HEADERS, showRow('Loki', 'Ended', 1, 'show', { franchise: 'Marvel' })]));
   const [loki] = indexArtwork(input({ shows: withColumn }), { timezone: 'Europe/London' });
   assert.equal(loki?.franchise, 'Marvel');
   assert.equal(loki?.context, 'Ended');
   assert.equal(loki?.releasedOn, null);
-  const without = parseGrid(sheetSnapshot([[...SHEET_HEADERS, 'Banner'], ...block('Loki', 1, null)]));
+  const noFranchise = SHEET_HEADERS.filter((h) => h !== 'Franchise');
+  const without = parseGrid(sheetSnapshot([noFranchise, rowByLabel(noFranchise, { Title: 'Loki', Status: 'Ended', ID: 1, Type: 'show' })]));
   assert.equal(indexArtwork(input({ shows: without }), { timezone: 'Europe/London' })[0]?.franchise, null);
 });
 
 test('a cour block is keyed by its first season row\'s id, and a duplicated id is no id', () => {
   const shows = parseGrid(
     sheetSnapshot([
-      [...SHEET_HEADERS, 'Banner'],
+      SHEET_HEADERS,
       ...block('Cour Show', null, null, seasonRow(1, 12, 45000, { id: 11 }), seasonRow(1, 12, 45001, { id: 12 })),
       ...block('Twice A', 20, null),
       ...block('Twice B', 20, null),
@@ -136,7 +146,7 @@ test('films take their provider id from the library and their franchise from the
   assert.equal(byTitle['Finding Nemo']?.franchise, 'Pixar');
   assert.equal(byTitle['Finding Nemo']?.releasedOn?.toString(), '2003-10-10');
   assert.equal(byTitle['Finding Nemo']?.context, null);
-  assert.equal(byTitle['Finding Nemo']?.address, 'N2');
+  assert.equal(byTitle['Finding Nemo']?.address, 'P2');
   assert.equal(byTitle['Unfiled']?.state, 'unlinked');
   assert.equal(byTitle['Unfiled']?.providerId, null);
   assert.equal(byTitle['Old Way']?.state, 'adopt');
@@ -190,7 +200,7 @@ test('only an applied sync run counts as the sync adding a row', () => {
 });
 
 test('an insert is matched to a title on its own tab', () => {
-  const shows = parseGrid(sheetSnapshot([[...SHEET_HEADERS, 'Banner'], ...block('Twin', 1, null)]));
+  const shows = parseGrid(sheetSnapshot([SHEET_HEADERS, ...block('Twin', 1, null)]));
   const films = parseMovieGrid(sheetSnapshot([MOVIE_SHEET_HEADERS, filmRow({ name: 'Twin', id: '2' })]));
   const runs = [run({ tab: 'films', inserts: [{ address: 'row 2', title: 'Twin', note: '' }] })];
   const titles = indexArtwork(input({ shows, films, runs }), { timezone: 'Europe/London' });
@@ -215,7 +225,7 @@ test('the summary counts what the chips show', () => {
       filmRow({ name: 'D', id: null }),
     ]),
   );
-  const shows = parseGrid(sheetSnapshot([[...SHEET_HEADERS, 'Banner'], ...block('E', 9, null)]));
+  const shows = parseGrid(sheetSnapshot([SHEET_HEADERS, ...block('E', 9, null)]));
   const runs = [
     run({ tab: 'films', at: daysAgo(2), inserts: [{ address: 'row 2', title: 'A', note: '' }] }),
     run({ tab: 'films', at: daysAgo(60), inserts: [{ address: 'row 3', title: 'B', note: '' }] }),

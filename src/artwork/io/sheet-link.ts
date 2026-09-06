@@ -1,5 +1,5 @@
 /**
- * WRITE — put the static link in one `Banner` cell, or say why not.
+ * WRITE — put the static link in one `Artwork` cell, or say why not.
  *
  * The authoritative pass. The shell pre-decides from its cached index so a
  * refusal costs no upload, but the cell is written only against a snapshot
@@ -25,6 +25,7 @@ import { parseMovieGrid } from '../../sheet/movies/2-grid.ts';
 import { appendSheetRun } from '../../sheet/io/journal.ts';
 import { SheetBusyError, withSheetLock } from '../../sheet/io/lock.ts';
 import { applyRequests, readSnapshot, type SheetSnapshot } from '../../sheet/io/spreadsheet.ts';
+import { ARTWORK_LABEL } from '../../sheet/values.ts';
 import { showBannerColumn, type ArtworkKind } from '../1-index.ts';
 import { decideLink, type RefusalReason } from '../3-decide.ts';
 
@@ -39,7 +40,7 @@ export interface LinkRequest {
   /** The title the reader acted on. The row found by id must still carry it. */
   title: string;
   adopt: boolean;
-  /** The `Banner` cell as the page showed it. The write requires the live cell to match. */
+  /** The `Artwork` cell as the page showed it. The write requires the live cell to match. */
   expectPrevious: CellData | undefined;
   signal?: AbortSignal;
 }
@@ -66,7 +67,12 @@ interface Located {
   title: string;
 }
 
-/** The row for a SIMKL id on either tab, or the reason there is no single one. */
+/**
+ * The row for a SIMKL id on either tab, or the reason there is no single one.
+ *
+ * `no-banner-column` names the state, not the header: the page's client and
+ * the tests both branch on the code, so it stays whatever the column is called.
+ */
 const locate = (kind: ArtworkKind, snapshot: SheetSnapshot, id: number): Located | { refused: LinkRefusal; detail: string } => {
   if (kind === 'movie') {
     const grid = parseMovieGrid(snapshot);
@@ -77,7 +83,7 @@ const locate = (kind: ArtworkKind, snapshot: SheetSnapshot, id: number): Located
   }
   const grid = parseGrid(snapshot);
   const column = showBannerColumn(grid);
-  if (column === null) return { refused: 'no-banner-column', detail: `${snapshot.title} has no Banner column` };
+  if (column === null) return { refused: 'no-banner-column', detail: `${snapshot.title} has no ${ARTWORK_LABEL} column` };
   if (duplicateIds(grid.blocks).has(id)) return { refused: 'duplicate', detail: `id ${id} is on more than one block of ${snapshot.title}` };
   const block = grid.blocks.find((b) => b.ids.includes(id) || b.seasons.some((s) => s.ids.includes(id)));
   if (!block) return { refused: 'not-found', detail: `no block on ${snapshot.title} carries id ${id}` };
@@ -134,7 +140,7 @@ const linkUnderLock = async ({ kind, id, title, adopt, expectPrevious, signal }:
     error = outcome.detail;
     log.error(`artwork: ${address} on ${tab.title}: ${error}`);
     await appendSheetRun(
-      { at, status: 'failed', tab: tab.tab, source: 'artwork', mode: config.sheetSyncMode, edits: [{ address, field: 'Banner', note }], inserts: [], error },
+      { at, status: 'failed', tab: tab.tab, source: 'artwork', mode: config.sheetSyncMode, edits: [{ address, field: ARTWORK_LABEL, note }], inserts: [], error },
       { log },
     );
     return outcome;
@@ -157,7 +163,7 @@ const linkUnderLock = async ({ kind, id, title, adopt, expectPrevious, signal }:
     log.error(`artwork: ${address} on ${tab.title}: ${error}`);
   }
   await appendSheetRun(
-    { at, status: outcome.status === 'written' ? 'applied' : 'failed', tab: tab.tab, source: 'artwork', mode: config.sheetSyncMode, edits: [{ address, field: 'Banner', note }], inserts: [], error },
+    { at, status: outcome.status === 'written' ? 'applied' : 'failed', tab: tab.tab, source: 'artwork', mode: config.sheetSyncMode, edits: [{ address, field: ARTWORK_LABEL, note }], inserts: [], error },
     { log },
   );
   return outcome;

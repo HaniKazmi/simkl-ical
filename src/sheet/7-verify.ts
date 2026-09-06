@@ -19,9 +19,9 @@ import type { CellData, ExtendedValue } from '../api/google/types.ts';
 import type { SheetSnapshot } from './io/spreadsheet.ts';
 
 /**
- * The columns the diff inspects. The edit columns alone would leave four of
- * the insert's six cells uninspected; everything would mean editing the
- * banner URL in `W2` aborts a sync for no reason.
+ * The columns the diff inspects. The edit columns alone would leave the
+ * insert's `Season` cell uninspected; every column on the tab would mean
+ * editing a show's artwork link aborts a sync for no reason.
  *
  * Derived rather than listed: forgetting an entry here is a corruption nobody
  * sees — a new header in `HEADERS` would be written by the sync and never
@@ -55,8 +55,9 @@ export const shiftRow = (row: number, insertRows: number[]): number => row + ins
  *
  * **`userEnteredValue` is only stable while the grid is.** Inserting a row
  * shifts every row beneath it and Sheets rewrites the relative A1 references
- * in every affected formula — `=I609*F609` becomes `=I610*F610`, each show
- * row's five roll-ups likewise. Correct behaviour, nothing to verify.
+ * in every affected formula — a show row's block-height helper
+ * `=IFERROR(MATCH("*",OFFSET($A2,1,0,40),0)-1,…)` becomes `OFFSET($A3,…)`, and
+ * its four roll-ups likewise. Correct behaviour, nothing to verify.
  * Treating it as unplanned flags a thousand cells and, far worse, invites a
  * rollback to write the pre-insert text back — which the accompanying delete
  * then rewrites *again*, one row off.

@@ -121,7 +121,7 @@ test('the id column moving is caught too, though the diff skips that column', ()
   // every film row is matched by, and a tab whose id column moved is one
   // nothing else can be trusted about.
   const moved = MOVIE_SHEET_HEADERS.map((h) => h);
-  const id = moved.indexOf('id');
+  const id = moved.indexOf('ID');
   [moved[id], moved[id + 1]] = [moved[id + 1]!, moved[id]!];
   const result = verifyFilms(ffx.grid, sheetSnapshot([moved, BASE[1]!, BASE[2]!]), filmPlanOf());
   assert.equal(result.ok, false);

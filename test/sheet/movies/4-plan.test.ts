@@ -6,8 +6,8 @@ import { MAX_LOOKUPS_PER_PASS, NOT_HELD, observeFilms, planFilms } from '../../.
 import { movieKey, type Baseline } from '../../../src/sheet/values.ts';
 import { isoOf } from '../../../src/shared/dates.ts';
 import type { FilmFacts } from '../../../src/sheet/movies/3-catalogue.ts';
-import { cellOf, libraryOf, type ItemSpec } from '../../helpers.ts';
-import { film, filmGrid, rawFilm, TODAY } from './fixture.ts';
+import { cellOf, libraryOf, rowByLabel, type ItemSpec } from '../../helpers.ts';
+import { film, filmGrid, MH, rawFilm, TODAY } from './fixture.ts';
 
 const NOW = Temporal.Instant.from('2026-09-04T12:00:00Z');
 const OPTS = { now: NOW, timezone: 'UTC' as const };
@@ -75,7 +75,7 @@ test('a value that moved away from what was recorded is written', () => {
   // note does; `41000` on a status page says nothing to anyone.
   assert.deepEqual(
     p.edits.map((e) => e.note),
-    ['Show 1: Watch Date moved from 2009-07-06 to 2012-04-01', 'Show 1: Score moved from 5 to 9', 'Show 1: Runtime moved from 90 to 120'],
+    ['Show 1: Watch Date moved from 2009-07-06 to 2012-04-01', 'Show 1: Score moved from 5 to 9', 'Show 1: Runtime (min) moved from 90 to 120'],
   );
 });
 
@@ -283,16 +283,18 @@ test('a film watched but never dated gets no row — a 1970 date is worse than n
   assert.match(p.skips.find((s) => s.code === 'unusable-value')?.reason ?? '', /watch date/);
 });
 
-test('Cinema is set only when the film opened here and was watched inside the window', () => {
+test('Format is Cinema only when the film opened here and was watched inside the window', () => {
   const opened = Temporal.PlainDate.from('1899-12-30').add({ days: TODAY - 5 });
   const inWindow = new Map<number, FilmFacts | null>([[2, facts({ openedInCinemas: opened })]]);
   const { plan: p } = plan([film('a', { id: 1 })], [movie({ id: 1 }), movie({ id: 2, lastWatchedAt: watchedOn(TODAY - 1) })], { known: inWindow });
-  assert.deepEqual(p.insert?.fill.find((c) => c.field === 'Cinema')?.value, { boolValue: true });
+  assert.deepEqual(p.insert?.fill.find((c) => c.field === 'Format')?.value, { stringValue: 'Cinema' });
 
-  // A streaming premiere watched on release week: no GB opening, no tick.
+  // A streaming premiere watched on release week: no GB opening, no tick —
+  // `Format` is always present, so the absence of a cinema visit is `Home`,
+  // never an absent cell.
   const never = new Map<number, FilmFacts | null>([[2, facts({ openedInCinemas: null })]]);
   const { plan: q } = plan([film('a', { id: 1 })], [movie({ id: 1 }), movie({ id: 2, lastWatchedAt: watchedOn(TODAY - 1) })], { known: never });
-  assert.equal(q.insert?.fill.some((c) => c.field === 'Cinema'), false);
+  assert.deepEqual(q.insert?.fill.find((c) => c.field === 'Format')?.value, { stringValue: 'Home' });
 });
 
 test('a film already on the tab is never inserted, whatever its status', () => {
@@ -312,7 +314,7 @@ test('a blank cell a film row has no value for is simply not filled', () => {
 test('a row someone started by hand is not given a second row beneath it', () => {
   // The parse keeps a row carrying only a name so the sync can see it; `onTab`
   // is keyed by id, so the name is the only handle on one that has none yet.
-  const started = rawFilm('started', ['Dune: Part Two', null, null, null, null, null, null, null, null, null, null, null, null, null]);
+  const started = rawFilm('started', rowByLabel(MH, { Title: 'Dune: Part Two' }));
   const known = new Map<number, FilmFacts | null>([[991, facts()]]);
   const { plan: p } = plan([started], [movie({ id: 991, title: 'Dune: Part Two', lastWatchedAt: watchedOn(TODAY - 1) })], { known });
   assert.equal(p.insert, null);
@@ -328,7 +330,7 @@ test('a hand-typed title Sheets stored as a number still holds its film back', (
   // "1917", "300" and "2012" are real film titles, and Sheets stores each as a
   // number. Read as text only, such a row would be nameless, and the film it
   // was started for would get a second row beneath it.
-  const started = rawFilm('started', [1917, null, null, null, null, null, null, null, null, null, null, null, null, null]);
+  const started = rawFilm('started', rowByLabel(MH, { Title: 1917 }));
   const known = new Map<number, FilmFacts | null>([[991, facts()]]);
   const { plan: p } = plan([started], [movie({ id: 991, title: '1917', lastWatchedAt: watchedOn(TODAY - 1) })], { known });
   assert.equal(p.insert, null);
@@ -371,16 +373,15 @@ test('an anime film with no row anywhere is inserted, and marked as one', () => 
   );
   assert.equal(p.insert?.id, 2);
   const filled = Object.fromEntries(p.insert!.fill.map((c) => [c.field, c.value]));
-  // Only ever `true`, the way `Cinema` is: the tab spells "no" as no cell.
-  assert.deepEqual(filled.Anime, { boolValue: true });
+  assert.deepEqual(filled.Type, { stringValue: 'anime' });
   assert.deepEqual(filled.Runtime, { numberValue: 125 });
 });
 
-test('an ordinary film is not marked as anime', () => {
+test('an ordinary film is marked film, not anime', () => {
   const known = new Map<number, FilmFacts | null>([[2, facts()]]);
   const { plan: p } = plan([film('a', { id: 1 })], [movie({ id: 1 }), movie({ id: 2, lastWatchedAt: watchedOn(TODAY - 2) })], { known });
   assert.equal(p.insert?.id, 2);
-  assert.equal(p.insert!.fill.some((c) => c.field === 'Anime'), false);
+  assert.deepEqual(p.insert!.fill.find((c) => c.field === 'Type')?.value, { stringValue: 'film' });
 });
 
 test('an anime film already on the show grid stays there rather than gaining a second row', () => {

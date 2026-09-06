@@ -57,9 +57,9 @@ export const plausibleSerial = (serial: number | null | undefined, ceiling: numb
   typeof serial === 'number' && serial >= MIN_SERIAL && serial <= ceiling;
 
 /**
- * A season row's `Status` note: when it was last watched, as text.
+ * A season row's `Note`: when it was last watched, as text.
  *
- * Text rather than a serial, because `Status` is a text column — a serial there
+ * Text rather than a serial, because `Note` is a text column — a serial there
  * renders as `46265`, and giving the write a number format would mean sending
  * `fields` beyond `userEnteredValue`, which is what keeps every hand-set format
  * on the sheet intact.
@@ -71,7 +71,7 @@ export const watchedNote = (at: Temporal.Instant | null | undefined, timezone: s
 const WATCHED_NOTE = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
- * The serial a `Status` cell's text stands for, or null where the cell holds
+ * The serial a `Note` cell's text stands for, or null where the cell holds
  * anything else.
  *
  * This is what separates the sync's own note from a hand-typed one, and both
@@ -91,7 +91,7 @@ export const watchedNoteSerial = (text: string | null | undefined): number | nul
 
 /**
  * Whether the sync may put its note in this cell: **blank, or holding a note of
- * its own**. The `Status` column on a season row is otherwise free space, and
+ * its own**. The `Note` column on a season row is otherwise free space, and
  * what a reader typed there is not reconstructible, so the row closes around a
  * hand-typed note rather than through it.
  *
@@ -117,32 +117,35 @@ export const maxSerial = (now: Temporal.Instant, timezone: string): number => da
 
 /**
  * The bounds of a runtime, in minutes: one whole minute to under a day. Both
- * tabs' runtime columns check against these — a per-episode day fraction on the
- * show grid, whole minutes on the films tab — so a bound exists once.
+ * tabs' runtime columns hold whole minutes and check against these, so a bound
+ * exists once — a film or an episode under a minute or a day long is a payload
+ * error, not a running time.
  */
 export const MIN_RUNTIME_MINUTES = 1;
 export const MAX_RUNTIME_MINUTES = 1440;
 
 /**
- * Per-episode minutes → the day fraction the `Episodes` column holds on a
- * season row, or null where that is not a length an episode has.
- *
- * The upper bound matters: a value at or above 1 in this column multiplies
- * every `Length` in the block by 1440. An insert writes SIMKL's show-wide
- * runtime through here unrounded, so the bound lives here, not only in the
- * guard.
+ * What the guard checks a planned runtime cell against, on either tab.
+ * `runtimeMinutes` cannot produce a value this refuses.
  */
-export const runtimeDays = (minutes: number | null | undefined): number | null =>
-  typeof minutes === 'number' && Number.isFinite(minutes) && minutes >= MIN_RUNTIME_MINUTES && minutes < MAX_RUNTIME_MINUTES
-    ? minutes / MAX_RUNTIME_MINUTES
-    : null;
+export const plausibleRuntime = (minutes: number): boolean =>
+  Number.isInteger(minutes) && minutes >= MIN_RUNTIME_MINUTES && minutes < MAX_RUNTIME_MINUTES;
 
 /**
- * The same bounds asked of the day fraction — what the guard checks a planned
- * cell against. `runtimeDays` cannot produce a value this refuses.
+ * A measured runtime → the whole minutes a runtime cell holds, or null where
+ * that is not a length anything has.
+ *
+ * Rounded before it is bounded, for SIMKL's show-wide figure: `averageRuntime`
+ * is whole already, and the fallback beside it is whatever SIMKL sends. A
+ * figure under thirty seconds rounds to 0, which `plausibleRuntime` refuses:
+ * the fail-closed direction, since a blank cell is the state a later poll can
+ * still fill.
  */
-export const plausibleRuntimeDays = (days: number | undefined): boolean =>
-  days !== undefined && days >= MIN_RUNTIME_MINUTES / MAX_RUNTIME_MINUTES && days < 1;
+export const runtimeMinutes = (minutes: number | null | undefined): number | null => {
+  if (typeof minutes !== 'number' || !Number.isFinite(minutes)) return null;
+  const whole = Math.round(minutes);
+  return plausibleRuntime(whole) ? whole : null;
+};
 
 // --- Following SIMKL --------------------------------------------------------
 
@@ -228,17 +231,24 @@ export const recordedSerial = (recorded: string | null | undefined, timezone: st
 // --- Artwork links -----------------------------------------------------------
 
 /**
- * Where both tabs' artwork lives. A `Banner` cell holds a public object URL
+ * What both tabs call the artwork column. One copy, because the films grid
+ * resolves it as a field and the artwork page resolves it on the show tab by
+ * label alone.
+ */
+export const ARTWORK_LABEL = 'Artwork';
+
+/**
+ * Where both tabs' artwork lives. An `Artwork` cell holds a public object URL
  * on this host, and the site uses the cell verbatim as an image source.
  */
 export const ARTWORK_HOST = 'https://storage.googleapis.com';
 
 /**
  * An object's key for a title: the title, exactly. No trim, no case-fold, no
- * normalisation — the show tab's 291 formula cells build the link as
- * `prefix & Name` and the objects behind them are named the same way, so any
- * rule but identity would break the link between a key derived here and one
- * the sheet already holds.
+ * normalisation — the show tab's 291 formula cells build the link by
+ * concatenating a literal bucket prefix with the title cell, and the objects
+ * behind them are named the same way, so any rule but identity would break the
+ * link between a key derived here and one the sheet already holds.
  */
 export const artworkKeyFor = (title: string): string => title;
 

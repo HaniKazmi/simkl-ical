@@ -280,7 +280,7 @@ ${model.mode === 'apply' ? null : html`<div class="problems"><ul><li>Sheet mode 
 <section>
   <div class="head"><h2 class="name">What this page does</h2></div>
   <div class="ctx" style="display:grid;gap:.4rem">
-    <div>A pick downloads the image through this service and uploads it to <span class="mono">${model.buckets.movie}</span> or <span class="mono">${model.buckets.show}</span> under the title's name, then writes the static link into a blank <span class="mono">Banner</span> cell. A formula cell is never written; a cell already linking the bucket decides the object name itself.</div>
+    <div>A pick downloads the image through this service and uploads it to <span class="mono">${model.buckets.movie}</span> or <span class="mono">${model.buckets.show}</span> under the title's name, then writes the static link into a blank <span class="mono">Artwork</span> cell. A formula cell is never written; a cell already linking the bucket decides the object name itself.</div>
     <div><b>Adopt</b> takes the image a row currently links elsewhere and moves it into the bucket the same way. <b>Adopt all</b> runs that over every adoptable row, one at a time, with progress above.</div>
     <div>Sheet writes wait for a running sync and vice-versa, and happen only in <span class="mono">apply</span> mode — in <span class="mono">report</span> the object still uploads and the cell address is reported instead.</div>
   </div>

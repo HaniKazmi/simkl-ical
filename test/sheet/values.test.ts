@@ -6,8 +6,8 @@ import {
   artworkKeyOf,
   artworkLink,
   dateSerial,
-  plausibleRuntimeDays,
-  runtimeDays,
+  plausibleRuntime,
+  runtimeMinutes,
   serialDate,
   watchSerial,
 } from '../../src/sheet/values.ts';
@@ -43,33 +43,45 @@ test('a space-separated timestamp is normalised rather than rejected', () => {
   assert.equal(watchSerial(instantFrom('2026-08-14 21:03:12Z'), 'Europe/London'), dateSerial(plainDateFrom('2026-08-14')));
 });
 
-test('a runtime in minutes becomes the day fraction the sheet holds', () => {
-  assert.ok(Math.abs((runtimeDays(41) ?? 0) - 0.0284722) < 1e-6);
-  assert.equal(runtimeDays(0), null);
-  assert.equal(runtimeDays(null), null);
+test('a runtime rounds to the nearest whole minute the cell holds', () => {
+  assert.equal(runtimeMinutes(41), 41);
+  assert.equal(runtimeMinutes(41.4), 41);
+  assert.equal(runtimeMinutes(41.6), 42);
+  assert.equal(runtimeMinutes(null), null);
 });
 
-// The guard refuses out-of-bounds fractions too, and refusal is whole-plan —
+// The guard refuses an out-of-bounds figure too, and refusal is whole-plan —
 // one title with bad upstream data would stop every unrelated edit. Bounded
 // here, it costs one cell.
 test('a length no episode has yields no cell rather than a refused plan', () => {
-  assert.equal(runtimeDays(1440), null, 'a full day is not a runtime');
-  assert.equal(runtimeDays(0.9), null, 'and under a minute is not one either');
-  assert.ok(runtimeDays(1), 'a whole minute is the smallest that is');
-  assert.equal(runtimeDays(5000), null);
-  assert.equal(runtimeDays(1439), 1439 / 1440);
+  assert.equal(runtimeMinutes(1440), null, 'a full day is not a runtime');
+  assert.equal(runtimeMinutes(0), null, 'and nothing is not one either — a mean under 30s rounds here');
+  assert.equal(runtimeMinutes(1), 1, 'a whole minute is the smallest that is');
+  assert.equal(runtimeMinutes(-5), null);
+  assert.equal(runtimeMinutes(1439), 1439);
+});
+
+// A fraction of a day is the shape the column held before the migration and
+// is refused outright now: the column holds whole minutes, so `49/1440`
+// (49 minutes, as a day fraction) is not a value this column can mean.
+test('plausibleRuntime accepts whole minutes only, never a day fraction', () => {
+  assert.equal(plausibleRuntime(49 / 1440), false);
+  assert.equal(plausibleRuntime(1), true);
+  assert.equal(plausibleRuntime(1439), true);
+  assert.equal(plausibleRuntime(0), false);
+  assert.equal(plausibleRuntime(1440), false);
+  assert.equal(plausibleRuntime(-1), false);
+  assert.equal(plausibleRuntime(1.5), false);
 });
 
 // The planner's conversion and the guard's bound are the same numbers in the
 // same file, so a value one emits and the other refuses is unrepresentable —
 // asserted anyway, because whole-plan-refusal safety rests on the identity.
-test('every day fraction the conversion produces is one the guard accepts', () => {
-  for (const minutes of [1, 22, 41, 61.5, 1439]) {
-    assert.ok(plausibleRuntimeDays(runtimeDays(minutes) ?? undefined), `${minutes} minutes should round-trip`);
+test('every whole minute the conversion produces is one the guard accepts', () => {
+  for (const minutes of [1, 22, 41, 62, 1439]) {
+    assert.ok(plausibleRuntime(runtimeMinutes(minutes) ?? -1), `${minutes} minutes should round-trip`);
   }
-  assert.equal(plausibleRuntimeDays(undefined), false);
-  assert.equal(plausibleRuntimeDays(1), false, 'a whole day is minutes in the wrong column');
-  assert.equal(plausibleRuntimeDays(0.4 / 1440), false, 'under half a minute renders as nothing');
+  assert.equal(plausibleRuntime(1440), false, 'a full day is minutes in the wrong column');
 });
 
 // --- Artwork links -----------------------------------------------------------

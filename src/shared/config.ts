@@ -126,7 +126,7 @@ export interface Config {
   /**
    * TMDB v4 read-access token, for a film's genres, certificate, backdrop,
    * dates and director. Absent, the films tab is never read: eight of its
-   * fourteen columns come from here, and a row inserted with those blank is
+   * sixteen columns come from here, and a row inserted with those blank is
    * worse than no row.
    */
   tmdbApiKey: string | undefined;
@@ -194,7 +194,7 @@ export const buildConfig = (env: NodeJS.ProcessEnv): Config => ({
 
   // --- Google Sheet sync. Absent SHEET_ID, the whole feature is inert.
   sheetId: env.SHEET_ID,
-  sheetName: env.SHEET_NAME || 'Sheet1',
+  sheetName: env.SHEET_NAME || 'Shows',
   moviesSheetName: env.MOVIES_SHEET_NAME || 'Movies',
   sheetSyncMode: oneOf(env.SHEET_SYNC_MODE, SHEET_SYNC_MODES, 'report'),
   // Nothing is touched without watch activity this recent — the rule that
@@ -210,7 +210,7 @@ export const buildConfig = (env: NodeJS.ProcessEnv): Config => ({
   googleCredentialsExplicit: Boolean(env.GOOGLE_APPLICATION_CREDENTIALS),
 
   // --- Per-episode runtimes. Absent TVDB_API_KEY, a closing season still gets
-  // its End date and count, and the Episodes cell is left alone. Additive, so
+  // its End date and count, and its episode-length cell is left alone. Additive, so
   // nothing to clamp and no default to pick.
   tvdbApiKey: env.TVDB_API_KEY,
   tvdbPin: env.TVDB_PIN,
@@ -294,7 +294,7 @@ export const tvdbConfigured = (c: Config = config): boolean => Boolean(c.tvdbApi
 
 /**
  * Whether the films tab can be synced: the sheet sync itself, plus a TMDB
- * token — the one switch, since eight of that tab's fourteen columns come from
+ * token — the one switch, since eight of that tab's sixteen columns come from
  * TMDB and a row inserted with them blank is worse than no row.
  *
  * `moviesSheetName` is not tested: it always has a value, so the test would say
