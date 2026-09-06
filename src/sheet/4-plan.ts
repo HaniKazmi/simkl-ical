@@ -899,13 +899,15 @@ const closeSeason = (
   // rows differ for a reason no reader could see. A title with no TVDB key at
   // all is that same case: no average is coming, so the show-wide length is
   // what the cell gets.
-  const length = runtimeMinutes(minutes) ?? runtimeMinutes(titles.get(runtime.id)?.runtime);
+  const own = runtimeMinutes(minutes);
+  const length = own ?? runtimeMinutes(titles.get(runtime.id)?.runtime);
   if (length === null) {
     plan.notes.push(`${label}: ended with no usable episode runtimes, so its ${SHOW_LABELS.Runtime} cell is left blank`);
   } else {
-    // The season's own average where TVDB answered, the show's usual episode
-    // length where it did not.
-    const measured = minutes === null ? "SIMKL's show-wide episode runtime" : `${minutes} min average episode runtime`;
+    // The season's own average where TVDB answered with one the column can
+    // hold, the show's usual episode length where it did not — decided on the
+    // value written, so the note never names an average the cell did not get.
+    const measured = own === null ? "SIMKL's show-wide episode runtime" : `${own} min average episode runtime`;
     plan.edits.push(edit(grid, season.row, 'Runtime', num(length), `${label}: ${measured}`));
   }
   return true;

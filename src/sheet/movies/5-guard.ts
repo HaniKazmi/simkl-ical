@@ -38,7 +38,7 @@ import {
   TYPE_ANIME,
   TYPE_FILM,
 } from './values.ts';
-import { nextFilmRow, type MovieGrid, type MovieHeaderName } from './2-grid.ts';
+import { MOVIE_LABELS, nextFilmRow, type MovieGrid, type MovieHeaderName } from './2-grid.ts';
 import type { FilmCellEdit, FilmPlan, FilmRowInsert } from './4-plan.ts';
 import type { ExtendedValue } from '../../api/google/types.ts';
 
@@ -197,13 +197,13 @@ const checkValue = (field: MovieHeaderName, value: ExtendedValue, where: string,
 /** The core's shape rules, then the value the column accepts. */
 const checkShape = (cell: FilmCellEdit, allowed: Set<MovieHeaderName>, { grid, serialCeiling, releaseCeiling }: FilmGuardContext): void => {
   const value = checkCellShape(cell, { allowed, emptiable: EMPTIABLE, columns: grid.columns }, refuse);
-  if (value !== undefined) checkValue(cell.field, value, `${cell.address} (${cell.field})`, serialCeiling, releaseCeiling);
+  if (value !== undefined) checkValue(cell.field, value, `${cell.address} (${MOVIE_LABELS[cell.field]})`, serialCeiling, releaseCeiling);
 };
 
 // --- Edits -----------------------------------------------------------------
 
 const checkEdit = (cell: FilmCellEdit, ctx: FilmGuardContext): void => {
-  const where = `${cell.address} (${cell.field})`;
+  const where = `${cell.address} (${MOVIE_LABELS[cell.field]})`;
 
   // Which film this row holds, re-derived from the grid rather than trusted
   // from the plan. Alignment alone cannot catch a write aimed one row off:

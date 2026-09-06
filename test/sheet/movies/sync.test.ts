@@ -449,7 +449,7 @@ test('the films tab is read by name, never the show grid by accident', async () 
       assert.ok(reads.some((c) => c.includes("'Movies'")));
       // And the show grid is not read at all: this library holds no shows, so
       // the show half early-outs before any request.
-      assert.deepEqual(reads.filter((c) => c.includes("'Sheet1'")), []);
+      assert.deepEqual(reads.filter((c) => c.includes("'Shows'")), []);
     });
   });
 });

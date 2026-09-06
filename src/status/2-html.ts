@@ -78,11 +78,11 @@ details.run[open]>summary,details.grp[open]>summary,.g-head{border-bottom:1px so
 details.run:hover,details.grp:hover{border-color:var(--accent)}
 details.run>summary:focus-visible,details.grp>summary:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 @media(prefers-reduced-motion:reduce){details.run>summary::before,details.grp>summary::before{transition:none}}
-.edit{display:grid;grid-template-columns:4.5rem 5rem minmax(0,1fr);gap:.625rem;padding:.2rem .9rem;font-size:.8125rem}
+.edit{display:grid;grid-template-columns:4.5rem 8rem minmax(0,1fr);gap:.625rem;padding:.2rem .9rem;font-size:.8125rem}
 .edit:first-of-type{padding-top:.5rem}.edit:last-child{padding-bottom:.5rem}
 .addr{color:var(--accent);font-family:var(--mono)}
 .edit.ins .addr{color:var(--ok)}
-.fld{color:var(--muted)}
+.fld{color:var(--muted);overflow-wrap:anywhere}
 .run-head.sole{display:grid;grid-template-columns:auto 5.5rem 6rem 2.5rem 4.5rem 5rem minmax(0,1fr) auto;gap:.625rem;align-items:center}
 .run-head.sole::before,.g-head::before{visibility:hidden}
 .run-head.sole .addr,.run-head.sole .fld,.note{font-size:.8125rem;overflow-wrap:anywhere}

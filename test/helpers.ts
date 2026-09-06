@@ -267,8 +267,8 @@ export const MOVIE_SHEET_HEADERS = [
 /**
  * A label's position in a header list, or a hard failure. Every `.indexOf` on
  * a header list is a silent trap under label headers: `indexOf('Episodes')`
- * on the show tab now points at the episode *count* column rather than the
- * runtime one it used to, and `indexOf('End')` finds no such label at all and
+ * on the show tab points at the episode *count* column, not the runtime one a
+ * reader of the field id expects, and `indexOf('End')` finds no such label and
  * returns -1, so a `row[-1]?.userEnteredValue === undefined` assertion built
  * on it passes for a reason that has nothing to do with what it claims to
  * test.

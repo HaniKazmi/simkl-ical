@@ -306,9 +306,9 @@ test('a runtime over a cell that already holds one is refused', () => {
   refuses(planOf([fx.cell('fargoS2', 'End', { numberValue: TODAY }), fx.cell('fargoS2', 'Runtime', { numberValue: 49 })]), /already holds a value/);
 });
 
-// The column holds whole minutes, so a day fraction — the shape it held
-// before the migration — is the wrong value entirely, not merely out of
-// bounds.
+// The column holds whole minutes, so a day fraction is the wrong value
+// entirely, not merely out of bounds: 49/1440 is 49 minutes to a reader of
+// the old TIME format and 0.03 minutes to this column.
 test('a day fraction written where whole minutes belong is refused', () => {
   refuses(planOf([endCell(), runtimeCell(49 / 1440)]), /not a per-episode runtime in whole minutes/, blank.grid);
 });

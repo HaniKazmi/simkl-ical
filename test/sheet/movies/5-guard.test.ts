@@ -239,9 +239,8 @@ test('Type is film or anime, as a string, and only ever written on an insert', (
   allows(filmPlanOf([], withValue(ffx.insert(), 'Type', { stringValue: 'anime' })));
   allows(filmPlanOf([], withValue(ffx.insert(), 'Type', { stringValue: 'film' })));
   // The switch has no `default`, so a whitelisted field with no case of its own
-  // is accepted at any shape. This is what proves `Type` has one: a boolean —
-  // the shape the column held before the migration — is refused outright, not
-  // merely an unrecognised word.
+  // is accepted at any shape. This is what proves `Type` has one: a boolean is
+  // refused outright, not merely an unrecognised word.
   refuses(filmPlanOf([], withValue(ffx.insert(), 'Type', { boolValue: true })), ffx.grid, /is not film or anime/);
   refuses(filmPlanOf([], withValue(ffx.insert(), 'Type', { stringValue: 'documentary' })), ffx.grid, /is not film or anime/);
 });

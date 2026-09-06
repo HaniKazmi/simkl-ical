@@ -17,7 +17,7 @@
  */
 
 import { config } from '../shared/config.ts';
-import { isBlank, numberOf, runtimeScopeOk, type Grid, type HeaderName, type SeasonRow, type ShowBlock } from './2-grid.ts';
+import { isBlank, numberOf, runtimeScopeOk, SHOW_LABELS, type Grid, type HeaderName, type SeasonRow, type ShowBlock } from './2-grid.ts';
 import { isTracked, maxSerial, ownsNote, plausibleRuntime, plausibleSerial, watchedNoteSerial } from './values.ts';
 import type { CellEdit, RowInsert, SheetPlan } from './4-plan.ts';
 import type { ExtendedValue } from '../api/google/types.ts';
@@ -250,7 +250,7 @@ const checkRuntimeEdit = (cell: CellEdit, where: string, plan: SheetPlan, season
 const checkEdit = (cell: CellEdit, plan: SheetPlan, ctx: GuardContext): void => {
   checkShape(cell, EDIT_FIELDS, EMPTIABLE_EDITS, ctx);
   checkCellAlignment(cell, ctx.grid.snapshot, refuse);
-  const where = `${cell.address} (${cell.field})`;
+  const where = `${cell.address} (${SHOW_LABELS[cell.field]})`;
 
   // The two row kinds have disjoint write surfaces, so the row a write landed
   // on is itself a rule: a `Status` anywhere but a show row, or anything else

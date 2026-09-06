@@ -55,15 +55,16 @@ test('a runtime rounds to the nearest whole minute the cell holds', () => {
 // here, it costs one cell.
 test('a length no episode has yields no cell rather than a refused plan', () => {
   assert.equal(runtimeMinutes(1440), null, 'a full day is not a runtime');
-  assert.equal(runtimeMinutes(0), null, 'and nothing is not one either — a mean under 30s rounds here');
+  assert.equal(runtimeMinutes(0), null, 'and nothing is not one either');
+  assert.equal(runtimeMinutes(0.9), null, 'under a minute is refused on the raw figure, never rounded up to one');
   assert.equal(runtimeMinutes(1), 1, 'a whole minute is the smallest that is');
   assert.equal(runtimeMinutes(-5), null);
   assert.equal(runtimeMinutes(1439), 1439);
 });
 
-// A fraction of a day is the shape the column held before the migration and
-// is refused outright now: the column holds whole minutes, so `49/1440`
-// (49 minutes, as a day fraction) is not a value this column can mean.
+// A fraction of a day is refused outright: the column holds whole minutes, so
+// `49/1440` (49 minutes, as a day fraction) is not a value this column can
+// mean.
 test('plausibleRuntime accepts whole minutes only, never a day fraction', () => {
   assert.equal(plausibleRuntime(49 / 1440), false);
   assert.equal(plausibleRuntime(1), true);

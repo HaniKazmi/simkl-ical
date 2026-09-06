@@ -135,14 +135,14 @@ export const plausibleRuntime = (minutes: number): boolean =>
  * A measured runtime → the whole minutes a runtime cell holds, or null where
  * that is not a length anything has.
  *
- * Rounded before it is bounded, for SIMKL's show-wide figure: `averageRuntime`
- * is whole already, and the fallback beside it is whatever SIMKL sends. A
- * figure under thirty seconds rounds to 0, which `plausibleRuntime` refuses:
- * the fail-closed direction, since a blank cell is the state a later poll can
- * still fill.
+ * Rounded for SIMKL's show-wide figure: `averageRuntime` is whole already,
+ * and the fallback beside it is whatever SIMKL sends. The floor is checked on
+ * the raw figure, before rounding, so anything under a minute is refused
+ * rather than rounded up to one — the fail-closed direction, since a blank
+ * cell is the state a later poll can still fill.
  */
 export const runtimeMinutes = (minutes: number | null | undefined): number | null => {
-  if (typeof minutes !== 'number' || !Number.isFinite(minutes)) return null;
+  if (typeof minutes !== 'number' || !Number.isFinite(minutes) || minutes < MIN_RUNTIME_MINUTES) return null;
   const whole = Math.round(minutes);
   return plausibleRuntime(whole) ? whole : null;
 };

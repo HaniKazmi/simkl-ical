@@ -107,8 +107,8 @@ export const gridFixture = (...named: NamedRow[]): GridFixture => {
    * The options are the states `planInsert` produces: `runtime: null` omits
    * the cell (a row left for its close to fill), `end` dates the row in the
    * same fill (a season already over), `note` is the last-watched date a row
-   * inserted open carries. No `Length` cell: the new schema has no formula
-   * column for it.
+   * inserted open carries. Nothing else: an insert writes no formula, since
+   * every per-season total is a show-row roll-up.
    */
   const insertAt = (row: string | number, season: number, { title = 'Fargo', runtime = 45, end = null, note = null }: InsertOptions = {}): RowInsert => {
     const index = indexOf(row);
