@@ -12,7 +12,7 @@
  * glob only collects `*.test.ts`, so this file never runs as a suite.
  */
 
-import { a1, columnLetter, parseGrid, type Grid, type HeaderName } from '../../src/sheet/2-grid.ts';
+import { a1, parseGrid, type Grid, type HeaderName } from '../../src/sheet/2-grid.ts';
 import { dateSerial } from '../../src/sheet/values.ts';
 import { emptyPlan, type CellEdit, type RowInsert, type SheetPlan } from '../../src/sheet/4-plan.ts';
 import type { ExtendedValue } from '../../src/api/google/types.ts';
@@ -45,7 +45,7 @@ export const season = (
   number: number,
   episode: number | null,
   end: number | null,
-  options: { id?: number | string | null; start?: number; episodes?: number | null; status?: string | null } = {},
+  options: { id?: number | string | null; start?: number; runtime?: number | null; note?: string | null } = {},
 ): NamedRow => ({ name, cells: seasonRow(number, episode, end, options) });
 
 /** An arbitrary row, for shapes `show`/`season` cannot say. */
@@ -69,10 +69,10 @@ export interface GridFixture {
 
 export interface InsertOptions {
   title?: string;
-  episodes?: number | null;
+  runtime?: number | null;
   end?: number | null;
   /** The last-watched note a row inserted open carries. */
-  status?: string | null;
+  note?: string | null;
 }
 
 /** The header row is implicit: it is row 0 of every grid, never named. */
@@ -104,12 +104,13 @@ export const gridFixture = (...named: NamedRow[]): GridFixture => {
   };
 
   /**
-   * The options are the states `planInsert` produces: `episodes: null` omits
+   * The options are the states `planInsert` produces: `runtime: null` omits
    * the cell (a row left for its close to fill), `end` dates the row in the
-   * same fill (a season already over), `status` is the note a row inserted
-   * open carries.
+   * same fill (a season already over), `note` is the last-watched date a row
+   * inserted open carries. Nothing else: an insert writes no formula, since
+   * every per-season total is a show-row roll-up.
    */
-  const insertAt = (row: string | number, season: number, { title = 'Fargo', episodes = 0.0153, end = null, status = null }: InsertOptions = {}): RowInsert => {
+  const insertAt = (row: string | number, season: number, { title = 'Fargo', runtime = 45, end = null, note = null }: InsertOptions = {}): RowInsert => {
     const index = indexOf(row);
     return {
       row: index,
@@ -118,13 +119,10 @@ export const gridFixture = (...named: NamedRow[]): GridFixture => {
       fill: (
         [
           ['Season', { numberValue: season }],
-          ...(status === null ? [] : [['Status', { stringValue: status }] as [HeaderName, ExtendedValue]]),
+          ...(note === null ? [] : [['Note', { stringValue: note }] as [HeaderName, ExtendedValue]]),
           ['Episode', { numberValue: 4 }],
           ['Start', { numberValue: TODAY - 10 }],
-          ...(episodes === null ? [] : [['Episodes', { numberValue: episodes }] as [HeaderName, ExtendedValue]]),
-          // Derived as the planner derives it, so a reordered header list
-          // cannot leave the fixture asserting a formula never emitted.
-          ['Length', { formulaValue: `=${columnLetter(grid.columns.Episodes)}${index + 1}*${columnLetter(grid.columns.Episode)}${index + 1}` }],
+          ...(runtime === null ? [] : [['Runtime', { numberValue: runtime }] as [HeaderName, ExtendedValue]]),
           ...(end === null ? [] : [['End', { numberValue: end }] as [HeaderName, ExtendedValue]]),
         ] as Array<[HeaderName, ExtendedValue]>
       ).map(([field, value]) => ({ row: index, column: grid.columns[field], field, previous: undefined, value, address: a1(index, grid.columns[field]), note: 'new' })),

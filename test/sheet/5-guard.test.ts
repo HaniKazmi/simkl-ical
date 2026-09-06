@@ -7,6 +7,7 @@ import type { HeaderName } from '../../src/sheet/2-grid.ts';
 import { fx, gridFixture, H, planOf, raw, season, show, TODAY, TODAY_NOTE } from './fixture.ts';
 import { dateSerial } from '../../src/sheet/values.ts';
 import { plainDateIn } from '../../src/shared/dates.ts';
+import { rowByLabel } from '../helpers.ts';
 
 const refuses = (plan: SheetPlan, pattern: RegExp, against: Grid = fx.grid): void =>
   assert.throws(() => assertPlanSafe(plan, against), (err: Error) => err instanceof UnsafePlanError && pattern.test(err.message));
@@ -21,25 +22,24 @@ test('an ordinary count advance on an open season is allowed', () => {
 
 test('a formula target is refused unconditionally', () => {
   refuses(planOf([fx.cell('fargo', 'Episode', { numberValue: 9 })]), /is a formula/);
-  refuses(planOf([fx.cell('fargoS2', 'Length', { numberValue: 1 })]), /not a field this sync may write/);
 });
 
-// The one field whose meaning depends on the row it lands on: the derived
-// state above, when the season was last watched below. Neither value is
-// writable where the other belongs.
-test('Status is the derived state on a show row and a watch date on a season row', () => {
+// `Status` is the show row's derived state, and never a season row's to hold.
+test('Status may only be written on a show row', () => {
   assert.doesNotThrow(() => assertPlanSafe(planOf([fx.cell('fargo', 'Status', { stringValue: 'Ended' })]), fx.grid));
-  assert.doesNotThrow(() => assertPlanSafe(planOf([fx.cell('fargoS2', 'Status', { stringValue: TODAY_NOTE })]), fx.grid));
-  refuses(planOf([fx.cell('fargoS2', 'Status', { stringValue: 'Ended' })]), /not a plausible last-watched date/);
-  refuses(planOf([fx.cell('fargo', 'Status', { stringValue: TODAY_NOTE })]), /a state, not a watch date/);
+  refuses(planOf([fx.cell('fargoS2', 'Status', { stringValue: 'Ended' })]), /Status may only be written on a show row/);
+});
 
-  // A show row whose derived cells are literals, not formulas. The formula
-  // guard cannot fire here, so the row-kind guard stands on its own.
-  const literal = gridFixture(raw('fargo', ['Fargo', 'Ended', 1, 6, 45000, 44000, 6, 0.1, 1, 'show']), season('fargoS1', 1, 6, null));
-  assert.throws(
-    () => assertPlanSafe(planOf([{ ...literal.cell('fargo', 'End', { numberValue: TODAY }), previous: { numberValue: 44000 } }]), literal.grid),
-    /only be written on a season row/,
-  );
+test('Status is a state, not a watch date', () => {
+  refuses(planOf([fx.cell('fargo', 'Status', { stringValue: TODAY_NOTE })]), /a state, not a watch date/);
+});
+
+// `Note` is the season row's last-watched date, and the show row's own `Note`
+// cell is the block-height helper formula — the formula refusal catches it
+// before the row-kind rule ever runs.
+test('Note may only be written on a season row, and a show row’s Note cell is a formula', () => {
+  assert.doesNotThrow(() => assertPlanSafe(planOf([fx.cell('fargoS2', 'Note', { stringValue: TODAY_NOTE })]), fx.grid));
+  refuses(planOf([fx.cell('fargo', 'Note', { stringValue: TODAY_NOTE })]), /is a formula/);
 });
 
 // The insert path's version of the closed-row refusal. A row created dated is
@@ -47,28 +47,28 @@ test('Status is the derived state on a show row and a watch date on a season row
 // put there in the same fill is one nothing can ever take away, the exact
 // state the clear exists to prevent.
 test('a row created with an end date may not also be given a note', () => {
-  assert.doesNotThrow(() => assertPlanSafe(planOf([], fx.insertAt(fx.end, 3, { status: TODAY_NOTE })), fx.grid));
-  refuses(planOf([], fx.insertAt(fx.end, 3, { end: TODAY, status: TODAY_NOTE })), /may not also carry a watch note/);
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], fx.insertAt(fx.end, 3, { note: TODAY_NOTE })), fx.grid));
+  refuses(planOf([], fx.insertAt(fx.end, 3, { end: TODAY, note: TODAY_NOTE })), /may not also carry a watch note/);
 });
 
 // A note left behind on an open row is a date that stops being true; a note
 // taken away from an open row is one nothing puts back this poll. Only `End`
 // arriving makes it redundant, so only that batch may remove it.
 test('a season’s watch note is only cleared by the batch that dates the row', () => {
-  const noted = gridFixture(show('fargo', 'Fargo'), season('fargoS1', 1, 6, 44000), season('fargoS2', 2, 3, null, { status: TODAY_NOTE }));
-  const clear = noted.cell('fargoS2', 'Status', undefined);
+  const noted = gridFixture(show('fargo', 'Fargo'), season('fargoS1', 1, 6, 44000), season('fargoS2', 2, 3, null, { note: TODAY_NOTE }));
+  const clear = noted.cell('fargoS2', 'Note', undefined);
   refuses(planOf([clear]), /only be cleared on the row that is being closed/, noted.grid);
   assert.doesNotThrow(() => assertPlanSafe(planOf([noted.cell('fargoS2', 'End', { numberValue: TODAY }), clear]), noted.grid));
 });
 
-// The Status column on a season row is otherwise free space, and what a reader
+// The Note column on a season row is otherwise free space, and what a reader
 // types there is not reconstructible. The row still closes — around the note,
 // not through it.
 test('text the sync did not write is neither overwritten nor cleared', () => {
-  const typed = gridFixture(show('fargo', 'Fargo'), season('fargoS1', 1, 6, 44000), season('fargoS2', 2, 3, null, { status: 'rewatching with Sam' }));
-  refuses(planOf([typed.cell('fargoS2', 'Status', { stringValue: TODAY_NOTE })]), /this sync did not write/, typed.grid);
+  const typed = gridFixture(show('fargo', 'Fargo'), season('fargoS1', 1, 6, 44000), season('fargoS2', 2, 3, null, { note: 'rewatching with Sam' }));
+  refuses(planOf([typed.cell('fargoS2', 'Note', { stringValue: TODAY_NOTE })]), /this sync did not write/, typed.grid);
   refuses(
-    planOf([typed.cell('fargoS2', 'End', { numberValue: TODAY }), typed.cell('fargoS2', 'Status', undefined)]),
+    planOf([typed.cell('fargoS2', 'End', { numberValue: TODAY }), typed.cell('fargoS2', 'Note', undefined)]),
     /this sync did not write/,
     typed.grid,
   );
@@ -76,11 +76,11 @@ test('text the sync did not write is neither overwritten nor cleared', () => {
 
 // Emptying a cell is how a note is removed, and the only thing that is ever
 // removed: everywhere else an absent value is a planner that lost one.
-test('no field but Status may be emptied', () => {
+test('no field but Note may be emptied', () => {
   refuses(planOf([fx.cell('fargoS2', 'Episode', undefined)]), /not a field this sync may empty/);
   refuses(planOf([fx.cell('fargoS2', 'End', undefined)]), /not a field this sync may empty/);
   // An insert fills a row; nothing there was ever a value to remove. Checked on
-  // `Status` too, the one field an edit may empty: the whitelist has to be what
+  // `Note` too, the one field an edit may empty: the whitelist has to be what
   // refuses it, not the value-shaped rule that would otherwise reach it first
   // and report an implausible date.
   const emptied = (insert: ReturnType<typeof fx.insertAt>, field: HeaderName) => ({
@@ -88,15 +88,15 @@ test('no field but Status may be emptied', () => {
     fill: insert.fill.map((f) => (f.field === field ? { ...f, value: undefined } : f)),
   });
   refuses(planOf([], emptied(fx.insertAt(fx.end, 3), 'Season')), /not a field this sync may empty/);
-  refuses(planOf([], emptied(fx.insertAt(fx.end, 3, { status: TODAY_NOTE }), 'Status')), /not a field this sync may empty/);
+  refuses(planOf([], emptied(fx.insertAt(fx.end, 3, { note: TODAY_NOTE }), 'Note')), /not a field this sync may empty/);
 });
 
 // The same bound `End` gets, on the same fact one column earlier.
 test('a watch note is bounded like the end date it becomes', () => {
   const soon = Temporal.Now.plainDateISO('UTC').add({ days: 3 }).toString();
-  refuses(planOf([fx.cell('fargoS2', 'Status', { stringValue: soon })]), /not a plausible last-watched date/);
-  refuses(planOf([fx.cell('fargoS2', 'Status', { stringValue: '1998-04-02' })]), /not a plausible last-watched date/);
-  refuses(planOf([fx.cell('fargoS2', 'Status', { numberValue: TODAY })]), /not a plausible last-watched date/);
+  refuses(planOf([fx.cell('fargoS2', 'Note', { stringValue: soon })]), /not a plausible last-watched date/);
+  refuses(planOf([fx.cell('fargoS2', 'Note', { stringValue: '1998-04-02' })]), /not a plausible last-watched date/);
+  refuses(planOf([fx.cell('fargoS2', 'Note', { numberValue: TODAY })]), /not a plausible last-watched date/);
 });
 
 test('a field outside the whitelist is refused however plausible', () => {
@@ -113,8 +113,8 @@ test('a field outside the whitelist is refused however plausible', () => {
  */
 test('a closed season is touched only by the fields that follow SIMKL', () => {
   refuses(planOf([blank.cell('fargoS1', 'Episode', { numberValue: 9 })]), /already has an end date/, blank.grid);
-  refuses(planOf([blank.cell('fargoS1', 'Episodes', { numberValue: 45 / 1440 })]), /already has an end date/, blank.grid);
-  refuses(planOf([blank.cell('fargoS1', 'Status', { stringValue: TODAY_NOTE })]), /already has an end date/, blank.grid);
+  refuses(planOf([blank.cell('fargoS1', 'Runtime', { numberValue: 45 })]), /already has an end date/, blank.grid);
+  refuses(planOf([blank.cell('fargoS1', 'Note', { stringValue: TODAY_NOTE })]), /already has an end date/, blank.grid);
 
   assert.doesNotThrow(() => assertPlanSafe(planOf([blank.cell('fargoS1', 'End', { numberValue: TODAY })]), blank.grid));
   assert.doesNotThrow(() => assertPlanSafe(planOf([blank.cell('fargoS1', 'Start', { numberValue: 43000 })]), blank.grid));
@@ -140,8 +140,8 @@ test('a start date may not fall after the row’s end date', () => {
 test('a start date is unbounded above where the end cell names no day', () => {
   assert.doesNotThrow(() => assertPlanSafe(planOf([blank.cell('fargoS2', 'Start', { numberValue: TODAY })]), blank.grid));
 
-  const tbd = gridFixture(show('fargo', 'Fargo'), season('fargoS1', 1, 6, null, { status: null }));
-  const held = gridFixture(show('fargo', 'Fargo'), raw('fargoS1', [null, null, 1, 6, 43000, 'TBD', null, null, null, null]));
+  const tbd = gridFixture(show('fargo', 'Fargo'), season('fargoS1', 1, 6, null, { note: null }));
+  const held = gridFixture(show('fargo', 'Fargo'), raw('fargoS1', rowByLabel(H, { Season: 1, Episodes: 6, 'Start Date': 43000, 'End Date': 'TBD' })));
   assert.doesNotThrow(() => assertPlanSafe(planOf([tbd.cell('fargoS1', 'Start', { numberValue: TODAY })]), tbd.grid));
   assert.doesNotThrow(() => assertPlanSafe(planOf([held.cell('fargoS1', 'Start', { numberValue: TODAY })]), held.grid));
 });
@@ -161,7 +161,7 @@ test('a hand-entered count stored as text is refused rather than overwritten', (
   const texty = gridFixture(
     show('fargo', 'Fargo'),
     season('fargoS1', 1, 6, 44000),
-    raw('fargoS2', [null, null, 2, '12', 45000, null, 0.0153, { formula: '=G4*D4' }, null, null]),
+    raw('fargoS2', rowByLabel(H, { Season: 2, Episodes: '12', 'Start Date': 45000 })),
   );
   refuses(planOf([texty.cell('fargoS2', 'Episode', { numberValue: 5 })]), /not a number/, texty.grid);
 });
@@ -276,64 +276,63 @@ test('the plausibility ceiling is tomorrow in the viewer zone, not in UTC', () =
 const blank = gridFixture(
   show('fargo', 'Fargo'),
   season('fargoS1', 1, 6, 44000),
-  season('fargoS2', 2, 3, null, { episodes: null }),
-  season('fargoS3', 3, 2, null, { episodes: null }),
+  season('fargoS2', 2, 3, null, { runtime: null }),
+  season('fargoS3', 3, 2, null, { runtime: null }),
 );
 
-const runtimeCell = (value: number, row = 'fargoS2') => blank.cell(row, 'Episodes', { numberValue: value });
+const runtimeCell = (value: number, row = 'fargoS2') => blank.cell(row, 'Runtime', { numberValue: value });
 
 /** The End edit a runtime always rides beside, on the same row. */
 const endCell = (row = 'fargoS2') => blank.cell(row, 'End', { numberValue: TODAY });
 
 // Without this baseline the refusals below could pass for the wrong reason.
 test('a runtime into a blank cell on the row being closed is allowed', () => {
-  assert.doesNotThrow(() => assertPlanSafe(planOf([endCell(), runtimeCell(49 / 1440)]), blank.grid));
+  assert.doesNotThrow(() => assertPlanSafe(planOf([endCell(), runtimeCell(49)]), blank.grid));
 });
 
 // The planner writes the pair together or not at all. A runtime on a row left
 // open fills a cell with nothing to close it, and the next poll finds it
 // non-blank and never revisits it.
 test('a runtime on a row nothing is closing is refused', () => {
-  refuses(planOf([runtimeCell(49 / 1440)]), /only be written on the row that is being closed/, blank.grid);
+  refuses(planOf([runtimeCell(49)]), /only be written on the row that is being closed/, blank.grid);
   // An End elsewhere in the plan is not this row's.
-  refuses(planOf([endCell('fargoS3'), runtimeCell(49 / 1440, 'fargoS2')]), /only be written on the row that is being closed/, blank.grid);
+  refuses(planOf([endCell('fargoS3'), runtimeCell(49, 'fargoS2')]), /only be written on the row that is being closed/, blank.grid);
 });
 
 // A hand-typed runtime is a correction, and the row closes in the same batch,
 // so an overwrite could never be undone.
 test('a runtime over a cell that already holds one is refused', () => {
-  // The shared fixture's open season carries 0.0153 already.
-  refuses(planOf([fx.cell('fargoS2', 'End', { numberValue: TODAY }), fx.cell('fargoS2', 'Episodes', { numberValue: 49 / 1440 })]), /already holds a value/);
+  // The shared fixture's open season carries 45 already.
+  refuses(planOf([fx.cell('fargoS2', 'End', { numberValue: TODAY }), fx.cell('fargoS2', 'Runtime', { numberValue: 49 })]), /already holds a value/);
 });
 
-// At or above 1 the number is minutes where a day fraction belongs, and every
-// Length in the block multiplies by 1440.
-test('minutes written where a day fraction belongs are refused', () => {
-  refuses(planOf([endCell(), runtimeCell(49)]), /not a plausible per-episode day fraction/, blank.grid);
-  refuses(planOf([endCell(), runtimeCell(1)]), /not a plausible per-episode day fraction/, blank.grid);
-  refuses(planOf([endCell(), runtimeCell(0)]), /not a plausible per-episode day fraction/, blank.grid);
-  refuses(planOf([endCell(), runtimeCell(-1 / 1440)]), /not a plausible per-episode day fraction/, blank.grid);
-  // Under half a minute rounds to nothing the sheet can show.
-  refuses(planOf([endCell(), runtimeCell(0.4 / 1440)]), /not a plausible per-episode day fraction/, blank.grid);
+// The column holds whole minutes, so a day fraction is the wrong value
+// entirely, not merely out of bounds: 49/1440 is 49 minutes to a reader of
+// the old TIME format and 0.03 minutes to this column.
+test('a day fraction written where whole minutes belong is refused', () => {
+  refuses(planOf([endCell(), runtimeCell(49 / 1440)]), /not a per-episode runtime in whole minutes/, blank.grid);
 });
 
-// On the real sheet a show row's Episodes cell is a roll-up formula, so the
-// formula rule fires first; strip the formula and the season-row rule catches
-// it. Both paths are asserted — the formula alone would leave a show row with
-// an empty runtime cell writable.
-test('a runtime is refused on a show row, by whichever rule reaches it first', () => {
-  refuses(planOf([fx.cell('fargo', 'Episodes', { numberValue: 49 / 1440 })]), /is a formula/);
+test('a runtime outside the column’s bounds is refused, in whole minutes', () => {
+  refuses(planOf([endCell(), runtimeCell(0)]), /not a per-episode runtime in whole minutes/, blank.grid);
+  refuses(planOf([endCell(), runtimeCell(1440)]), /not a per-episode runtime in whole minutes/, blank.grid);
+  refuses(planOf([endCell(), runtimeCell(-1)]), /not a per-episode runtime in whole minutes/, blank.grid);
+  refuses(planOf([endCell(), runtimeCell(1.5)]), /not a per-episode runtime in whole minutes/, blank.grid);
+  assert.doesNotThrow(() => assertPlanSafe(planOf([endCell(), runtimeCell(1)]), blank.grid));
+  assert.doesNotThrow(() => assertPlanSafe(planOf([endCell('fargoS3'), runtimeCell(1439, 'fargoS3')]), blank.grid));
+});
 
-  const bareShow = [...show(null, 'Fargo').cells];
-  bareShow[H.indexOf('Episodes')] = null;
-  const stripped = gridFixture(raw('fargo', bareShow), season('fargoS1', 1, 6, 44000), season('fargoS2', 2, 3, null, { episodes: null }));
-  refuses(planOf([{ ...stripped.cell('fargo', 'Episodes', { numberValue: 49 / 1440 }), previous: undefined }]), /may only be written on a season row/, stripped.grid);
+// A runtime is refused on a show row's own Runtime cell, which is blank on
+// every real show row — the row-kind rule is what catches it, not the formula
+// refusal `Note` hits above.
+test('a runtime is refused on a show row', () => {
+  refuses(planOf([fx.cell('fargo', 'Runtime', { numberValue: 45 })]), /may only be written on a season row/);
 });
 
 // A dated row is frozen for good: the runtime rides the batch that closes the
 // row, never a later one.
 test('a runtime is refused on a row that already has an end date', () => {
-  refuses(planOf([runtimeCell(49 / 1440, 'fargoS1')]), /already has an end date/, blank.grid);
+  refuses(planOf([runtimeCell(49, 'fargoS1')]), /already has an end date/, blank.grid);
 });
 
 /**
@@ -345,8 +344,8 @@ const scoped = (type: string, id: number | null) =>
   gridFixture(
     show('fargo', 'Fargo', { id, type }),
     season('fargoS1', 1, 6, 44000),
-    season('fargoS2', 2, 3, null, { episodes: null }),
-    season('fargoS3', 3, 2, null, { episodes: null }),
+    season('fargoS2', 2, 3, null, { runtime: null }),
+    season('fargoS3', 3, 2, null, { runtime: null }),
   );
 
 /**
@@ -359,8 +358,8 @@ test('a runtime is refused in an anime block, and in a block whose show row has 
   // Type decides the first case, not a missing id: this block has an id and is
   // still refused. A hand-maintained sheet can put a show-row id on an anime
   // block, which a bare "no ids" test reads as live-action.
-  refuses(planOf([endCell(), runtimeCell(49 / 1440)]), /live-action block/, scoped('anime', 1).grid);
-  refuses(planOf([endCell(), runtimeCell(49 / 1440)]), /live-action block/, scoped('show', null).grid);
+  refuses(planOf([endCell(), runtimeCell(49)]), /live-action block/, scoped('anime', 1).grid);
+  refuses(planOf([endCell(), runtimeCell(49)]), /live-action block/, scoped('show', null).grid);
 });
 
 /**
@@ -372,16 +371,16 @@ test('a runtime is refused on a season row that carries its own id', () => {
   const owned = gridFixture(
     show('fargo', 'Fargo'),
     season('fargoS1', 1, 6, 44000),
-    season('fargoS2', 2, 3, null, { episodes: null }),
+    season('fargoS2', 2, 3, null, { runtime: null }),
     // Only the id separates this row from fargoS2, so the refusal can only be
     // the id rule.
-    season('fargoS3', 3, 2, null, { episodes: null, id: 99 }),
+    season('fargoS3', 3, 2, null, { runtime: null, id: 99 }),
   );
   assert.doesNotThrow(() =>
-    assertPlanSafe(planOf([owned.cell('fargoS2', 'End', { numberValue: TODAY }), owned.cell('fargoS2', 'Episodes', { numberValue: 49 / 1440 })]), owned.grid),
+    assertPlanSafe(planOf([owned.cell('fargoS2', 'End', { numberValue: TODAY }), owned.cell('fargoS2', 'Runtime', { numberValue: 49 })]), owned.grid),
   );
   refuses(
-    planOf([owned.cell('fargoS3', 'End', { numberValue: TODAY }), owned.cell('fargoS3', 'Episodes', { numberValue: 49 / 1440 })]),
+    planOf([owned.cell('fargoS3', 'End', { numberValue: TODAY }), owned.cell('fargoS3', 'Runtime', { numberValue: 49 })]),
     /carries its own id/,
     owned.grid,
   );
@@ -401,12 +400,12 @@ test('an insert carrying a runtime and an End is allowed', () => {
 // The state a row left for its close goes in as: the insert whitelist is a
 // whitelist, not a requirement.
 test('an insert with no runtime cell at all is allowed', () => {
-  assert.doesNotThrow(() => assertPlanSafe(planOf([], fx.insertAt(fx.end, 3, { episodes: null })), fx.grid));
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], fx.insertAt(fx.end, 3, { runtime: null })), fx.grid));
 });
 
-test('an insert’s runtime is bounded exactly as an edit’s is', () => {
-  for (const bad of [49, 1, 0, -1 / 1440, 0.4 / 1440]) {
-    refuses(planOf([], fx.insertAt(fx.end, 3, { episodes: bad })), /not a plausible per-episode day fraction/);
+test('an insert’s runtime is bounded exactly as an edit’s is, in whole minutes', () => {
+  for (const bad of [49 / 1440, 0, 1440, -1, 1.5]) {
+    refuses(planOf([], fx.insertAt(fx.end, 3, { runtime: bad })), /not a per-episode runtime in whole minutes/);
   }
 });
 
@@ -429,17 +428,17 @@ test('an insert carrying a runtime into a block TVDB cannot describe is refused'
 
   // Both blocks accept a row with no runtime, so the refusals above are the
   // runtime rule and nothing else.
-  assert.doesNotThrow(() => assertPlanSafe(planOf([], anime.insertAt(anime.end, 3, { title: 'Bleach', episodes: null })), anime.grid));
-  assert.doesNotThrow(() => assertPlanSafe(planOf([], idless.insertAt(idless.end, 3, { episodes: null })), idless.grid));
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], anime.insertAt(anime.end, 3, { title: 'Bleach', runtime: null })), anime.grid));
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], idless.insertAt(idless.end, 3, { runtime: null })), idless.grid));
 });
 
 // Writes go out in fill order and the last wins, so a bound that only inspects
 // the first runtime cell is no bound at all.
 test('every runtime cell an insert carries is bounded, not just the first', () => {
   const insert = fx.insertAt(fx.end, 3);
-  const first = insert.fill.find((c) => c.field === 'Episodes')!;
+  const first = insert.fill.find((c) => c.field === 'Runtime')!;
   refuses(
-    planOf([], { ...insert, fill: [...insert.fill, { ...first, value: { numberValue: 49 } }] }),
-    /not a plausible per-episode day fraction/,
+    planOf([], { ...insert, fill: [...insert.fill, { ...first, value: { numberValue: 1440 } }] }),
+    /not a per-episode runtime in whole minutes/,
   );
 });

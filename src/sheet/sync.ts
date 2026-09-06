@@ -169,7 +169,7 @@ interface Poll {
    * Every SIMKL id the show grid held when this poll read it, or null if it
    * was never read. Assigned the moment the grid parses, so a show half that
    * fails *after* the read still leaves a valid answer. The films half needs
-   * it to place an anime film: on `Sheet1` already means leave it there. Null
+   * it to place an anime film: already on the show tab means leave it there. Null
    * fails closed — see `onShowGrid` in `movies/4-plan.ts`.
    */
   showGridIds: Set<number> | null;
@@ -384,7 +384,7 @@ export class SheetSync {
    */
   private runTab<G extends { snapshot: SheetSnapshot }, P extends TabPlan>(spec: TabSpec<G, P>, poll: Poll): Promise<SheetSyncResult> {
     // Under the sheet lock from the first read to the last verify: a page
-    // write landing in between is a `Banner` cell the verifier did not plan,
+    // write landing in between is an `Artwork` cell the verifier did not plan,
     // and it would roll the tab back. Per tab rather than per run, so the
     // early-outs above never hold it — and a wait on an upstream lookup inside
     // the fixpoint is held through, since the plan is against this snapshot.
@@ -743,7 +743,7 @@ export class SheetSync {
       try {
         const fetched = await fetchFilms(wanted, { signal: poll.signal });
         // The bucket is read here, in the shell, and handed down: with the
-        // artwork page configured a new row's Banner is the static link, not
+        // artwork page configured a new row's `Artwork` cell is the static link, not
         // a TMDB URL. The whole feature, not the bucket alone: the column is
         // written once, and a link nothing can put an object behind is a
         // broken image for the life of the row.

@@ -3,7 +3,7 @@
  * listings, reduced to one row per title with a state the page can act on.
  * Pure: every input is handed in, and the shell decides how stale each may be.
  *
- * A title's state is read off its `Banner` cell against its bucket, the way
+ * A title's state is read off its `Artwork` cell against its bucket, the way
  * `decideLink` will read it when a pick lands, so what the page shows as
  * "needs artwork" is exactly what a pick can fix. The key is the cell's where
  * the cell has one and the title's where it does not — the same rule.
@@ -13,12 +13,12 @@ import type { CellData } from '../api/google/types.ts';
 import type { StoredObject } from '../api/google/storage.ts';
 import { allowedImageUrl } from '../api/images.ts';
 import type { Library } from '../library.ts';
-import { a1, duplicateIds, findHeaderRow, numberOf, resolveColumns, type Grid, type ShowBlock } from '../sheet/2-grid.ts';
+import { a1, duplicateIds, findHeaderRow, numberOf, resolveColumns, SHOW_HEADER_MARKERS, type Grid, type ShowBlock } from '../sheet/2-grid.ts';
 import { tvdbIdOf } from '../sheet/3-catalogue.ts';
 import { tmdbIdOf } from '../sheet/movies/1-index.ts';
 import { movieCellAt, type MovieGrid } from '../sheet/movies/2-grid.ts';
 import type { SheetRunRecord } from '../sheet/io/journal.ts';
-import { artworkKeyFor, serialDate } from '../sheet/values.ts';
+import { ARTWORK_LABEL, artworkKeyFor, serialDate } from '../sheet/values.ts';
 import { instantFrom } from '../shared/dates.ts';
 import { classifyCell, type CellKind } from './3-decide.ts';
 
@@ -52,7 +52,7 @@ export interface ArtworkTitle {
   title: string;
   /** Zero-based row in the tab's snapshot. */
   row: number;
-  /** The `Banner` cell, A1. Null when the tab has no such column. */
+  /** The `Artwork` cell, A1. Null when the tab has no such column. */
   address: string | null;
   cell: { kind: CellKind; url: string | null; previous: CellData | undefined };
   /** The object key a pick uploads to: the cell's where it links this bucket, else the title's. */
@@ -103,22 +103,27 @@ export interface IndexOptions {
 export const RECENT_WINDOW = Temporal.Duration.from({ days: 30 });
 
 /**
- * A show-tab column the sync does not name, resolved on its own. A tab
- * without it degrades — no link writes for shows, no franchise grouping —
- * rather than a page that will not render.
+ * A show-tab column the sync does not name, resolved on its own by its label.
+ * A tab without it degrades — no link writes for shows, no franchise grouping
+ * — rather than a page that will not render.
+ *
+ * The markers are the parser's own, so a `Grid` that reached this cannot fail
+ * to find its header row: the catch is the missing-column degrade and nothing
+ * else. Markers of its own would make every show index as unlinked the day the
+ * two lists disagreed, with no error anywhere.
  */
-const showColumn = (grid: Grid, header: string): number | null => {
+const showColumn = (grid: Grid, label: string): number | null => {
   const { rows, columnCount } = grid.snapshot;
   try {
-    const headerRow = findHeaderRow(rows, ['Show', 'Season']);
+    const headerRow = findHeaderRow(rows, SHOW_HEADER_MARKERS);
     const width = Math.max(columnCount, ...rows.map((r) => r.length));
-    return resolveColumns(rows[headerRow] ?? [], width, [header] as const)[header] ?? null;
+    return resolveColumns(rows[headerRow] ?? [], width, [label] as const, (h) => h)[label] ?? null;
   } catch {
     return null;
   }
 };
 
-export const showBannerColumn = (grid: Grid): number | null => showColumn(grid, 'Banner');
+export const showBannerColumn = (grid: Grid): number | null => showColumn(grid, ARTWORK_LABEL);
 
 /** A cell's text, a formula's computed value included. */
 const cellText = (cell: CellData | undefined): string | null => {

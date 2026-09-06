@@ -210,16 +210,85 @@ export const cellOf = (spec: CellSpec): CellData => {
     const result = typeof spec.value === 'number' ? { numberValue: spec.value } : spec.value === undefined ? undefined : { stringValue: spec.value };
     return { userEnteredValue: { formulaValue: spec.formula }, ...(result ? { effectiveValue: result } : {}) };
   }
-  // A boolean is its own `ExtendedValue` member, not a stringified one: the
-  // films tab's `Cinema` and `Anime` cells hold `boolValue: true`, and a
-  // `"TRUE"` string is a different cell to every comparison in the sync.
+  // A boolean is its own `ExtendedValue` member, not a stringified one — kept
+  // so a guard test can prove a `boolValue` cell is refused where the tab now
+  // holds a string (`Format`, `Type`).
   const value =
     typeof spec === 'number' ? { numberValue: spec } : typeof spec === 'boolean' ? { boolValue: spec } : { stringValue: spec };
   return { userEnteredValue: value, effectiveValue: value };
 };
 
-/** Today's column order. Tests that care about header resolution shuffle it. */
-export const SHEET_HEADERS = ['Show', 'Status', 'Season', 'Episode', 'Start', 'End', 'Episodes', 'Length', 'id', 'Type'];
+/**
+ * The live show tab's 17 labels, in order (A..Q). Tests that care about header
+ * resolution shuffle it; nothing else may depend on the positions.
+ */
+export const SHEET_HEADERS = [
+  'Title',
+  'Franchise',
+  'Genre',
+  'Other Genres',
+  'Network',
+  'Certificate',
+  'Type',
+  'Status',
+  'Season',
+  'Subtitle',
+  'Episodes',
+  'Episode Length (min)',
+  'Start Date',
+  'End Date',
+  'Seasons / Last Watched',
+  'ID',
+  'Artwork',
+];
+
+/**
+ * The live films tab's 16 labels, in order (A..P).
+ */
+export const MOVIE_SHEET_HEADERS = [
+  'Title',
+  'Series',
+  'Series #',
+  'Franchise',
+  'Director',
+  'Genre',
+  'Other Genres',
+  'Certificate',
+  'Format',
+  'Release Date',
+  'Watch Date',
+  'Runtime (min)',
+  'Score',
+  'Type',
+  'ID',
+  'Artwork',
+];
+
+/**
+ * A label's position in a header list, or a hard failure. Every `.indexOf` on
+ * a header list is a silent trap under label headers: `indexOf('Episodes')`
+ * on the show tab points at the episode *count* column, not the runtime one a
+ * reader of the field id expects, and `indexOf('End')` finds no such label and
+ * returns -1, so a `row[-1]?.userEnteredValue === undefined` assertion built
+ * on it passes for a reason that has nothing to do with what it claims to
+ * test.
+ */
+export const col = (headers: readonly string[], label: string): number => {
+  const index = headers.indexOf(label);
+  if (index === -1) throw new Error(`no column labelled "${label}" in ${JSON.stringify(headers)}`);
+  return index;
+};
+
+/**
+ * A full-width row built by label rather than position: `null` for every
+ * column a spec omits, and a hard failure for a key naming no column — the
+ * same fail-loud `col` gives a single lookup.
+ */
+export const rowByLabel = (headers: readonly string[], cells: Partial<Record<string, CellSpec>>): CellSpec[] => {
+  const row = new Array<CellSpec>(headers.length).fill(null);
+  for (const [label, value] of Object.entries(cells)) row[col(headers, label)] = value ?? null;
+  return row;
+};
 
 /**
  * `rowCount` is the *declared* grid, which on a real tab runs well past the
@@ -233,7 +302,7 @@ export const sheetSnapshot = (
   { sheetId = 1, columnCount, rowCount }: { sheetId?: number; columnCount?: number; rowCount?: number } = {},
 ): SheetSnapshot => ({
   sheetId,
-  title: 'Sheet1',
+  title: 'Shows',
   rowCount: rowCount ?? rows.length + 10,
   columnCount: columnCount ?? Math.max(...rows.map((r) => r.length)),
   rows: rows.map((row) => row.map(cellOf)),
@@ -241,36 +310,55 @@ export const sheetSnapshot = (
 });
 
 /**
- * A show row and a season row, in `SHEET_HEADERS` order. Shared rather than
- * per file: these are positional arrays keyed to the header list, and a missed
- * edit shifts every index in a file without failing loudly. The show row's
- * derived cells are formulas, as on the real sheet — the never-write-a-formula
- * guard depends on it.
+ * A show row, in `SHEET_HEADERS` order. Shared rather than per file: these are
+ * label-keyed rows and a missed edit shifts every index in a file without
+ * failing loudly. The five derived cells are formulas, as on the real sheet —
+ * the never-write-a-formula guard depends on it — and `Episode Length (min)`
+ * is blank, as measured on all 309 live show rows.
  */
-export const showRow = (title: string, status: string | null, id: number | string | null = null, type = 'show'): CellSpec[] => [
-  title,
-  status,
-  { formula: '=LET(…)', value: 1 },
-  { formula: '=LET(…)', value: 6 },
-  45000,
-  { formula: '=LET(…)' },
-  { formula: '=LET(…)' },
-  { formula: '=LET(…)' },
-  id,
-  type,
-];
+export const showRow = (
+  title: string,
+  status: string | null,
+  id: number | string | null = null,
+  type = 'show',
+  { artwork = null, franchise = null }: { artwork?: string | null; franchise?: string | null } = {},
+): CellSpec[] =>
+  rowByLabel(SHEET_HEADERS, {
+    Title: title,
+    Franchise: franchise,
+    Type: type,
+    Status: status,
+    Season: { formula: '=IF($O2=0,"",OFFSET($I2,$O2,0))', value: 1 },
+    Episodes: { formula: '=IF($O2=0,"",SUM(OFFSET($K2,1,0,$O2)))', value: 6 },
+    'Start Date': { formula: '=IF($O2=0,"",LET(r,OFFSET($M2,1,0,$O2),IF(COUNT(r)=0,"",MIN(r))))', value: 45000 },
+    'End Date': { formula: '=IF($O2=0,"",LET(r,OFFSET($N2,1,0,$O2),IF(COUNT(r)=0,"",MAX(r))))', value: 45010 },
+    'Seasons / Last Watched': { formula: '=IFERROR(MATCH("*",OFFSET($A2,1,0,40),0)-1,COUNTA(OFFSET($I2,1,0,40)))', value: 2 },
+    ID: id,
+    Artwork: artwork,
+  });
 
 /**
- * `episodes` is the per-episode runtime as a day fraction; `null` leaves the
- * cell blank — the one state the runtime write may fill. An option rather than
- * a positional argument, because a name cannot drift the way a position can.
+ * A season row, in `SHEET_HEADERS` order. `runtime: null` leaves the cell
+ * blank — the one state the runtime write may fill — and `note` is the
+ * last-watched date text; `Status` is always blank on a season row, the
+ * meaning it never carries any more.
  */
 export const seasonRow = (
   season: number,
   episode: number | null,
   end: number | null,
-  { id = null, start = 45000, episodes = 0.0153, status = null }: { id?: number | string | null; start?: number; episodes?: number | null; status?: string | null } = {},
-): CellSpec[] => [null, status, season, episode, start, end, episodes, { formula: '=G*F' }, id, null];
+  { id = null, start = 45000, runtime = 45, note = null }: { id?: number | string | null; start?: number; runtime?: number | null; note?: string | null } = {},
+): CellSpec[] =>
+  rowByLabel(SHEET_HEADERS, {
+    Status: null,
+    Season: season,
+    Episodes: episode,
+    'Episode Length (min)': runtime,
+    'Start Date': start,
+    'End Date': end,
+    'Seasons / Last Watched': note,
+    ID: id,
+  });
 
 /** An ISO instant `days` in the past — the cut-off is the gate on everything. */
 export const daysAgo = (days: number): string => ago(Temporal.Duration.from({ days }).total('milliseconds'));
@@ -360,33 +448,13 @@ export const libraryItem = ({
 export const libraryOf = (...items: ItemSpec[]): Library =>
   new Map(items.map((spec) => [spec.id, { type: spec.type ?? 'shows', item: libraryItem(spec) }]));
 
-/**
- * The films tab's column order today. Tests that care about header resolution
- * shuffle it; nothing else may depend on the positions.
- */
-export const MOVIE_SHEET_HEADERS = [
-  'Name',
-  'Watch Date',
-  'Score',
-  'Cinema',
-  'Runtime',
-  'Genre',
-  'Genres',
-  'Rating',
-  'Release Date',
-  'Franchise',
-  'Director',
-  'id',
-  'Anime',
-  'Banner',
-];
-
 export interface FilmRowSpec {
   name?: string;
   /** A date serial, the way the tab stores it. */
   watched?: number | null;
   score?: number | null;
-  cinema?: boolean;
+  /** `Cinema` or `Home`, always present on a real row; default `Home`. */
+  format?: 'Cinema' | 'Home' | null;
   runtime?: number | null;
   genre?: string | null;
   genres?: string | null;
@@ -394,10 +462,14 @@ export interface FilmRowSpec {
   released?: number | null;
   franchise?: string | null;
   director?: string | null;
-  /** Text, matching what all 348 live rows hold. A number here is a different cell. */
+  /** Text, matching what all 366 live rows hold. A number here is a different cell. */
   id?: string | number | null;
-  anime?: boolean;
+  /** `film` or `anime`, always present on a real row; default `film`. */
+  type?: 'film' | 'anime' | null;
+  /** The field id `bannerFor`/the guard use — the tab's `Artwork` cell. */
   banner?: string | null;
+  series?: string | null;
+  seriesNumber?: string | number | null;
 }
 
 /** One film row, in `MOVIE_SHEET_HEADERS` order. */
@@ -405,7 +477,7 @@ export const filmRow = ({
   name = 'A Film',
   watched = 45000,
   score = null,
-  cinema = false,
+  format = 'Home',
   runtime = null,
   genre = null,
   genres = null,
@@ -414,23 +486,26 @@ export const filmRow = ({
   franchise = null,
   director = null,
   id = null,
-  anime = false,
+  type = 'film',
   banner = null,
-}: FilmRowSpec = {}): CellSpec[] => [
-  name,
-  watched,
-  score,
-  // `null` is a blank cell and `true` a real boolean — the tab spells "no" as
-  // an absent cell and never as FALSE, so there is no `false` case to build.
-  cinema ? true : null,
-  runtime,
-  genre,
-  genres,
-  rating,
-  released,
-  franchise,
-  director,
-  id === null ? null : String(id),
-  anime ? true : null,
-  banner,
-];
+  series = null,
+  seriesNumber = null,
+}: FilmRowSpec = {}): CellSpec[] =>
+  rowByLabel(MOVIE_SHEET_HEADERS, {
+    Title: name,
+    Series: series,
+    'Series #': seriesNumber,
+    Franchise: franchise,
+    Director: director,
+    Genre: genre,
+    'Other Genres': genres,
+    Certificate: rating,
+    Format: format,
+    'Release Date': released,
+    'Watch Date': watched,
+    'Runtime (min)': runtime,
+    Score: score,
+    Type: type,
+    ID: id === null ? null : String(id),
+    Artwork: banner,
+  });

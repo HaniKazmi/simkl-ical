@@ -3,23 +3,23 @@ import assert from 'node:assert/strict';
 import { ensureLink, type LinkRequest } from '../../../src/artwork/io/sheet-link.ts';
 import { clearTokenCache } from '../../../src/api/google/auth.ts';
 import { sheetRuns } from '../../../src/sheet/io/journal.ts';
-import { cellOf, filmRow, MOVIE_SHEET_HEADERS, quiet, SHEET_HEADERS, showRow, withConfig, withFetch, withFreshJournal, type CellSpec } from '../../helpers.ts';
+import { cellOf, col, filmRow, MOVIE_SHEET_HEADERS, quiet, SHEET_HEADERS, showRow, withConfig, withFetch, withFreshJournal, type CellSpec } from '../../helpers.ts';
 import { CREDENTIAL, fakeSheets, type FakeSheetsOptions } from '../../sheet/fake-sheets.ts';
 
 const MOVIE_BUCKET = 'movies-bucket';
 const SHOW_BUCKET = 'shows-bucket';
 const NEMO_LINK = 'https://storage.googleapis.com/movies-bucket/Finding Nemo';
 
-const movies = (nemoBanner: CellSpec = null): CellSpec[][] => [
-  MOVIE_SHEET_HEADERS,
-  filmRow({ name: 'Star Wars', id: '53078', banner: 'https://image.tmdb.org/t/p/w1280/sw.jpg' }),
-  [...filmRow({ name: 'Finding Nemo', id: '53080' }).slice(0, -1), nemoBanner],
-];
+const MOVIE_ARTWORK_COL = col(MOVIE_SHEET_HEADERS, 'Artwork');
+const SHOW_ARTWORK_COL = col(SHEET_HEADERS, 'Artwork');
 
-const shows = (banner: CellSpec = null): CellSpec[][] => [
-  [...SHEET_HEADERS, 'Banner'],
-  [...showRow('Fargo', 'Watching', 3381), banner],
-];
+const movies = (nemoBanner: CellSpec = null): CellSpec[][] => {
+  const nemo = filmRow({ name: 'Finding Nemo', id: '53080' });
+  nemo[MOVIE_ARTWORK_COL] = nemoBanner;
+  return [MOVIE_SHEET_HEADERS, filmRow({ name: 'Star Wars', id: '53078', banner: 'https://image.tmdb.org/t/p/w1280/sw.jpg' }), nemo];
+};
+
+const shows = (banner: string | null = null): CellSpec[][] => [SHEET_HEADERS, showRow('Fargo', 'Watching', 3381, 'show', { artwork: banner })];
 
 const request = (over: Partial<LinkRequest> = {}): LinkRequest => ({ kind: 'movie', id: 53080, title: 'Finding Nemo', adopt: false, expectPrevious: cellOf(null), ...over });
 
@@ -45,43 +45,43 @@ const batches = (calls: string[]) => calls.filter((c) => c.includes(':batchUpdat
 
 test('a blank cell is written once, verified, and journalled as a Banner edit', async () => {
   await run('apply', { movies: movies(null) }, request(), (outcome, sheet, calls) => {
-    assert.deepEqual(outcome, { status: 'written', address: 'N3', key: 'Finding Nemo', link: NEMO_LINK });
+    assert.deepEqual(outcome, { status: 'written', address: 'P3', key: 'Finding Nemo', link: NEMO_LINK });
     assert.equal(batches(calls).length, 1);
     assert.deepEqual(sheet.batches, [['updateCells']]);
     const films = sheet.tabs.get(2)!;
-    assert.equal(films[2]?.[MOVIE_SHEET_HEADERS.indexOf('Banner')]?.userEnteredValue?.stringValue, NEMO_LINK);
+    assert.equal(films[2]?.[MOVIE_ARTWORK_COL]?.userEnteredValue?.stringValue, NEMO_LINK);
     // Both the sync's rows and this one are edits; the note says which this is.
     const [record] = sheetRuns();
     assert.equal(record?.tab, 'films');
     assert.equal(record?.status, 'applied');
-    assert.deepEqual(record?.edits.map((e) => [e.address, e.field]), [['N3', 'Banner']]);
+    assert.deepEqual(record?.edits.map((e) => [e.address, e.field]), [['P3', 'Artwork']]);
     assert.equal(record?.edits[0]?.note, 'artwork: Finding Nemo');
   });
 });
 
 test('a show row is written in its Banner column, the one column of a show row the page may touch', async () => {
   await run('apply', { grid: shows(null) }, request({ kind: 'show', id: 3381, title: 'Fargo' }), (outcome, sheet) => {
-    assert.deepEqual(outcome, { status: 'written', address: 'K2', key: 'Fargo', link: 'https://storage.googleapis.com/shows-bucket/Fargo' });
-    assert.equal(sheet.state[1]?.[SHEET_HEADERS.length]?.userEnteredValue?.stringValue, 'https://storage.googleapis.com/shows-bucket/Fargo');
+    assert.deepEqual(outcome, { status: 'written', address: 'Q2', key: 'Fargo', link: 'https://storage.googleapis.com/shows-bucket/Fargo' });
+    assert.equal(sheet.state[1]?.[SHOW_ARTWORK_COL]?.userEnteredValue?.stringValue, 'https://storage.googleapis.com/shows-bucket/Fargo');
     assert.equal(sheetRuns()[0]?.tab, 'shows');
   });
 });
 
 test('report mode decides in full and writes nothing', async () => {
   await run('report', { movies: movies(null) }, request(), (outcome, _sheet, calls) => {
-    assert.deepEqual(outcome, { status: 'reported', address: 'N3', key: 'Finding Nemo', link: NEMO_LINK });
+    assert.deepEqual(outcome, { status: 'reported', address: 'P3', key: 'Finding Nemo', link: NEMO_LINK });
     assert.deepEqual(batches(calls), []);
     assert.deepEqual(sheetRuns(), []);
   });
 });
 
 test('a formula is never written, whichever way it resolves', async () => {
-  const formula = { formula: '=CONCAT($O$1,A3)', value: NEMO_LINK };
+  const formula = { formula: '=CONCAT("https://storage.googleapis.com/movies-bucket/",A3)', value: NEMO_LINK };
   await run('apply', { movies: movies(formula) }, request({ adopt: true, expectPrevious: cellOf(formula) }), (outcome, _sheet, calls) => {
-    assert.deepEqual(outcome, { status: 'kept', address: 'N3', key: 'Finding Nemo', link: NEMO_LINK });
+    assert.deepEqual(outcome, { status: 'kept', address: 'P3', key: 'Finding Nemo', link: NEMO_LINK });
     assert.deepEqual(batches(calls), []);
   });
-  await run('apply', { movies: movies({ formula: '=CONCAT($O$1,A3)', value: 'Finding Nemo' }) }, request({ adopt: true }), (outcome, _sheet, calls) => {
+  await run('apply', { movies: movies({ formula: '=CONCAT("https://storage.googleapis.com/movies-bucket/",A3)', value: 'Finding Nemo' }) }, request({ adopt: true }), (outcome, _sheet, calls) => {
     assert.equal(outcome.status, 'refused');
     assert.equal(outcome.status === 'refused' && outcome.reason, 'formula');
     assert.deepEqual(batches(calls), []);
@@ -105,7 +105,7 @@ test('a foreign link is replaced only on adopt', async () => {
 test('a row that moved, went, or was duplicated is refused by id, not written by position', async () => {
   const moved: CellSpec[][] = [MOVIE_SHEET_HEADERS, filmRow({ name: 'Inserted Above', id: '99' }), ...movies(null).slice(1)];
   await run('apply', { movies: moved }, request(), (outcome) => {
-    assert.deepEqual(outcome, { status: 'written', address: 'N4', key: 'Finding Nemo', link: NEMO_LINK });
+    assert.deepEqual(outcome, { status: 'written', address: 'P4', key: 'Finding Nemo', link: NEMO_LINK });
   });
   await run('apply', { movies: movies(null) }, request({ id: 53080, title: 'Star Wars' }), (outcome, _sheet, calls) => {
     assert.equal(outcome.status === 'refused' && outcome.reason, 'title-moved');
@@ -160,7 +160,7 @@ test('a read-back that fails after the write is unverified, not failed', async (
           assert.equal(outcome.status, 'unverified');
           assert.match(outcome.status === 'unverified' ? outcome.detail : '', /could not be read back after the write/);
           assert.equal(batches(calls).length, 1);
-          assert.equal(sheet.films![2]?.[MOVIE_SHEET_HEADERS.indexOf('Banner')]?.userEnteredValue?.stringValue, NEMO_LINK, 'the write did land');
+          assert.equal(sheet.films![2]?.[MOVIE_ARTWORK_COL]?.userEnteredValue?.stringValue, NEMO_LINK, 'the write did land');
           assert.equal(sheetRuns()[0]?.status, 'failed');
           assert.equal(sheetRuns()[0]?.source, 'artwork');
           assert.match(sheetRuns()[0]?.error ?? '', /read back/);
@@ -178,19 +178,20 @@ test('a page write is journalled under its own source', async () => {
 
 test('a write the verify read does not find is failed, journalled, and not reverted', async () => {
   const meddleMovies = (films: ReturnType<typeof cellOf>[][]) => {
-    films[2]![MOVIE_SHEET_HEADERS.indexOf('Banner')] = cellOf('someone else');
+    films[2]![MOVIE_ARTWORK_COL] = cellOf('someone else');
   };
   await run('apply', { movies: movies(null), meddleMovies }, request(), (outcome, _sheet, calls) => {
     assert.equal(outcome.status, 'failed');
-    assert.match(outcome.status === 'failed' ? outcome.detail : '', /N3 does not hold the link/);
+    assert.match(outcome.status === 'failed' ? outcome.detail : '', /P3 does not hold the link/);
     assert.equal(batches(calls).length, 1, 'no rollback batch');
     assert.equal(sheetRuns()[0]?.status, 'failed');
-    assert.match(sheetRuns()[0]?.error ?? '', /N3/);
+    assert.match(sheetRuns()[0]?.error ?? '', /P3/);
   });
 });
 
 test('a show tab without a Banner column refuses rather than guessing a column', async () => {
-  await run('apply', { grid: [SHEET_HEADERS, showRow('Fargo', 'Watching', 3381)] }, request({ kind: 'show', id: 3381, title: 'Fargo' }), (outcome, _sheet, calls) => {
+  const noArtwork = SHEET_HEADERS.filter((h) => h !== 'Artwork');
+  await run('apply', { grid: [noArtwork, showRow('Fargo', 'Watching', 3381).slice(0, noArtwork.length)] }, request({ kind: 'show', id: 3381, title: 'Fargo' }), (outcome, _sheet, calls) => {
     assert.equal(outcome.status === 'refused' && outcome.reason, 'no-banner-column');
     assert.deepEqual(batches(calls), []);
   });

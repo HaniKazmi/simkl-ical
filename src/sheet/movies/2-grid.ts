@@ -12,13 +12,20 @@
 import type { CellData } from '../../api/google/types.ts';
 import type { SheetSnapshot } from '../io/spreadsheet.ts';
 import { a1, findHeaderRow, GridError, isBlank, numberOf, resolveColumns, textOf } from '../2-grid.ts';
+import { ARTWORK_LABEL } from '../values.ts';
 
-/** Every column on the tab, all of which the films sync reads or writes. */
+/**
+ * Every column on the tab, named as fields — the ids the planner, the guard
+ * and the baseline are written in terms of. `Series` and `SeriesNumber` are
+ * hand columns the sync never writes, and they are here so the verifier covers
+ * them: a column outside `MOVIE_HEADERS` is one a concurrent hand could change
+ * mid-write with nothing noticing.
+ */
 export const MOVIE_HEADERS = [
   'Name',
   'Watch Date',
   'Score',
-  'Cinema',
+  'Format',
   'Runtime',
   'Genre',
   'Genres',
@@ -28,18 +35,41 @@ export const MOVIE_HEADERS = [
   'Director',
   'id',
   'Banner',
-  'Anime',
+  'Type',
+  'Series',
+  'SeriesNumber',
 ] as const;
 
 export type MovieHeaderName = (typeof MOVIE_HEADERS)[number];
 
 export type MovieColumnMap = Record<MovieHeaderName, number>;
 
+/** What each field is called on the tab — see `SHOW_LABELS` for why the two are separate. */
+export const MOVIE_LABELS: Record<MovieHeaderName, string> = {
+  Name: 'Title',
+  'Watch Date': 'Watch Date',
+  Score: 'Score',
+  Format: 'Format',
+  Runtime: 'Runtime (min)',
+  Genre: 'Genre',
+  Genres: 'Other Genres',
+  Rating: 'Certificate',
+  'Release Date': 'Release Date',
+  Franchise: 'Franchise',
+  Director: 'Director',
+  id: 'ID',
+  Banner: ARTWORK_LABEL,
+  Type: 'Type',
+  Series: 'Series',
+  SeriesNumber: 'Series #',
+};
+
 /**
- * The pair that identifies this tab's header row. `Name` alone is too weak —
- * a show grid has no `Name` column, but a future tab might.
+ * The pair that identifies this tab's header row. `Title` alone is too weak —
+ * the show tab carries one too, which is exactly why the second marker is a
+ * column only this tab has.
  */
-const MOVIE_HEADER_MARKERS = ['Name', 'Watch Date'] as const;
+export const MOVIE_HEADER_MARKERS: readonly string[] = [MOVIE_LABELS.Name, MOVIE_LABELS['Watch Date']];
 
 export interface MovieRow {
   /** Zero-based index into `snapshot.rows`. */
@@ -55,7 +85,7 @@ export interface MovieRow {
   /**
    * The SIMKL id, or null when the cell is blank or not a positive integer.
    *
-   * The tab stores it as *text* — `{ stringValue: "53078" }` on all 348 rows —
+   * The tab stores it as *text* — `{ stringValue: "53078" }` on all 366 rows —
    * so this reads either representation and the write emits the text one. A
    * row with no id is unmatched and is left entirely alone.
    */
@@ -103,7 +133,7 @@ export const parseMovieGrid = (snapshot: SheetSnapshot): MovieGrid => {
   // displaced header as *missing*, which fail-closed turns into a disabled
   // sync.
   const width = Math.max(snapshot.columnCount, ...rows.map((r) => r.length));
-  const columns = resolveColumns(rows[headerRow] ?? [], width, MOVIE_HEADERS);
+  const columns = resolveColumns(rows[headerRow] ?? [], width, MOVIE_HEADERS, (header) => MOVIE_LABELS[header]);
 
   const parsed: MovieRow[] = [];
   const seen = new Map<number, number>();

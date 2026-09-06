@@ -11,11 +11,10 @@
  * gap strands a row — demanded and never written, or waiting on a lookup
  * nothing requests.
  *
- * The write surface is five columns — a season's `Episode`, its `Start` and
- * `End` dates, its runtime, and `Status`, which means one thing on a show row
- * (the derived state) and another on a season row (when it was last watched) —
- * plus inserting a season row. Everything else is hand-maintained or a formula
- * that rolls up by itself.
+ * The write surface is six columns — a season row's `Episode`, its `Start` and
+ * `End` dates, its runtime and its `Note` (when it was last watched), plus a
+ * show row's `Status` — and inserting a season row. Everything else is
+ * hand-maintained or a formula that rolls up by itself.
  *
  * `Start` and `End` are the two that **follow SIMKL**: written whenever what
  * SIMKL says has moved away from what the baseline recorded, on a dated row as
@@ -36,6 +35,7 @@ import {
   isFormula,
   numberOf,
   runtimeScopeOk,
+  SHOW_LABELS,
   usesCourModel,
   type ColumnMap,
   type Grid,
@@ -44,7 +44,7 @@ import {
   type ShowBlock,
 } from './2-grid.ts';
 import { courComplete, type SeasonProgress, type TitleProgress } from './1-index.ts';
-import { maxSerial, ownsNote, plausibleSerial, recordedSerial, runtimeDays, seasonKey, TRACKED_FIELDS, watchedNote, watchSerial } from './values.ts';
+import { maxSerial, ownsNote, plausibleSerial, recordedSerial, runtimeMinutes, seasonKey, TRACKED_FIELDS, watchedNote, watchSerial } from './values.ts';
 import type { Baseline, TrackedField } from './values.ts';
 import { instantFrom, isoOf } from '../shared/dates.ts';
 import { seasonAired, seasonComplete, type SeasonShape, type TitleCatalogue } from './3-catalogue.ts';
@@ -209,7 +209,7 @@ const blockIds = (block: ShowBlock): number[] => [...new Set([...block.ids, ...b
  *
  * The same reading of a block `planSync` uses for `seen`, exported so the films
  * half's placement rule asks this question exactly once rather than keeping a
- * second copy of what counts as "on `Sheet1`".
+ * second copy of what counts as "on the show tab".
  */
 export const gridIds = (grid: Grid): Set<number> => new Set(grid.blocks.flatMap(blockIds));
 
@@ -558,7 +558,7 @@ const runtimeAnswer = (
   const id = idsFor(block, season)[0];
   if (id === undefined || !index.has(id)) return { state: 'ineligible' };
 
-  if (!isBlank(cellAt(grid, season.row, grid.columns.Episodes))) return { state: 'ineligible' };
+  if (!isBlank(cellAt(grid, season.row, grid.columns.Runtime))) return { state: 'ineligible' };
 
   // Absent means the detail has not answered; null means it answered "no
   // key". The store writes one or the other the moment `/tv/{id}` lands, so
@@ -778,7 +778,7 @@ const followUpstream = (
     if (moved && why !== null) {
       plan.skips.push({
         code: fragment ? 'season-fragment' : 'unusable-timestamp',
-        message: `${label}: SIMKL's ${field} date ${why}, so that cell is left alone`,
+        message: `${label}: SIMKL's ${SHOW_LABELS[field]} ${why}, so that cell is left alone`,
       });
       record(observed);
       continue;
@@ -792,7 +792,7 @@ const followUpstream = (
     }
 
     const before = watchedNote(instantFrom(baseline.get(key)?.[field]), timezone);
-    plan.edits.push(edit(grid, season.row, field, num(serial), `${label}: ${field} moved from ${before} to ${watchedNote(at, timezone)}`));
+    plan.edits.push(edit(grid, season.row, field, num(serial), `${label}: ${SHOW_LABELS[field]} moved from ${before} to ${watchedNote(at, timezone)}`));
     // Into `writing`, and *withdrawn* from `observed`, which `observeWatches`
     // has already seeded with this very value: recorded before its write lands,
     // the next poll compares against it, finds nothing moved, and the change is
@@ -899,20 +899,22 @@ const closeSeason = (
   // rows differ for a reason no reader could see. A title with no TVDB key at
   // all is that same case: no average is coming, so the show-wide length is
   // what the cell gets.
-  const days = runtimeDays(minutes) ?? runtimeDays(titles.get(runtime.id)?.runtime);
-  if (days === null) {
-    plan.notes.push(`${label}: ended with no usable episode runtimes, so its Episodes cell is left blank`);
+  const own = runtimeMinutes(minutes);
+  const length = own ?? runtimeMinutes(titles.get(runtime.id)?.runtime);
+  if (length === null) {
+    plan.notes.push(`${label}: ended with no usable episode runtimes, so its ${SHOW_LABELS.Runtime} cell is left blank`);
   } else {
-    // The season's own average where TVDB answered, the show's usual episode
-    // length where it did not.
-    const measured = minutes === null ? "SIMKL's show-wide episode runtime" : `${minutes} min average episode runtime`;
-    plan.edits.push(edit(grid, season.row, 'Episodes', num(days), `${label}: ${measured}`));
+    // The season's own average where TVDB answered with one the column can
+    // hold, the show's usual episode length where it did not — decided on the
+    // value written, so the note never names an average the cell did not get.
+    const measured = own === null ? "SIMKL's show-wide episode runtime" : `${own} min average episode runtime`;
+    plan.edits.push(edit(grid, season.row, 'Runtime', num(length), `${label}: ${measured}`));
   }
   return true;
 };
 
 /**
- * The `Status` cell on a season row: when the season was last watched, and
+ * The `Note` cell on a season row: when the season was last watched, and
  * nothing once the row is dated — the `End` column says the same thing more
  * precisely, and a row that never changes again should not keep a running note.
  *
@@ -936,7 +938,7 @@ const closeSeason = (
  * column a human typed, and the row closes around it rather than through it.
  * The guard re-derives the same predicate, one copy in `values.ts`.
  *
- * A formula is declined by that predicate too, and it has to be: `season.status`
+ * A formula is declined by that predicate too, and it has to be: `season.note`
  * is the cell's *result*, so a formula rendering a date reads as this sync's own
  * note and would be planned over. The guard refuses a formula target
  * unconditionally and refusal is whole-plan, so one such cell would stop every
@@ -947,23 +949,23 @@ const closeSeason = (
  * timestamp, so a cour row's number never has to address anything upstream —
  * unlike the runtime beside it.
  */
-const statusNote = (
+const watchNote = (
   grid: Grid,
   season: SeasonRow,
   lastWatchedAt: Temporal.Instant | null,
   { advanced, closing, label, timezone }: { advanced: boolean; closing: boolean; label: string; timezone: string },
 ): CellEdit | null => {
-  const cell = cellAt(grid, season.row, grid.columns.Status);
-  if (!ownsNote(cell, season.status)) return null;
+  const cell = cellAt(grid, season.row, grid.columns.Note);
+  if (!ownsNote(cell, season.note)) return null;
 
   if (closing) {
     // Nothing of ours in a blank cell to take away.
-    return isBlank(cell) ? null : edit(grid, season.row, 'Status', undefined, `${label}: dated, so its last-watched note is cleared`);
+    return isBlank(cell) ? null : edit(grid, season.row, 'Note', undefined, `${label}: dated, so its last-watched note is cleared`);
   }
   if (!advanced) return null;
   const text = watchedNote(lastWatchedAt, timezone);
-  if (text === null || text === season.status) return null;
-  return edit(grid, season.row, 'Status', str(text), `${label}: last watched ${text}`);
+  if (text === null || text === season.note) return null;
+  return edit(grid, season.row, 'Note', str(text), `${label}: last watched ${text}`);
 };
 
 // --- The plan --------------------------------------------------------------
@@ -1093,7 +1095,7 @@ export const planSync = (
       // the reason names the row instead of the planner.
       const existing = cellAt(grid, season.row, grid.columns.Episode);
       if (!isBlank(existing) && numberOf(existing) === null) {
-        plan.skips.push({ code: 'non-numeric-count', message: `${label}: the Episode cell holds something that is not a number, so the row is left alone` });
+        plan.skips.push({ code: 'non-numeric-count', message: `${label}: the ${SHOW_LABELS.Episode} cell holds something that is not a number, so the row is left alone` });
         continue;
       }
       const advanced = resolved.watched > (season.episode ?? 0);
@@ -1106,7 +1108,7 @@ export const planSync = (
       // Last, because what the note should say depends on whether this batch
       // dates the row — a row left open for another poll keeps carrying its
       // date, a row being closed hands the fact over to `End`.
-      const note = statusNote(grid, season, resolved.lastWatchedAt, { advanced, closing, label, timezone });
+      const note = watchNote(grid, season, resolved.lastWatchedAt, { advanced, closing, label, timezone });
       if (note) plan.edits.push(note);
     }
 
@@ -1140,7 +1142,7 @@ export const planSync = (
     // and plans a new row in each.
     const source = (sourceId === null ? null : index.get(sourceId)) ?? null;
     if (sourceId !== null && duplicates.has(sourceId)) {
-      plan.skips.push({ code: 'duplicate-id', message: `${block.title}: id ${sourceId} is claimed by more than one row, so Status and new rows are left alone` });
+      plan.skips.push({ code: 'duplicate-id', message: `${block.title}: id ${sourceId} is claimed by more than one row, so ${SHOW_LABELS.Status} and new rows are left alone` });
     } else if (source) {
       const entry = titles.get(source.id);
       // Which model applies is decided by where the ids sit, never by whether
@@ -1150,7 +1152,7 @@ export const planSync = (
       // show rather than the latest season. So it declines to write; the
       // lookup failure already asks for another poll.
       if (!anime && !entry?.shapes.size) {
-        plan.skips.push({ code: 'no-episode-list', message: `${block.title}: no episode list came back, so Status is left alone` });
+        plan.skips.push({ code: 'no-episode-list', message: `${block.title}: no episode list came back, so ${SHOW_LABELS.Status} is left alone` });
       } else {
         const status = deriveStatus(source, {
           detailStatus: entry?.status,
@@ -1201,7 +1203,7 @@ export const planSync = (
   for (const progress of index.values()) {
     if (seen.has(progress.id) || !within(progress.lastWatchedAt, cutoff)) continue;
     // An anime film with no block is not missing a row: the films tab holds it,
-    // and this half still indexes it because 20 of them sit on `Sheet1` rows.
+    // and this half still indexes it because 20 of them sit on show-tab rows.
     if (filed?.has(progress.id)) continue;
     plan.notes.push(`${progress.title} (simkl ${progress.id}) has recent activity and no row — add it by hand if you want it tracked`);
   }
@@ -1245,7 +1247,7 @@ const planInsert = (
 
   // What this row's runtime cell can hold, and whether this fill may date the
   // row. A row created and dated in one batch is never revisited, so its
-  // `Episodes` cell has one chance to be right.
+  // `Runtime` cell has one chance to be right.
   //
   // The runtime follows *airing*; the date below follows watching. A season
   // one episode into a finished run has settled lengths and no business being
@@ -1256,12 +1258,12 @@ const planInsert = (
   // close can never correct. With no join key there is nothing to wait for,
   // so the show-wide runtime is the best there will ever be.
   const runtime =
-    target === null ? runtimeDays(entry?.runtime)
+    target === null ? runtimeMinutes(entry?.runtime)
     : !aired ? null
-    // Settled, either way. `runtimeDays` also rejects an average that is not
+    // Settled, either way. `runtimeMinutes` also rejects an average that is not
     // a length an episode has, and the show-wide number beats a cell nothing
     // can ever fill again.
-    : minutes !== undefined ? (runtimeDays(minutes) ?? runtimeDays(entry?.runtime))
+    : minutes !== undefined ? (runtimeMinutes(minutes) ?? runtimeMinutes(entry?.runtime))
     : null;
 
   // Whether anything can still reach this cell — a fact about the runtime
@@ -1284,14 +1286,8 @@ const planInsert = (
     { field: 'Season', value: num(candidate.number) },
     { field: 'Episode', value: num(candidate.watched) },
     { field: 'Start', value: num(start) },
-    ...(note === null ? [] : [{ field: 'Status' as const, value: str(note) }]),
-    ...(runtime === null ? [] : [{ field: 'Episodes' as const, value: num(runtime) }]),
-    {
-      field: 'Length',
-      // The sheet's convention: runtime x episodes watched. A formula, so it
-      // keeps tracking the count like every other row.
-      value: { formulaValue: `=${columnLetter(grid.columns.Episodes)}${row + 1}*${columnLetter(grid.columns.Episode)}${row + 1}` },
-    },
+    ...(note === null ? [] : [{ field: 'Note' as const, value: str(note) }]),
+    ...(runtime === null ? [] : [{ field: 'Runtime' as const, value: num(runtime) }]),
     ...(end === null ? [] : [{ field: 'End' as const, value: num(end) }]),
   ];
   const fill: CellEdit[] = cells.map(({ field, value }) => ({
@@ -1319,7 +1315,7 @@ const planInsert = (
       // Blank with nothing outstanding is blank for good, dated or not: no
       // join key, or the key's answer is in and unusable. A row still waiting
       // is not this, and says nothing.
-      : runtime === null && !waiting ? ', with no episode runtime to fill its Episodes cell'
+      : runtime === null && !waiting ? `, with no episode runtime to fill its ${SHOW_LABELS.Runtime} cell`
       : ''
     }`,
   };
@@ -1334,10 +1330,12 @@ const planInsert = (
 export interface RecordedEdit {
   address: string;
   /**
-   * Either tab's column, as text. One record shape for both, because the
-   * journal and the status page ask the same three questions of a films edit
-   * as of a show one — where it landed, which column, and why — and this
-   * module does not name the other tab's columns.
+   * Either tab's column, by the label a reader sees in the header row — never
+   * the field id, because the record outlives the run and is read beside the
+   * sheet. One record shape for both, because the journal and the status page
+   * ask the same three questions of a films edit as of a show one — where it
+   * landed, which column, and why — and this module does not name the other
+   * tab's columns.
    */
   field: string;
   note: string;
@@ -1370,7 +1368,7 @@ export interface PlanRecord {
  * report a plan size that disagrees with the plan it reports.
  */
 export const planRecord = (plan: SheetPlan): PlanRecord => ({
-  edits: plan.edits.map(({ address, field, note }) => ({ address, field, note })),
+  edits: plan.edits.map(({ address, field, note }) => ({ address, field: SHOW_LABELS[field], note })),
   inserts: plan.insert === null ? [] : [{ address: `row ${plan.insert.row + 1}`, title: plan.insert.title, season: plan.insert.season, note: plan.insert.note }],
 });
 
@@ -1380,7 +1378,7 @@ export const describePlan = (plan: SheetPlan, columns: ColumnMap): string[] => {
   for (const e of plan.edits) lines.push(`  edit   ${e.address.padEnd(7)} ${e.note}`);
   if (plan.insert) {
     lines.push(`  insert row ${plan.insert.row + 1}  ${plan.insert.note}`);
-    for (const f of plan.insert.fill) lines.push(`           ${columnLetter(columns[f.field])} ${f.field}`);
+    for (const f of plan.insert.fill) lines.push(`           ${columnLetter(columns[f.field])} ${SHOW_LABELS[f.field]}`);
   }
   for (const s of plan.skips) lines.push(`  skip   ${s.message}`);
   for (const n of plan.notes) lines.push(`  note   ${n}`);

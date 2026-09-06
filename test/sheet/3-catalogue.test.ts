@@ -8,7 +8,7 @@ import {
   seasonShapes,
   tvdbIdOf,
 } from '../../src/sheet/3-catalogue.ts';
-import { runtimeDays } from '../../src/sheet/values.ts';
+import { runtimeMinutes } from '../../src/sheet/values.ts';
 import { indexLibrary } from '../../src/sheet/1-index.ts';
 import { libraryOf } from '../helpers.ts';
 
@@ -43,7 +43,7 @@ const eps = (...specs: Array<[number, number | null]>) => specs.map(([number, ru
 test('a season average is the arithmetic mean, in whole minutes', () => {
   assert.equal(averageRuntime(eps([1, 24], [2, 24], [3, 25]), 3), 24);
   // 21 at 22m plus a 44m finale is 506 minutes; 23 x 22 = 506. A median
-  // answers 22 and leaves every Length in the block short by 22 minutes.
+  // answers 22 and leaves every Runtime cell in the block short by 22 minutes.
   const long = eps(...Array.from({ length: 21 }, (_, i) => [i + 1, 22] as [number, number]), [22, 44]);
   assert.equal(averageRuntime(long, 22), 23);
 });
@@ -85,7 +85,7 @@ test('a film inside a numbered season is dropped, and a duplicate counted once',
 });
 
 test('a mean under half a minute yields no cell rather than a zero one', () => {
-  assert.equal(runtimeDays(averageRuntime(eps([1, 0.2], [2, 0.2]), 2)), null);
+  assert.equal(runtimeMinutes(averageRuntime(eps([1, 0.2], [2, 0.2]), 2)), null);
 });
 
 test('the tvdb id is read as a number, and anything else is simply absent', () => {

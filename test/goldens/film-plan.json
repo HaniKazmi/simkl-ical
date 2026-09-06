@@ -1,7 +1,7 @@
 {
   "edits": [
     {
-      "address": "C3",
+      "address": "M3",
       "field": "Score",
       "note": "Finding Nemo: Score moved from 6 to 9"
     }
@@ -20,29 +20,34 @@
       "value": "A Reference Film"
     },
     {
-      "column": "B",
+      "column": "K",
       "field": "Watch Date",
       "value": 46248
     },
     {
-      "column": "L",
+      "column": "O",
       "field": "id",
       "value": "62344"
     },
     {
-      "column": "C",
+      "column": "I",
+      "field": "Format",
+      "value": "Cinema"
+    },
+    {
+      "column": "N",
+      "field": "Type",
+      "value": "film"
+    },
+    {
+      "column": "M",
       "field": "Score",
       "value": 7
     },
     {
-      "column": "E",
+      "column": "L",
       "field": "Runtime",
       "value": 81
-    },
-    {
-      "column": "D",
-      "field": "Cinema",
-      "value": true
     },
     {
       "column": "F",
@@ -60,22 +65,22 @@
       "value": 12
     },
     {
-      "column": "I",
+      "column": "J",
       "field": "Release Date",
       "value": 46241
     },
     {
-      "column": "J",
+      "column": "D",
       "field": "Franchise",
       "value": "A Reference"
     },
     {
-      "column": "K",
+      "column": "E",
       "field": "Director",
       "value": "A Director"
     },
     {
-      "column": "N",
+      "column": "P",
       "field": "Banner",
       "value": "https://image.tmdb.org/t/p/w1280/chosen.jpg"
     }

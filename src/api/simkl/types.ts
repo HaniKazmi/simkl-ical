@@ -240,7 +240,7 @@ export interface EpisodeDetail {
  * Three fields are read. `status` separates a show that has ended from one
  * between seasons, which the episode list cannot express. `runtime` is the
  * show-wide "most common length", which a newly inserted season row takes for
- * its `Episodes` cell. `ids.tvdb` is the join key to the per-episode runtimes,
+ * its runtime cell. `ids.tvdb` is the join key to the per-episode runtimes,
  * which SIMKL holds but does not serve.
  */
 export interface ShowDetail {

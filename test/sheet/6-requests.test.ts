@@ -62,14 +62,14 @@ test('a season closing with its runtime emits three cell writes on one row', () 
   const plan = planOf([
     fx.cell('fargoS2', 'Episode', { numberValue: 10 }),
     fx.cell('fargoS2', 'End', { numberValue: TODAY }),
-    fx.cell('fargoS2', 'Episodes', { numberValue: 49 / 1440 }),
+    fx.cell('fargoS2', 'Runtime', { numberValue: 49 }),
   ]);
   const requests = toRequests(writesFor(plan, fx.grid));
   assert.equal(requests.length, 3);
   const columns = requests.map((r) => ('updateCells' in r ? r.updateCells.range.startColumnIndex : -1));
   assert.deepEqual(
     columns,
-    [fx.grid.columns.Episodes, fx.grid.columns.End, fx.grid.columns.Episode].sort((a, b) => b - a),
+    [fx.grid.columns.Runtime, fx.grid.columns.End, fx.grid.columns.Episode].sort((a, b) => b - a),
     'all three are cell writes, descending by column',
   );
 });

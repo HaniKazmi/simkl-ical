@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { columnLetter, duplicateIds, findHeaderRow, GridError, HEADERS, idsFor, parseGrid, parseIds, resolveColumns } from '../../src/sheet/2-grid.ts';
-import { cellOf, sheetSnapshot, SHEET_HEADERS, type CellSpec, seasonRow, showRow } from '../helpers.ts';
+import { columnLetter, duplicateIds, findHeaderRow, GridError, HEADERS, idsFor, parseGrid, parseIds, resolveColumns, SHOW_LABELS } from '../../src/sheet/2-grid.ts';
+import { cellOf, col, sheetSnapshot, SHEET_HEADERS, type CellSpec, seasonRow, showRow } from '../helpers.ts';
 
 const H = SHEET_HEADERS;
+const labelOf = (h: (typeof HEADERS)[number]) => SHOW_LABELS[h];
 const show = showRow;
 const season = (n: number, episodes: number, start: number, end: number | null, id: number | string | null = null): CellSpec[] =>
   seasonRow(n, episodes, end, { id, start });
@@ -25,12 +26,12 @@ test('column letters are real base 26 past Z', () => {
 
 test('the header row is found by content, so a title row above it is survivable', () => {
   const rows = [['My shows', null], [], H, ...[show('Fargo', 'Ended', 1, 'show')]];
-  assert.equal(findHeaderRow(rows.map((r) => r.map(cellOf)), ['Show', 'Season']), 2);
+  assert.equal(findHeaderRow(rows.map((r) => r.map(cellOf)), ['Title', 'Season']), 2);
 });
 
 test('headers resolve case-insensitively and on trimmed text', () => {
-  const header = ['  SHOW ', 'status', 'Season', 'Episode', 'Start', 'End', 'Episodes', 'Length', 'ID', 'type'];
-  const columns = resolveColumns(header.map(cellOf), header.length, HEADERS);
+  const header = ['  TITLE ', 'status', 'seasons / last watched', 'Season', 'Episodes', 'Start Date', 'End Date', 'episode length (min)', 'ID', 'type'];
+  const columns = resolveColumns(header.map(cellOf), header.length, HEADERS, labelOf);
   assert.equal(columns.Show, 0);
   assert.equal(columns.id, 8);
 });
@@ -38,8 +39,8 @@ test('headers resolve case-insensitively and on trimmed text', () => {
 // The cheapest proof nothing depends on position: the same data in a different
 // column order must produce the same logical grid.
 test('a shuffled column order resolves to the same blocks', () => {
-  const shuffled = ['Type', 'id', 'Show', 'End', 'Start', 'Episode', 'Season', 'Status', 'Length', 'Episodes'];
-  const pick = (row: CellSpec[]): CellSpec[] => shuffled.map((h) => row[H.indexOf(h)] as CellSpec);
+  const shuffled = [...H].reverse();
+  const pick = (row: CellSpec[]): CellSpec[] => shuffled.map((label) => row[col(H, label)] as CellSpec);
   const rows = [show('Fargo', 'Ended', 3381, 'show'), season(1, 6, 45000, null)];
 
   const straight = parseGrid(sheetSnapshot([H, ...rows]));
@@ -50,18 +51,19 @@ test('a shuffled column order resolves to the same blocks', () => {
 });
 
 test('a missing, renamed or duplicated header is a hard failure', () => {
-  const missing = H.map((h) => (h === 'End' ? 'Finished' : h));
-  assert.throws(() => resolveColumns(missing.map(cellOf), missing.length, HEADERS), /End is missing/);
+  const labels = HEADERS.map(labelOf);
+  const missing = labels.map((l) => (l === 'End Date' ? 'Finished' : l));
+  assert.throws(() => resolveColumns(missing.map(cellOf), missing.length, HEADERS, labelOf), /End Date is missing/);
 
-  const duplicated = [...H, 'Episode'];
-  assert.throws(() => resolveColumns(duplicated.map(cellOf), duplicated.length, HEADERS), /Episode appears in D and K/);
+  const duplicated = [...labels, 'Episodes'];
+  assert.throws(() => resolveColumns(duplicated.map(cellOf), duplicated.length, HEADERS, labelOf), /Episodes appears in/);
 });
 
 test('the declared width is used, not the widest row', () => {
   // A short read must not present a displaced header as missing — under the
   // fail-closed rule that disables the sync entirely.
   const snapshot = sheetSnapshot([H, show('Fargo', 'Ended', 1, 'show')], { columnCount: 31 });
-  assert.equal(parseGrid(snapshot).columns.Type, 9);
+  assert.equal(parseGrid(snapshot).columns.Type, col(H, 'Type'));
 });
 
 // --- blocks ----------------------------------------------------------------
@@ -84,7 +86,10 @@ test('a season row with no show row above it throws rather than being orphaned',
 // The roll-up formulas use MATCH("*", …), which matches text only. "24",
 // "1899" and "1923" are real show names, so this is not theoretical.
 test('a numeric show title is refused, because the roll-up would merge two blocks', () => {
-  assert.throws(() => parseGrid(sheetSnapshot([H, show('Fargo', 'Ended', 1, 'show'), season(1, 6, 45000, null), [1899, 'Ended', 1, 1, 1, 1, 1, 1, 2, 'show']])), /is not text/);
+  const numericTitle = seasonRow(1, 1, null, { id: 2 });
+  numericTitle[col(H, 'Title')] = 1899;
+  numericTitle[col(H, 'Status')] = 'Ended';
+  assert.throws(() => parseGrid(sheetSnapshot([H, show('Fargo', 'Ended', 1, 'show'), season(1, 6, 45000, null), numericTitle])), /is not text/);
 });
 
 test('trailing blank rows are the sheet tail, not data', () => {
@@ -145,7 +150,7 @@ test('the same id on two show rows is caught, not just on two season rows', () =
 // a hand-typed note reads as open and gets overwritten.
 test('a non-numeric End still closes the row', () => {
   const rows = [H, show('Fargo', 'Ended', 1, 'show'), season(1, 6, 45000, null)];
-  rows[2]![5] = 'TBD';
+  rows[2]![col(H, 'End Date')] = 'TBD';
   assert.equal(parseGrid(sheetSnapshot(rows)).blocks[0]?.seasons[0]?.closed, true);
 });
 
@@ -162,6 +167,8 @@ test('a show row and its own season row naming one id is not a duplicate', () =>
 // path never consults `season` — a count would be planned into a row that is
 // not a season row at all.
 test('a row carrying only an id is not read as a season row', () => {
-  const grid = parseGrid(sheetSnapshot([H, show('Fargo', 'Ended', 100), [null, null, null, null, null, null, null, null, 3381, null]]));
+  const idOnly = new Array<CellSpec>(H.length).fill(null);
+  idOnly[col(H, 'ID')] = 3381;
+  const grid = parseGrid(sheetSnapshot([H, show('Fargo', 'Ended', 100), idOnly]));
   assert.deepEqual(grid.blocks[0]?.seasons, []);
 });

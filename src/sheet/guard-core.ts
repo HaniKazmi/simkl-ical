@@ -116,10 +116,11 @@ export const checkCellShape = <H extends string>(
  * the one failure that produces real writes in wrong places.
  *
  * The formula refusal is unconditional. On the show grid every derived cell on
- * a show row is a formula rolling up from the season rows, and writing one
- * replaces a live roll-up with a frozen number that nothing would ever notice;
- * the films tab carries none today, and the copy people read carries one in
- * `Banner`, so the rule has to hold rather than be assumed.
+ * a show row is a formula rolling up from the season rows — its artwork link
+ * included — and writing one replaces a live roll-up with a frozen number that
+ * nothing would ever notice; the films tab carries no formula today, and one
+ * hand-written cell is all it takes, so the rule has to hold rather than be
+ * assumed.
  */
 export const checkCellAlignment = <H extends string>(cell: GuardedCell<H>, snapshot: SheetSnapshot, refuse: Refuse): void => {
   const where = `${cell.address} (${cell.field})`;

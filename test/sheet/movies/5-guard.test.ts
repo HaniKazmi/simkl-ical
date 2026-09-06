@@ -21,6 +21,17 @@ const allows = (plan: Parameters<typeof assertFilmPlanSafe>[0], grid = ffx.grid)
   assert.doesNotThrow(() => assertFilmPlanSafe(plan, grid));
 };
 
+/**
+ * An insert with one already-filled cell's value swapped out. `without` plus
+ * `extra` cannot do this: `insert()`'s filter drops every fill entry named
+ * `field`, the replacement included, so testing a *different* value for a
+ * field the insert fills by default has to edit the built fill directly.
+ */
+const withValue = (insert: ReturnType<typeof ffx.insert>, field: MovieHeaderName, value: ExtendedValue): ReturnType<typeof ffx.insert> => ({
+  ...insert,
+  fill: insert.fill.map((f) => (f.field === field ? { ...f, value } : f)),
+});
+
 // --- What may be written to a row that already exists ------------------------
 
 test('the three columns that follow SIMKL may be written to an existing row', () => {
@@ -35,8 +46,8 @@ test('every write-once column is refused on a row that already exists', () => {
   // track of which rule it was applying.
   const cases: Array<[MovieHeaderName, ExtendedValue]> = [
     ['Name', { stringValue: 'Renamed' }],
-    ['Cinema', { boolValue: true }],
-    ['Anime', { boolValue: true }],
+    ['Format', { stringValue: 'Cinema' }],
+    ['Type', { stringValue: 'anime' }],
     ['Genre', { stringValue: 'Drama' }],
     ['Genres', { stringValue: 'Action' }],
     ['Rating', { numberValue: 15 }],
@@ -45,6 +56,8 @@ test('every write-once column is refused on a row that already exists', () => {
     ['Director', { stringValue: 'George Lucas' }],
     ['Banner', { stringValue: 'https://image.tmdb.org/t/p/w1280/a.jpg' }],
     ['id', { stringValue: '999' }],
+    ['Series', { stringValue: 'Star Wars' }],
+    ['SeriesNumber', { stringValue: '1' }],
   ];
   for (const [field, value] of cases) {
     refuses(filmPlanOf([ffx.cell('starWars', field, value)]), ffx.grid, /follow SIMKL|may write/);
@@ -222,17 +235,35 @@ test('a column filled twice is refused', () => {
   refuses(filmPlanOf([], twice), ffx.grid, /Name is filled twice/);
 });
 
-test('Anime is only ever written TRUE, and only on an insert', () => {
-  allows(filmPlanOf([], ffx.insert({ extra: [['Anime', { boolValue: true }]] })));
+test('Type is film or anime, as a string, and only ever written on an insert', () => {
+  allows(filmPlanOf([], withValue(ffx.insert(), 'Type', { stringValue: 'anime' })));
+  allows(filmPlanOf([], withValue(ffx.insert(), 'Type', { stringValue: 'film' })));
   // The switch has no `default`, so a whitelisted field with no case of its own
-  // is accepted at any shape. This is what proves `Anime` has one.
-  refuses(filmPlanOf([], ffx.insert({ extra: [['Anime', { boolValue: false }]] })), ffx.grid, /only ever written as TRUE/);
-  refuses(filmPlanOf([], ffx.insert({ extra: [['Anime', { stringValue: 'yes' }]] })), ffx.grid, /only ever written as TRUE/);
+  // is accepted at any shape. This is what proves `Type` has one: a boolean is
+  // refused outright, not merely an unrecognised word.
+  refuses(filmPlanOf([], withValue(ffx.insert(), 'Type', { boolValue: true })), ffx.grid, /is not film or anime/);
+  refuses(filmPlanOf([], withValue(ffx.insert(), 'Type', { stringValue: 'documentary' })), ffx.grid, /is not film or anime/);
 });
 
-test('Cinema is only ever written TRUE — the tab spells no as an absent cell', () => {
-  allows(filmPlanOf([], ffx.insert({ extra: [['Cinema', { boolValue: true }]] })));
-  refuses(filmPlanOf([], ffx.insert({ extra: [['Cinema', { boolValue: false }]] })), ffx.grid, /only ever written as TRUE/);
+test('Format is Cinema or Home, as a string — the tab fills it on every row', () => {
+  allows(filmPlanOf([], withValue(ffx.insert(), 'Format', { stringValue: 'Cinema' })));
+  allows(filmPlanOf([], withValue(ffx.insert(), 'Format', { stringValue: 'Home' })));
+  refuses(filmPlanOf([], withValue(ffx.insert(), 'Format', { boolValue: true })), ffx.grid, /is not Cinema or Home/);
+  refuses(filmPlanOf([], withValue(ffx.insert(), 'Format', { stringValue: 'Streaming' })), ffx.grid, /is not Cinema or Home/);
+});
+
+// Both columns are filled on every row the tab holds, so an insert missing
+// either leaves a blank nothing will come back to fill.
+test('an insert must say how it was watched and what kind of film it is', () => {
+  refuses(filmPlanOf([], ffx.insert({ without: 'Format' })), ffx.grid, /must say how it was watched/);
+  refuses(filmPlanOf([], ffx.insert({ without: 'Type' })), ffx.grid, /must say what kind of film it is/);
+});
+
+// Hand columns: headers so the verifier covers them, never targets — refused
+// here as well as omitted from both whitelists.
+test('Series and SeriesNumber are never written, on an insert or an edit', () => {
+  refuses(filmPlanOf([], ffx.insert({ extra: [['Series', { stringValue: 'Star Wars' }]] })), ffx.grid, /may write|hand-maintained/);
+  refuses(filmPlanOf([], ffx.insert({ extra: [['SeriesNumber', { stringValue: '1' }]] })), ffx.grid, /may write|hand-maintained/);
 });
 
 test('a genre outside the renderer vocabulary is refused', () => {
@@ -316,9 +347,17 @@ test('the guard whitelist and the planner followed set say the same thing', () =
   assert.deepEqual([...EDIT_FIELDS].sort(), [...FOLLOWED_FIELDS].sort());
   // And every followed field is insertable, since a new row carries them too.
   for (const field of FOLLOWED_FIELDS) assert.ok(INSERT_FIELDS.has(field));
-  // `Anime` goes the other way: filled once when the row is built, and never
-  // followed, because what kind of film a row holds is not a thing SIMKL
-  // revises.
-  assert.ok(INSERT_FIELDS.has('Anime' as MovieHeaderName));
-  assert.equal(EDIT_FIELDS.has('Anime' as MovieHeaderName), false);
+  // `Format` and `Type` go the other way: filled once when the row is built,
+  // and never followed, because how a film was watched and what kind it is
+  // are not things SIMKL revises.
+  assert.ok(INSERT_FIELDS.has('Format' as MovieHeaderName));
+  assert.ok(INSERT_FIELDS.has('Type' as MovieHeaderName));
+  assert.equal(EDIT_FIELDS.has('Format' as MovieHeaderName), false);
+  assert.equal(EDIT_FIELDS.has('Type' as MovieHeaderName), false);
+  // Hand columns: headers so the verifier covers every column but `id`, never
+  // a target of either whitelist.
+  assert.equal(INSERT_FIELDS.has('Series' as MovieHeaderName), false);
+  assert.equal(INSERT_FIELDS.has('SeriesNumber' as MovieHeaderName), false);
+  assert.equal(EDIT_FIELDS.has('Series' as MovieHeaderName), false);
+  assert.equal(EDIT_FIELDS.has('SeriesNumber' as MovieHeaderName), false);
 });

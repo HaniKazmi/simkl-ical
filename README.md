@@ -162,10 +162,10 @@ copy back and which rows to delete. `/healthz` only reports *that* it froze.
 tabs of the spreadsheet — needs-artwork first, then whatever the sync touched most recently — and
 lets you pick a TMDB backdrop for a film or a TVDB poster for a show. A pick downloads that image
 through the service, uploads it to a Cloud Storage bucket under the title's name, and writes a
-static link into the row's `Banner` cell. The link is the same shape the show tab's formula cells
+static link into the row's `Artwork` cell. The link is the same shape the show tab's formula cells
 already produce, so a re-pick later touches the bucket and never the sheet again.
 
-Rows whose `Banner` still links another host are **adoptable**: a pick may replace the image, or
+Rows whose `Artwork` still links another host are **adoptable**: a pick may replace the image, or
 **Adopt** copies the current one into the bucket as-is. **Adopt all** does that over every such
 row, one at a time, with progress on the page — the migration from a tab of TMDB URLs to a tab of
 bucket links, resumable if it is interrupted.
@@ -177,7 +177,7 @@ written. Unlike the status page it runs a small script and loads images off-orig
 Content-Security-Policy naming only its own script and https images; it sends no referrer, and
 no absolute URL on it carries the token.
 
-A `Banner` cell may link any public https host, and adopting copies from wherever it points. The
+An `Artwork` cell may link any public https host, and adopting copies from wherever it points. The
 service refuses a host that resolves to a private or local address, never follows a redirect, and
 refuses anything that is not an image, so a mistyped cell cannot make it fetch from its own
 network or put a web page in the bucket.
@@ -189,7 +189,7 @@ ARTWORK_MOVIE_BUCKET=hanikazmi_plotdevice_movie
 ARTWORK_SHOW_BUCKET=hanikazmi_plotdevice_show
 ```
 
-Setting both is also what switches a newly inserted film row's `Banner` from a TMDB URL to the
+Setting both is also what switches a newly inserted film row's `Artwork` from a TMDB URL to the
 static bucket link; the sync writes that column once, so it only does so where this page exists to
 put an object behind the link.
 
@@ -220,7 +220,8 @@ for the library: the watch detail rides along on the fetch the feed already make
 | Variable                         | Default    | Notes                                                          |
 | -------------------------------- | ---------- | -------------------------------------------------------------- |
 | `SHEET_ID`                       | —          | The spreadsheet id, from its URL. Unset ⇒ none of this runs     |
-| `SHEET_NAME`                     | `Sheet1`   | Which tab                                                       |
+| `SHEET_NAME`                     | `Shows`    | The show tab. The spreadsheet may hold other tabs (`Games`, `Books`); the sync never reads them |
+| `MOVIES_SHEET_NAME`              | `Movies`   | The films tab                                                    |
 | `GOOGLE_SA_KEY_B64`              | —          | **Secret.** Base64 of the service-account JSON: `base64 -w0 sa.json` |
 | `GOOGLE_APPLICATION_CREDENTIALS` | —          | Path to that JSON instead, for local dev                        |
 | `SHEET_SYNC_MODE`                | `report`   | `off` / `report` / `apply`. Anything unrecognised clamps to `report` |
@@ -244,10 +245,10 @@ shows what each run actually wrote, and survives a restart.
 
 ### What it does
 
-It writes exactly five things — a season row's episode count, its start and end dates, its
-average episode runtime *into a blank cell only*, and a show row's status — and inserts a season
-row when you start a new season. It never adds a show, never moves a count backwards, and never
-writes a formula.
+It writes exactly six things — a season row's episode count, its start and end dates, its
+average episode runtime in whole minutes *into a blank cell only*, the last-watched note on an
+open season row, and a show row's status — and inserts a season row when you start a new season.
+It never adds a show, never moves a count backwards, and never writes a formula.
 
 The start and end dates are the two that **keep following SIMKL** after the row is finished: if a
 date changes upstream — you correct a watch date, or rewatch the last episode — the cell is

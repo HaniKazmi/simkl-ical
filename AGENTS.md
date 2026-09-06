@@ -211,19 +211,19 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   under a different rule: it follows SIMKL for the life of the row, and checks against the same two
   constants.
 - **Never write a formula cell, and never write a show row except `Status`** — and, from the
-  artwork page only, `Banner`, under the conditions above. Every derived cell on a show row rolls
+  artwork page only, `Artwork`, under the conditions above. Every derived cell on a show row rolls
   up from the season rows beneath it. Writing one replaces a live roll-up with a frozen number, and
   nothing would ever notice.
-- **`Status` means one thing on a show row and another on a season row** — the derived state above,
-  the date the season was last watched below — so which row a write landed on picks the rule, in
-  `4-plan.ts` and `5-guard.ts` both. The note is written and moved on while the row is open, and the
-  batch that dates the row takes it away: `End` says the same thing, and a row nothing revisits must
-  not keep a running one. **Only a cell `ownsNote` accepts may be written into or cleared** — blank,
-  or holding a note of the sync's own shape. The column is otherwise free space and what a reader
-  typed there is not reconstructible, so the row closes around a hand-typed note rather than through
-  it; and a formula is declined by the same predicate, because `season.status` is the cell's *result*
-  and one rendering a date would read as the sync's own note, against a formula refusal that is
-  unconditional and whole-plan. One copy for planner and guard, in `values.ts` with the bounds.
+- **`Note` is a season-row column and `Status` is a show-row column** — which one a write may touch
+  is decided by the row it landed on, in `4-plan.ts` and `5-guard.ts` both: `Note` refuses a show
+  row and `Status` refuses a season row. The show row's cell in the note column is the block-height
+  helper formula every roll-up reads, so the unconditional formula refusal covers it before the row
+  rule does. `Note` is written and moved on while the row is open, and
+  the batch that dates the row takes it away: `End` says the same thing, and a row nothing revisits
+  must not keep a running one. **Only a cell `ownsNote` accepts may be written into or cleared** —
+  blank, or holding a note of the sync's own shape. The column is otherwise free space and what a
+  reader typed there is not reconstructible, so the row closes around a hand-typed note rather than
+  through it. One copy for planner and guard, in `values.ts` with the bounds.
 - **The note dates the count beside it, so it moves only when that count does** — written when a
   season row's `Episode` advances and when a row is inserted open, and never on a row this run
   leaves alone. `lastWatchedAt` drifts for reasons the count cannot see (a scrobbler restamping an
@@ -234,7 +234,7 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   *everything* over budget, and a note set that did not drain would stop the counts being written
   until enough rows aged out. The **clear** is not conditioned on the count: a stale note on a
   closing row goes whether or not that batch advanced anything.
-- **An absent `CellEdit.value` empties a cell, and only a season's `Status` is ever emptied.** It is
+- **An absent `CellEdit.value` empties a cell, and only a season's `Note` is ever emptied.** It is
   the encoding `writeCell` already uses to undo an inserted value, and the only one that leaves a
   cell a later read calls blank. Writing an empty string instead makes VERIFY's recognition of its
   own edit depend on how Sheets echoes such a write. Two consequences: `7-verify.ts` asks its
@@ -297,7 +297,7 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   navigation the reader clicks is not a subresource, and `no-referrer` covers it either way.
 - **The artwork page is the one page that runs a script and loads images off-origin, and it does
   both under its own CSP.** `script-src 'self'` admits only `artwork/app.js`; `img-src` is
-  `'self' https:`, because a `Banner` cell may link any public host and the row shows what it
+  `'self' https:`, because an `Artwork` cell may link any public host and the row shows what it
   links; `connect-src 'self'` is what the script's fetches run under. Every `src` and `href` on it
   is relative or an https URL, so **no absolute URL on the page carries the feed token** — pinned by
   `4-html.test.ts` and `server-artwork.test.ts` — and the `no-referrer` header keeps the page's URL
@@ -314,24 +314,26 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   answers every name publicly, so no test touches DNS. `CANDIDATE_HOSTS` is a different list: where
   the page's own candidates come from, not what it may fetch.
 - **A page write and a sync run never overlap — `withSheetLock`.** The films verifier inspects every
-  column but `id`, `Banner` included, so a `Banner` cell written between the sync's read and its
+  column but `id`, `Artwork` included, so an `Artwork` cell written between the sync's read and its
   verify is one the sync did not plan: VERIFY rolls the whole tab back, taking the page's write with
   it and refusing the sync's own. The sync holds the lock per tab from its first read to its last
   verify (lookups included — the plan is against that snapshot); a page write holds it for
   read → decide → write → verify and gives up with `SheetBusyError` after `LINK_WAIT`, which the
   route answers as a 503 with `Retry-After`. The object is already uploaded by then, and a re-pick
   puts the same bytes under the same key, so nothing is lost.
-- **A `Banner` cell is the one cell on a show row the page may write, and only ever through
-  `decideLink`.** The show-row rule below protects roll-up formulas; `Banner` is hand-maintained,
-  not derived. The checklist: a formula is never written, unconditionally — kept where its value
-  already links the bucket, refused otherwise; blank takes the static link for the title; a link
-  into this bucket is kept under the key **the cell** names, so the 18 hand-written show rows and the
-  two typo'd object names keep serving; a URL on another host is replaced only on `adopt`; anything
-  else is refused. The write additionally requires the live cell to still hold what the page
-  showed, the row to be found again by SIMKL id under the lock, and that row to still carry the
-  title acted on. Not through the sync's planner or guard: their whitelists are the poll's.
+- **An `Artwork` cell is the one cell on a show row the page may write, and only ever through
+  `decideLink`.** The show-row rule below protects roll-up formulas; `Artwork` (field id `Banner`
+  in code) is hand-maintained, not derived. The checklist: a formula is never written,
+  unconditionally — kept where its value already links the bucket, refused otherwise; blank takes
+  the static link for the title; a link into this bucket is kept under the key **the cell** names,
+  so the 18 hand-written show rows and the two typo'd object names keep serving; a URL on another
+  host is replaced only on `adopt`; anything else is refused. The write additionally requires the
+  live cell to still hold what the page showed, the row to be found again by SIMKL id under the
+  lock, and that row to still carry the title acted on. Not through the sync's planner or guard:
+  their whitelists are the poll's.
 - **The static link is one convention for both tabs, in `sheet/values.ts`.** `artworkKeyFor` is
-  identity — the show tab's 291 `=CONCAT($Z$2,A#)` rows and the objects behind them are named by
+  identity — the show tab's 291 `=CONCAT("https://storage.googleapis.com/<bucket>/",A#)` rows, a
+  literal prefix with no prefix cell, and the objects behind them are named by
   the title verbatim, so any normalisation breaks the link between a key derived here and one the
   sheet already holds — and `artworkLink` escapes only `%`, `#` and `?`, so a link the sync writes
   is byte-identical to the formula's output for the same title. With a movie bucket configured the
@@ -361,15 +363,19 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   `6-requests.ts` is structural over `{row, column, value}` so it names no field. What they share
   no copy of is a single rule about what may be written — those live in each tab's own numbered
   modules, and the parent core imports nothing from `movies/`.
-- **Three film columns follow SIMKL; eleven are written once and never revisited.** `Watch Date`,
+- **Three film columns follow SIMKL; thirteen are written once and never revisited.** `Watch Date`,
   `Score` and `Runtime` qualify on `TRACKED_FIELDS`' own test — what they hold is not the row's
   judgement but SIMKL's — and all three come off the library delta with no lookup at all
   (`movie.runtime` agrees with the tab on 346 of 346 rows, `user_rating` on 245 of 245). Everything
-  else is a judgement: which backdrop, which genre is primary, whether a franchise is "Pixar".
-  `Name` is deliberately *not* followed though it is 95% derivable, because the 18 rows that
-  disagree carry hand titles. `EDIT_FIELDS` in `movies/5-guard.ts` is the independent statement of
-  that split — not `FOLLOWED_FIELDS`, because a whitelist derived from the planner would widen with
-  it; the suite pins the two sets equal instead.
+  else is a judgement: which backdrop, which genre is primary, whether a franchise is "Pixar",
+  including `Format` (`Cinema`/`Home`) and `Type` (`film`/`anime`) — both strings, both written on
+  every insert and enumerated by the guard, neither followed again after. `Name` is deliberately
+  *not* followed though it is 95% derivable, because the 18 rows that disagree carry hand titles.
+  `Series` and `Series #` are hand columns the sync never writes, kept as required headers so the
+  verifier still covers every column but `ID`. `EDIT_FIELDS` in `movies/5-guard.ts` is the
+  independent statement of the followed/write-once split — not `FOLLOWED_FIELDS`, because a
+  whitelist derived from the planner would widen with it; the suite pins the two sets equal
+  instead.
 - **A recorded absence is not an absent record.** SIMKL holds no score for 102 of the films already
   on the tab, so leaving those unrecorded would make rating one later a *first sighting* — recorded,
   written nothing, silent from then on. `NOT_HELD` records the absence, which makes none → 8 a move.
@@ -412,7 +418,7 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   collapses and two records a poll evict the real history in 25 polls.
 - **A snapshot tab is named after the tab it copies, and a sweep takes only its own.** The name is
   the only state a snapshot has, and which tab it copies decides who may remove it: a films write
-  verifying clean says nothing about `Sheet1`, and a failed show write kept its copy for the
+  verifying clean says nothing about `Shows`, and a failed show write kept its copy for the
   operator. A latch in the process cannot hold that rule — a restart resets it and the snapshot is
   not, and it protects in one direction only — so `backupName` carries the `sheetId` and
   `sweepBackups` filters on it, with no state at all.
@@ -427,10 +433,11 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   ceiling spends another `MAX_LOOKUPS_PER_PASS`. The lookups a run chose not to make count as work
   and arm `retry` the way deferred inserts do — without that, the poll that inserts the last film
   the store knows has nothing deferred, and the rest of the backlog waits on unrelated activity.
-- **`Cinema` is only ever written `TRUE`, and `id` only ever as text.** The tab spells "no" as an
-  **absent** cell, never `FALSE`; and all 348 id cells hold `{ stringValue }`, so a number there
-  compares unequal to every other row and the sync would not recognise its own insert. Both are
-  guard rules, not conventions.
+- **`Format` and `Type` are strings, always present, and `id` only ever as text.** `Format` is
+  `Cinema` or `Home`, `Type` is `film` or `anime`, and both are written on every insert rather than
+  left to default — neither follows SIMKL after that. All 348 id cells hold `{ stringValue }`, so a
+  number there compares unequal to every other row and the sync would not recognise its own insert.
+  All three are guard rules, not conventions.
 - **A film is SIMKL's `movies` category plus `anime` with an `anime_type` of `movie`** — a
   top-level key beside `show`, and the one fact `LibraryEntry.type` cannot supply, since `type` says
   only which response key the record arrived under. `ova`, `special` and `ona` stay with the show
@@ -442,7 +449,7 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   grid is left there — `onShowGrid` in `movies/4-plan.ts`, read off a per-poll field `sync.ts`
   assigns the moment a grid parses. No grid parsed means no anime film is inserted, which costs one
   poll against a duplicate row that stands; and since an anime film's own presence stops the show
-  half early-outing, a failed `Sheet1` read is the only way it meets that branch. The gate sits
+  half early-outing, a failed `Shows` read is the only way it meets that branch. The gate sits
   **inside `planInsert`'s `missing` filter**, because everything past that filter reports: below it,
   the show half's "add it by hand" note is moved rather than removed. Both halves therefore index
   anime films, and dropping them from `indexLibrary` is the tidy-up not to make — 20 sit on show-grid
@@ -573,7 +580,7 @@ name and so needs no films copy.
 | --- | --- |
 | INDEX | `1-index.ts` — both grids, the library, the run history and both bucket listings → one `ArtworkTitle` per row with a state a pick can act on, plus `summarise` |
 | CANDIDATES | `2-candidates.ts` — a TMDB images payload or a TVDB artworks payload → `Candidate[]`, at the site's shape, ranked as a starting point |
-| DECIDE | `3-decide.ts` — a `Banner` cell → `keep` / `write` / `refuse`; the whole of the page's guard, as a checklist |
+| DECIDE | `3-decide.ts` — an `Artwork` cell → `keep` / `write` / `refuse`; the whole of the page's guard, as a checklist |
 | RENDER | `4-html.ts` — the model and the page; every value through `html` |
 | — | `client.ts` — the page's script, served as `artwork/app.js`; `page.ts` — the read shell, index → model → page |
 | io | `io/tmdb-images.ts`, `io/tvdb-art.ts` (fetch only), `io/sheet-link.ts` (`ensureLink`: the authoritative pass under the lock, one `updateCells`, one verify read, one journal record) |
@@ -610,11 +617,16 @@ Where a sheet run stopped is `SheetSyncStatus`, which `/healthz` reports as `she
   seconds, and blanks the sheet, TVDB and TMDB credentials as described above — and both artwork
   buckets, which have a golden behind them: with a movie bucket set the films insert writes a
   bucket link, and a leaked `ARTWORK_MOVIE_BUCKET` would fail `film-plan.json` for the wrong reason.
-- `sheetSnapshot(rows)`, `cellOf(spec)`, `showRow`/`seasonRow` and `libraryOf(...items)` build sheet
-  and library fixtures. A cell spec of `{ formula }` is the one that matters: only
-  `userEnteredValue.formulaValue` distinguishes a formula, and a formula target must be refused
-  unconditionally. `seasonRow`'s `episodes` option is the other: `null` is a blank runtime cell,
-  which is the only state the runtime write may touch.
+- `sheetSnapshot(rows)`, `cellOf(spec)`, `showRow`/`seasonRow`, `filmRow(spec)` and
+  `libraryOf(...items)` build sheet and library fixtures, all by **label**: `col(headers, label)`
+  and `rowByLabel(headers, {label: cell})` resolve against the live column order (`SHEET_HEADERS`,
+  `MOVIE_SHEET_HEADERS`), so an A1 address asserted in a test matches the live sheet rather than a
+  bare index that re-points silently when a column moves. A cell spec of `{ formula }` is the one
+  that matters: only `userEnteredValue.formulaValue` distinguishes a formula, and a formula target
+  must be refused unconditionally. `seasonRow`'s `runtime` option is the other: `null` is a blank
+  runtime cell, which is the only state the runtime write may touch; `note` sets the season's
+  last-watched note. `filmRow`'s `format` (`'Cinema'|'Home'|null`) and `type`
+  (`'film'|'anime'|null`) cover the two columns every insert writes.
 - A fetch handler must be **host-qualified**. `url.includes('/tv/')` matches TVDB's season path as
   well as SIMKL's, and answering one upstream with the other's body makes a test assert nothing.
 
@@ -682,7 +694,7 @@ than assumed: `TMDB_API_KEY` here is the **v4 read access token**, sent as a bea
 `?api_key=` would put the credential into the paths `describeUrl` prints on the status page;
 `append_to_response=release_dates,credits,images` folds a whole row's worth of columns into one
 request; and `include_image_language=en` is what keeps a null-language backdrop — usually a poster
-crop — out of the `Banner` cell, since 346 of 347 films have a real English one.
+crop — out of the `Artwork` cell, since 346 of 347 films have a real English one.
 
 `GET /series/{id}/episodes/official?season={n}` returns one season, and one call is one season —
 `links.page_size` is 500 and `next` is null on every season measured, up to a 28-episode cour. Three

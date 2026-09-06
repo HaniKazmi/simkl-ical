@@ -23,6 +23,7 @@ import type { EventKind, FeedEvent } from '../feed/2-join.ts';
 import type { RequestRecord } from '../api/requests.ts';
 import type { SheetRunRecord } from '../sheet/io/journal.ts';
 import type { RecordedEdit } from '../sheet/4-plan.ts';
+import { SHOW_LABELS } from '../sheet/2-grid.ts';
 import type { BaselineSummary } from '../sheet/io/baseline.ts';
 import type { SheetSyncStatus } from '../sheet/sync.ts';
 
@@ -40,7 +41,7 @@ export interface StatusInput {
   /**
    * Whether per-episode runtimes can be looked up. Unconfigured makes *zero*
    * requests, so nothing else on the page distinguishes "no credential" from
-   * "no season has closed yet" while the Episodes column stays blank.
+   * "no season has closed yet" while the episode-length column stays blank.
    */
   runtimesConfigured: boolean;
   /**
@@ -353,7 +354,7 @@ const due = (last: string | null, every: Temporal.Duration, now: Temporal.Instan
 const rowOf = (address: string): string | null => /(\d+)$/.exec(address)?.[1] ?? null;
 
 /**
- * The wording `statusNote` gives a season row's watch note, in
+ * The wording `watchNote` gives a season row's watch note, in
  * `sheet/4-plan.ts`. Recogniser and extractor at once, and it earns the second
  * job: the clear that takes the note away is worded differently and fails this,
  * which leaves a closing batch — End, the clear, and whatever else that batch
@@ -368,17 +369,19 @@ const WATCH_NOTE = / last watched \d{4}-\d{2}-\d{2}$/;
  * note's date is appended to the count's own wording, which already names the
  * season.
  *
- * The address is the count's cell. The note's is the `Status` column of that
- * same row by construction, which is not a second place to look.
+ * The address is the count's cell. The note's is the note column of that same
+ * row by construction, which is not a second place to look.
  *
- * Matched by field and row rather than by position: this is read off disk, and
+ * Matched by the labels a record carries rather than by field id, which is what
+ * a record holds, and by field and row rather than by position: this is read
+ * off disk, and
  * the shared prefix stays rather than being deduped, because a title carries
  * colons of its own — `Frieren: Beyond Journey's End S1` — and no split
  * recovers the label.
  */
 const datedCount = (edits: RecordedEdit[]): SoleChange | null => {
-  const count = edits.find((e) => e.field === 'Episode');
-  const note = edits.find((e) => e.field === 'Status');
+  const count = edits.find((e) => e.field === SHOW_LABELS.Episode);
+  const note = edits.find((e) => e.field === SHOW_LABELS.Note);
   if (!count || !note) return null;
   const row = rowOf(count.address);
   if (row === null || row !== rowOf(note.address)) return null;
@@ -454,7 +457,7 @@ const PATH_BUDGET = 48;
 
 /**
  * Shortened in the middle, never the end, because the tail is what tells the
- * rows apart — `…:batchUpdate` from `…?ranges='Sheet1'`. The rule is by length
+ * rows apart — `…:batchUpdate` from `…?ranges='Shows'`. The rule is by length
  * alone; no upstream's URL shape is known here.
  */
 const shorten = (path: string): string => {

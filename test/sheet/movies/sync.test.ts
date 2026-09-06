@@ -14,10 +14,13 @@ import { appendSheetRun, sheetRuns } from '../../../src/sheet/io/journal.ts';
 import { baseline } from '../../../src/sheet/io/baseline.ts';
 import { dateSerial, movieKey } from '../../../src/sheet/values.ts';
 import {
+  col,
   daysAgo,
   filmRow,
   jsonResponse,
   libraryOf,
+  MOVIE_SHEET_HEADERS,
+  SHEET_HEADERS,
   quiet,
   recorder,
   withConfig,
@@ -28,9 +31,13 @@ import {
   type CellSpec,
   type ItemSpec,
 } from '../../helpers.ts';
+
 import { CREDENTIAL, DEFAULT_GRID, DEFAULT_MOVIES, fakeSheets, type FakeSheetsOptions } from '../fake-sheets.ts';
 import type { Library } from '../../../src/library.ts';
 import type { CellData } from '../../../src/api/google/types.ts';
+
+const MH = MOVIE_SHEET_HEADERS;
+const H = SHEET_HEADERS;
 
 // In UTC, the zone every fixture here plans in, and computed without reading
 // config — which the suite overrides per test.
@@ -141,10 +148,10 @@ test('a score that moved on SIMKL is written, and only that cell', async () => {
       const result = await poll(filmsOnly({ ...ON_TAB[0]!, rating: 10 }, ON_TAB[1]!));
       assert.equal(result.status, 'applied', result.error ?? '');
       assert.deepEqual(result.record.edits.map((e) => e.field), ['Score']);
-      assert.equal(sheet.films?.[1]?.[2]?.userEnteredValue?.numberValue, 10);
+      assert.equal(sheet.films?.[1]?.[col(MH, 'Score')]?.userEnteredValue?.numberValue, 10);
       // Nothing else on the row moved.
-      assert.equal(sheet.films?.[1]?.[0]?.userEnteredValue?.stringValue, 'Star Wars');
-      assert.equal(sheet.films?.[1]?.[4]?.userEnteredValue?.numberValue, 121);
+      assert.equal(sheet.films?.[1]?.[col(MH, 'Title')]?.userEnteredValue?.stringValue, 'Star Wars');
+      assert.equal(sheet.films?.[1]?.[col(MH, 'Runtime (min)')]?.userEnteredValue?.numberValue, 121);
     });
   });
 });
@@ -170,22 +177,22 @@ test('a new film is inserted below the last row, fully filled, and verifies', as
       assert.equal(result.record.inserts.length, 1);
       const row = sheet.films?.[3];
       assert.ok(row, 'the row is below the two already there');
-      const cell = (i: number) => row?.[i]?.userEnteredValue;
-      assert.deepEqual(cell(0), { stringValue: 'A New Film' });
-      assert.deepEqual(cell(2), { numberValue: 7 });
+      const cell = (label: string) => row?.[col(MH, label)]?.userEnteredValue;
+      assert.deepEqual(cell('Title'), { stringValue: 'A New Film' });
+      assert.deepEqual(cell('Score'), { numberValue: 7 });
       // GB theatrical on 2026-08-20, watched on the 25th: inside the window.
-      assert.deepEqual(cell(3), { boolValue: true });
-      assert.deepEqual(cell(4), { numberValue: 110 });
+      assert.deepEqual(cell('Format'), { stringValue: 'Cinema' });
+      assert.deepEqual(cell('Runtime (min)'), { numberValue: 110 });
       // TMDB order, with Animation dropped for having nowhere to go.
-      assert.deepEqual(cell(5), { stringValue: 'Adventure' });
-      assert.deepEqual(cell(6), { stringValue: 'Sci-Fi' });
-      assert.deepEqual(cell(7), { numberValue: 12 });
+      assert.deepEqual(cell('Genre'), { stringValue: 'Adventure' });
+      assert.deepEqual(cell('Other Genres'), { stringValue: 'Sci-Fi' });
+      assert.deepEqual(cell('Certificate'), { numberValue: 12 });
       // TMDB suffixes every collection name; the column does not.
-      assert.deepEqual(cell(9), { stringValue: 'A New Film' });
-      assert.deepEqual(cell(10), { stringValue: 'A Director' });
+      assert.deepEqual(cell('Franchise'), { stringValue: 'A New Film' });
+      assert.deepEqual(cell('Director'), { stringValue: 'A Director' });
       // Text, matching every other id cell on the tab.
-      assert.deepEqual(cell(11), { stringValue: '999' });
-      assert.deepEqual(cell(13), { stringValue: 'https://image.tmdb.org/t/p/w1280/a.jpg' });
+      assert.deepEqual(cell('ID'), { stringValue: '999' });
+      assert.deepEqual(cell('Artwork'), { stringValue: 'https://image.tmdb.org/t/p/w1280/a.jpg' });
     });
   });
 });
@@ -207,7 +214,7 @@ test('with the artwork page configured a new film\'s Banner is the static link, 
           const library = filmsOnly(...ON_TAB, film({ id: 999, title: 'What If...?', lastWatchedAt: '2026-08-25T20:00:00Z', rating: 7, runtime: 110 }));
           const result = await new SheetSync({ logger: quiet }).run(library);
           assert.equal(result.status, 'applied', result.error ?? '');
-          banner = sheet.films?.[3]?.[13]?.userEnteredValue;
+          banner = sheet.films?.[3]?.[col(MH, 'Artwork')]?.userEnteredValue;
         }),
       ),
     );
@@ -350,8 +357,8 @@ test('a cell that changed under the write is rolled back, not left half-applied'
       assert.equal(result.status, 'rolled-back', result.error ?? '');
       // The whole tab went back, the concurrent edit included — the accepted
       // cost of a wholesale paste, and the reason the window is kept short.
-      assert.equal(sheet.films?.[1]?.[2]?.userEnteredValue?.numberValue, 8);
-      assert.equal(sheet.films?.[2]?.[0]?.userEnteredValue?.stringValue, 'Finding Nemo');
+      assert.equal(sheet.films?.[1]?.[col(MH, 'Score')]?.userEnteredValue?.numberValue, 8);
+      assert.equal(sheet.films?.[2]?.[col(MH, 'Title')]?.userEnteredValue?.stringValue, 'Finding Nemo');
     });
   });
 });
@@ -442,7 +449,7 @@ test('the films tab is read by name, never the show grid by accident', async () 
       assert.ok(reads.some((c) => c.includes("'Movies'")));
       // And the show grid is not read at all: this library holds no shows, so
       // the show half early-outs before any request.
-      assert.deepEqual(reads.filter((c) => c.includes("'Sheet1'")), []);
+      assert.deepEqual(reads.filter((c) => c.includes("'Shows'")), []);
     });
   });
 });
@@ -533,8 +540,8 @@ test('a poll where both halves write charges one shared budget', async () => {
       const result = await poll(libraryOf(showWatching(6), { ...ON_TAB[0]!, rating: 10 }, ON_TAB[1]!));
       assert.equal(result.status, 'applied', result.error ?? '');
       assert.deepEqual(sheetRuns().map((r) => r.tab).slice(-2), ['shows', 'films']);
-      assert.equal(sheet.films?.[1]?.[2]?.userEnteredValue?.numberValue, 10, 'the films edit landed');
-      assert.equal(sheet.state[3]?.[3]?.userEnteredValue?.numberValue, 6, 'and so did the show edit');
+      assert.equal(sheet.films?.[1]?.[col(MH, 'Score')]?.userEnteredValue?.numberValue, 10, 'the films edit landed');
+      assert.equal(sheet.state[3]?.[col(H, 'Episodes')]?.userEnteredValue?.numberValue, 6, 'and so did the show edit');
     });
   });
 });
@@ -665,10 +672,11 @@ test('an anime film on no Sheet1 block is inserted on the films tab, marked as a
     await run('apply', {}, libraryOf(SHOW, animeFilm()), (result, _calls, sheet) => {
       assert.equal(result.status, 'applied', result.error ?? '');
       const row = sheet.films?.[3];
-      assert.deepEqual(row?.[0]?.userEnteredValue, { stringValue: 'A New Film' });
-      assert.deepEqual(row?.[11]?.userEnteredValue, { stringValue: '999' });
-      // The column this tab has always carried by hand, now written.
-      assert.deepEqual(row?.[12]?.userEnteredValue, { boolValue: true });
+      assert.deepEqual(row?.[col(MH, 'Title')]?.userEnteredValue, { stringValue: 'A New Film' });
+      assert.deepEqual(row?.[col(MH, 'ID')]?.userEnteredValue, { stringValue: '999' });
+      // The column this tab now always carries as a string, whichever kind of
+      // film the row is.
+      assert.deepEqual(row?.[col(MH, 'Type')]?.userEnteredValue, { stringValue: 'anime' });
     });
   });
 });
@@ -692,7 +700,7 @@ test('a poll whose Sheet1 read failed inserts no anime film at all', async () =>
   // its early-out, so a failed read is what is left. Fails closed — one poll's
   // delay against a duplicate row that stands.
   await withFreshJournal(async () => {
-    await run('report', { failReadOf: 'Sheet1' }, libraryOf(SHOW, animeFilm()), (result) => {
+    await run('report', { failReadOf: 'Shows' }, libraryOf(SHOW, animeFilm()), (result) => {
       assert.equal(result.record.inserts.length, 0);
     });
   });
@@ -703,7 +711,7 @@ test('an ordinary film is inserted even when the Sheet1 read failed', async () =
   // whenever the other half had a bad poll.
   await withFreshJournal(async () => {
     const library = libraryOf(SHOW, ...ON_TAB, film({ id: 999, title: 'A New Film', lastWatchedAt: '2026-08-25T20:00:00Z' }));
-    await run('report', { failReadOf: 'Sheet1' }, library, (result) => {
+    await run('report', { failReadOf: 'Shows' }, library, (result) => {
       assert.equal(result.record.inserts.length, 1);
     });
   });
@@ -717,7 +725,7 @@ test('the ids Sheet1 held do not carry over into a poll that failed to read it',
     await harness('report', {}, async ({ poll, sheet }) => {
       // A first poll that reads `Sheet1` and finds no anime film on it.
       await poll(libraryOf(SHOW));
-      sheet.stopServing('Sheet1');
+      sheet.stopServing('Shows');
       const second = await poll(libraryOf(SHOW, animeFilm()));
       assert.equal(second.record.inserts.length, 0);
     });

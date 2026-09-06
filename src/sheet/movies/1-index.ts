@@ -9,12 +9,12 @@
  * both need the grid.
  *
  * SIMKL's `movies` category, plus the `anime` records whose `anime_type` is
- * `movie`. Whether an anime film belongs here or embedded in a `Sheet1` block
+ * `movie`. Whether an anime film belongs here or embedded in a show-tab block
  * is a curation call the record does not answer, so the planner reads the
  * sheet's own placement instead — see `onShowGrid` in `4-plan.ts`.
  *
  * An anime film is therefore in *both* halves' indexes, and that is not a
- * duplication to tidy away: 20 of them sit on `Sheet1` rows, which the show
+ * duplication to tidy away: 20 of them sit on show-tab rows, which the show
  * half skips as `unknown-id` every poll the moment `indexLibrary` stops
  * holding them.
  */
@@ -81,7 +81,7 @@ const isAnimeFilm = (type: string, item: LibraryItem): boolean => type === 'anim
 /**
  * The ids this tab takes off the show half's hands.
  *
- * The show half still indexes these — 20 sit on `Sheet1` rows — but must stop
+ * The show half still indexes these — 20 sit on show-tab rows — but must stop
  * reporting the rest as titles missing a row, which is what they stopped being
  * the moment this tab started placing them.
  */

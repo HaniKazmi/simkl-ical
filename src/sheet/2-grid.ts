@@ -11,18 +11,44 @@ import type { CellData, ExtendedValue } from '../api/google/types.ts';
 import type { SheetSnapshot } from './io/spreadsheet.ts';
 
 /**
- * The labels the sync needs. Columns are resolved by these, never by position:
- * the user rearranges them. Hardcoded so a rename stops the sync loudly
- * rather than writing to whatever now sits in that column.
- *
- * Only the ten that are read or written. Requiring `Genre` would make
- * renaming a column the sync never touches a hard failure.
+ * The columns the sync reads or writes, named by what they *are* to this code
+ * rather than by what the sheet calls them. Only the ten: requiring `Genre`
+ * would make renaming a column the sync never touches a hard failure.
  */
-export const HEADERS = ['Show', 'Status', 'Season', 'Episode', 'Start', 'End', 'Episodes', 'Length', 'id', 'Type'] as const;
+export const HEADERS = ['Show', 'Status', 'Note', 'Season', 'Episode', 'Start', 'End', 'Runtime', 'id', 'Type'] as const;
 
 export type HeaderName = (typeof HEADERS)[number];
 
 export type ColumnMap = Record<HeaderName, number>;
+
+/**
+ * What each field is called on the tab. Columns are resolved by these, never
+ * by position: the user rearranges them. Hardcoded so a rename stops the sync
+ * loudly rather than writing to whatever now sits in that column.
+ *
+ * A field id is not a header. The ids are what every rule, whitelist and
+ * baseline key is written in terms of, so a header the user retitles is one
+ * line here rather than a rename reaching the stored history — which is what a
+ * baseline keyed on labels would forfeit.
+ */
+export const SHOW_LABELS: Record<HeaderName, string> = {
+  Show: 'Title',
+  Status: 'Status',
+  Note: 'Seasons / Last Watched',
+  Season: 'Season',
+  Episode: 'Episodes',
+  Start: 'Start Date',
+  End: 'End Date',
+  Runtime: 'Episode Length (min)',
+  id: 'ID',
+  Type: 'Type',
+};
+
+/**
+ * The pair that identifies this tab's header row — see `findHeaderRow`. The
+ * two labels no other tab in the file carries together.
+ */
+export const SHOW_HEADER_MARKERS: readonly string[] = [SHOW_LABELS.Show, SHOW_LABELS.Season];
 
 /** How far down to look for the header row, so a title row above it is survivable. */
 const HEADER_SEARCH_ROWS = 5;
@@ -148,9 +174,13 @@ export const findHeaderRow = (rows: CellData[][], required: readonly string[]): 
 };
 
 /**
- * Column index per label. Every label must appear exactly once: a duplicate
- * makes "which column is Episode" unanswerable, and the wrong answer is a
- * real edit to the wrong cell.
+ * Column index per field. Every label must appear exactly once: a duplicate
+ * makes "which column is the episode count" unanswerable, and the wrong answer
+ * is a real edit to the wrong cell.
+ *
+ * `labelOf` is what separates the field from the header: the caller says what
+ * its tab calls each field, and every problem names the label, because the
+ * label is what a reader sees in the header row.
  *
  * `headers` is required and `H` is inferred from it. A default would have to
  * be cast to `H` — there is no value that is every caller's header list — and
@@ -158,7 +188,12 @@ export const findHeaderRow = (rows: CellData[][], required: readonly string[]): 
  * receive the *show* grid's columns branded as movie columns, which is a wrong
  * column for every write and no error anywhere.
  */
-export const resolveColumns = <H extends string>(headerCells: CellData[], width: number, headers: readonly H[]): Record<H, number> => {
+export const resolveColumns = <H extends string>(
+  headerCells: CellData[],
+  width: number,
+  headers: readonly H[],
+  labelOf: (header: H) => string,
+): Record<H, number> => {
   const found = new Map<string, number[]>();
   for (let column = 0; column < width; column += 1) {
     const label = fold(textOf(headerCells[column]) ?? '');
@@ -169,9 +204,10 @@ export const resolveColumns = <H extends string>(headerCells: CellData[], width:
   const columns = {} as Record<H, number>;
   const problems: string[] = [];
   for (const header of headers) {
-    const matches = found.get(fold(header)) ?? [];
-    if (matches.length === 0) problems.push(`${header} is missing`);
-    else if (matches.length > 1) problems.push(`${header} appears in ${matches.map((c) => columnLetter(c)).join(' and ')}`);
+    const label = labelOf(header);
+    const matches = found.get(fold(label)) ?? [];
+    if (matches.length === 0) problems.push(`${label} is missing`);
+    else if (matches.length > 1) problems.push(`${label} appears in ${matches.map((c) => columnLetter(c)).join(' and ')}`);
     else columns[header] = matches[0] as number;
   }
   if (problems.length) throw new GridError(`Cannot resolve the header row: ${problems.join('; ')}.`);
@@ -193,12 +229,11 @@ export interface SeasonRow {
   /** Episodes *watched* — a count, not the highest episode number. */
   episode: number | null;
   /**
-   * The `Status` cell's text. On a season row this carries the last watch
-   * date, which the row's closing batch clears — so the planner needs to see
-   * both what is there and that it is text, since only text it wrote itself
-   * may be overwritten or removed.
+   * The `Note` cell's text: the last watch date, which the row's closing batch
+   * clears — so the planner needs to see both what is there and that it is
+   * text, since only text it wrote itself may be overwritten or removed.
    */
-  status: string | null;
+  note: string | null;
   /**
    * Whether the row has an end date, which freezes it forever.
    *
@@ -252,12 +287,12 @@ export const parseIds = (cell: CellData | undefined): number[] => {
 
 export const parseGrid = (snapshot: SheetSnapshot): Grid => {
   const { rows } = snapshot;
-  const headerRow = findHeaderRow(rows, ['Show', 'Season']);
+  const headerRow = findHeaderRow(rows, SHOW_HEADER_MARKERS);
   // The declared width, not the widest row: a truncated read presents a
   // displaced header as *missing*, which fail-closed turns into a disabled
   // sync.
   const width = Math.max(snapshot.columnCount, ...rows.map((r) => r.length));
-  const columns = resolveColumns(rows[headerRow] ?? [], width, HEADERS);
+  const columns = resolveColumns(rows[headerRow] ?? [], width, HEADERS, (header) => SHOW_LABELS[header]);
 
   const blocks: ShowBlock[] = [];
   for (let row = headerRow + 1; row < rows.length; row += 1) {
@@ -300,7 +335,7 @@ export const parseGrid = (snapshot: SheetSnapshot): Grid => {
       row,
       season: numberOf(cells[columns.Season]),
       episode: numberOf(cells[columns.Episode]),
-      status: textOf(cells[columns.Status]),
+      note: textOf(cells[columns.Note]),
       closed: !isBlank(cells[columns.End]),
       ids: parseIds(cells[columns.id]),
     });

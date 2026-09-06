@@ -173,8 +173,8 @@ test('a count and its date render flat, on one line', () => {
     runs: [
       runRecord({
         edits: [
-          { address: 'F378', field: 'Episode', note: 'Frieren S1: 16 -> 17 episodes' },
-          { address: 'B378', field: 'Status', note: 'Frieren S1: last watched 2026-09-01' },
+          { address: 'K378', field: 'Episodes', note: 'Frieren S1: 16 -> 17 episodes' },
+          { address: 'O378', field: 'Seasons / Last Watched', note: 'Frieren S1: last watched 2026-09-01' },
         ],
       }),
     ],
@@ -184,7 +184,7 @@ test('a count and its date render flat, on one line', () => {
   assert.match(section, /Frieren S1: 16 -&gt; 17 episodes, last watched 2026-09-01/, 'both halves on the one line');
   assert.match(section, /class="run-head bare sole"/, 'as the line itself');
   assert.ok(!section.includes('<details'), 'and there is nothing left to expand');
-  assert.ok(!section.includes('B378'), 'the note\u2019s own cell is the Status column of that row, not a second place to look');
+  assert.ok(!section.includes('O378'), 'the note\u2019s own cell is the Seasons / Last Watched column of that row, not a second place to look');
 });
 
 // Newest last in the journal, so the two-edit run here is not the open one —
@@ -363,13 +363,13 @@ test('the summary says when the films tab is off, and names it when it is on', (
   // "no TMDB token" from "no film has moved".
   const off = renderPage(buildModel(input({ sheetConfigured: true, filmsConfigured: false })));
   assert.match(off, /films off/);
-  assert.match(off, /tab “Sheet1”/, 'and only the show tab is named');
+  assert.match(off, /tab “Shows”/, 'and only the show tab is named');
 
   const on = renderPage(buildModel(input({ sheetConfigured: true, filmsConfigured: true })));
   assert.doesNotMatch(on, /films off/, 'a page that works says nothing about it');
   // Both named: they are different tabs of one spreadsheet with different
   // rules, and naming only the first says the films tab is not touched.
-  assert.match(on, /tabs “Sheet1” and “Movies”/);
+  assert.match(on, /tabs “Shows” and “Movies”/);
 });
 
 // A stamp with no usable instant must not become a `<time>`: the attribute

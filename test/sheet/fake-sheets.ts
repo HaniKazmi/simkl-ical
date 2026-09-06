@@ -87,7 +87,7 @@ export const fakeSheets = ({
   meddleMovies,
 }: FakeSheetsOptions = {}) => {
   const tabs = new Map<number, CellData[][]>([[1, grid.map((row) => row.map(cellOf))]]);
-  const titles = new Map<number, string>([[1, 'Sheet1']]);
+  const titles = new Map<number, string>([[1, 'Shows']]);
   const state = tabs.get(1)!;
   let nextSheetId = 2;
   if (movies) {

@@ -9,7 +9,7 @@
  */
 
 import { plainDateIn, releaseDate } from '../../shared/dates.ts';
-import { artworkKeyFor, artworkLink, dateSerial, MAX_RUNTIME_MINUTES, MIN_RUNTIME_MINUTES } from '../values.ts';
+import { artworkKeyFor, artworkLink, dateSerial } from '../values.ts';
 import { config } from '../../shared/config.ts';
 import type { TmdbBackdrop, TmdbMovie, TmdbRelease } from '../../api/tmdb/types.ts';
 
@@ -150,10 +150,10 @@ export const releaseDateOf = (movie: TmdbMovie | undefined): Temporal.PlainDate 
 /**
  * How long after a film opens a watch still counts as having been in a cinema.
  *
- * Every one of the 63 rows ticked `Cinema` was watched 0-39 days after the
- * theatrical release and none before it. Thirty days catches 60 of them and
- * mis-ticks 3; widening to 45 catches all 63 and mis-ticks 12, most of them
- * streaming-first titles watched in the first month.
+ * Every one of the 63 rows the tab files as a cinema watch happened 0-39 days
+ * after the theatrical release and none before it. Thirty days catches 60 of
+ * them and mis-files 3; widening to 45 catches all 63 and mis-files 12, most of
+ * them streaming-first titles watched in the first month.
  */
 export const CINEMA_WINDOW_DAYS = 30;
 
@@ -183,6 +183,37 @@ export const watchedInCinema = (
   const since = opened.until(watched, { largestUnit: 'day' }).days;
   return since >= 0 && since <= windowDays;
 };
+
+// --- Format and Type -------------------------------------------------------
+
+/**
+ * How the `Format` column spells where a film was watched. Both words are
+ * always written: the column is filled on all 366 rows, so an absent cell is
+ * an unfinished row rather than a "no".
+ */
+export const FORMAT_CINEMA = 'Cinema';
+export const FORMAT_HOME = 'Home';
+
+const FORMATS = new Set<string>([FORMAT_CINEMA, FORMAT_HOME]);
+
+export const formatCell = (inCinema: boolean): string => (inCinema ? FORMAT_CINEMA : FORMAT_HOME);
+
+/** The closed set the guard re-derives: anything else is a word the tab does not use. */
+export const isFormat = (value: string): boolean => FORMATS.has(value);
+
+/**
+ * How the `Type` column spells what kind of film a row holds — the same
+ * vocabulary the show tab's `Type` uses for a series, so a reader filtering on
+ * `anime` gets both.
+ */
+export const TYPE_ANIME = 'anime';
+export const TYPE_FILM = 'film';
+
+const FILM_TYPES = new Set<string>([TYPE_ANIME, TYPE_FILM]);
+
+export const typeCell = (anime: boolean): string => (anime ? TYPE_ANIME : TYPE_FILM);
+
+export const isFilmType = (value: string): boolean => FILM_TYPES.has(value);
 
 // --- Certificate -----------------------------------------------------------
 
@@ -296,7 +327,7 @@ export const bannerOf = (movie: TmdbMovie | undefined): string | null => {
 };
 
 /**
- * The `Banner` cell for a new row.
+ * The `Artwork` cell for a new row.
  *
  * With a movie bucket configured it is the static link for the title — the
  * convention the show tab already follows — and holds whether or not an
@@ -320,14 +351,6 @@ export const bannerFor = (
 
 /** SIMKL's own scale. A value off it is a payload the guard should refuse, not round. */
 export const plausibleScore = (score: number): boolean => Number.isInteger(score) && score >= 1 && score <= 10;
-
-/**
- * The `Runtime` column is whole minutes, inside the bounds the show grid's
- * per-episode runtime uses and for the same reason: a film under a minute or
- * a day long is a payload error, not a film.
- */
-export const plausibleRuntime = (minutes: number): boolean =>
-  Number.isInteger(minutes) && minutes >= MIN_RUNTIME_MINUTES && minutes < MAX_RUNTIME_MINUTES;
 
 /**
  * `Release Date` needs bounds of its own, at both ends.

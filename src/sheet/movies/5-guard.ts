@@ -9,10 +9,10 @@
  * The whitelists below are this module's own spec, never derived from what the
  * planner emits — derived, one bad emission would widen both at once. That is
  * what makes them a second, independent statement of the rule that matters
- * most here: **ten of this tab's columns are written when the row is created
- * and never again**. A plan that tries to rewrite a film's `Genre` or `Banner`
- * is refused whole, rather than being prevented only by the planner having
- * declined to build it.
+ * most here: **eleven of this tab's columns are written when the row is created
+ * and never again**. A plan that tries to rewrite a film's `Genre` or its
+ * artwork link is refused whole, rather than being prevented only by the
+ * planner having declined to build it.
  *
  * The value conventions it shares with the planner (`values.ts`) are one copy
  * on purpose: a bound that exists twice can disagree, and any gap is a
@@ -22,18 +22,23 @@
  */
 
 import { config } from '../../shared/config.ts';
-import { maxSerial, plausibleSerial } from '../values.ts';
+import { maxSerial, plausibleRuntime, plausibleSerial } from '../values.ts';
 import { checkBudgets, checkCellAlignment, checkCellShape, describeValue, PlanRefusal, type Refuse, type SpentBudget } from '../guard-core.ts';
 import {
+  FORMAT_CINEMA,
+  FORMAT_HOME,
   isCertificate,
+  isFilmType,
+  isFormat,
   isGenre,
   MAX_SECONDARY_GENRES,
   plausibleReleaseSerial,
-  plausibleRuntime,
   plausibleScore,
   releaseCeiling as releaseHorizon,
+  TYPE_ANIME,
+  TYPE_FILM,
 } from './values.ts';
-import { nextFilmRow, type MovieGrid, type MovieHeaderName } from './2-grid.ts';
+import { MOVIE_LABELS, nextFilmRow, type MovieGrid, type MovieHeaderName } from './2-grid.ts';
 import type { FilmCellEdit, FilmPlan, FilmRowInsert } from './4-plan.ts';
 import type { ExtendedValue } from '../../api/google/types.ts';
 
@@ -53,17 +58,20 @@ const EMPTIABLE: Set<MovieHeaderName> = new Set();
 
 /**
  * What it may write into a row it is creating. A *separate* whitelist: an
- * insert fills up to fourteen columns, and folding the two together would
- * either forbid the insert or let an ordinary edit reach every one of them.
+ * insert fills up to fourteen of the tab's sixteen columns, and folding the two
+ * together would either forbid the insert or let an ordinary edit reach every
+ * one of them.
  *
- * `Anime` is here and not in `EDIT_FIELDS`: what kind of film a row holds is
- * settled when the row is built and is not a thing SIMKL revises.
+ * `Type` is here and not in `EDIT_FIELDS`: what kind of film a row holds is
+ * settled when the row is built and is not a thing SIMKL revises. `Series` and
+ * `SeriesNumber` are in neither — they are hand columns, and the tab holds them
+ * blank on every row.
  */
 export const INSERT_FIELDS = new Set<MovieHeaderName>([
   'Name',
   'Watch Date',
   'Score',
-  'Cinema',
+  'Format',
   'Runtime',
   'Genre',
   'Genres',
@@ -73,7 +81,7 @@ export const INSERT_FIELDS = new Set<MovieHeaderName>([
   'Director',
   'id',
   'Banner',
-  'Anime',
+  'Type',
 ]);
 
 export class UnsafeFilmPlanError extends PlanRefusal {
@@ -150,19 +158,30 @@ const checkValue = (field: MovieHeaderName, value: ExtendedValue, where: string,
       for (const token of tokens) if (!isGenre(token)) refuse(`${where}: ${token} is not one of the genres the renderer colours.`);
       return;
     }
-    case 'Cinema':
-      // Only ever true. The tab spells "no" as an absent cell, so a written
-      // FALSE would be a value no hand-maintained row has ever held.
-      if (value.boolValue !== true) refuse(`${where}: Cinema is only ever written as TRUE.`);
+    case 'Format':
+      // One of two words, as text. The tab fills this column on every row, and
+      // a boolean here is the shape the column does not hold at all.
+      if (typeof value.stringValue !== 'string' || !isFormat(value.stringValue)) {
+        refuse(`${where}: ${describeValue(value)} is not ${FORMAT_CINEMA} or ${FORMAT_HOME}.`);
+      }
       return;
-    case 'Anime':
-      // Same convention as `Cinema`, and needed for the same reason the case
-      // above it is: the switch has no `default`, so a whitelisted field with
-      // no case of its own is accepted at any shape.
-      if (value.boolValue !== true) refuse(`${where}: Anime is only ever written as TRUE.`);
+    case 'Type':
+      // Same shape as `Format`, and needed for the same reason the case above
+      // it is: the switch has no `default`, so a whitelisted field with no case
+      // of its own is accepted at any shape.
+      if (typeof value.stringValue !== 'string' || !isFilmType(value.stringValue)) {
+        refuse(`${where}: ${describeValue(value)} is not ${TYPE_FILM} or ${TYPE_ANIME}.`);
+      }
+      return;
+    case 'Series':
+    case 'SeriesNumber':
+      // Hand columns. They are headers so the verifier covers them, never
+      // targets — and refused here as well as omitted from both whitelists,
+      // because a whitelist widened by accident should still meet a rule.
+      refuse(`${where}: ${field} is hand-maintained and never written.`);
       return;
     case 'id':
-      // Text, matching all 348 rows. A number here compares unequal to every
+      // Text, matching all 366 rows. A number here compares unequal to every
       // other id cell, so a later run would not recognise its own insert.
       if (typeof value.stringValue !== 'string' || !/^\d+$/.test(value.stringValue)) refuse(`${where}: id must be the SIMKL id as text.`);
       return;
@@ -178,13 +197,13 @@ const checkValue = (field: MovieHeaderName, value: ExtendedValue, where: string,
 /** The core's shape rules, then the value the column accepts. */
 const checkShape = (cell: FilmCellEdit, allowed: Set<MovieHeaderName>, { grid, serialCeiling, releaseCeiling }: FilmGuardContext): void => {
   const value = checkCellShape(cell, { allowed, emptiable: EMPTIABLE, columns: grid.columns }, refuse);
-  if (value !== undefined) checkValue(cell.field, value, `${cell.address} (${cell.field})`, serialCeiling, releaseCeiling);
+  if (value !== undefined) checkValue(cell.field, value, `${cell.address} (${MOVIE_LABELS[cell.field]})`, serialCeiling, releaseCeiling);
 };
 
 // --- Edits -----------------------------------------------------------------
 
 const checkEdit = (cell: FilmCellEdit, ctx: FilmGuardContext): void => {
-  const where = `${cell.address} (${cell.field})`;
+  const where = `${cell.address} (${MOVIE_LABELS[cell.field]})`;
 
   // Which film this row holds, re-derived from the grid rather than trusted
   // from the plan. Alignment alone cannot catch a write aimed one row off:
@@ -239,6 +258,10 @@ const checkInsert = (insert: FilmRowInsert, ctx: FilmGuardContext): void => {
   }
   if (!insert.fill.some((cell) => cell.field === 'Name')) refuse(`insert at row ${insert.row + 1}: a film row must carry a name.`);
   if (!insert.fill.some((cell) => cell.field === 'Watch Date')) refuse(`insert at row ${insert.row + 1}: a film row must carry a watch date.`);
+  // Every row the tab holds fills both, and neither is ever revisited, so a row
+  // inserted without one carries a blank nothing will come back to fill.
+  if (!insert.fill.some((cell) => cell.field === 'Format')) refuse(`insert at row ${insert.row + 1}: a film row must say how it was watched.`);
+  if (!insert.fill.some((cell) => cell.field === 'Type')) refuse(`insert at row ${insert.row + 1}: a film row must say what kind of film it is.`);
 
   const fields = insert.fill.map((cell) => cell.field);
   const duplicated = fields.find((field, i) => fields.indexOf(field) !== i);

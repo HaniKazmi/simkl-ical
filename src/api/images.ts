@@ -2,7 +2,7 @@
  * Downloading an artwork candidate or an adopted image: the bytes a cell or
  * a candidate names, from any public https host, bounded in size.
  *
- * Any host, because the URL can come from a hand-edited `Banner` cell and
+ * Any host, because the URL can come from a hand-edited `Artwork` cell and
  * the point of adopting is to copy whatever the sheet links. What that must
  * not become is a way to make this process fetch from its own network: the
  * hostname is resolved **before** the request and refused if any address is

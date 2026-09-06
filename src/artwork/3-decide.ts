@@ -1,5 +1,5 @@
 /**
- * DECIDE — what a `Banner` cell holds, and what a pick may do to it. Pure,
+ * DECIDE — what an `Artwork` cell holds, and what a pick may do to it. Pure,
  * and the whole of the page's guard: every branch is a named rule, and the
  * io module that writes asks this and nothing else.
  *
@@ -71,7 +71,9 @@ export type LinkDecision =
  * The checklist, in order:
  *
  * 1. A **formula** is never written, unconditionally. Kept when its value
- *    already links this bucket — the show tab's 291 `=CONCAT` rows — and
+ *    already links this bucket — the show tab's 291
+ *    `=CONCAT("https://storage.googleapis.com/<bucket>/",A#)` rows, whose
+ *    prefix is a literal in each formula — and
  *    refused otherwise, since the page cannot know what the formula means.
  * 2. **Blank** takes the static link for the title.
  * 3. A link into this bucket is kept, under the key the cell names.

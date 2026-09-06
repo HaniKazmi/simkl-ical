@@ -3,7 +3,7 @@
  * never overlap.
  *
  * The sync's protocol is read → plan → write → verify → rollback, and the
- * films verifier inspects every column but `id` — `Banner` included. A page
+ * films verifier inspects every column but `id` — `Artwork` included. A page
  * write landing between the sync's read and its verify is a cell the sync
  * did not plan and cannot recognise, so VERIFY rolls the whole tab back to the
  * snapshot, taking the page's write with it and refusing the sync's own. The

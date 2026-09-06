@@ -14,7 +14,7 @@ import { clearTokenCache } from '../src/api/google/auth.ts';
 import { clearTokenCache as clearTvdbTokenCache } from '../src/api/tvdb/auth.ts';
 import { withSheetLock } from '../src/sheet/io/lock.ts';
 import { SheetSync } from '../src/sheet/sync.ts';
-import { filmRow, jsonResponse, libraryOf, MOVIE_SHEET_HEADERS, quiet, SHEET_HEADERS, showRow, withConfig, withFetch, withFreshJournal, type CellSpec } from './helpers.ts';
+import { col, filmRow, jsonResponse, libraryOf, MOVIE_SHEET_HEADERS, quiet, SHEET_HEADERS, showRow, withConfig, withFetch, withFreshJournal, type CellSpec } from './helpers.ts';
 import { CREDENTIAL, fakeSheets, type FakeSheetsOptions } from './sheet/fake-sheets.ts';
 import { fakeBucket, JPEG, type FakeBucketOptions } from './artwork/fake-bucket.ts';
 
@@ -22,15 +22,18 @@ const TOKEN = 'a'.repeat(48);
 const BACKDROP = 'https://image.tmdb.org/t/p/w1280/nemo.jpg';
 const POSTER = 'https://artworks.thetvdb.com/banners/v4/series/371980/posters/1.jpg';
 
+const MOVIE_ARTWORK_COL = col(MOVIE_SHEET_HEADERS, 'Artwork');
+const SHOW_ARTWORK_COL = col(SHEET_HEADERS, 'Artwork');
+
 const MOVIES: CellSpec[][] = [
   MOVIE_SHEET_HEADERS,
-  [...filmRow({ name: 'Star Wars', id: '53078' }).slice(0, -1), 'https://image.tmdb.org/t/p/w1280/sw.jpg'],
+  filmRow({ name: 'Star Wars', id: '53078', banner: 'https://image.tmdb.org/t/p/w1280/sw.jpg' }),
   filmRow({ name: 'Finding Nemo', id: '53080' }),
 ];
 const SHOWS: CellSpec[][] = [
-  [...SHEET_HEADERS, 'Banner'],
-  [...showRow('Severance', 'Watching', 3381), null],
-  [...showRow('Unmapped', 'Watching', 3382), null],
+  SHEET_HEADERS,
+  showRow('Severance', 'Watching', 3381),
+  showRow('Unmapped', 'Watching', 3382),
 ];
 
 const tmdb = (url: string): Response =>
@@ -181,9 +184,9 @@ test('a pick uploads the offered image and writes the link, in that order', asyn
     assert.equal(body.ok, true);
     assert.equal(body.key, 'Finding Nemo');
     assert.deepEqual(body.uploaded, { bucket: 'movies', key: 'Finding Nemo', bytes: JPEG.byteLength, contentType: 'image/jpeg' });
-    assert.deepEqual(body.link, { status: 'written', address: 'N3', key: 'Finding Nemo', link: 'https://storage.googleapis.com/movies/Finding Nemo' });
+    assert.deepEqual(body.link, { status: 'written', address: 'P3', key: 'Finding Nemo', link: 'https://storage.googleapis.com/movies/Finding Nemo' });
     assert.deepEqual(bucket.uploads.map((u) => [u.key, u.cacheControl]), [['Finding Nemo', 'public, max-age=300']]);
-    assert.equal(sheet.films![2]?.[MOVIE_SHEET_HEADERS.indexOf('Banner')]?.userEnteredValue?.stringValue, 'https://storage.googleapis.com/movies/Finding Nemo');
+    assert.equal(sheet.films![2]?.[MOVIE_ARTWORK_COL]?.userEnteredValue?.stringValue, 'https://storage.googleapis.com/movies/Finding Nemo');
     const order = calls.filter((c) => c.includes('image.tmdb.org/t/p') || c.includes('/upload/storage') || c.includes(':batchUpdate')).map((c) => (c.includes('batchUpdate') ? 'write' : c.includes('upload') ? 'upload' : 'download'));
     assert.deepEqual(order, ['download', 'upload', 'write']);
     // The page reflects it without a rebuild.
@@ -213,7 +216,7 @@ test('a foreign link needs adopt, and adopting copies the current image in and r
     const adopted = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: { kind: 'movie', id: 53078, adopt: true } });
     assert.equal(adopted.statusCode, 502, 'the fake CDN has no such image, and the failure is the upstream\'s');
     assert.deepEqual(bucket.uploads, []);
-    assert.equal(sheet.films![1]?.[MOVIE_SHEET_HEADERS.indexOf('Banner')]?.userEnteredValue?.stringValue, 'https://image.tmdb.org/t/p/w1280/sw.jpg', 'the cell is untouched');
+    assert.equal(sheet.films![1]?.[MOVIE_ARTWORK_COL]?.userEnteredValue?.stringValue, 'https://image.tmdb.org/t/p/w1280/sw.jpg', 'the cell is untouched');
   });
 });
 
@@ -237,9 +240,9 @@ test('in report mode the object uploads and the link is reported, not written', 
       const res = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: { kind: 'show', id: 3381, url: POSTER } });
       assert.equal(res.statusCode, 200, res.body);
       assert.equal(res.json().link.status, 'reported');
-      assert.equal(res.json().link.address, 'K2');
+      assert.equal(res.json().link.address, 'Q2');
       assert.deepEqual(bucket.uploads.map((u) => u.key), ['Severance']);
-      assert.equal(sheet.state[1]?.[SHEET_HEADERS.length]?.userEnteredValue, undefined);
+      assert.equal(sheet.state[1]?.[SHOW_ARTWORK_COL]?.userEnteredValue, undefined);
     },
     { mode: 'report' },
   );
@@ -261,7 +264,7 @@ test('a pick while the sheet is held answers 503 with Retry-After, after the upl
     assert.equal(res.headers['retry-after'], '10');
     assert.equal(res.json().error, 'busy');
     assert.equal(bucket.uploads.length, 1, 'the upload went out before the link step waited');
-    assert.equal(sheet.films![2]?.[MOVIE_SHEET_HEADERS.indexOf('Banner')]?.userEnteredValue, undefined, 'the cell is untouched');
+    assert.equal(sheet.films![2]?.[MOVIE_ARTWORK_COL]?.userEnteredValue, undefined, 'the cell is untouched');
     release();
     await holder;
     const again = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: { kind: 'movie', id: 53080, url: BACKDROP } });
