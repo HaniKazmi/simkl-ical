@@ -21,8 +21,9 @@ import { errorMessage } from '../../shared/errors.ts';
 import type { Logger } from '../../shared/logger.ts';
 import { a1, duplicateIds, parseGrid, sameValue, textOf } from '../../sheet/2-grid.ts';
 import { writeCell } from '../../sheet/6-requests.ts';
+import { parseBookGrid } from '../../sheet/books/2-grid.ts';
 import { parseMovieGrid } from '../../sheet/movies/2-grid.ts';
-import { appendSheetRun } from '../../sheet/io/journal.ts';
+import { appendSheetRun, type RunTab } from '../../sheet/io/journal.ts';
 import { SheetBusyError, withSheetLock } from '../../sheet/io/lock.ts';
 import { applyRequests, readSnapshot, type SheetSnapshot } from '../../sheet/io/spreadsheet.ts';
 import { ARTWORK_LABEL } from '../../sheet/values.ts';
@@ -73,14 +74,27 @@ interface Located {
  * `no-banner-column` names the state, not the header: the page's client and
  * the tests both branch on the code, so it stays whatever the column is called.
  */
-const locate = (kind: ArtworkKind, snapshot: SheetSnapshot, id: number): Located | { refused: LinkRefusal; detail: string } => {
-  if (kind === 'movie') {
-    const grid = parseMovieGrid(snapshot);
-    if (grid.duplicates.has(id)) return { refused: 'duplicate', detail: `id ${id} is on more than one row of ${snapshot.title}` };
-    const row = grid.rows.find((r) => r.id === id);
-    if (!row || row.name === null) return { refused: 'not-found', detail: `no row on ${snapshot.title} carries id ${id}` };
-    return { row: row.row, column: grid.columns.Banner, title: row.name };
-  }
+const locateBook = (snapshot: SheetSnapshot, id: number): Located | { refused: LinkRefusal; detail: string } => {
+  const grid = parseBookGrid(snapshot);
+  if (grid.duplicates.has(id)) return { refused: 'duplicate', detail: `id ${id} is on more than one row of ${snapshot.title}` };
+  const row = grid.rows.find((r) => r.id === id);
+  if (!row || row.name === null) return { refused: 'not-found', detail: `no row on ${snapshot.title} carries id ${id}` };
+  // No `no-banner-column` arm: `Banner` is a required field of `BOOK_HEADERS`,
+  // so a tab missing it throws a `GridError` out of the parse above. Only the
+  // show tab, whose headers predate the feature, resolves the column
+  // separately and can degrade.
+  return { row: row.row, column: grid.columns.Banner, title: row.name };
+};
+
+const locateFilm = (snapshot: SheetSnapshot, id: number): Located | { refused: LinkRefusal; detail: string } => {
+  const grid = parseMovieGrid(snapshot);
+  if (grid.duplicates.has(id)) return { refused: 'duplicate', detail: `id ${id} is on more than one row of ${snapshot.title}` };
+  const row = grid.rows.find((r) => r.id === id);
+  if (!row || row.name === null) return { refused: 'not-found', detail: `no row on ${snapshot.title} carries id ${id}` };
+  return { row: row.row, column: grid.columns.Banner, title: row.name };
+};
+
+const locateShow = (snapshot: SheetSnapshot, id: number): Located | { refused: LinkRefusal; detail: string } => {
   const grid = parseGrid(snapshot);
   const column = showBannerColumn(grid);
   if (column === null) return { refused: 'no-banner-column', detail: `${snapshot.title} has no ${ARTWORK_LABEL} column` };
@@ -90,10 +104,47 @@ const locate = (kind: ArtworkKind, snapshot: SheetSnapshot, id: number): Located
   return { row: block.row, column, title: block.title };
 };
 
-const tabOf = (kind: ArtworkKind): { title: string; tab: 'shows' | 'films'; bucket: string | undefined } =>
-  kind === 'movie'
-    ? { title: config.moviesSheetName, tab: 'films', bucket: config.artworkMovieBucket }
-    : { title: config.sheetName, tab: 'shows', bucket: config.artworkShowBucket };
+/**
+ * The row for an id on its own tab, or the reason there is no single one.
+ *
+ * A record rather than a chain, because the fallthrough of a chain here is a
+ * *write*: a kind that matched no branch would be parsed as the show grid and
+ * linked into a show row.
+ *
+ * `no-banner-column` names the state, not the header: the page's client and
+ * the tests both branch on the code, so it stays whatever the column is called.
+ */
+const LOCATE: Record<ArtworkKind, (snapshot: SheetSnapshot, id: number) => Located | { refused: LinkRefusal; detail: string }> = {
+  movie: locateFilm,
+  show: locateShow,
+  book: locateBook,
+};
+
+/**
+ * Which tab a kind lives on, what it is called in the run history, and where
+ * its objects go.
+ *
+ * A record rather than a chain of ternaries, and exported so the shell selects
+ * a bucket through it too: an `else` branch is what silently hands a new kind
+ * another kind's bucket, and this is the value a pick uploads under.
+ *
+ * The books title falls back to the empty string, which `readSnapshot` cannot
+ * match — books are unreachable here without `booksArtworkConfigured`, which
+ * requires the name.
+ */
+/** Every kind's bucket, so the shell and the page read the one table a pick uploads through. */
+export const bucketsOf = (): Record<ArtworkKind, string> => ({
+  movie: tabOf('movie').bucket ?? '',
+  show: tabOf('show').bucket ?? '',
+  book: tabOf('book').bucket ?? '',
+});
+
+export const tabOf = (kind: ArtworkKind): { title: string; tab: RunTab; bucket: string | undefined } =>
+  ({
+    movie: { title: config.moviesSheetName, tab: 'films' as const, bucket: config.artworkMovieBucket },
+    show: { title: config.sheetName, tab: 'shows' as const, bucket: config.artworkShowBucket },
+    book: { title: config.booksSheetName ?? '', tab: 'books' as const, bucket: config.artworkBookBucket },
+  })[kind];
 
 /**
  * Ensure the cell links the bucket. Throws `SheetBusyError` when the sheet
@@ -108,7 +159,7 @@ const linkUnderLock = async ({ kind, id, title, adopt, expectPrevious, signal }:
   const bucket = tab.bucket;
 
   const snapshot = await readSnapshot(tab.title, { signal });
-  const found = locate(kind, snapshot, id);
+  const found = LOCATE[kind](snapshot, id);
   if ('refused' in found) return { status: 'refused', reason: found.refused, address: null, key: null, detail: found.detail };
   const address = a1(found.row, found.column);
   if (found.title !== title) {

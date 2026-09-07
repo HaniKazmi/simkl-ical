@@ -22,6 +22,15 @@ import type { Logger } from '../../shared/logger.ts';
 import type { SheetSyncMode } from '../../shared/config.ts';
 import type { RecordedEdit, RecordedInsert } from '../4-plan.ts';
 import type { SheetSyncStatus, SheetTab } from '../sync.ts';
+
+/**
+ * Which tab a *record* is about. Wider than `SheetTab`, which means "a tab the
+ * sync runs" and is what a `TabSpec` and the poll's two halves are typed on:
+ * `books` is only ever written by the artwork page, so admitting it there
+ * would allow a value no `TabSpec` can produce and falsify that type's own
+ * "two per poll".
+ */
+export type RunTab = SheetTab | 'books';
 import { instantFrom } from '../../shared/dates.ts';
 
 /** One finished run, as an operator would want it after a restart. */
@@ -36,7 +45,7 @@ export interface SheetRunRecord {
    * Optional, and absent means the show grid, so a file whose records carry no
    * `tab` reads correctly rather than being dropped for a version bump.
    */
-  tab?: SheetTab;
+  tab?: RunTab;
   /**
    * Who wrote. Absent is the sync's poll; `artwork` is a link write from the
    * page. Kept apart because the cap below is per source: the page writes
@@ -193,7 +202,7 @@ const within = (from: string, to: string): boolean => {
 
 /** Same tab, same outcome, same plan, same message, and close enough in time to be one run of it. */
 /** A record with no `tab` is a show run — see `SheetRunRecord.tab`. */
-const tabOf = (run: { tab?: SheetTab }): SheetTab => run.tab ?? 'shows';
+const tabOf = (run: { tab?: RunTab }): RunTab => run.tab ?? 'shows';
 
 const sameAs = (a: SheetRunRecord, b: NewSheetRun): boolean =>
   // The tab first: one poll writes one record per tab, and two halves failing

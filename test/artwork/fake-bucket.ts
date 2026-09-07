@@ -107,7 +107,10 @@ export const fakeBucket = ({ buckets = {}, images = {}, pageSize = 1000, failUpl
       throw new Error(`fake bucket: unexpected storage request ${url}`);
     }
 
-    if (parsed.host === 'image.tmdb.org' || parsed.host === 'artworks.thetvdb.com') {
+    // The four hosts a candidate or an adopt can name. `wsrv.nl` is two of
+    // those at once: it serves every book thumbnail, and every `Artwork` cell
+    // on the books tab links through it, so an adopt downloads from it too.
+    if (parsed.host === 'image.tmdb.org' || parsed.host === 'artworks.thetvdb.com' || parsed.host === 'assets.hardcover.app' || parsed.host === 'wsrv.nl') {
       const image = images[url];
       if (!image) return new Response('not found', { status: 404 });
       return new Response(new Uint8Array(image.bytes), { status: 200, headers: { 'content-type': image.contentType } });

@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import { ensureLink, type LinkRequest } from '../../../src/artwork/io/sheet-link.ts';
 import { clearTokenCache } from '../../../src/api/google/auth.ts';
 import { sheetRuns } from '../../../src/sheet/io/journal.ts';
-import { cellOf, col, filmRow, MOVIE_SHEET_HEADERS, quiet, SHEET_HEADERS, showRow, withConfig, withFetch, withFreshJournal, type CellSpec } from '../../helpers.ts';
+import { BOOK_SHEET_HEADERS, bookRow, cellOf, col, filmRow, MOVIE_SHEET_HEADERS, quiet, SHEET_HEADERS, showRow, withConfig, withFetch, withFreshJournal, type CellSpec } from '../../helpers.ts';
 import { CREDENTIAL, fakeSheets, type FakeSheetsOptions } from '../../sheet/fake-sheets.ts';
 
 const MOVIE_BUCKET = 'movies-bucket';
+const BOOK_BUCKET = 'books-bucket';
 const SHOW_BUCKET = 'shows-bucket';
 const NEMO_LINK = 'https://storage.googleapis.com/movies-bucket/Finding Nemo';
 
@@ -32,7 +33,7 @@ const run = async (
   clearTokenCache();
   const sheet = fakeSheets(options);
   await withFreshJournal(() =>
-    withConfig({ sheetId: 'SID', sheetSyncMode: mode, googleKeyBase64: CREDENTIAL, artworkMovieBucket: MOVIE_BUCKET, artworkShowBucket: SHOW_BUCKET }, () =>
+    withConfig({ sheetId: 'SID', sheetSyncMode: mode, googleKeyBase64: CREDENTIAL, artworkMovieBucket: MOVIE_BUCKET, artworkShowBucket: SHOW_BUCKET, booksSheetName: 'Books', artworkBookBucket: BOOK_BUCKET }, () =>
       withFetch(sheet.handler, async (calls) => {
         const outcome = await ensureLink(req, { log: quiet });
         await assertions(outcome, sheet, calls);
@@ -195,4 +196,85 @@ test('a show tab without a Banner column refuses rather than guessing a column',
     assert.equal(outcome.status === 'refused' && outcome.reason, 'no-banner-column');
     assert.deepEqual(batches(calls), []);
   });
+});
+
+const BOOK_ARTWORK_COL = col(BOOK_SHEET_HEADERS, 'Artwork');
+const WSRV = 'https://wsrv.nl/?url=https://assets.hardcover.app/edition/29258002/small.jpg';
+
+const books = (banner: CellSpec = null): CellSpec[][] => {
+  const orwell = bookRow({ name: '1984', id: 379760 });
+  // Set directly rather than through the spec, so a formula object can go
+  // there: only `formulaValue` distinguishes a formula, and a formula target
+  // must be refused unconditionally.
+  orwell[BOOK_ARTWORK_COL] = banner;
+  return [BOOK_SHEET_HEADERS, bookRow({ name: 'Animal Farm', id: 12345 }), orwell];
+};
+
+test('a book row is found by its Hardcover id and written on its own tab, into its own bucket', async () => {
+  await run(
+    'apply',
+    { books: books(WSRV) },
+    { kind: 'book', id: 379760, title: '1984', adopt: true, expectPrevious: cellOf(WSRV) },
+    (outcome, sheet, calls) => {
+      assert.equal(outcome.status, 'written');
+      assert.equal(outcome.status === 'written' && outcome.link, 'https://storage.googleapis.com/books-bucket/1984');
+      // Row 3 of the books tab, not row 2: the row is found by id, never by
+      // the index's row number, because rows move.
+      assert.equal(outcome.status === 'written' && outcome.address, `${String.fromCharCode(65 + BOOK_ARTWORK_COL)}3`);
+      assert.equal(sheet.tab('Books')[2]?.[BOOK_ARTWORK_COL]?.userEnteredValue?.stringValue, 'https://storage.googleapis.com/books-bucket/1984');
+      // The films and show tabs are untouched.
+      assert.equal(batches(calls).length, 1);
+      const record = sheetRuns().at(-1);
+      assert.equal(record?.tab, 'books');
+      assert.equal(record?.source, 'artwork');
+    },
+  );
+});
+
+test('a book keeps a cell that already links its bucket, and refuses one whose title has moved', async () => {
+  await run(
+    'apply',
+    { books: books('https://storage.googleapis.com/books-bucket/1984') },
+    { kind: 'book', id: 379760, title: '1984', adopt: false, expectPrevious: cellOf('https://storage.googleapis.com/books-bucket/1984') },
+    (outcome, _sheet, calls) => {
+      assert.equal(outcome.status, 'kept');
+      assert.equal(batches(calls).length, 0);
+    },
+  );
+  await run(
+    'apply',
+    { books: books(WSRV) },
+    { kind: 'book', id: 379760, title: 'Nineteen Eighty-Four', adopt: true, expectPrevious: cellOf(WSRV) },
+    (outcome, _sheet, calls) => {
+      assert.equal(outcome.status, 'refused');
+      assert.equal(outcome.status === 'refused' && outcome.reason, 'title-moved');
+      assert.equal(batches(calls).length, 0);
+    },
+  );
+});
+
+test('a book id on two rows is refused rather than written to either', async () => {
+  await run(
+    'apply',
+    { books: [BOOK_SHEET_HEADERS, bookRow({ name: 'A', id: 7, banner: WSRV }), bookRow({ name: 'B', id: 7, banner: WSRV })] },
+    { kind: 'book', id: 7, title: 'A', adopt: true, expectPrevious: cellOf(WSRV) },
+    (outcome, _sheet, calls) => {
+      assert.equal(outcome.status, 'refused');
+      assert.equal(outcome.status === 'refused' && outcome.reason, 'duplicate');
+      assert.equal(batches(calls).length, 0);
+    },
+  );
+});
+
+test('a formula in a book\'s Artwork cell is never written, adopt or not', async () => {
+  await run(
+    'apply',
+    { books: books({ formula: '=IMAGE(A3)' }) },
+    { kind: 'book', id: 379760, title: '1984', adopt: true, expectPrevious: cellOf({ formula: '=IMAGE(A3)' }) },
+    (outcome, _sheet, calls) => {
+      assert.equal(outcome.status, 'refused');
+      assert.equal(outcome.status === 'refused' && outcome.reason, 'formula');
+      assert.equal(batches(calls).length, 0);
+    },
+  );
 });

@@ -2,11 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { indexArtwork, showBannerColumn, summarise, type IndexInput } from '../../src/artwork/1-index.ts';
 import { parseGrid } from '../../src/sheet/2-grid.ts';
+import { parseBookGrid } from '../../src/sheet/books/2-grid.ts';
 import { parseMovieGrid } from '../../src/sheet/movies/2-grid.ts';
 import type { SheetRunRecord } from '../../src/sheet/io/journal.ts';
-import { col, daysAgo, filmRow, libraryOf, MOVIE_SHEET_HEADERS, rowByLabel, seasonRow, SHEET_HEADERS, sheetSnapshot, showRow, type CellSpec } from '../helpers.ts';
+import { BOOK_SHEET_HEADERS, MOVIE_SHEET_HEADERS, SHEET_HEADERS, bookRow, col, daysAgo, filmRow, libraryOf, rowByLabel, seasonRow, sheetSnapshot, showRow, type CellSpec } from '../helpers.ts';
 
-const BUCKETS = { movie: 'movies-bucket', show: 'shows-bucket' };
+const BUCKETS = { movie: 'movies-bucket', show: 'shows-bucket', book: 'books-bucket' };
 const SHOW_LINK = (key: string) => `https://storage.googleapis.com/shows-bucket/${key}`;
 const MOVIE_LINK = (key: string) => `https://storage.googleapis.com/movies-bucket/${key}`;
 
@@ -24,9 +25,12 @@ const block = (title: string, id: number | null, artwork: CellSpec, ...seasons: 
   return [show, ...seasons];
 };
 
-const stored = (movie: string[], show: string[]) => ({
-  movie: new Map(movie.map((k) => [k, { size: 1, updated: Temporal.Instant.from('2026-08-01T00:00:00Z') }])),
-  show: new Map(show.map((k) => [k, { size: 1, updated: Temporal.Instant.from('2026-08-01T00:00:00Z') }])),
+const objects = (keys: string[]) => new Map(keys.map((k) => [k, { size: 1, updated: Temporal.Instant.from('2026-08-01T00:00:00Z') }]));
+
+const stored = (movie: string[], show: string[], book: string[] = []) => ({
+  movie: objects(movie),
+  show: objects(show),
+  book: objects(book),
 });
 
 const run = (over: Partial<SheetRunRecord>): SheetRunRecord => ({ at: daysAgo(3), status: 'applied', mode: 'apply', edits: [], inserts: [], error: null, repeats: 1, ...over });
@@ -34,6 +38,7 @@ const run = (over: Partial<SheetRunRecord>): SheetRunRecord => ({ at: daysAgo(3)
 const input = (over: Partial<IndexInput> = {}): IndexInput => ({
   shows: null,
   films: null,
+  books: null,
   library: null,
   runs: [],
   stored: stored([], []),
@@ -210,7 +215,7 @@ test('an insert is matched to a title on its own tab', () => {
 
 test('a bucket that could not be listed leaves existence unknown rather than reporting every object missing', () => {
   const films = parseMovieGrid(sheetSnapshot([MOVIE_SHEET_HEADERS, filmRow({ name: 'Linked', id: '1', banner: MOVIE_LINK('Linked') })]));
-  const [title] = indexArtwork(input({ films, stored: { movie: null, show: null } }), { timezone: 'Europe/London' });
+  const [title] = indexArtwork(input({ films, stored: { movie: null, show: null, book: null } }), { timezone: 'Europe/London' });
   assert.equal(title?.stored.exists, null);
   assert.equal(title?.state, 'done');
 });
@@ -231,5 +236,66 @@ test('the summary counts what the chips show', () => {
     run({ tab: 'films', at: daysAgo(60), inserts: [{ address: 'row 3', title: 'B', note: '' }] }),
   ];
   const titles = indexArtwork(input({ films, shows, runs, stored: stored(['A'], []) }), { timezone: 'Europe/London' });
-  assert.deepEqual(summarise(titles), { total: 5, needing: 3, adoptable: 1, addedRecently: 1, noId: 1, shows: 1, films: 4 });
+  assert.deepEqual(summarise(titles), { total: 5, needing: 3, adoptable: 1, addedRecently: 1, noId: 1, shows: 1, films: 4, books: 0, bulkAdoptable: 1 });
+});
+
+test('a book indexes off its own tab: the id is the provider id, the author is the context, and no sync ever inserted it', () => {
+  const books = parseBookGrid(
+    sheetSnapshot([
+      BOOK_SHEET_HEADERS,
+      bookRow({ name: '1984', author: 'George Orwell', id: 379760, franchise: '1984', released: 18057, ended: 40061, banner: 'https://wsrv.nl/?url=https://assets.hardcover.app/a.jpg' }),
+    ]),
+  );
+  // A journal record for the books tab exists and still must not count: no
+  // sync inserts here, so "added by the sync" can never be true of a book.
+  const runs = [run({ tab: 'books', at: daysAgo(1), inserts: [{ address: 'row 2', title: '1984', note: '' }] })];
+  const [book] = indexArtwork(input({ books, runs }), { timezone: 'Europe/London' });
+  assert.equal(book?.kind, 'book');
+  assert.equal(book?.id, 379760);
+  // One number, not two: the `ID` cell is a Hardcover id and Hardcover is the
+  // upstream, so nothing is resolved on demand the way a show's TVDB id is.
+  assert.equal(book?.providerId, 379760);
+  assert.equal(book?.context, 'George Orwell');
+  assert.equal(book?.franchise, '1984');
+  assert.equal(book?.addedBySync, null);
+  assert.equal(book?.releasedOn?.toString(), '1949-06-08');
+  // Every live cell links another host, so every book opens adoptable.
+  assert.equal(book?.state, 'adopt');
+});
+
+test('a book is dated by when it was finished, and by when it was started while it is still being read', () => {
+  const books = (spec: { started?: number | null; ended?: number | null }) =>
+    parseBookGrid(sheetSnapshot([BOOK_SHEET_HEADERS, bookRow({ id: 1, ...spec })]));
+  const dayOf = (grid: ReturnType<typeof parseBookGrid>) =>
+    indexArtwork(input({ books: grid }), { timezone: 'Europe/London' })[0]?.recentAt?.toZonedDateTimeISO('Europe/London').toPlainDate().toString();
+  assert.equal(dayOf(books({ started: 40056, ended: 40061 })), '2009-09-05');
+  assert.equal(dayOf(books({ started: 40056, ended: null })), '2009-08-31');
+  assert.equal(dayOf(books({ started: null, ended: null })), undefined);
+});
+
+test('a book on two rows cannot be picked for, and the counts name books apart from the bulk button', () => {
+  const books = parseBookGrid(
+    sheetSnapshot([
+      BOOK_SHEET_HEADERS,
+      bookRow({ name: 'Twice A', id: 7, banner: 'https://wsrv.nl/?url=https://assets.hardcover.app/a.jpg' }),
+      bookRow({ name: 'Twice B', id: 7, banner: 'https://wsrv.nl/?url=https://assets.hardcover.app/b.jpg' }),
+      bookRow({ name: 'Fine', id: 8, banner: 'https://wsrv.nl/?url=https://assets.hardcover.app/c.jpg' }),
+    ]),
+  );
+  const films = parseMovieGrid(sheetSnapshot([MOVIE_SHEET_HEADERS, filmRow({ name: 'F', id: '1', banner: 'https://image.tmdb.org/t/p/w1280/x.jpg' })]));
+  const titles = indexArtwork(input({ books, films }), { timezone: 'Europe/London' });
+  assert.deepEqual(
+    titles.filter((t) => t.kind === 'book').map((t) => [t.title, t.state]),
+    [
+      ['Fine', 'adopt'],
+      ['Twice A', 'no-id'],
+      ['Twice B', 'no-id'],
+    ],
+  );
+  const summary = summarise(titles);
+  assert.equal(summary.books, 3);
+  // Two adoptable rows, but only the film is one the bulk button will act on:
+  // adopting a book copies the cover this page exists to replace.
+  assert.equal(summary.adoptable, 2);
+  assert.equal(summary.bulkAdoptable, 1);
 });

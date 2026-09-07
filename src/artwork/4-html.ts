@@ -17,6 +17,12 @@ import { BASE_STYLE, document, html, type SafeHtml } from '../shared/html.ts';
 import { duration } from '../shared/dates.ts';
 import type { ArtworkKind, ArtworkState, ArtworkSummary, ArtworkTitle } from './1-index.ts';
 
+/**
+ * What a row calls its kind. A record so a fourth kind fails `tsc` rather than
+ * rendering as whatever the last branch of a ternary said.
+ */
+const KIND_LABEL: Record<ArtworkKind, string> = { movie: 'film', show: 'show', book: 'book' };
+
 /** One row as the page shows it; built by the shell from an `ArtworkTitle` and the clock. */
 export interface ArtworkRow {
   kind: ArtworkKind;
@@ -45,7 +51,13 @@ export interface ArtworkModel {
   version: string;
   timezone: string;
   mode: 'off' | 'report' | 'apply';
-  buckets: { movie: string; show: string };
+  buckets: Record<ArtworkKind, string>;
+  /**
+   * Whether the books half is configured. The gate that stops the reads has to
+   * reach the page too: unconfigured, "books are simply not listed" has to mean
+   * the chip, the count and the copy as well as the rows.
+   */
+  books: boolean;
   summary: ArtworkSummary;
   /** `30 days`, for the chip and the tile. */
   recentWindow: string;
@@ -85,7 +97,8 @@ export interface ModelOptions {
   appName: string;
   version: string;
   mode: 'off' | 'report' | 'apply';
-  buckets: { movie: string; show: string };
+  buckets: Record<ArtworkKind, string>;
+  books: boolean;
 }
 
 const pad = (n: number): string => String(n).padStart(2, '0');
@@ -96,7 +109,7 @@ const pad = (n: number): string => String(n).padStart(2, '0');
  */
 export const artworkModel = (
   index: { titles: readonly ArtworkTitle[]; summary: ArtworkSummary; errors: string[]; builtAt: Temporal.Instant },
-  { now, timezone, recentWindow, appName, version, mode, buckets }: ModelOptions,
+  { now, timezone, recentWindow, appName, version, mode, buckets, books }: ModelOptions,
 ): ArtworkModel => {
   const since = now.subtract({ seconds: recentWindow.total('seconds') });
   const local = index.builtAt.toZonedDateTimeISO(timezone);
@@ -106,6 +119,7 @@ export const artworkModel = (
     timezone,
     mode,
     buckets,
+    books,
     summary: index.summary,
     recentWindow: duration(recentWindow),
     errors: index.errors,
@@ -177,6 +191,7 @@ const STYLE = `${BASE_STYLE}
 .cand img{display:block;background:var(--bg)}
 .cand.land img{width:240px;height:135px;object-fit:cover}
 .cand.port img{width:136px;height:200px;object-fit:cover}
+.cand.book img{width:136px;height:204px;object-fit:contain;background:var(--bg)}
 .cand.pick button{box-shadow:0 0 0 2px var(--accent)}
 .cand .badge{position:absolute;top:.375rem;left:.375rem;font-size:.625rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;padding:.15rem .4rem;border-radius:4px;background:rgba(27,31,36,.8);color:#fff}
 .cand.pick .badge{background:var(--accent)}
@@ -212,7 +227,7 @@ export const loadableImage = (url: string | null): boolean => {
 
 const thumb = (row: ArtworkRow): SafeHtml =>
   row.image && loadableImage(row.image)
-    ? html`<img class="th${row.kind === 'show' ? ' portrait' : ''}" src="${row.image}" alt="" title="enlarge" loading="lazy" decoding="async">`
+    ? html`<img class="th${row.kind === 'movie' ? '' : ' portrait'}" src="${row.image}" alt="" title="enlarge" loading="lazy" decoding="async">`
     : html`<div class="ph"></div>`;
 
 const rowHtml = (row: ArtworkRow): SafeHtml => {
@@ -221,7 +236,7 @@ const rowHtml = (row: ArtworkRow): SafeHtml => {
   return html`<div class="row" data-kind="${row.kind}" data-id="${row.id ?? ''}" data-state="${row.state}" data-title="${row.title}" data-recent="${row.recent ? '1' : ''}" data-franchise="${row.franchise ?? ''}" data-released="${row.released}" data-q="${`${row.title} ${row.franchise ?? ''} ${row.context ?? ''}`.toLowerCase()}">
   <div class="rh">
     ${thumb(row)}
-    <span class="kind">${row.kind === 'movie' ? 'film' : 'show'}</span>
+    <span class="kind">${KIND_LABEL[row.kind]}</span>
     <div><div class="ttl">${row.title}</div><div class="ctx">${row.franchise && row.franchise !== row.title ? html`${row.franchise} · ` : null}${row.context ? html`${row.context} · ` : null}row ${row.rowNumber}${row.address ? html` · <span class="mono">${row.address}</span>` : null} · ${row.cell}</div></div>
     <span class="pill ${label.pill}" data-pill>${label.text}</span>
     <span class="rec">${row.touched ? html`<b>${row.touched.label}</b>${row.touched.because}` : null}</span>
@@ -251,10 +266,10 @@ ${model.errors.length === 0 ? null : html`<div class="problems"><ul>${model.erro
 ${model.mode === 'apply' ? null : html`<div class="problems"><ul><li>Sheet mode is <span class="mono">${model.mode}</span>: images upload, and the link that would be written is reported instead of written.</li></ul></div>`}
 
 <div class="tiles">
-  <div class="tile"><span class="t-name">titles</span><span class="t-head">${model.summary.total}</span><span class="t-next">${model.summary.shows} shows · ${model.summary.films} films</span></div>
+  <div class="tile"><span class="t-name">titles</span><span class="t-head">${model.summary.total}</span><span class="t-next">${model.summary.shows} shows · ${model.summary.films} films${model.books ? html` · ${model.summary.books} books` : null}</span></div>
   <div class="tile${model.summary.needing ? ' warn' : ''}"><span class="t-name">need artwork</span><span class="t-head" data-needing>${model.summary.needing}</span><span class="t-next">no object behind the link, or no link</span></div>
   <div class="tile"><span class="t-name">added by the sync</span><span class="t-head">${model.summary.addedRecently}</span><span class="t-next">in the last ${model.recentWindow}</span></div>
-  <div class="tile act"><div><span class="t-name">adoptable</span><span class="t-head" style="display:block">${model.summary.adoptable}</span><span class="t-next" data-adopt-progress>still linking another host</span></div><button class="btn" type="button" data-adopt-all ${model.summary.adoptable ? '' : 'disabled'}>Adopt all</button></div>
+  <div class="tile act"><div><span class="t-name">adoptable</span><span class="t-head" style="display:block">${model.summary.bulkAdoptable}</span><span class="t-next" data-adopt-progress>still linking another host</span></div><button class="btn" type="button" data-adopt-all ${model.summary.bulkAdoptable ? '' : 'disabled'}>Adopt all</button></div>
 </div>
 
 <div class="tool">
@@ -264,6 +279,7 @@ ${model.mode === 'apply' ? null : html`<div class="problems"><ul><li>Sheet mode 
   ${chip('recent', 'Added by the sync', model.summary.addedRecently)}
   ${chip('show', 'Shows', model.summary.shows)}
   ${chip('movie', 'Films', model.summary.films)}
+  ${model.books ? chip('book', 'Books', model.summary.books) : null}
   ${chip('adopt', 'Adoptable', model.summary.adoptable)}
   ${chip('no-id', 'No id', model.summary.noId)}
   <span class="sortby"><span class="lbl">sort</span>
@@ -280,13 +296,14 @@ ${model.mode === 'apply' ? null : html`<div class="problems"><ul><li>Sheet mode 
 <section>
   <div class="head"><h2 class="name">What this page does</h2></div>
   <div class="ctx" style="display:grid;gap:.4rem">
-    <div>A pick downloads the image through this service and uploads it to <span class="mono">${model.buckets.movie}</span> or <span class="mono">${model.buckets.show}</span> under the title's name, then writes the static link into a blank <span class="mono">Artwork</span> cell. A formula cell is never written; a cell already linking the bucket decides the object name itself.</div>
+    <div>A pick downloads the image through this service and uploads it to <span class="mono">${model.buckets.movie}</span>, <span class="mono">${model.buckets.show}</span>${model.books ? html` or <span class="mono">${model.buckets.book}</span>` : null} under the title's name, then writes the static link into a blank <span class="mono">Artwork</span> cell. A formula cell is never written; a cell already linking the bucket decides the object name itself.</div>
+    ${!model.books ? null : html`<div>Adopt all skips books. Adopting copies the cover a cell already links, and every cell on that tab links a cover this page exists to replace — a bulk adopt would put four hundred of them in the bucket. A book is adopted one row at a time, or picked from its covers.</div>`}
     <div><b>Adopt</b> takes the image a row currently links elsewhere and moves it into the bucket the same way. <b>Adopt all</b> runs that over every adoptable row, one at a time, with progress above.</div>
     <div>Sheet writes wait for a running sync and vice-versa, and happen only in <span class="mono">apply</span> mode — in <span class="mono">report</span> the object still uploads and the cell address is reported instead.</div>
   </div>
 </section>
 
-<footer>Reads both tabs of the spreadsheet, the library, the run history and both buckets · candidates from TMDb and TVDB · images load from their CDNs and the buckets, and this page sends no referrer.</footer>
+<footer>Reads the spreadsheet's tabs, the library, the run history and the buckets · candidates from TMDb, TVDB and Hardcover · images load from their CDNs and the buckets, and this page sends no referrer.</footer>
 
 </div>
 <dialog data-dialog><div class="dbar"><span data-dialog-caption></span><button class="btn" type="button" data-dialog-use>Use this one</button><button class="btn quiet" type="button" data-dialog-close>close</button></div><img alt="" data-dialog-image></dialog>

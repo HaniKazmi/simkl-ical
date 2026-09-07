@@ -27,9 +27,6 @@ import { config } from '../shared/config.ts';
 import { errorMessage } from '../shared/errors.ts';
 import type { RequestComponent } from './requests.ts';
 
-/** The CDNs candidates come from — TMDB's for films, TVDB's for shows. What the page offers, not what it may fetch. */
-export const CANDIDATE_HOSTS: readonly string[] = ['image.tmdb.org', 'artworks.thetvdb.com'];
-
 /** Past this a candidate is not a backdrop; TMDB's largest original is under 6 MiB. */
 export const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 

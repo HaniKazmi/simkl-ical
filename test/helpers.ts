@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { config, type Config } from '../src/shared/config.ts';
 import { clearSheetRuns } from '../src/sheet/io/journal.ts';
+import { clearHardcoverToken } from '../src/api/hardcover/client.ts';
 import { clearBaseline } from '../src/sheet/io/baseline.ts';
 import { dateSerial } from '../src/sheet/values.ts';
 
@@ -44,7 +45,13 @@ config.tmdbApiKey = undefined;
 // ARTWORK_MOVIE_BUCKET would fail the films golden for the wrong reason.
 config.artworkMovieBucket = undefined;
 config.artworkShowBucket = undefined;
+config.artworkBookBucket = undefined;
 config.artworkPublicAcl = false;
+// Same guard, and the sharpest of them: HARDCOVER_TOKEN_PATH names a file on
+// disk, so a leaked one would spend a real daily quota rather than merely
+// reaching an API. Blanked, `graphql` throws before any fetch.
+config.booksSheetName = undefined;
+config.hardcoverTokenPath = undefined;
 // Same guard, for writes: everything that persists lands under config.dataDir,
 // which defaults to ./data and holds a live token on a real checkout. The
 // default moves somewhere harmless; `withTempDataDir` stays for tests that
@@ -81,11 +88,13 @@ export const withConfig = async (overrides: Partial<Config>, fn: () => void | Pr
   const previous = Object.fromEntries(keys.map((k) => [k, config[k]])) as Partial<Config>;
   Object.assign(config, overrides);
   clearBaseline();
+  clearHardcoverToken();
   try {
     await fn();
   } finally {
     Object.assign(config, previous);
     clearBaseline();
+  clearHardcoverToken();
   }
 };
 
@@ -140,10 +149,12 @@ export const withFreshJournal = async (fn: (dir: string) => Promise<void>): Prom
 export const withFreshBaseline = async (fn: (dir: string) => Promise<void>): Promise<void> =>
   withTempDataDir(async (dir) => {
     clearBaseline();
+  clearHardcoverToken();
     try {
       await fn(dir);
     } finally {
       clearBaseline();
+  clearHardcoverToken();
     }
   });
 
@@ -507,5 +518,73 @@ export const filmRow = ({
     Score: score,
     Type: type,
     ID: id === null ? null : String(id),
+    Artwork: banner,
+  });
+
+/** The books tab's live header row, in order. */
+export const BOOK_SHEET_HEADERS = [
+  'Title',
+  'Author',
+  'Series',
+  'Series #',
+  'Franchise',
+  'Genre',
+  'Format',
+  'Release Date',
+  'Start Date',
+  'End Date',
+  'Pages',
+  'Hours',
+  'Status',
+  'Score',
+  'ID',
+  'Artwork',
+];
+
+export interface BookRowSpec {
+  name?: string | null;
+  author?: string | null;
+  franchise?: string | null;
+  /** Date serials, the way the tab stores them. */
+  released?: number | null;
+  started?: number | null;
+  ended?: number | null;
+  /**
+   * A **number**, matching all 401 live rows — where every id on the films tab
+   * is text. Both must parse, so a test may pass either.
+   */
+  id?: string | number | null;
+  /** The tab's `Artwork` cell. */
+  banner?: string | null;
+  series?: string | null;
+  seriesNumber?: string | number | null;
+  status?: string | null;
+}
+
+/** One book row, in `BOOK_SHEET_HEADERS` order. */
+export const bookRow = ({
+  name = 'A Book',
+  author = 'An Author',
+  franchise = null,
+  released = null,
+  started = null,
+  ended = 40000,
+  id = null,
+  banner = null,
+  series = null,
+  seriesNumber = null,
+  status = 'Finished',
+}: BookRowSpec = {}): CellSpec[] =>
+  rowByLabel(BOOK_SHEET_HEADERS, {
+    Title: name,
+    Author: author,
+    Series: series,
+    'Series #': seriesNumber,
+    Franchise: franchise,
+    'Release Date': released,
+    'Start Date': started,
+    'End Date': ended,
+    Status: status,
+    ID: id,
     Artwork: banner,
   });

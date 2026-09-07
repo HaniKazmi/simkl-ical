@@ -117,6 +117,18 @@ export const textOf = (cell: CellData | undefined): string | null => {
 };
 
 /** Whether anything at all was typed here — `{}` and an absent cell both read as empty. */
+/**
+ * A title cell as text, whichever way Sheets stored it. A tab's own title
+ * column is the one place a number is still a name — "1917", "1984", "300" —
+ * and every flat tab needs the same reading of it.
+ */
+export const titleText = (cell: CellData | undefined): string | null => {
+  const text = textOf(cell);
+  if (text !== null) return text;
+  const n = numberOf(cell);
+  return n === null ? null : String(n);
+};
+
 export const isBlank = (cell: CellData | undefined): boolean => {
   const value = cell?.userEnteredValue;
   if (!value) return true;

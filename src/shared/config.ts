@@ -132,12 +132,26 @@ export interface Config {
   tmdbApiKey: string | undefined;
 
   /**
+   * The books tab, and the file holding a Hardcover personal access token.
+   * Neither is defaulted, which is the point: `booksArtworkConfigured` tests
+   * both by truthiness, and a defaulted value would answer "a tab was named"
+   * and "a token was supplied" on every machine — the trap
+   * `googleCredentialsExplicit` exists to work around. Google needs the pair
+   * because its error messages must name a path even when the base64 route is
+   * used; Hardcover has one route and so needs one field.
+   */
+  booksSheetName: string | undefined;
+  hardcoverTokenPath: string | undefined;
+
+  /**
    * The Cloud Storage buckets the artwork page uploads into — one per tab,
    * because the site reads them as two separate prefixes and an object's key
-   * is the title alone. Absent either, the page is inert.
+   * is the title alone. Absent the two the page needs, it is inert; absent the
+   * books one, books are simply not listed.
    */
   artworkMovieBucket: string | undefined;
   artworkShowBucket: string | undefined;
+  artworkBookBucket: string | undefined;
   /**
    * Whether an upload asks for `allUsers` read on the object. Needed on a
    * bucket with legacy ACLs, where a new object is otherwise private; a 400
@@ -219,9 +233,15 @@ export const buildConfig = (env: NodeJS.ProcessEnv): Config => ({
   // alone; the show grid is unaffected.
   tmdbApiKey: env.TMDB_API_KEY,
 
-  // --- Artwork. Absent either bucket, the page is not served at all.
+  // --- Books. Undefaulted on purpose; see the `Config` comment.
+  booksSheetName: env.BOOKS_SHEET_NAME || undefined,
+  hardcoverTokenPath: env.HARDCOVER_TOKEN_PATH ? expandHome(env.HARDCOVER_TOKEN_PATH) : undefined,
+
+  // --- Artwork. Absent either of the first two buckets, the page is not
+  // served at all; absent the third, it serves without books.
   artworkMovieBucket: env.ARTWORK_MOVIE_BUCKET || undefined,
   artworkShowBucket: env.ARTWORK_SHOW_BUCKET || undefined,
+  artworkBookBucket: env.ARTWORK_BOOK_BUCKET || undefined,
   artworkPublicAcl: flag(env.ARTWORK_PUBLIC_ACL),
 });
 
@@ -310,6 +330,22 @@ export const moviesSyncConfigured = (c: Config = config): boolean => sheetSyncCo
  */
 export const artworkConfigured = (c: Config = config): boolean =>
   moviesSyncConfigured(c) && tvdbConfigured(c) && Boolean(c.artworkMovieBucket) && Boolean(c.artworkShowBucket);
+
+/**
+ * Whether books can be listed and picked for. A gate of its own rather than a
+ * fourth conjunct of `artworkConfigured`: books are a third tab most installs
+ * do not have, and folding them in would make the whole page inert for every
+ * install that has the two it already had. Unconfigured, books are simply not
+ * listed — which is what the all-or-nothing rationale above actually asks for,
+ * since a page that lists nothing it cannot act on is not half-configured.
+ *
+ * The token file is not read here: this module evaluates at import, and a
+ * predicate that touches the disk would make configuration depend on what a
+ * filesystem answered at boot. A missing or unreadable token fails at the
+ * first cover lookup instead, the way a rejected TVDB key does.
+ */
+export const booksArtworkConfigured = (c: Config = config): boolean =>
+  sheetSyncConfigured(c) && Boolean(c.booksSheetName) && Boolean(c.artworkBookBucket) && Boolean(c.hardcoverTokenPath);
 
 export const requireClientId = (): string => {
   if (!config.clientId) {
