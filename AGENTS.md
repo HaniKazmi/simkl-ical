@@ -804,7 +804,9 @@ verify CORS with a `GET`.
 Hardcover is GraphQL, at `POST https://api.hardcover.app/v1/graphql` under an
 `authorization: Bearer` personal access token; its docs are the `hardcoverapp/hardcover-docs` repo
 under `src/content/docs/api/` — `docs.hardcover.app` answers a non-browser fetch with a 403, so read
-the repo. Five things checked rather than assumed: **a rejected query answers HTTP 200** carrying an
+the repo. The credential comes either as `HARDCOVER_TOKEN` or as a file named by
+`HARDCOVER_TOKEN_PATH`; only the file is cached, because only a file can change under a running
+process, which is what the 401 re-read exists for. Five things checked rather than assumed: **a rejected query answers HTTP 200** carrying an
 `errors[]` body (or a top-level `error` string), so a client reading status alone files a failure as
 a book with no covers; `image.ratio` is present in the schema and **0 on every edition measured**,
 so shape comes from `width`/`height`, which are populated; `editions_aggregate` is

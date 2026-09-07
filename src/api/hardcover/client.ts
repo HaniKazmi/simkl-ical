@@ -8,10 +8,9 @@
  * title's candidates when a reader opens a row, and `artwork.ts` catches
  * whatever throws. A `classify` would be an export with no caller.
  *
- * The credential is a file rather than an environment variable because that is
- * how the token is issued and stored; it goes in a header for the reason
- * `tmdb/client.ts` gives, that `describeUrl` renders request paths onto the
- * status page.
+ * The credential arrives either as a value or as a path to a file holding one,
+ * and goes in a header for the reason `tmdb/client.ts` gives: `describeUrl`
+ * renders request paths onto the status page.
  *
  * One blind spot worth knowing: a query rejected with a 200 (see `graphql`) is
  * recorded in the request log as a success, because the transport finishes its
@@ -53,17 +52,26 @@ export const clearHardcoverToken = (): void => {
 };
 
 /**
- * The token, read from disk on first use and held for the process. There is no
- * expiry to track — a personal access token is valid until it is revoked or
- * its stated lifetime runs out, and either way a 401 is the only signal, which
- * `SPEC` turns into a re-read.
+ * The token: the configured value where there is one, otherwise the contents of
+ * the configured file, read on first use and held for the process.
+ *
+ * Only the file is cached, because only the file can change under a running
+ * process — an environment variable is already in memory and is fixed for the
+ * life of it, so the 401 arm below re-reads a rotated file and re-sends an
+ * unchanged value, which is the most either route allows.
+ *
+ * There is no expiry to track: a personal access token is valid until it is
+ * revoked or its stated lifetime runs out, and a 401 is the only signal either
+ * way.
  */
 const readToken = (): string => {
+  const configured = config.hardcoverToken;
+  if (configured) return configured;
   if (cached) return cached;
   const path = config.hardcoverTokenPath;
   // Thrown before any fetch, so an unconfigured install cannot reach Hardcover
   // even if a caller forgets to gate on `booksArtworkConfigured`.
-  if (!path) throw new HardcoverError('HARDCOVER_TOKEN_PATH is not set, so no cover lookup can be made.');
+  if (!path) throw new HardcoverError('Neither HARDCOVER_TOKEN nor HARDCOVER_TOKEN_PATH is set, so no cover lookup can be made.');
   let raw: string;
   try {
     raw = readFileSync(path, 'utf8');

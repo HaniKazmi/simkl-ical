@@ -212,6 +212,12 @@ test('a millisecond env var becomes exactly that span', () => {
 test('books are gated apart, on three settings none of which is defaulted', () => {
   const env = { SHEET_ID: 'SID', GOOGLE_SA_KEY_B64: 'x', BOOKS_SHEET_NAME: 'Books', ARTWORK_BOOK_BUCKET: 'books', HARDCOVER_TOKEN_PATH: '/t/token' };
   assert.equal(booksArtworkConfigured(buildConfig(env)), true);
+  // Either credential route satisfies the gate, and a deployment uses the
+  // value one — the token is a single opaque line, so it needs no file
+  // mounted into a container to get there.
+  const byValue = { ...env, HARDCOVER_TOKEN_PATH: undefined, HARDCOVER_TOKEN: 'hc_pat_x' };
+  assert.equal(booksArtworkConfigured(buildConfig(byValue)), true);
+  assert.equal(booksArtworkConfigured(buildConfig({ ...byValue, HARDCOVER_TOKEN: undefined })), false, 'neither route');
   // Each on its own. None may be defaulted, or its conjunct would answer
   // "a tab was named" on every machine — the trap `googleCredentialsExplicit`
   // exists to work around.

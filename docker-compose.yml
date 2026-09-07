@@ -54,6 +54,18 @@ services:
       # SHEET_MAX_EDITS: "30"
       # SHEET_MAX_ROWS: "20"
 
+      # --- Book covers on the artwork page (optional) --------------------
+      # Adds the Books tab to the artwork page, offering the covers Hardcover
+      # holds for each book. All three are needed together; set none and the
+      # page serves exactly as it does now, listing no books. The sync never
+      # reads this tab either way.
+      #
+      # The token itself is a secret and goes in the secrets file as
+      # HARDCOVER_TOKEN — one opaque line, so nothing has to be mounted.
+      #
+      # BOOKS_SHEET_NAME: "Books"
+      # ARTWORK_BOOK_BUCKET: "…"
+
       # --- Per-episode runtimes (optional) -------------------------------
       # Fills a season row's Episodes cell with that season's average episode
       # runtime on the run that closes the row, and only when the cell is

@@ -21,14 +21,46 @@ const ask = (): Promise<{ editions: { id: number }[] }> =>
 
 test('no token path means no request at all', async () => {
   clearHardcoverToken();
-  await withConfig({ hardcoverTokenPath: undefined }, async () => {
+  await withConfig({ hardcoverToken: undefined, hardcoverTokenPath: undefined }, async () => {
     await withFetch(
       () => ok({}),
       async (calls) => {
-        await assert.rejects(ask, (err: Error) => err instanceof HardcoverError && /HARDCOVER_TOKEN_PATH is not set/.test(err.message));
+        await assert.rejects(ask, (err: Error) => err instanceof HardcoverError && /Neither HARDCOVER_TOKEN nor HARDCOVER_TOKEN_PATH/.test(err.message));
         // Thrown before the fetch, so an unconfigured install cannot reach
         // Hardcover even if a caller forgets the gate.
         assert.deepEqual(calls, []);
+      },
+    );
+  });
+});
+
+test('the configured value is used directly, and wins over a file', async () => {
+  clearHardcoverToken();
+  await withConfig({ hardcoverToken: 'hc_pat_env', hardcoverTokenPath: undefined }, async () => {
+    const seen: RequestInit[] = [];
+    await withFetch(
+      (_url, init) => {
+        seen.push(init ?? {});
+        return ok({ data: { editions: [] } });
+      },
+      async () => {
+        // No file anywhere: a deployment sets the value and mounts nothing.
+        await ask();
+        assert.equal((seen[0]?.headers as Record<string, string>).Authorization, 'Bearer hc_pat_env');
+      },
+    );
+  });
+  clearHardcoverToken();
+  await withConfig({ hardcoverToken: 'hc_pat_env', hardcoverTokenPath: tokenFile('from-the-file') }, async () => {
+    const seen: RequestInit[] = [];
+    await withFetch(
+      (_url, init) => {
+        seen.push(init ?? {});
+        return ok({ data: { editions: [] } });
+      },
+      async () => {
+        await ask();
+        assert.equal((seen[0]?.headers as Record<string, string>).Authorization, 'Bearer hc_pat_env');
       },
     );
   });

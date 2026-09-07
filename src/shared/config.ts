@@ -132,15 +132,21 @@ export interface Config {
   tmdbApiKey: string | undefined;
 
   /**
-   * The books tab, and the file holding a Hardcover personal access token.
-   * Neither is defaulted, which is the point: `booksArtworkConfigured` tests
-   * both by truthiness, and a defaulted value would answer "a tab was named"
-   * and "a token was supplied" on every machine — the trap
-   * `googleCredentialsExplicit` exists to work around. Google needs the pair
-   * because its error messages must name a path even when the base64 route is
-   * used; Hardcover has one route and so needs one field.
+   * The books tab, and a Hardcover personal access token by either route: the
+   * value itself, or a file holding it.
+   *
+   * The value wins, and is what a deployment should use — the token is one
+   * opaque line, so it survives an environment variable intact and needs no
+   * volume mounted to reach a container. The path is for a workstation, where
+   * the token already sits in a file beside other credentials.
+   *
+   * None of the three is defaulted, which is the point: `booksArtworkConfigured`
+   * tests them by truthiness, and a defaulted value would answer "a tab was
+   * named" or "a token was supplied" on every machine — the trap
+   * `googleCredentialsExplicit` exists to work around.
    */
   booksSheetName: string | undefined;
+  hardcoverToken: string | undefined;
   hardcoverTokenPath: string | undefined;
 
   /**
@@ -235,6 +241,7 @@ export const buildConfig = (env: NodeJS.ProcessEnv): Config => ({
 
   // --- Books. Undefaulted on purpose; see the `Config` comment.
   booksSheetName: env.BOOKS_SHEET_NAME || undefined,
+  hardcoverToken: env.HARDCOVER_TOKEN || undefined,
   hardcoverTokenPath: env.HARDCOVER_TOKEN_PATH ? expandHome(env.HARDCOVER_TOKEN_PATH) : undefined,
 
   // --- Artwork. Absent either of the first two buckets, the page is not
@@ -339,13 +346,14 @@ export const artworkConfigured = (c: Config = config): boolean =>
  * listed — which is what the all-or-nothing rationale above actually asks for,
  * since a page that lists nothing it cannot act on is not half-configured.
  *
- * The token file is not read here: this module evaluates at import, and a
- * predicate that touches the disk would make configuration depend on what a
- * filesystem answered at boot. A missing or unreadable token fails at the
- * first cover lookup instead, the way a rejected TVDB key does.
+ * Either credential route satisfies it, and neither is read here: this module
+ * evaluates at import, and a predicate that touches the disk would make
+ * configuration depend on what a filesystem answered at boot. A named file that
+ * is missing or unreadable fails at the first cover lookup instead, the way a
+ * rejected TVDB key does.
  */
 export const booksArtworkConfigured = (c: Config = config): boolean =>
-  sheetSyncConfigured(c) && Boolean(c.booksSheetName) && Boolean(c.artworkBookBucket) && Boolean(c.hardcoverTokenPath);
+  sheetSyncConfigured(c) && Boolean(c.booksSheetName) && Boolean(c.artworkBookBucket) && Boolean(c.hardcoverToken || c.hardcoverTokenPath);
 
 export const requireClientId = (): string => {
   if (!config.clientId) {

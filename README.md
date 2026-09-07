@@ -199,7 +199,7 @@ the rest of the page serves either way:
 ```
 BOOKS_SHEET_NAME=Books
 ARTWORK_BOOK_BUCKET=hanikazmi_plotdevice_book
-HARDCOVER_TOKEN_PATH=~/.config/books-tracker/hardcover.token
+HARDCOVER_TOKEN=hc_pat_…
 ```
 
 The tab's `ID` column holds a [Hardcover](https://hardcover.app) *book* id, and the covers offered
@@ -212,9 +212,10 @@ usually the same artwork scanned bigger, not a better picture. Each tile says it
 (`1:1.53`) and whether it is a print, ebook or audio edition. It is a ranked list, not a verdict;
 the reader picks.
 
-The token is a personal access token from your [API settings](https://hardcover.app/account/api),
-in a file rather than an environment variable because that is how it is issued. Read scopes are
-enough — the page never reads your library.
+The token is a personal access token from your [API settings](https://hardcover.app/account/api).
+Read scopes are enough — the page never reads your library. `HARDCOVER_TOKEN_PATH` takes a path to
+a file holding it instead, for a workstation where it already sits beside other credentials; the
+value wins if both are set.
 
 Setting the two film and show buckets is also what switches a newly inserted film row's `Artwork` from a TMDB URL to the
 static bucket link; the sync writes that column once, so it only does so where this page exists to

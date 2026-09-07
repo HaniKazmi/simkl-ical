@@ -47,10 +47,12 @@ config.artworkMovieBucket = undefined;
 config.artworkShowBucket = undefined;
 config.artworkBookBucket = undefined;
 config.artworkPublicAcl = false;
-// Same guard, and the sharpest of them: HARDCOVER_TOKEN_PATH names a file on
-// disk, so a leaked one would spend a real daily quota rather than merely
-// reaching an API. Blanked, `graphql` throws before any fetch.
+// Same guard, and the sharpest of them: either Hardcover route reaches a live
+// account, and the path one names a file that exists on a real workstation, so
+// a leak spends a daily quota rather than merely reaching an API. Blanked,
+// `graphql` throws before any fetch.
 config.booksSheetName = undefined;
+config.hardcoverToken = undefined;
 config.hardcoverTokenPath = undefined;
 // Same guard, for writes: everything that persists lands under config.dataDir,
 // which defaults to ./data and holds a live token on a real checkout. The
