@@ -11,7 +11,7 @@
 
 import type { CellData } from '../../api/google/types.ts';
 import type { SheetSnapshot } from '../io/spreadsheet.ts';
-import { a1, findHeaderRow, GridError, isBlank, numberOf, resolveColumns, textOf } from '../2-grid.ts';
+import { a1, findHeaderRow, GridError, isBlank, numberOf, resolveColumns, textOf, titleText } from '../2-grid.ts';
 import { ARTWORK_LABEL } from '../values.ts';
 
 /**
@@ -111,14 +111,6 @@ export interface MovieGrid {
   duplicates: Set<number>;
 }
 
-/** The `Name` cell as text, whichever way Sheets stored it. */
-const nameOf = (cell: CellData | undefined): string | null => {
-  const text = textOf(cell);
-  if (text !== null) return text;
-  const n = numberOf(cell);
-  return n === null ? null : String(n);
-};
-
 /** The id cell, in either representation the tab uses. */
 export const parseMovieId = (cell: CellData | undefined): number | null => {
   const text = textOf(cell);
@@ -151,7 +143,7 @@ export const parseMovieGrid = (snapshot: SheetSnapshot): MovieGrid => {
       if (seen.has(id)) duplicates.add(id);
       else seen.set(id, row);
     }
-    parsed.push({ row, name: nameOf(cells[columns.Name]), id });
+    parsed.push({ row, name: titleText(cells[columns.Name]), id });
   }
 
   return { snapshot, columns, headerRow, rows: parsed, duplicates };

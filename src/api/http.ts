@@ -103,6 +103,14 @@ export interface HttpRequestOptions {
   maxAttempts?: number;
   /** Names the call in failure messages; defaults to the URL's path. */
   path?: string;
+  /**
+   * What the request log calls this call, for the one upstream whose URL says
+   * nothing: a GraphQL query travels in the POST body, so every such request
+   * is `/v1/graphql`. Everything else leaves this unset and is described by
+   * its URL, which carries the parameters that tell two rows apart. Separate
+   * from `path` above because that one is deliberately bare.
+   */
+  logPath?: string;
   signal?: AbortSignal;
 }
 
@@ -125,10 +133,12 @@ type Consumer<T> = (res: Response, describe: { spec: HttpSpec; path: string }) =
 const request = async <T>(
   spec: HttpSpec,
   url: URL,
-  { component, method = 'GET', headers, body, rawBody, redirect = 'follow', maxAttempts = spec.maxAttempts, path = url.pathname, signal }: HttpRequestOptions,
+  options: HttpRequestOptions,
   consume: Consumer<T>,
 ): Promise<T> => {
-  const finish = beginRequest({ service: spec.service, component, method, url });
+  const { component, method = 'GET', headers, body, rawBody, redirect = 'follow', maxAttempts = spec.maxAttempts, signal } = options;
+  const path = options.path ?? url.pathname;
+  const finish = beginRequest({ service: spec.service, component, method, url, logPath: options.logPath });
   let attempts = 0;
   let status: number | null = null;
   let bytes: number | null = null;

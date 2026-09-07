@@ -279,7 +279,7 @@ const runs = (model: StatusModel) =>
         // show run. Always a cell, empty for a show run: the sole layout below
         // is a positional grid, and a cell that is sometimes absent shifts the
         // note into the count's column, where it takes every pixel it wants.
-        run.tab === 'films' ? html`<span class="fld tab">films</span>` : html`<span class="tab"></span>`
+        run.tab === 'films' || run.tab === 'books' ? html`<span class="fld tab">${run.tab}</span>` : html`<span class="tab"></span>`
       }
       ${run.sole === null
         ? null

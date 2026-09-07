@@ -27,12 +27,12 @@ const title = (over: Partial<ArtworkTitle> = {}): ArtworkTitle => ({
   ...over,
 });
 
-const summary = { total: 1, needing: 1, adoptable: 0, addedRecently: 0, noId: 0, shows: 0, films: 1 };
+const summary = { total: 1, needing: 1, adoptable: 0, addedRecently: 0, noId: 0, shows: 0, films: 1, books: 0, bulkAdoptable: 0 };
 
 const model = (titles: ArtworkTitle[], over: Partial<ArtworkModel> = {}): ArtworkModel => ({
   ...artworkModel(
     { titles, summary, errors: [], builtAt: NOW.subtract({ minutes: 3 }) },
-    { now: NOW, timezone: 'Europe/London', recentWindow: Temporal.Duration.from({ days: 30 }), appName: 'simkl-ical', version: '0.2.0', mode: 'apply', buckets: { movie: 'movies', show: 'shows' } },
+    { now: NOW, timezone: 'Europe/London', recentWindow: Temporal.Duration.from({ days: 30 }), appName: 'simkl-ical', version: '0.2.0', mode: 'apply', buckets: { movie: 'movies', show: 'shows', book: 'books' }, books: true },
   ),
   ...over,
 });

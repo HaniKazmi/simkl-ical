@@ -14,7 +14,8 @@ api4.thetvdb.com/v4/series/{id}/episodes/official   (per-episode runtimes)  ─�
 api.themoviedb.org/3/movie/{id}                     (a film's genres, certificate, dates, crew, backdrop) ─→ the sheet only
 
 api.themoviedb.org/3/movie/{id}/images              (a film's backdrops)     ─┐
-api4.thetvdb.com/v4/series/{id}/artworks            (a show's posters)       ─┤─ the artwork page only
+api4.thetvdb.com/v4/series/{id}/artworks            (a show's posters)       ─┤
+api.hardcover.app/v1/graphql                        (a book's edition covers)─┤─ the artwork page only
 storage.googleapis.com                              (where a pick is put)    ─┘
 ```
 
@@ -225,6 +226,14 @@ died mid-download must not surface as a 200 carrying unparseable JSON.
   tab back over it. The page's write is the one cell on a show row written outside `Status`, and it
   goes through its own checklist rather than the sync's guard: the sync's whitelists are the
   poll's, and widening them for a click is how one rule ends up holding two jobs.
+- **Books are gated apart from the rest of the artwork page.** `artworkConfigured` is all-or-
+  nothing because a page listing shows it cannot act on reads as broken; `booksArtworkConfigured`
+  is a second predicate rather than a fourth conjunct of it, because a books tab is a third tab
+  most installs do not have and requiring it would make the page inert for every install that has
+  the two it already had. Unconfigured, books are not listed — nothing is offered that cannot be
+  acted on, which is what the first rule actually asks for. Books are also a *page* tab, never a
+  sync one: `SheetTab` still means "a tab the poll runs over", and the journal's wider `RunTab` is
+  what carries a books record.
 - **A pick uploads before it links, and pre-decides before it uploads.** The object is what the
   site shows and is idempotent, so an upload that outruns a refused link costs nothing; a link
   that outran a failed upload would point at nothing. The pre-decision off the cached cell stops

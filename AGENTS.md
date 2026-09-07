@@ -311,8 +311,7 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   follows a redirect, which would land wherever the first hop pointed, and checks `image/*` after,
   because a 200 carrying an HTML error page is what would put a web page in the bucket under an
   image's name. The resolver is injectable (`Artwork`'s `resolve`), and the suite passes one that
-  answers every name publicly, so no test touches DNS. `CANDIDATE_HOSTS` is a different list: where
-  the page's own candidates come from, not what it may fetch.
+  answers every name publicly, so no test touches DNS.
 - **A page write and a sync run never overlap — `withSheetLock`.** The films verifier inspects every
   column but `id`, `Artwork` included, so an `Artwork` cell written between the sync's read and its
   verify is one the sync did not plan: VERIFY rolls the whole tab back, taking the page's write with
@@ -331,6 +330,69 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   live cell to still hold what the page showed, the row to be found again by SIMKL id under the
   lock, and that row to still carry the title acted on. Not through the sync's planner or guard:
   their whitelists are the poll's.
+- **A book's covers come from its editions, and one ordering cannot find them.** Hardcover hangs a
+  cover off an *edition*, so a book's own default is one edition's and often a poor one — 44 of the
+  401 cells on the tab are under 300px wide and 15 under 100px. `io/hardcover-covers.ts` therefore
+  asks twice in one request, aliased: `users_count desc` and `image.width desc`. Neither alone is
+  enough — the first buries 1984's 1707×2560 past two hundred editions because three readers hold
+  it, and the second leads with a 2400×2400 German audiobook square nobody holds at all. Two is
+  also the ceiling worth having: Hardcover refuses more than five top-level fields per request, and
+  the free tier's limits are daily as well as per-minute.
+- **A book cover is offered only if it is shaped like one: height ÷ width between 1.4 and 1.7.**
+  A filter, not a demotion, and the one place books differ from the tab's own 2:3 convention by
+  design — outside that window the image is not a cover of the book. A square is an audiobook's
+  (Sabriel's only English cover over 600px is 2397×2400, Abhorsen's is 1500×1500), a landscape one
+  is a spread or a banner, and either is picked if it is shown at all. The cost is that a book
+  whose editions carry nothing inside the window gets an **empty strip** and has to be left alone
+  — 0 of 24 books measured, but it is reachable and it is the right answer when it happens.
+- **`bookCandidates` ranks by tiers, and the order of the tiers is the whole rule.** English, then
+  shape, then wide enough to be a cover at all, then a UK edition, then readers, then the URL.
+  Three of those placements are load-bearing. **Shape is bucketed rather than scored**, because a
+  score orders every candidate completely and no tier below it could then fire; bucketed, it puts
+  the near-2:3 covers first and lets readers decide inside the band. The band is ±0.1 around 1.50
+  and the window is 1.4–1.7, so in practice only the tall end is ever demoted — a property of those
+  two numbers, not a second rule. **Resolution is not a tier at
+  all** — between two covers a reader can see, the larger file is the same artwork scanned bigger,
+  and ranking on it puts a 1707×2560 that three readers hold above the edition three hundred of
+  them read. **The country tier is binary and sits above readers** — binary because ranked three ways an
+  unrecorded country outranks `us`, which is 164 of 229 candidates measured; above readers because
+  otherwise a popular US edition would always bury the UK one. That placement is bought at a real
+  price, a `gb` 329×500 leading a `us` 1695×2560, and it is affordable only because this orders a
+  strip a reader picks from. **`BOOK_MIN_WIDTH` is the one thing size still decides**: below 300px
+  a cover is a placeholder rather than a choice — it is upscaled even in the 272px strip, and 300
+  is where the tab's own covers begin, 263 of the 401 sitting in the 300–399 band. Demoted, never
+  dropped, so a book whose covers are all small still gets a strip in a sensible order. Every tier is pinned by a test that fails when it alone is
+  deleted, and the merge is the comparator itself: two editions sharing one cover give one tile,
+  the one that wins the sort. Patching fields across the merge instead builds an edition that does
+  not exist — a country from one, a reader count from another, and a badge naming neither.
+- **`reading_format_id` is fetched to be printed, never to rank on.** The tile says `print`,
+  `ebook` or `audio` beside the cover's own `1:1.53`, because which edition a picture came from is
+  context a reader wants and a fact nothing else on the tile carries. Ranking on it would be the
+  mistake: a paperback and an ebook of one edition routinely share a picture, and an audiobook's
+  square cover is already gone at the filter.
+- **A `.tiff` candidate is dropped by URL suffix, before anything is fetched.** It serves
+  `image/tiff`, which passes `fetchImage`'s `image/*` check and uploads happily — and then no
+  browser renders it, so the tile is blank in the strip and the cover is blank on the site. One in
+  247 measured. The proxy the thumbnails go through is not a way out: asked for that file it
+  answers `image/tiff` too.
+- **Books are a page tab, never a sync one, and gated apart.** `SheetTab` keeps meaning "a tab the
+  poll runs over" — widening it would admit a value no `TabSpec` can produce and falsify its own
+  "two per poll" — so the journal carries a wider `RunTab`. `booksArtworkConfigured` is a second
+  predicate rather than a fourth conjunct of `artworkConfigured`, and all three of its settings are
+  undefaulted so each is a real test; a defaulted one would answer "a tab was named" on every
+  machine, which is the trap `googleCredentialsExplicit` exists to work around. Unconfigured, books
+  are simply not listed, and no read is paid for them.
+- **Adopt all skips books, and the tile's count skips them with it.** Adopting copies the cover the
+  cell already links, and every cell on that tab links one this page exists to replace — in bulk it
+  would freeze four hundred of them in the bucket. The rule lives twice, once in `summarise`'s
+  `bulkAdoptable` and once inside the client string, because the button reads the first and acts on
+  the second; both are pinned. The `Adoptable` **chip** still counts books, because it filters rows
+  and a book is genuinely adoptable one at a time.
+- **A caller may name its own request-log path, and only a caller that has to.** `HttpRequestOptions.path`
+  reaches `beginRequest` only when supplied; otherwise the log keeps `describeUrl`, which retains
+  the `?season=3` and `?date_from=` that distinguish one REST row from another. GraphQL is the one
+  upstream that has to override it: the query travels in the POST body, so every call shares
+  `/v1/graphql` and the status page would show an unbroken column of identical rows.
 - **The static link is one convention for both tabs, in `sheet/values.ts`.** `artworkKeyFor` is
   identity — the show tab's 291 `=CONCAT("https://storage.googleapis.com/<bucket>/",A#)` rows, a
   literal prefix with no prefix cell, and the objects behind them are named by
@@ -509,11 +571,11 @@ needs it**, and **is it transport or business logic**.
 | `src/health.ts` | What the state *means*: `assess` (restart-worthiness, the `/healthz` status code) and `pageHealthy` (the page's stricter question), plus the `/healthz` body |
 | `src/library.ts` | How the library is gated, merged and read: the signatures, the delta merge, the removal diff |
 | `src/library-counts.ts` | The library, counted — the status page's totals and movement deltas |
-| `src/api/` | Every HTTP client, and no domain rules. `http.ts` is the one retrying transport, for JSON and for bytes (`requestBytes`, bounded); `simkl/`, `google/` (`client.ts` for Sheets, `storage.ts` for Cloud Storage, one `auth.ts` minting a token per scope), `tvdb/`, `tmdb/` are specs over it; `images.ts` the bounded download from any public https host, private addresses refused; `token-cache.ts` the one bearer cache; `pool.ts`, `requests.ts`, `cdn.ts` shared. `requests.ts` is the one exception to "no domain rules": `RequestComponent` names the callers, because which part of the service asked is not a fact any transport holds |
+| `src/api/` | Every HTTP client, and no domain rules. `http.ts` is the one retrying transport, for JSON and for bytes (`requestBytes`, bounded); `simkl/`, `google/` (`client.ts` for Sheets, `storage.ts` for Cloud Storage, one `auth.ts` minting a token per scope), `tvdb/`, `tmdb/`, `hardcover/` are specs over it; `images.ts` the bounded download from any public https host, private addresses refused; `token-cache.ts` the one bearer cache; `pool.ts`, `requests.ts`, `cdn.ts` shared. `requests.ts` is the one exception to "no domain rules": `RequestComponent` names the callers, because which part of the service asked is not a fact any transport holds |
 | `src/feed/` | iCal only |
-| `src/sheet/` | Google Sheet sync only |
+| `src/sheet/` | The spreadsheet: the sync, and the per-tab parsers the artwork page reads (`books/`, which no sync runs) |
 | `src/status/` | The HTML status page. Reads the snapshot and the request log; `server.ts` is its only reader |
-| `src/artwork/` | The artwork page: both tabs and both buckets indexed, candidates from TMDB and TVDB, a pick that uploads and links. `server.ts` is its only reader |
+| `src/artwork/` | The artwork page: every tab and every bucket indexed, candidates from TMDB, TVDB and Hardcover, a pick that uploads and links. `server.ts` is its only reader |
 
 `src/status/` and `src/artwork/` are **layers**, not peers of the halves: each sits above both
 halves and below `server.ts`, and names `Orchestrator` only where it must (`status/` as a type,
@@ -566,6 +628,21 @@ the process, and the rest carries its pipeline position in the filename, so `ls`
 `6-` is absent on purpose: BUILD is the parent's `6-requests.ts` unchanged, which reads no field
 name and so needs no films copy.
 
+`src/sheet/books/` — the books tab. PARSE, and nothing else.
+
+| Step | Module |
+| --- | --- |
+| PARSE | `2-grid.ts` — snapshot → one `BookRow` per book; header resolution by text, markers `Title` + `Author` |
+
+**The sync never runs this tab and names it nowhere** — `sync.ts` gains no third `TabSpec` and
+nothing under `sheet/` imports `books/`. It sits here rather than under `artwork/` because it is
+composed almost entirely out of `2-grid.ts`, and because a reader asking how a tab of this
+spreadsheet is parsed looks beside `parseGrid` and `parseMovieGrid`; `values.ts` already holds
+conventions only the artwork page reads. Only the eight columns the page reads are named, where
+`MOVIE_HEADERS` names all sixteen: that tab lists every column so its verifier covers them, and
+nothing verifies this one, so requiring `Pages` would make renaming a column the page never looks
+at a hard failure.
+
 `src/status/` — MODEL → RENDER
 
 | Step | Module |
@@ -578,12 +655,12 @@ name and so needs no films copy.
 
 | Step | Module |
 | --- | --- |
-| INDEX | `1-index.ts` — both grids, the library, the run history and both bucket listings → one `ArtworkTitle` per row with a state a pick can act on, plus `summarise` |
-| CANDIDATES | `2-candidates.ts` — a TMDB images payload or a TVDB artworks payload → `Candidate[]`, at the site's shape, ranked as a starting point |
+| INDEX | `1-index.ts` — every grid, the library, the run history and every bucket listing → one `ArtworkTitle` per row with a state a pick can act on, plus `summarise` |
+| CANDIDATES | `2-candidates.ts` — a TMDB images, TVDB artworks or Hardcover editions payload → `Candidate[]`, ranked as a starting point. Films and shows filter on shape; books rank on it |
 | DECIDE | `3-decide.ts` — an `Artwork` cell → `keep` / `write` / `refuse`; the whole of the page's guard, as a checklist |
 | RENDER | `4-html.ts` — the model and the page; every value through `html` |
 | — | `client.ts` — the page's script, served as `artwork/app.js`; `page.ts` — the read shell, index → model → page |
-| io | `io/tmdb-images.ts`, `io/tvdb-art.ts` (fetch only), `io/sheet-link.ts` (`ensureLink`: the authoritative pass under the lock, one `updateCells`, one verify read, one journal record) |
+| io | `io/tmdb-images.ts`, `io/tvdb-art.ts`, `io/hardcover-covers.ts` (fetch only), `io/sheet-link.ts` (`ensureLink`: the authoritative pass under the lock, one `updateCells`, one verify read, one journal record) |
 | — | `artwork.ts` — the shell: the index cache (60 s, `?fresh=1` bypasses), the candidate cache (15 min, 200 titles, what lets a pick name a URL), the pick flow in its fixed order, and `summary()` for the status page |
 
 Everything numbered stays pure (the catalogue store is stateful but I/O-free) — numbered modules
@@ -708,7 +785,7 @@ Two things it does not offer, checked rather than assumed: there is no revision 
 Drive's revisions can be listed, fetched, deleted or pinned but never named, created or reverted to.
 That is why the sync snapshots a tab before writing instead of using version history.
 
-The artwork page's three upstreams. TMDB's `/movie/{id}/images?include_image_language=en,null`
+The artwork page's four upstreams. TMDB's `/movie/{id}/images?include_image_language=en,null`
 lists backdrops with dimensions and vote counts — the appended `images` on a film's detail carries
 neither — and `en` backdrops carry the title across the frame while `null` ones are textless. TVDB's
 `/series/{id}/artworks?type=2` lists posters, 680×1000 with a `_t` thumbnail and a `score`, in every
@@ -723,3 +800,17 @@ Whether an upload must also ask for `predefinedAcl=publicRead` depends on the bu
 legacy ACLs, a 400 under uniform bucket-level access; `ARTWORK_PUBLIC_ACL` says which.
 `storage.googleapis.com` sends `Access-Control-Allow-Origin: *` on a `GET` and not on a `HEAD`, so
 verify CORS with a `GET`.
+
+Hardcover is GraphQL, at `POST https://api.hardcover.app/v1/graphql` under an
+`authorization: Bearer` personal access token; its docs are the `hardcoverapp/hardcover-docs` repo
+under `src/content/docs/api/` — `docs.hardcover.app` answers a non-browser fetch with a 403, so read
+the repo. The credential comes either as `HARDCOVER_TOKEN` or as a file named by
+`HARDCOVER_TOKEN_PATH`; only the file is cached, because only a file can change under a running
+process, which is what the 401 re-read exists for. Five things checked rather than assumed: **a rejected query answers HTTP 200** carrying an
+`errors[]` body (or a top-level `error` string), so a client reading status alone files a failure as
+a book with no covers; `image.ratio` is present in the schema and **0 on every edition measured**,
+so shape comes from `width`/`height`, which are populated; `editions_aggregate` is
+`403 unsupported_operation`, so there are no counts to page by; at most **five top-level fields**
+per request, which is what makes the two-ordering query the ceiling rather than a choice; and a
+read-scoped token cannot query `me` at all, so nothing about the reader's own library is available
+to rank with. The free tier's per-minute limit bites at roughly one request a second.

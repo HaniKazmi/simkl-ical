@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { clearRequests, describeUrl, recentRequests, recordRequest, type RequestRecord } from '../../src/api/requests.ts';
+import { beginRequest, clearRequests, describeUrl, recentRequests, recordRequest, type RequestRecord } from '../../src/api/requests.ts';
+import { apiGet as simklGet } from '../../src/api/simkl/client.ts';
+import { jsonResponse, withConfig, withFetch } from '../helpers.ts';
 
 const record = (over: Partial<RequestRecord> = {}): RequestRecord => ({
   at: '2026-08-16T12:00:00Z',
@@ -147,4 +149,34 @@ test('a record says which part of the service asked', () => {
       ['catalogue', '/tv/1649662'],
     ],
   );
+});
+
+test('a caller may label its own log row, and one that does not is described by its URL', () => {
+  clearRequests();
+  // GraphQL puts the query in the body, so every call to that upstream shares
+  // one path and the log would be a column of identical rows.
+  const named = beginRequest({ service: 'hardcover', component: 'artwork', method: 'POST', url: 'https://api.hardcover.app/v1/graphql', logPath: 'editions/379760' });
+  named({ status: 200, bytes: 10, error: null });
+  assert.equal(recentRequests().find((r) => r.service === 'hardcover')?.path, 'editions/379760');
+
+  const plain = beginRequest({ service: 'tvdb', component: 'runtimes', method: 'GET', url: 'https://api4.thetvdb.com/v4/series/1/episodes/official?season=3' });
+  plain({ status: 200, bytes: 10, error: null });
+  assert.equal(recentRequests().find((r) => r.service === 'tvdb')?.path, '/v4/series/1/episodes/official?season=3');
+});
+
+test('a REST call keeps the parameters that tell its row apart, through the transport', async () => {
+  // The assertion above goes straight to `beginRequest`, a layer no client
+  // uses. This one goes through `requestJson`, which is where a caller's bare
+  // `path` — passed by every REST client for its failure messages — could be
+  // mistaken for a log label and drop `date_from` from every delta pull.
+  clearRequests();
+  await withConfig({ clientId: 'cid' }, () =>
+    withFetch(
+      () => jsonResponse({}),
+      async () => {
+        await simklGet('/sync/all-items', { component: 'poll', token: 't', params: { date_from: '2026-09-01T00:00:00Z', extended: 'full' } });
+      },
+    ),
+  );
+  assert.equal(recentRequests().find((r) => r.service === 'simkl')?.path, '/sync/all-items?date_from=2026-09-01T00:00:00Z&extended=full');
 });

@@ -7,6 +7,7 @@ import { assess, healthResponse } from './health.ts';
 import { renderStatus } from './status/status.ts';
 import { ICON_APPLE, ICON_ICO, ICON_SVG } from './status/icons.ts';
 import { Artwork, PickRefused } from './artwork/artwork.ts';
+import { ARTWORK_KINDS, type ArtworkKind } from './artwork/1-index.ts';
 import { renderArtwork } from './artwork/page.ts';
 import { CLIENT_SCRIPT } from './artwork/client.ts';
 import { SheetBusyError } from './sheet/io/lock.ts';
@@ -201,7 +202,7 @@ export const buildServer = (state: Orchestrator, { logger = true, logStream, art
       .send(CLIENT_SCRIPT);
   });
 
-  const kindOf = (value: unknown): 'movie' | 'show' | null => (value === 'movie' || value === 'show' ? value : null);
+  const kindOf = (value: unknown): ArtworkKind | null => (ARTWORK_KINDS.includes(value as ArtworkKind) ? (value as ArtworkKind) : null);
   const idOf = (value: unknown): number | null => {
     const n = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : Number.NaN;
     return Number.isInteger(n) && n > 0 ? n : null;
@@ -211,7 +212,7 @@ export const buildServer = (state: Orchestrator, { logger = true, logStream, art
     if (!artworkGate(req.params.token)) return reply.code(404).send(NOT_FOUND);
     const kind = kindOf(req.query.kind);
     const id = idOf(req.query.id);
-    if (!kind || id === null) return reply.code(400).send({ error: 'bad-request', detail: 'kind must be movie or show, and id a positive integer' });
+    if (!kind || id === null) return reply.code(400).send({ error: 'bad-request', detail: 'kind must be movie, show or book, and id a positive integer' });
     try {
       return reply.header('Cache-Control', 'private, no-store').send(await artwork.candidates(kind, id));
     } catch (err) {
@@ -227,7 +228,7 @@ export const buildServer = (state: Orchestrator, { logger = true, logStream, art
     const id = idOf(body.id);
     const url = typeof body.url === 'string' ? body.url : undefined;
     const adopt = body.adopt === true;
-    if (!kind || id === null) return reply.code(400).send({ error: 'bad-request', detail: 'kind must be movie or show, and id a positive integer' });
+    if (!kind || id === null) return reply.code(400).send({ error: 'bad-request', detail: 'kind must be movie, show or book, and id a positive integer' });
     try {
       const result = await artwork.pick(kind, id, { url, adopt });
       return reply.header('Cache-Control', 'private, no-store').send({ ok: true, ...result });

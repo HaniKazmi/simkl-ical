@@ -12,7 +12,7 @@
 
 import { generateKeyPairSync } from 'node:crypto';
 import type { CellData, SheetRequest } from '../../src/api/google/types.ts';
-import { cellOf, filmRow, jsonResponse, MOVIE_SHEET_HEADERS, SHEET_HEADERS, seasonRow, showRow, type CellSpec } from '../helpers.ts';
+import { BOOK_SHEET_HEADERS, cellOf, filmRow, jsonResponse, MOVIE_SHEET_HEADERS, SHEET_HEADERS, seasonRow, showRow, type CellSpec } from '../helpers.ts';
 
 // A real key, because the assertion is really signed; stubbing node:crypto
 // would test nothing.
@@ -65,8 +65,15 @@ export interface FakeSheetsOptions {
    * that predate the films half see exactly the spreadsheet they did before.
    */
   movies?: CellSpec[][];
+  /**
+   * The books tab's grid. Opt-in for the reason the films one is: without it
+   * the tab does not exist, and no suite that predates books sees one.
+   */
+  books?: CellSpec[][];
   /** Answers TMDB film reads; without it any TMDB request throws. */
   tmdb?: (url: string) => Response;
+  /** Answers Hardcover cover reads; without it any Hardcover request throws. */
+  hardcover?: (url: string, init?: RequestInit) => Response;
   /** `meddle`, for the films tab: mutate it on the write so verify must fail. */
   meddleMovies?: (films: CellData[][]) => void;
 }
@@ -83,7 +90,9 @@ export const fakeSheets = ({
   tvdb,
   detail,
   movies,
+  books,
   tmdb,
+  hardcover,
   meddleMovies,
 }: FakeSheetsOptions = {}) => {
   const tabs = new Map<number, CellData[][]>([[1, grid.map((row) => row.map(cellOf))]]);
@@ -96,8 +105,16 @@ export const fakeSheets = ({
     nextSheetId += 1;
   }
   const films = movies ? tabs.get(nextSheetId - 1)! : null;
-  /** Widths are per tab: the two have different column counts. */
-  const widthOf = (id: number): number => (id === 1 ? SHEET_HEADERS.length : MOVIE_SHEET_HEADERS.length);
+  let booksId: number | null = null;
+  if (books) {
+    booksId = nextSheetId;
+    tabs.set(nextSheetId, books.map((row) => row.map(cellOf)));
+    titles.set(nextSheetId, 'Books');
+    nextSheetId += 1;
+  }
+  /** Widths are per tab: the three have different column counts. */
+  const widthOf = (id: number): number =>
+    id === 1 ? SHEET_HEADERS.length : id === booksId ? BOOK_SHEET_HEADERS.length : MOVIE_SHEET_HEADERS.length;
   let writes = 0;
   let tabLists = 0;
   const batches: string[][] = [];
@@ -229,6 +246,11 @@ export const fakeSheets = ({
       return tmdb(url);
     }
 
+    if (url.startsWith('https://api.hardcover.app/')) {
+      if (!hardcover) throw new Error(`unexpected Hardcover request: ${url}`);
+      return hardcover(url, init);
+    }
+
     if (url.startsWith('https://api4.thetvdb.com/v4/login')) return jsonResponse({ data: { token: 'tvdb-token' } });
     if (url.startsWith('https://api4.thetvdb.com/')) {
       if (!tvdb) throw new Error(`unexpected TVDB request: ${url}`);
@@ -237,7 +259,13 @@ export const fakeSheets = ({
     throw new Error(`unexpected request: ${url}`);
   };
 
-  return { handler, state, films, tabs, titles, batches, writes: () => writes, stopServing: (tab: string) => unreadable.add(tab) };
+  /** A tab's live rows, by the title the service reads it under. */
+  const tab = (title: string): CellData[][] => {
+    for (const [id, name] of titles) if (name === title) return tabs.get(id)!;
+    throw new Error(`fake sheets: no tab called ${title}`);
+  };
+
+  return { handler, state, films, tab, tabs, titles, batches, writes: () => writes, stopServing: (name: string) => unreadable.add(name) };
 };
 
 export type FakeSheets = ReturnType<typeof fakeSheets>;

@@ -21,23 +21,25 @@
  */
 
 import type { Orchestrator } from '../orchestrator.ts';
-import { config } from '../shared/config.ts';
+import { booksArtworkConfigured, config } from '../shared/config.ts';
 import { errorMessage } from '../shared/errors.ts';
 import type { Logger } from '../shared/logger.ts';
 import { listObjects, uploadObject, type StoredObject, type Uploaded } from '../api/google/storage.ts';
 import { allowedImageUrl, fetchImage, type Resolver } from '../api/images.ts';
 import { parseGrid, type Grid } from '../sheet/2-grid.ts';
+import { parseBookGrid, type BookGrid } from '../sheet/books/2-grid.ts';
 import { parseMovieGrid, type MovieGrid } from '../sheet/movies/2-grid.ts';
 import { fetchCatalogue } from '../sheet/io/catalogue.ts';
 import { sheetRuns } from '../sheet/io/journal.ts';
 import { readSnapshot } from '../sheet/io/spreadsheet.ts';
 import { tvdbIdOf } from '../sheet/3-catalogue.ts';
 import { indexArtwork, summarise, type ArtworkKind, type ArtworkSummary, type ArtworkTitle } from './1-index.ts';
-import { filmCandidates, showCandidates, type Candidate } from './2-candidates.ts';
+import { bookCandidates, filmCandidates, showCandidates, type Candidate } from './2-candidates.ts';
 import { decideLink } from './3-decide.ts';
 import { fetchFilmImages } from './io/tmdb-images.ts';
 import { fetchShowPosters } from './io/tvdb-art.ts';
-import { ensureLink, type LinkOutcome } from './io/sheet-link.ts';
+import { fetchBookCovers } from './io/hardcover-covers.ts';
+import { bucketsOf, ensureLink, tabOf, type LinkOutcome } from './io/sheet-link.ts';
 
 /** How long an index is served before being rebuilt; `fresh` bypasses it. */
 const INDEX_TTL = Temporal.Duration.from({ seconds: 60 });
@@ -72,6 +74,29 @@ export interface CandidateListing {
   candidates: Candidate[];
   error: string | null;
 }
+
+/**
+ * Why a row has no candidates to offer. A record rather than a ternary so a
+ * fourth kind fails `tsc` rather than inheriting a message naming the wrong
+ * upstream — books have nothing to do with SIMKL, and a books row reaching
+ * this at all means its `ID` cell is unreadable.
+ */
+/**
+ * Which upstream answers for a kind. A record rather than a chain whose last
+ * branch catches whatever is left: an `else` here spends another upstream's
+ * quota on an id it cannot use, and a fourth kind would reach it in silence.
+ */
+const COVERS_OF: Record<ArtworkKind, (providerId: number, signal?: AbortSignal) => Promise<Candidate[]>> = {
+  movie: async (id, signal) => filmCandidates(await fetchFilmImages(id, { signal })),
+  show: async (id, signal) => showCandidates(await fetchShowPosters(id, { signal })),
+  book: async (id, signal) => bookCandidates(await fetchBookCovers(id, { signal })),
+};
+
+const NO_PROVIDER_ID: Record<ArtworkKind, string> = {
+  movie: 'SIMKL holds no TMDB id for this film',
+  show: 'SIMKL holds no TVDB id for this show',
+  book: 'the books tab holds no Hardcover id for this row',
+};
 
 export type PickError = 'unknown-title' | 'not-offered' | 'formula' | 'needs-adopt' | 'unrecognised' | 'no-id' | 'nothing-to-adopt' | 'frozen';
 
@@ -138,15 +163,30 @@ export class Artwork {
         return null;
       }
     };
-    const buckets = { movie: config.artworkMovieBucket ?? '', show: config.artworkShowBucket ?? '' };
-    const [shows, films, storedShow, storedMovie] = await Promise.all([
+    const buckets = bucketsOf();
+    // Books are gated separately from the two tabs the page cannot run
+    // without, so an install with neither a books tab nor a bucket pays no
+    // read for them and lists none.
+    const wantBooks = booksArtworkConfigured();
+    const booksTab = config.booksSheetName ?? '';
+    const [shows, films, books, storedShow, storedMovie, storedBook] = await Promise.all([
       attempt<Grid>(`the ${config.sheetName} tab`, async () => parseGrid(await readSnapshot(config.sheetName, { signal }))),
       attempt<MovieGrid>(`the ${config.moviesSheetName} tab`, async () => parseMovieGrid(await readSnapshot(config.moviesSheetName, { signal }))),
+      wantBooks ? attempt<BookGrid>(`the ${booksTab} tab`, async () => parseBookGrid(await readSnapshot(booksTab, { signal }))) : null,
       attempt<Map<string, StoredObject>>(`bucket ${buckets.show}`, () => listObjects(buckets.show, { component: 'artwork', signal })),
       attempt<Map<string, StoredObject>>(`bucket ${buckets.movie}`, () => listObjects(buckets.movie, { component: 'artwork', signal })),
+      wantBooks ? attempt<Map<string, StoredObject>>(`bucket ${buckets.book}`, () => listObjects(buckets.book, { component: 'artwork', signal })) : null,
     ]);
     const titles = indexArtwork(
-      { shows, films, library: this.state.library, runs: sheetRuns(), stored: { movie: storedMovie, show: storedShow }, buckets },
+      {
+        shows,
+        films,
+        books,
+        library: this.state.library,
+        runs: sheetRuns(),
+        stored: { movie: storedMovie, show: storedShow, book: storedBook },
+        buckets,
+      },
       { timezone: config.timezone },
     );
     for (const title of titles) {
@@ -169,7 +209,7 @@ export class Artwork {
    * The index as it stands, building one only when there is none: the row a
    * caller names was rendered from some index, and a pick re-reads the sheet
    * under the lock, so staleness here costs nothing and a rebuild would cost
-   * four Google reads on every request past the TTL.
+   * four to six Google reads on every request past the TTL.
    */
   private current({ signal }: { signal?: AbortSignal } = {}): Promise<ArtworkIndex> {
     return this.index ? Promise.resolve(this.index) : this.load({ signal });
@@ -206,9 +246,9 @@ export class Artwork {
         }
       }
       if (providerId === null) {
-        error = kind === 'movie' ? 'SIMKL holds no TMDB id for this film' : 'SIMKL holds no TVDB id for this show';
+        error = NO_PROVIDER_ID[kind];
       } else {
-        candidates = kind === 'movie' ? filmCandidates(await fetchFilmImages(providerId, { signal })) : showCandidates(await fetchShowPosters(providerId, { signal }));
+        candidates = await COVERS_OF[kind](providerId, signal);
       }
     } catch (err) {
       error = errorMessage(err);
@@ -254,8 +294,8 @@ export class Artwork {
     const index = await this.current({ signal });
     const title = this.titleOf(index, kind, id);
     if (!title) throw new PickRefused('unknown-title', `no ${kind} with id ${id} is on the sheet`);
-    if (title.id === null || title.state === 'no-id') throw new PickRefused('no-id', `${title.title} has no usable SIMKL id`);
-    const bucket = kind === 'movie' ? config.artworkMovieBucket : config.artworkShowBucket;
+    if (title.id === null || title.state === 'no-id') throw new PickRefused('no-id', `${title.title} has no usable id on its tab`);
+    const bucket = tabOf(kind).bucket;
     if (!bucket) throw new PickRefused('unrecognised', `no bucket is configured for ${kind}s`);
 
     // Pre-decide off the cached cell. The authoritative decision is

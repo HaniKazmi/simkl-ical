@@ -160,7 +160,8 @@ copy back and which rows to delete. `/healthz` only reports *that* it froze.
 
 `https://…/<FEED_TOKEN>/artwork` is the one page that does work: it lists every title on both
 tabs of the spreadsheet — needs-artwork first, then whatever the sync touched most recently — and
-lets you pick a TMDB backdrop for a film or a TVDB poster for a show. A pick downloads that image
+lets you pick a TMDB backdrop for a film, a TVDB poster for a show, or a Hardcover cover for a
+book. A pick downloads that image
 through the service, uploads it to a Cloud Storage bucket under the title's name, and writes a
 static link into the row's `Artwork` cell. The link is the same shape the show tab's formula cells
 already produce, so a re-pick later touches the bucket and never the sheet again.
@@ -168,7 +169,8 @@ already produce, so a re-pick later touches the bucket and never the sheet again
 Rows whose `Artwork` still links another host are **adoptable**: a pick may replace the image, or
 **Adopt** copies the current one into the bucket as-is. **Adopt all** does that over every such
 row, one at a time, with progress on the page — the migration from a tab of TMDB URLs to a tab of
-bucket links, resumable if it is interrupted.
+bucket links, resumable if it is interrupted. It skips books: every cell on that tab links a cover
+this page exists to replace, so adopting them in bulk would freeze the ones worth changing.
 
 What it will not do: write a formula cell, write a cell that is not blank, a bucket link or a
 recognisable URL, or write at all while a sync run holds the sheet (it answers "busy" and the page
@@ -189,11 +191,37 @@ ARTWORK_MOVIE_BUCKET=hanikazmi_plotdevice_movie
 ARTWORK_SHOW_BUCKET=hanikazmi_plotdevice_show
 ```
 
-Setting both is also what switches a newly inserted film row's `Artwork` from a TMDB URL to the
+### Books
+
+A `Books` tab joins the same page when all three of these are set, and is absent without them —
+the rest of the page serves either way:
+
+```
+BOOKS_SHEET_NAME=Books
+ARTWORK_BOOK_BUCKET=hanikazmi_plotdevice_book
+HARDCOVER_TOKEN=hc_pat_…
+```
+
+The tab's `ID` column holds a [Hardcover](https://hardcover.app) *book* id, and the covers offered
+are the ones its editions carry — a book's default cover is one edition's, and often a small one.
+A cover is offered only if it is shaped like one — height over width between **1.4 and 1.7**, so a
+square audiobook cover and a landscape spread are not shown at all. What survives is ranked English
+first, then closeness to 2:3, then whether it is at least 300px wide, then UK editions, then how
+many readers hold that edition. Resolution is deliberately not a ranking: the larger file is
+usually the same artwork scanned bigger, not a better picture. Each tile says its own ratio
+(`1:1.53`) and whether it is a print, ebook or audio edition. It is a ranked list, not a verdict;
+the reader picks.
+
+The token is a personal access token from your [API settings](https://hardcover.app/account/api).
+Read scopes are enough — the page never reads your library. `HARDCOVER_TOKEN_PATH` takes a path to
+a file holding it instead, for a workstation where it already sits beside other credentials; the
+value wins if both are set.
+
+Setting the two film and show buckets is also what switches a newly inserted film row's `Artwork` from a TMDB URL to the
 static bucket link; the sync writes that column once, so it only does so where this page exists to
 put an object behind the link.
 
-The service account needs `roles/storage.objectAdmin` on both — `objectCreator` cannot overwrite,
+The service account needs `roles/storage.objectAdmin` on every bucket above — `objectCreator` cannot overwrite,
 and a re-pick overwrites. If a bucket uses legacy ACLs rather than uniform bucket-level access,
 set `ARTWORK_PUBLIC_ACL=1` so each upload asks for public read; under uniform access that request
 is a 400 and the bucket's own policy already makes objects public.
@@ -220,7 +248,7 @@ for the library: the watch detail rides along on the fetch the feed already make
 | Variable                         | Default    | Notes                                                          |
 | -------------------------------- | ---------- | -------------------------------------------------------------- |
 | `SHEET_ID`                       | —          | The spreadsheet id, from its URL. Unset ⇒ none of this runs     |
-| `SHEET_NAME`                     | `Shows`    | The show tab. The spreadsheet may hold other tabs (`Games`, `Books`); the sync never reads them |
+| `SHEET_NAME`                     | `Shows`    | The show tab. The sync reads this and `MOVIES_SHEET_NAME` only — never a `Games` tab, and a `Books` tab only through the artwork page |
 | `MOVIES_SHEET_NAME`              | `Movies`   | The films tab                                                    |
 | `GOOGLE_SA_KEY_B64`              | —          | **Secret.** Base64 of the service-account JSON: `base64 -w0 sa.json` |
 | `GOOGLE_APPLICATION_CREDENTIALS` | —          | Path to that JSON instead, for local dev                        |

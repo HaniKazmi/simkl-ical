@@ -16,6 +16,17 @@ export const MH = MOVIE_SHEET_HEADERS;
 /** A serial today, in UTC — the zone every fixture here plans in. */
 export const TODAY = dateSerial(Temporal.Now.plainDateISO('UTC'));
 
+/**
+ * Midday on that same day, for a test that hands the planner its clock.
+ *
+ * Derived from `TODAY` rather than written out beside it, because the two have
+ * to agree and a date typed in drifts the moment the wall clock passes it: the
+ * planner then reads every watch the fixture calls recent as being in its own
+ * future, refuses to plan the row, and the failure surfaces as an insert that
+ * is simply absent — days after the change that is blamed for it.
+ */
+export const NOW = Temporal.Now.plainDateISO('UTC').toZonedDateTime({ timeZone: 'UTC' }).add({ hours: 12 }).toInstant();
+
 export interface NamedFilmRow {
   name: string | null;
   cells: CellSpec[];

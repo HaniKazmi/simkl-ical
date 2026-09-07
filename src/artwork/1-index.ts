@@ -1,6 +1,6 @@
 /**
- * INDEX — both tabs, the library, the run history and the two bucket
- * listings, reduced to one row per title with a state the page can act on.
+ * INDEX — every tab, the library, the run history and every bucket listing,
+ * reduced to one row per title with a state the page can act on.
  * Pure: every input is handed in, and the shell decides how stale each may be.
  *
  * A title's state is read off its `Artwork` cell against its bucket, the way
@@ -17,12 +17,22 @@ import { a1, duplicateIds, findHeaderRow, numberOf, resolveColumns, SHOW_HEADER_
 import { tvdbIdOf } from '../sheet/3-catalogue.ts';
 import { tmdbIdOf } from '../sheet/movies/1-index.ts';
 import { movieCellAt, type MovieGrid } from '../sheet/movies/2-grid.ts';
+import { bookCellAt, type BookGrid } from '../sheet/books/2-grid.ts';
 import type { SheetRunRecord } from '../sheet/io/journal.ts';
 import { ARTWORK_LABEL, artworkKeyFor, serialDate } from '../sheet/values.ts';
 import { instantFrom } from '../shared/dates.ts';
 import { classifyCell, type CellKind } from './3-decide.ts';
 
-export type ArtworkKind = 'movie' | 'show';
+/**
+ * Every kind, and the type derived from it — one enumeration, not a list beside
+ * a union that can drift from it. The route validates against the list; every
+ * `Record<ArtworkKind, …>` in the layer fails `tsc` on a new member. The filter
+ * chips are not among them: they are written out one per kind in `4-html.ts`
+ * and matched by name in the client script, so a fourth kind is an edit there.
+ */
+export const ARTWORK_KINDS = ['movie', 'show', 'book'] as const;
+
+export type ArtworkKind = (typeof ARTWORK_KINDS)[number];
 
 /**
  * What a row needs, if anything.
@@ -81,21 +91,41 @@ export interface ArtworkSummary {
   noId: number;
   shows: number;
   films: number;
+  books: number;
+  /**
+   * Adoptable rows the bulk button will actually act on — every kind but
+   * books. Counted apart from `adoptable` because the button reads this and
+   * the filter chip reads that: a book is adoptable one row at a time, and
+   * a tab whose every cell is adoptable would otherwise make the button claim
+   * four hundred rows it skips.
+   */
+  bulkAdoptable: number;
 }
 
 export interface IndexInput {
   /** The show tab, parsed; null when it could not be read. */
   shows: Grid | null;
   films: MovieGrid | null;
+  /** The books tab; null when it is unconfigured as well as when it could not be read. */
+  books: BookGrid | null;
   library: Library | null;
   runs: readonly SheetRunRecord[];
-  /** Each bucket's listing; null when it could not be listed. */
-  stored: { movie: Map<string, StoredObject> | null; show: Map<string, StoredObject> | null };
-  buckets: { movie: string; show: string };
+  /**
+   * Each bucket's listing, and each bucket's name. Keyed by kind rather than
+   * held in named slots so that a fourth kind fails `tsc` here instead of
+   * taking another kind's bucket from a `??` default — this is the value a
+   * pick uploads under.
+   */
+  stored: Record<ArtworkKind, Map<string, StoredObject> | null>;
+  buckets: Record<ArtworkKind, string>;
 }
 
 export interface IndexOptions {
-  /** For a film with no library stamp, whose `Watch Date` is a calendar day. */
+  /**
+   * For a row with no library stamp, whose date is a calendar day: every film
+   * watched before the library was pulled, and every book, since nothing on
+   * that tab is in SIMKL at all.
+   */
   timezone: string;
 }
 
@@ -213,7 +243,7 @@ const compare = (a: ArtworkTitle, b: ArtworkTitle): number => {
 };
 
 export const indexArtwork = (input: IndexInput, { timezone }: IndexOptions): ArtworkTitle[] => {
-  const { shows, films, library, runs, stored, buckets } = input;
+  const { shows, films, books, library, runs, stored, buckets } = input;
   const out: ArtworkTitle[] = [];
 
   if (shows) {
@@ -281,6 +311,47 @@ export const indexArtwork = (input: IndexInput, { timezone }: IndexOptions): Art
     }
   }
 
+  if (books) {
+    for (const row of books.rows) {
+      if (row.name === null) continue;
+      const id = row.id !== null && !books.duplicates.has(row.id) ? row.id : null;
+      // No library stamp is possible: nothing on this tab is in SIMKL. The
+      // tab's own dates are the whole supply — the day it was finished, and
+      // the day it was started for one still being read.
+      const read =
+        serialDate(numberOf(bookCellAt(books, row.row, books.columns['End Date']))) ??
+        serialDate(numberOf(bookCellAt(books, row.row, books.columns['Start Date'])));
+      out.push(
+        entry(
+          {
+            kind: 'book',
+            id,
+            // A book's id and its provider id are one number: the `ID` column
+            // holds a Hardcover book id and Hardcover is the upstream. There
+            // is no SIMKL record and so nothing to resolve on demand.
+            providerId: id,
+            title: row.name,
+            row: row.row,
+            address: a1(row.row, books.columns.Banner),
+            lastWatchedAt: read?.toZonedDateTime({ timeZone: timezone }).toInstant() ?? null,
+            // The author, where a show gives its status and a film gives
+            // nothing — it is what a reader looks for beside a book's title,
+            // and two books share a title far more readily than two films do.
+            context: cellText(bookCellAt(books, row.row, books.columns.Author)),
+            franchise: cellText(bookCellAt(books, row.row, books.columns.Franchise)),
+            releasedOn: serialDate(numberOf(bookCellAt(books, row.row, books.columns['Release Date']))),
+          },
+          bookCellAt(books, row.row, books.columns.Banner),
+          buckets.book,
+          stored.book,
+          // Permanently null: no sync inserts into this tab, so the journal
+          // can never carry a books insert to find.
+          null,
+        ),
+      );
+    }
+  }
+
   return out.sort(compare);
 };
 
@@ -301,5 +372,7 @@ export const summarise = (
     noId: titles.filter((t) => t.state === 'no-id').length,
     shows: titles.filter((t) => t.kind === 'show').length,
     films: titles.filter((t) => t.kind === 'movie').length,
+    books: titles.filter((t) => t.kind === 'book').length,
+    bulkAdoptable: titles.filter((t) => t.state === 'adopt' && t.kind !== 'book').length,
   };
 };

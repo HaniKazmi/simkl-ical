@@ -3,10 +3,11 @@
  * model, and the model into the page. `server.ts` is its only caller.
  */
 
-import { config } from '../shared/config.ts';
+import { booksArtworkConfigured, config } from '../shared/config.ts';
 import type { Artwork } from './artwork.ts';
 import { RECENT_WINDOW } from './1-index.ts';
 import { artworkModel, renderArtworkPage } from './4-html.ts';
+import { bucketsOf } from './io/sheet-link.ts';
 
 export const renderArtwork = async (artwork: Artwork, { fresh = false, now = Temporal.Now.instant() }: { fresh?: boolean; now?: Temporal.Instant } = {}): Promise<string> => {
   const index = await artwork.load({ fresh });
@@ -18,7 +19,8 @@ export const renderArtwork = async (artwork: Artwork, { fresh = false, now = Tem
       appName: config.appName,
       version: config.appVersion,
       mode: config.sheetSyncMode,
-      buckets: { movie: config.artworkMovieBucket ?? '', show: config.artworkShowBucket ?? '' },
+      buckets: bucketsOf(),
+      books: booksArtworkConfigured(),
     }),
   );
 };

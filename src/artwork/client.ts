@@ -14,6 +14,8 @@
 
 export const CLIENT_SCRIPT = String.raw`'use strict';
 (() => {
+  /** Films, then shows, then books, within one franchise. */
+  const KIND_RANK = { movie: 0, show: 1, book: 2 };
   const NEEDS = new Set(['missing-object', 'unlinked', 'adopt']);
   const rows = Array.from(document.querySelectorAll('.row'));
   const chips = Array.from(document.querySelectorAll('[data-filter]'));
@@ -47,6 +49,7 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
       (name === 'recent' && row.dataset.recent === '1') ||
       (name === 'show' && kind === 'show') ||
       (name === 'movie' && kind === 'movie') ||
+      (name === 'book' && kind === 'book') ||
       (name === 'adopt' && state === 'adopt') ||
       (name === 'no-id' && state === 'no-id')
     );
@@ -79,7 +82,7 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
   const franchiseOf = (row) => row.dataset.franchise || row.dataset.title;
   const byFranchise = (a, b) =>
     franchiseOf(a).localeCompare(franchiseOf(b), undefined, { sensitivity: 'base' }) ||
-    (a.dataset.kind === 'movie' ? 0 : 1) - (b.dataset.kind === 'movie' ? 0 : 1) ||
+    KIND_RANK[a.dataset.kind] - KIND_RANK[b.dataset.kind] ||
     (a.dataset.released || '9999').localeCompare(b.dataset.released || '9999') ||
     a.dataset.title.localeCompare(b.dataset.title, undefined, { sensitivity: 'base' });
   const reorder = (mode) => {
@@ -151,7 +154,7 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
   const setThumb = (row, url) => {
     if (!loadable(url)) return;
     const old = row.querySelector('.th, .ph');
-    const img = el('img', 'th' + (row.dataset.kind === 'show' ? ' portrait' : ''));
+    const img = el('img', 'th' + (row.dataset.kind === 'movie' ? '' : ' portrait'));
     img.alt = '';
     img.loading = 'lazy';
     img.src = url + (url.includes('?') ? '&' : '?') + 't=' + Date.now();
@@ -227,7 +230,13 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
       if (event.target === dialog) dialog.close();
     });
   }
-  const describe = (cand) => cand.width + '×' + cand.height + (cand.votes !== null ? ' · ' + cand.votes + ' votes' : ' · score ' + cand.score) + ' · ' + cand.source;
+  // One reading of an upstream's own figure, for the tile caption and the
+  // dialog both: Hardcover counts the readers holding an edition, which is not
+  // a vote on its cover, and TVDB publishes a score and no count at all. Two
+  // copies of this is how the dialog came to call a book's readers votes.
+  const tally = (cand, kind) => (kind === 'book' ? cand.votes + ' readers' : cand.votes !== null ? cand.votes + ' votes' : 'score ' + cand.score);
+
+  const describe = (cand, kind) => cand.width + '×' + cand.height + ' · ' + tally(cand, kind) + ' · ' + cand.source;
 
   // The row's current image enlarges the same way; the URL is the cell's.
   for (const row of rows) {
@@ -240,15 +249,22 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
     panel.replaceChildren();
     const label = el('div', 'lbl');
     const kind = row.dataset.kind;
-    const what = kind === 'movie' ? ' backdrops from TMDb' : ' posters from TVDB';
+    const what = kind === 'movie' ? ' backdrops from TMDb' : kind === 'show' ? ' posters from TVDB' : ' covers from Hardcover';
     label.appendChild(el('span', '', listing.candidates.length + what));
-    label.appendChild(el('span', 'dim', (kind === 'movie' ? '16:9 only · English first, ranked by votes' : 'English first, 680×1000 next, then by score') + ' · click a tile to enlarge and use it'));
+    const ranked = kind === 'movie' ? '16:9 only · English first, ranked by votes' : kind === 'show' ? 'English first, 680×1000 next, then by score' : 'English first, then 2:3, then 300px wide, then UK, then readers';
+    label.appendChild(el('span', 'dim', ranked + ' · click a tile to enlarge and use it'));
     if (listing.error) label.appendChild(el('span', 'err', listing.error));
     panel.appendChild(label);
     const strip = el('div', 'strip');
     const progress = el('div', 'prog');
     listing.candidates.forEach((cand, i) => {
-      const item = el('div', 'cand ' + (kind === 'movie' ? 'land' : 'port') + (i === 0 ? ' pick' : ''));
+      // A book tile is its own class rather than 'port' because it renders
+      // 'contain' where the other two crop. Nothing authors a book cover to a
+      // standard, so a square audiobook cover reaches the strip; cropped to
+      // 2:3 it would look like the poster it is not, hiding the very defect
+      // its low rank is telling the reader about.
+      const shape = kind === 'movie' ? 'land' : kind === 'book' ? 'book' : 'port';
+      const item = el('div', 'cand ' + shape + (i === 0 ? ' pick' : ''));
       const button = el('button');
       button.type = 'button';
       const img = el('img');
@@ -256,19 +272,32 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
       img.loading = 'lazy';
       if (loadable(cand.thumb)) img.src = cand.thumb;
       button.appendChild(img);
-      button.appendChild(el('span', 'badge', i === 0 ? 'top' : cand.language === null ? 'textless' : cand.language));
+      // A null language means textless on a film backdrop and merely unknown
+      // on a book cover, so a book badges its country — the fact its rank
+      // turned on — and falls back to the language.
+      const mark = kind === 'book' ? cand.country || cand.language || '?' : cand.language === null ? 'textless' : cand.language;
+      button.appendChild(el('span', 'badge', i === 0 ? 'top' : mark));
       const cap = el('div', 'cap');
       cap.appendChild(el('span', '', cand.width + '×' + cand.height));
-      cap.appendChild(el('span', '', cand.votes !== null ? cand.votes + ' votes' : 'score ' + cand.score));
+      cap.appendChild(el('span', '', tally(cand, kind)));
       item.appendChild(button);
       item.appendChild(cap);
+      if (kind === 'book') {
+        // Height over width, so a cover reads as 1.50 against the 1.5 of 2:3 —
+        // the shape tier's own question, in the form a reader can compare at a
+        // glance. The dimensions above say how big; this says what shape.
+        const shapeOf = el('div', 'cap');
+        shapeOf.appendChild(el('span', '', cand.format || 'edition'));
+        shapeOf.appendChild(el('span', '', '1:' + (cand.height / cand.width).toFixed(2)));
+        item.appendChild(shapeOf);
+      }
       const use = async () => {
         for (const other of strip.querySelectorAll('.cand')) other.classList.remove('pick');
         item.classList.add('pick');
         progress.textContent = 'uploading…';
         progress.textContent = await pick(row, { kind, id: Number(row.dataset.id), url: cand.url }, progress);
       };
-      button.addEventListener('click', () => openDialog(cand.url, row.dataset.title + ' · ' + describe(cand), use));
+      button.addEventListener('click', () => openDialog(cand.url, row.dataset.title + ' · ' + describe(cand, kind), use));
       strip.appendChild(item);
     });
     panel.appendChild(strip);
@@ -315,7 +344,11 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
   const adoptAll = document.querySelector('[data-adopt-all]');
   const adoptProgress = document.querySelector('[data-adopt-progress]');
   if (adoptAll) adoptAll.addEventListener('click', async () => {
-    const targets = rows.filter((row) => row.dataset.state === 'adopt' && row.dataset.id);
+    // Books are excluded, and the tile's count is computed the same way
+    // server-side. Adopting copies the cover the cell already links, and every
+    // cell on that tab links one this page exists to replace — in bulk that
+    // freezes four hundred of them in the bucket.
+    const targets = rows.filter((row) => row.dataset.state === 'adopt' && row.dataset.id && row.dataset.kind !== 'book');
     if (!targets.length) return;
     if (!window.confirm('Copy the image behind ' + targets.length + ' rows into the bucket and rewrite each cell to the static link?')) return;
     adoptAll.disabled = true;

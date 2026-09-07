@@ -7,9 +7,8 @@ import { movieKey, type Baseline } from '../../../src/sheet/values.ts';
 import { isoOf } from '../../../src/shared/dates.ts';
 import type { FilmFacts } from '../../../src/sheet/movies/3-catalogue.ts';
 import { cellOf, libraryOf, rowByLabel, type ItemSpec } from '../../helpers.ts';
-import { film, filmGrid, MH, rawFilm, TODAY } from './fixture.ts';
+import { film, filmGrid, MH, NOW, rawFilm, TODAY } from './fixture.ts';
 
-const NOW = Temporal.Instant.from('2026-09-04T12:00:00Z');
 const OPTS = { now: NOW, timezone: 'UTC' as const };
 
 /**

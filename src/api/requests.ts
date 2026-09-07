@@ -38,7 +38,7 @@ const MAX_ERROR_CHARS = 300;
  * candidate lives on — two hosts, one label, because what the page needs to
  * know is that a download failed, and the path says where.
  */
-export type RequestService = 'simkl' | 'cdn' | 'sheets' | 'tvdb' | 'tmdb' | 'storage' | 'images';
+export type RequestService = 'simkl' | 'cdn' | 'sheets' | 'tvdb' | 'tmdb' | 'hardcover' | 'storage' | 'images';
 
 /**
  * Which part of the service asked — not the same question as which upstream
@@ -55,7 +55,7 @@ export type RequestService = 'simkl' | 'cdn' | 'sheets' | 'tvdb' | 'tmdb' | 'sto
  * about a film, but `films` is the feed asking SIMKL for a release date and
  * this is the sheet asking TMDB for a row's worth of columns, and only one of
  * them failing stops the films tab. `artwork` is the page: every candidate
- * listing, download, upload and link write it makes, against three upstreams,
+ * listing, download, upload and link write it makes, against four upstreams,
  * and none of them on the poll's behalf.
  *
  * A property of the calling module, so every `io/` module names itself once.
@@ -122,13 +122,21 @@ export const describeUrl = (url: string | URL): string => {
  * The attempt bookkeeping genuinely differs, so it stays with each transport.
  */
 export const beginRequest = (
-  init: { service: RequestService; component: RequestComponent; method: string; url: string | URL },
+  init: { service: RequestService; component: RequestComponent; method: string; url: string | URL; logPath?: string },
 ): ((outcome: { status: number | null; bytes: number | null; error: string | null; attempts?: number }) => void) => {
   // Monotonic: this is a span, not a moment. On wall time an NTP correction or
   // VM resume between the readings renders a negative latency. `at` below is a
   // moment and stays on the wall clock — it is matched against log lines.
   const started = performance.now();
-  const path = describeUrl(init.url);
+  // The URL answers this for every upstream but one, and answers it better:
+  // `describeUrl` keeps the parameters that tell one row from another —
+  // `?season=3`, `?date_from=`, `?ranges=`. A GraphQL query is in the POST
+  // body instead, so every such call is `/v1/graphql` and the list would be an
+  // unbroken column of one path; that caller labels itself. Deliberately not
+  // the `path` an `HttpSpec` caller already passes for its failure messages:
+  // that one is bare by design, and reading it here would drop every
+  // distinguishing parameter from every REST row in the log.
+  const path = init.logPath ?? describeUrl(init.url);
   return ({ status, bytes, error, attempts = 1 }) =>
     recordRequest({
       at: nowIso(),

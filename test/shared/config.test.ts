@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
-import { buildConfig, config, requireClientId, requireTemporal, requireValidTimezone, sheetSyncConfigured, tvdbConfigured } from '../../src/shared/config.ts';
+import { artworkConfigured, booksArtworkConfigured, buildConfig, config, requireClientId, requireTemporal, requireValidTimezone, sheetSyncConfigured, tvdbConfigured } from '../../src/shared/config.ts';
 import { withTimeout } from '../../src/shared/signals.ts';
 import { withConfig } from '../helpers.ts';
 import { spawnSync } from 'node:child_process';
@@ -207,4 +207,40 @@ test('a millisecond env var becomes exactly that span', () => {
   const c = buildConfig({ ACTIVITIES_POLL_MS: '900000', RETRY_BASE_MS: '250' });
   assert.equal(c.activitiesPoll.total('milliseconds'), 900_000);
   assert.equal(c.retryBase.total('milliseconds'), 250);
+});
+
+test('books are gated apart, on three settings none of which is defaulted', () => {
+  const env = { SHEET_ID: 'SID', GOOGLE_SA_KEY_B64: 'x', BOOKS_SHEET_NAME: 'Books', ARTWORK_BOOK_BUCKET: 'books', HARDCOVER_TOKEN_PATH: '/t/token' };
+  assert.equal(booksArtworkConfigured(buildConfig(env)), true);
+  // Either credential route satisfies the gate, and a deployment uses the
+  // value one — the token is a single opaque line, so it needs no file
+  // mounted into a container to get there.
+  const byValue = { ...env, HARDCOVER_TOKEN_PATH: undefined, HARDCOVER_TOKEN: 'hc_pat_x' };
+  assert.equal(booksArtworkConfigured(buildConfig(byValue)), true);
+  assert.equal(booksArtworkConfigured(buildConfig({ ...byValue, HARDCOVER_TOKEN: undefined })), false, 'neither route');
+  // Each on its own. None may be defaulted, or its conjunct would answer
+  // "a tab was named" on every machine — the trap `googleCredentialsExplicit`
+  // exists to work around.
+  for (const key of ['BOOKS_SHEET_NAME', 'ARTWORK_BOOK_BUCKET', 'HARDCOVER_TOKEN_PATH'] as const) {
+    assert.equal(booksArtworkConfigured(buildConfig({ ...env, [key]: undefined })), false, key);
+  }
+  // The sheet sync is still the floor: there is no books-only page.
+  assert.equal(booksArtworkConfigured(buildConfig({ ...env, SHEET_ID: undefined })), false);
+});
+
+test('the token path expands ~ and stays undefined rather than defaulting', () => {
+  assert.equal(buildConfig({}).hardcoverTokenPath, undefined);
+  assert.equal(buildConfig({ HARDCOVER_TOKEN_PATH: '~/.config/books-tracker/hardcover.token' }).hardcoverTokenPath, resolve(homedir(), '.config/books-tracker/hardcover.token'));
+});
+
+test('books neither gate the rest of the page nor are gated by it', () => {
+  // The whole reason for a second predicate. An install with the two tabs the
+  // page cannot run without still serves when books are absent; one with books
+  // configured and no TVDB key lists no books rather than nothing at all.
+  const both = { SHEET_ID: 'SID', GOOGLE_SA_KEY_B64: 'x', TMDB_API_KEY: 'm', TVDB_API_KEY: 'v', ARTWORK_MOVIE_BUCKET: 'm', ARTWORK_SHOW_BUCKET: 's' };
+  assert.equal(artworkConfigured(buildConfig(both)), true);
+  assert.equal(booksArtworkConfigured(buildConfig(both)), false);
+  const booksOnly = { SHEET_ID: 'SID', GOOGLE_SA_KEY_B64: 'x', BOOKS_SHEET_NAME: 'Books', ARTWORK_BOOK_BUCKET: 'books', HARDCOVER_TOKEN_PATH: '/t' };
+  assert.equal(booksArtworkConfigured(buildConfig(booksOnly)), true);
+  assert.equal(artworkConfigured(buildConfig(booksOnly)), false);
 });

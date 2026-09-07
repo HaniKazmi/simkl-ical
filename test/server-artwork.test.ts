@@ -9,12 +9,17 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ARTWORK_CSP, buildServer } from '../src/server.ts';
 import { Artwork } from '../src/artwork/artwork.ts';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { Orchestrator } from '../src/orchestrator.ts';
+import { clearHardcoverToken } from '../src/api/hardcover/client.ts';
 import { clearTokenCache } from '../src/api/google/auth.ts';
 import { clearTokenCache as clearTvdbTokenCache } from '../src/api/tvdb/auth.ts';
+import { sheetRuns } from '../src/sheet/io/journal.ts';
 import { withSheetLock } from '../src/sheet/io/lock.ts';
 import { SheetSync } from '../src/sheet/sync.ts';
-import { col, filmRow, jsonResponse, libraryOf, MOVIE_SHEET_HEADERS, quiet, SHEET_HEADERS, showRow, withConfig, withFetch, withFreshJournal, type CellSpec } from './helpers.ts';
+import { BOOK_SHEET_HEADERS, bookRow, col, filmRow, jsonResponse, libraryOf, MOVIE_SHEET_HEADERS, quiet, SHEET_HEADERS, showRow, withConfig, withFetch, withFreshJournal, type CellSpec } from './helpers.ts';
 import { CREDENTIAL, fakeSheets, type FakeSheetsOptions } from './sheet/fake-sheets.ts';
 import { fakeBucket, JPEG, type FakeBucketOptions } from './artwork/fake-bucket.ts';
 
@@ -36,6 +41,26 @@ const SHOWS: CellSpec[][] = [
   showRow('Unmapped', 'Watching', 3382),
 ];
 
+const HARDCOVER_TOKEN = (() => {
+  const path = join(mkdtempSync(join(tmpdir(), 'hardcover-')), 'token');
+  writeFileSync(path, 'hc_pat_test\n');
+  return path;
+})();
+const COVER = 'https://assets.hardcover.app/edition/4675245/big.jpg';
+const CELL_COVER = 'https://wsrv.nl/?url=https://assets.hardcover.app/edition/29258002/small.jpg';
+const BOOKS: CellSpec[][] = [BOOK_SHEET_HEADERS, bookRow({ name: '1984', author: 'George Orwell', id: 379760, banner: CELL_COVER })];
+
+const hardcover = (): Response =>
+  jsonResponse({
+    data: {
+      byUsers: [
+        { users_count: 266, language: { code2: 'en' }, country: { code2: 'us' }, image: { url: CELL_COVER.replace('https://wsrv.nl/?url=', ''), width: 291, height: 475 } },
+        { users_count: 3, language: { code2: 'en' }, country: { code2: 'gb' }, image: { url: COVER, width: 1600, height: 2400 } },
+      ],
+      byWidth: [],
+    },
+  });
+
 const tmdb = (url: string): Response =>
   url.includes('/movie/12/images')
     ? jsonResponse({ backdrops: [{ file_path: '/nemo.jpg', iso_639_1: 'en', width: 1920, height: 1080, vote_average: 7, vote_count: 9 }] })
@@ -47,6 +72,8 @@ const tvdb = (url: string): Response =>
 
 interface Case {
   configured?: boolean;
+  /** Books are gated apart from the two tabs the page cannot run without. */
+  withBooks?: boolean;
   mode?: 'report' | 'apply';
   sheets?: FakeSheetsOptions;
   bucket?: FakeBucketOptions;
@@ -54,13 +81,14 @@ interface Case {
 
 const serve = async (
   fn: (app: ReturnType<typeof buildServer>, doubles: { sheet: ReturnType<typeof fakeSheets>; bucket: ReturnType<typeof fakeBucket>; calls: string[]; sync: SheetSync }) => Promise<void>,
-  { configured = true, mode = 'apply', sheets = {}, bucket = {} }: Case = {},
+  { configured = true, withBooks = true, mode = 'apply', sheets = {}, bucket = {} }: Case = {},
 ): Promise<void> => {
   clearTokenCache();
   clearTvdbTokenCache();
+  clearHardcoverToken();
   // The SIMKL detail a show without a library TVDB id is asked for on demand.
-  const sheet = fakeSheets({ movies: MOVIES, grid: SHOWS, tmdb, tvdb, detail: { ids: { tvdb: '371980' } }, ...sheets });
-  const store = fakeBucket({ buckets: { movies: {}, shows: {} }, images: { [BACKDROP]: { bytes: JPEG, contentType: 'image/jpeg' }, [POSTER]: { bytes: JPEG, contentType: 'image/jpeg' } }, next: sheet.handler, ...bucket });
+  const sheet = fakeSheets({ movies: MOVIES, grid: SHOWS, books: BOOKS, tmdb, tvdb, hardcover, detail: { ids: { tvdb: '371980' } }, ...sheets });
+  const store = fakeBucket({ buckets: { movies: {}, shows: {}, books: {} }, images: { [BACKDROP]: { bytes: JPEG, contentType: 'image/jpeg' }, [POSTER]: { bytes: JPEG, contentType: 'image/jpeg' }, [COVER]: { bytes: JPEG, contentType: 'image/jpeg' } }, next: sheet.handler, ...bucket });
   await withFreshJournal(() =>
     withConfig(
       {
@@ -72,6 +100,9 @@ const serve = async (
         tvdbApiKey: configured ? 'tvdb-key' : undefined,
         artworkMovieBucket: configured ? 'movies' : undefined,
         artworkShowBucket: configured ? 'shows' : undefined,
+        booksSheetName: configured && withBooks ? 'Books' : undefined,
+        artworkBookBucket: configured && withBooks ? 'books' : undefined,
+        hardcoverTokenPath: configured && withBooks ? HARDCOVER_TOKEN : undefined,
       },
       () =>
         withFetch(store.handler, async (calls) => {
@@ -168,7 +199,7 @@ test('candidates come back for a film and a show, and a bad query is a 400', asy
     const show = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=show&id=3381` });
     assert.equal(show.statusCode, 200);
     assert.deepEqual(show.json().candidates.map((c: { url: string }) => c.url), [POSTER]);
-    for (const query of ['kind=book&id=1', 'kind=movie&id=x', 'kind=movie', '']) {
+    for (const query of ['kind=comic&id=1', 'kind=movie&id=x', 'kind=movie', '']) {
       assert.equal((await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?${query}` })).statusCode, 400, query);
     }
     assert.equal((await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=movie&id=999` })).statusCode, 404);
@@ -321,5 +352,85 @@ test('candidates and picks use the index that stands rather than rebuilding it',
     await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=movie&id=53080` });
     await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=movie&id=53080` });
     assert.equal(reads(), after, 'no tab read and no bucket listing for a candidate request');
+  });
+});
+
+// --- Books ---------------------------------------------------------------
+
+test('a book lists, offers Hardcover covers ranked, and a pick lands in the books bucket', async () => {
+  await serve(async (app, { bucket, sheet }) => {
+    const page = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork` });
+    assert.equal(page.statusCode, 200);
+    // Every live cell links another host, so a book opens adoptable.
+    assert.match(page.body, /data-kind="book"[^>]*data-id="379760"[^>]*data-state="adopt"/);
+
+    const listing = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=book&id=379760` });
+    assert.equal(listing.statusCode, 200);
+    // The 1600×2400 UK edition leads the 291×475 US one the cell holds: same
+    // shape band, and country outranks nothing here because width already
+    // separates them — this is the ordering the reader asked for.
+    assert.deepEqual(listing.json().candidates.map((c: { url: string }) => c.url), [COVER, CELL_COVER.replace('https://wsrv.nl/?url=', '')]);
+
+    const picked = await app.inject({
+      method: 'POST',
+      url: `/${TOKEN}/artwork/pick`,
+      payload: { kind: 'book', id: 379760, url: COVER, adopt: true },
+    });
+    assert.equal(picked.statusCode, 200);
+    assert.equal(picked.json().uploaded.bucket, 'books');
+    assert.equal(picked.json().uploaded.key, '1984');
+    assert.deepEqual([...bucket.objects('books').keys()], ['1984']);
+    // The cell now links the bucket, under the title's own name.
+    const cell = sheet.tab('Books')[1]?.[col(BOOK_SHEET_HEADERS, 'Artwork')];
+    assert.equal(cell?.userEnteredValue?.stringValue, 'https://storage.googleapis.com/books/1984');
+  });
+});
+
+test('a books run is labelled in the journal so it cannot collapse into a films one', async () => {
+  await serve(async (app) => {
+    // The row has to be opened first: a pick is only ever of a URL this page
+    // offered, which is checked against the cached listing.
+    await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=book&id=379760` });
+    const res = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: { kind: 'book', id: 379760, url: COVER, adopt: true } });
+    assert.equal(res.statusCode, 200, res.body);
+    const record = sheetRuns().at(-1);
+    assert.equal(record?.tab, 'books');
+    assert.equal(record?.source, 'artwork');
+    assert.equal(record?.status, 'applied');
+  });
+});
+
+test('without a books tab the page still serves, and simply lists no books', async () => {
+  // The whole point of gating books apart from the two tabs the page cannot
+  // run without: an install with neither reads nothing for them and is not
+  // made inert by their absence.
+  await serve(
+    async (app, { calls }) => {
+      const page = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork` });
+      assert.equal(page.statusCode, 200);
+      assert.doesNotMatch(page.body, /data-kind="book"/);
+      // Not just the rows: the chip, the count and the copy are books
+      // artifacts too, and an unconfigured bucket rendered as an empty
+      // `<span class="mono"></span>` in the middle of a sentence.
+      assert.doesNotMatch(page.body, /data-filter="book"/);
+      assert.doesNotMatch(page.body, /books<\/span>|Adopt all skips books/);
+      assert.doesNotMatch(page.body, /<span class="mono"><\/span>/);
+      assert.equal(calls.some((c) => c.includes('Books')), false);
+      // And the route refuses a book it never listed, rather than 500ing.
+      const listing = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=book&id=379760` });
+      assert.equal(listing.statusCode, 404);
+    },
+    { withBooks: false },
+  );
+});
+
+test('the bulk adopt skips books, in the tile and in the script', async () => {
+  await serve(async (app) => {
+    const page = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork` });
+    // Two rows are adoptable — Star Wars and 1984 — but only the film is one
+    // the button acts on, so the tile must not claim both.
+    assert.match(page.body, /<span class="t-name">adoptable<\/span><span class="t-head" style="display:block">1</);
+    const script = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/app.js` });
+    assert.match(script.body, /dataset\.kind !== 'book'/);
   });
 });
