@@ -4,7 +4,7 @@ import { assertPlanSafe } from '../../src/sheet/5-guard.ts';
 import { parseGrid } from '../../src/sheet/2-grid.ts';
 import { deriveStatus, MAX_LOOKUPS_PER_PASS, observeWatches, planRecord, planSync, statusSource, type PlanOptions, type SheetPlan } from '../../src/sheet/4-plan.ts';
 import { artworkFormula, ROLLUP_FIELDS, showRowFormulas } from '../../src/sheet/values.ts';
-import { blockLibrary, gridFixture, season as namedSeason, show as namedShow } from './fixture.ts';
+import { BLOCK_SHOW, blockLibrary, gridFixture, season as namedSeason, show as namedShow } from './fixture.ts';
 import { seasonShapes, type TitleCatalogue } from '../../src/sheet/3-catalogue.ts';
 import { indexLibrary } from '../../src/sheet/1-index.ts';
 import { dateSerial, seasonKey, type Baseline } from '../../src/sheet/values.ts';
@@ -2079,6 +2079,27 @@ test('a season row for an existing block takes the slot ahead of a new block', (
   assert.equal(plan.insert?.kind, 'season');
   assert.equal(plan.deferredInserts, 1);
   assert.match(plan.notes.join('\n'), /Severance \(simkl \d+\): a block waits for the next run/);
+});
+
+// The lookups a deferred block needs are the next run's: fetched now, every
+// pass to the ceiling would spend another round on rows this run cannot add.
+// The gate is the planner's, not the sync's — the block's runtime demand lands
+// in the same list as a closing row's, which the sync cannot hold back.
+test('a block behind a taken slot demands nothing, not even its season runtime', () => {
+  const tab = gridFixture(
+    namedShow('fargo', 'Fargo', { id: 1, status: 'Watching' }),
+    namedSeason('fargoS1', 1, 6, 44000),
+  );
+  const { index, titles } = blockLibrary({ genres: undefined, certificate: undefined, seasonRuntimes: new Map() });
+  index.set(1, indexLibrary(libraryOf({ id: 1, title: 'Fargo', status: 'watching', seasons: { 1: watched(6, 400), 2: watched(3) }, watched: 9, total: 9 })).get(1)!);
+  titles.set(1, { shapes: seasonShapes([...eps(1, 6), ...eps(2, 3)]), status: 'ended', runtime: 45, tvdbId: 5, tmdbId: 6, seasonRuntimes: new Map([[2, 45]]) });
+
+  const { plan, demands } = planSync(tab.grid, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } });
+  assert.equal(plan.insert?.kind, 'season');
+  assert.equal(plan.deferredInserts, 1);
+  assert.deepEqual(demands.genres, []);
+  assert.deepEqual(demands.certificates, []);
+  assert.equal(demands.runtimes.some((request) => request.id === BLOCK_SHOW.id), false, 'the season runtime waits with the block');
 });
 
 // Oldest first, so the sheet gains blocks in the order the shows were started

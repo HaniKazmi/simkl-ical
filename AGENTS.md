@@ -310,6 +310,10 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   that was never added. A credential the upstream rejects is held by name in `factsRejected` for
   the life of the process, because both keys are read at start-up — asking again every poll settles
   nothing, and settling the waiting shows would file them as ones the upstream has nothing for.
+  The block's first season row is the earliest season watched **inside the activity window**, the
+  same window a season insert obeys: a show whose earlier seasons were watched before the window
+  gets a block starting at the recent one, and those earlier rows are added by hand — a season
+  finished in 2024 beside one begun in September 2026 gives a block of the second alone.
 - **The six block columns are optional** — `BLOCK_HEADERS` (`Franchise`, `Genre`, `Genres`,
   `Network`, `Certificate`, `Banner`), resolved by `resolveOptionalColumns` rather than joining the
   ten required `HEADERS`. The artwork page parses a Shows tab carrying no `Franchise` column at

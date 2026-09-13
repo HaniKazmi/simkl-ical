@@ -288,7 +288,9 @@ new cour of one you already have. The new block goes where the `Franchise` colum
 genre comes from TVDB, its network from SIMKL and its certificate from TMDB — each from whichever
 of the three lists that column the way your tab does. If any of that has not answered yet, the
 block waits for the next poll rather than arriving with blank cells, because nothing revisits a
-show row once it exists.
+show row once it exists. Its first season row is the earliest season watched inside the activity
+window, so a show whose earlier seasons predate the window gets a block starting at the recent
+one, and you add the earlier rows by hand.
 
 The start and end dates are the two that **keep following SIMKL** after the row is finished: if a
 date changes upstream — you correct a watch date, or rewatch the last episode — the cell is
