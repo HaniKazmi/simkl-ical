@@ -1799,6 +1799,9 @@ const blocks = (catalogue: Partial<TitleCatalogue> = {}, options: PlanOptions = 
 
 const blockGrid = gridFixture(namedShow('fargo', 'Fargo'), namedSeason('fargoS1', 1, 6, 44000), namedSeason('fargoS2', 2, 3, null));
 
+/** `blockLibrary`'s answered catalogue entry under another id and title — every fact a block needs. */
+const blockFacts = (id: number, title: string): [number, TitleCatalogue] => [id, blockLibrary({ title }).titles.get(900)!];
+
 const valueOf = (insert: Insert | null, row: number, field: string) =>
   insert?.fill.find((f) => f.row === row && f.field === field)?.value;
 
@@ -2111,16 +2114,29 @@ test('two blocks ready at once are ordered by their first watch, and the second 
       { id: 901, title: 'Utopia', status: 'watching', seasons: { 1: [daysAgo(30), daysAgo(3)] }, watched: 2, total: 9 },
     ),
   );
-  const facts = (id: number, title: string): [number, TitleCatalogue] => [
-    id,
-    { ...blockLibrary({ title }).titles.get(900)!, title },
-  ];
-  const titles = new Map<number, TitleCatalogue>([facts(900, 'Severance'), facts(901, 'Utopia')]);
+  const titles = new Map<number, TitleCatalogue>([blockFacts(900, 'Severance'), blockFacts(901, 'Utopia')]);
 
   const { plan } = planSync(blockGrid.grid, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } });
   assert.equal(plan.insert?.title, 'Utopia', 'started three weeks earlier');
   assert.equal(plan.deferredInserts, 1);
   assert.match(plan.notes.join('\n'), /Severance \(simkl \d+\): a block waits for the next run/);
+});
+
+// One row lands per run, so the comparator decides which title that is. Two
+// started the same evening would otherwise be ordered by whatever the library
+// map gave, and the pair would swap between polls — each poll adding whichever
+// the sort happened to put first.
+test('two blocks first watched the same day are ordered by id, whatever order the library gives', () => {
+  const item = (id: number, title: string) => ({ id, title, status: 'watching', seasons: { 1: [daysAgo(9), daysAgo(2)] }, watched: 2, total: 9 });
+  const titles = new Map<number, TitleCatalogue>([blockFacts(900, 'Severance'), blockFacts(901, 'Utopia')]);
+
+  for (const order of [
+    [item(900, 'Severance'), item(901, 'Utopia')],
+    [item(901, 'Utopia'), item(900, 'Severance')],
+  ]) {
+    const { plan } = planSync(blockGrid.grid, indexLibrary(libraryOf(...order)), titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } });
+    assert.equal(plan.insert?.title, 'Severance', 'the lower id');
+  }
 });
 
 // `hold` and `plantowatch` are no information, never a reason to write — so
@@ -2143,7 +2159,23 @@ test('the lookups a pass asks for are capped per upstream', () => {
   const { demands } = planSync(blockGrid.grid, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } });
   assert.equal(demands.genres.length, MAX_LOOKUPS_PER_PASS);
   assert.equal(demands.certificates.length, MAX_LOOKUPS_PER_PASS);
-  assert.equal(demands.catalogue.length, 12, 'the catalogue is the sync’s to gate on its own stamp');
+  assert.equal(demands.catalogue.length, 12, 'a title whose detail is already in hand does not count against the cap');
+});
+
+// The block walk's own catalogue asks, capped for the reason
+// `MAX_LOOKUPS_PER_PASS` names: this list is library-minus-sheet, so a cold
+// start would ask for every unlisted title in one pass. Unanswered titles are
+// what count — the test above has twelve answered ones all asking.
+test('a pass asks SIMKL for no more than eight details it does not already hold', () => {
+  const ids = Array.from({ length: 9 }, (_, i) => 900 + i);
+  const index = indexLibrary(
+    libraryOf(...ids.map((id) => ({ id, title: `Show ${id}`, status: 'watching', seasons: { 1: [daysAgo(9), daysAgo(2)] }, watched: 2, total: 9 }))),
+  );
+  const { demands, plan } = planSync(blockGrid.grid, index, new Map(), { timezone: TZ, facts: { tvdb: true, tmdb: true } });
+  assert.equal(demands.catalogue.length, MAX_LOOKUPS_PER_PASS);
+  // The ninth is not dropped, only unasked: it is reported waiting like the
+  // eight, and the next pass asks for it.
+  assert.equal(plan.skips.filter((skip) => skip.code === 'awaiting-lookup').length, 9);
 });
 
 // `rows N-M`, because a block is a show row and a season row and "row 610"

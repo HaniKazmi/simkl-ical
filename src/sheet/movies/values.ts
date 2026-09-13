@@ -9,7 +9,7 @@
  */
 
 import { plainDateIn, releaseDate } from '../../shared/dates.ts';
-import { CERTIFICATE_AGES, artworkKeyFor, artworkLink, dateSerial } from '../values.ts';
+import { CERTIFICATE_AGES, artworkKeyFor, artworkLink, dateSerial, mapGenres } from '../values.ts';
 import { config } from '../../shared/config.ts';
 import type { TmdbBackdrop, TmdbMovie, TmdbRelease } from '../../api/tmdb/types.ts';
 
@@ -62,14 +62,8 @@ const TMDB_GENRES: Record<string, string> = {
  * they are judgements — a fixed priority order tuned against the data reaches
  * 67%, and 11 of 87 primaries are not in TMDB's mapped list at all.
  */
-export const mappedGenres = (movie: TmdbMovie | undefined): string[] => {
-  const out: string[] = [];
-  for (const genre of movie?.genres ?? []) {
-    const mapped = genre.name ? TMDB_GENRES[genre.name] : undefined;
-    if (mapped && !out.includes(mapped)) out.push(mapped);
-  }
-  return out;
-};
+export const mappedGenres = (movie: TmdbMovie | undefined): string[] =>
+  mapGenres((movie?.genres ?? []).map((genre) => genre.name), TMDB_GENRES);
 
 // --- Release dates and the cinema window -----------------------------------
 

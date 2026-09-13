@@ -165,6 +165,23 @@ test('a tab with no Franchise column at all still verifies', () => {
   assert.equal(result.ok, true, result.problems.join('; '));
 });
 
+// A column resolving under the write and not before it is the same hazard as
+// one that moved: every index below was read off the earlier header row, so a
+// column that was not there then is one nothing checked the write against.
+test('a column that only the read after the write resolves is a move', () => {
+  const rows = fx.rows.map((row) => [...row]);
+  rows[0] = [...H];
+  rows[0]![col(H, 'Franchise')] = 'Something Else';
+  const grid = parseGrid(sheetSnapshot(rows));
+
+  const changed = rows.map((row) => [...row]);
+  changed[0] = [...H];
+  changed[fx.at.fargoS2!]![grid.columns.Episode] = 8;
+  const result = verify(grid, sheetSnapshot(changed), planOf([editOf('fargoS2', 'Episode', 8)]));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join('; '), /the Franchise column moved during the write/);
+});
+
 // --- inserts ---------------------------------------------------------------
 
 const insertFixture = () => {

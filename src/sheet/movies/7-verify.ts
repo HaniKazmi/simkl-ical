@@ -25,8 +25,9 @@ import type { SheetSnapshot } from '../io/spreadsheet.ts';
  *
  * `id` is excluded from the *diff* and checked by a rule of its own: it is the
  * key every row is matched by, so it earns more than a line in a loop that
- * skips unwritten columns. It stays in `headers` below, because a tab whose id
- * column moved is one nothing else can be trusted about.
+ * skips unwritten columns. Its position is still checked, off `columnsOf`,
+ * because a tab whose id column moved is one nothing else can be trusted
+ * about.
  */
 const INSPECTED: MovieHeaderName[] = MOVIE_HEADERS.filter((header) => header !== 'id');
 
@@ -36,7 +37,6 @@ const FILMS_TAB: VerifiedTab<MovieGrid, MovieHeaderName, FilmPlan> = {
   parse: parseMovieGrid,
   columnsOf: (grid) => grid.columns,
   snapshotOf: (grid) => grid.snapshot,
-  headers: MOVIE_HEADERS,
   inspected: INSPECTED,
   // A film row that lost every cell stops being one, and that film is inserted
   // again on the next poll.

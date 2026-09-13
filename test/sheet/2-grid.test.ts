@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  BLOCK_HEADERS,
   BLOCK_LABELS,
   columnLetter,
   duplicateIds,
@@ -12,7 +11,6 @@ import {
   parseGrid,
   parseIds,
   resolveColumns,
-  resolveOptionalColumns,
   SHOW_LABELS,
 } from '../../src/sheet/2-grid.ts';
 import { ARTWORK_LABEL } from '../../src/sheet/values.ts';
@@ -218,15 +216,6 @@ test('a duplicated optional column resolves to absent, not a thrown error', () =
   assert.equal(grid.blockColumns.Genre, undefined);
   // The other five are untouched by one column's duplicate.
   assert.equal(grid.blockColumns.Franchise, col(H, 'Franchise'));
-});
-
-test('resolveOptionalColumns answers absent rather than throwing, for both failure shapes', () => {
-  const labelOf = (h: (typeof BLOCK_HEADERS)[number]) => BLOCK_LABELS[h];
-  const missing = H.filter((label) => label !== 'Certificate');
-  assert.deepEqual(resolveOptionalColumns(missing.map(cellOf), missing.length, BLOCK_HEADERS, labelOf).Certificate, undefined);
-
-  const duplicated = [...H, 'Network'];
-  assert.deepEqual(resolveOptionalColumns(duplicated.map(cellOf), duplicated.length, BLOCK_HEADERS, labelOf).Network, undefined);
 });
 
 test('a block\'s franchise reads the Franchise cell as text, and is null when the cell or the column is absent', () => {

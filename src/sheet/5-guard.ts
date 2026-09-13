@@ -18,8 +18,8 @@
 
 import { config, showArtworkBucket } from '../shared/config.ts';
 import {
-  HEADERS,
   isBlank,
+  isHeaderName,
   numberOf,
   parseIds,
   runtimeScopeOk,
@@ -38,7 +38,6 @@ import {
   isGenre,
   isStatus,
   isTracked,
-  MAX_SECONDARY_GENRES,
   maxSerial,
   ownsNote,
   placeBlock,
@@ -53,7 +52,17 @@ import {
 } from './values.ts';
 import { gridIds, type BlockCell, type BlockInsert, type CellEdit, type Insert, type RowInsert, type SheetPlan } from './4-plan.ts';
 import type { ExtendedValue } from '../api/google/types.ts';
-import { checkBudgets, checkCellAlignment, checkCellShape, describeValue, PlanRefusal, type Refuse, type SpentBudget } from './guard-core.ts';
+import {
+  checkBudgets,
+  checkCellAlignment,
+  checkCellPosition,
+  checkCellShape,
+  checkGenresValue,
+  describeValue,
+  PlanRefusal,
+  type Refuse,
+  type SpentBudget,
+} from './guard-core.ts';
 
 /** What the sync may write to a row that already exists. */
 const EDIT_FIELDS = new Set<HeaderName>(['Status', 'Note', 'Episode', 'Start', 'End', 'Runtime']);
@@ -102,9 +111,12 @@ export interface SafetyLimits {
    */
   timezone?: string;
   /**
-   * The bucket a new show row's artwork formula links into, or null for an
-   * install with no artwork bucket — the planner's own option, so the two
-   * cannot disagree about whether that cell may be written at all.
+   * The bucket a new show row's artwork formula links into, or null — which
+   * covers an install with no bucket *and* one whose bucket is named while the
+   * artwork page is not served, since only a served page can put an object
+   * behind the link. `showArtworkBucket` in `shared/config.ts` is that rule, and
+   * it is the planner's own option too, so the two cannot disagree about
+   * whether the cell may be written at all.
    */
   showBucket?: string | null;
 }
@@ -132,8 +144,8 @@ interface GuardContext {
  * The shape rules the core checks, plus the one both date columns share: a
  * serial no later than tomorrow in the viewer's zone.
  */
-const checkShape = (cell: CellEdit, allowed: Set<HeaderName>, emptiable: Set<HeaderName>, { grid, serialCeiling }: GuardContext): void => {
-  const value = checkCellShape(cell, { allowed, emptiable, columns: grid.columns }, refuse);
+const checkShape = (cell: BlockCell, allowed: Set<ShowField>, emptiable: Set<ShowField>, { grid, serialCeiling }: GuardContext): void => {
+  const value = checkCellShape(cell, { allowed, emptiable, columns: grid.fields }, refuse);
   if (value === undefined) return;
   if ((cell.field === 'End' || cell.field === 'Start') && !plausibleSerial(value.numberValue, serialCeiling)) {
     refuse(`${cell.address} (${cell.field}): ${describeValue(value)} is not a plausible date serial.`);
@@ -242,7 +254,7 @@ const checkEpisodeEdit = (cell: CellEdit, where: string, season: SeasonRow, ctx:
  * the row is created and dated by a single fill. Scope and bounds are all
  * the guard can re-derive there.
  */
-const checkRuntimeScope = (where: string, block: ShowBlock): void => {
+const checkRuntimeScope = (where: string, block: Pick<ShowBlock, 'type' | 'ids'>): void => {
   // The one planner claim a row cannot take back: the row is dated by the
   // same batch, so the blank-cell rule stops protecting the cell the instant
   // the write lands. `runtimeScopeOk` carries the reasoning.
@@ -342,20 +354,24 @@ const checkInsertPlacement = (insert: RowInsert, where: string, ctx: GuardContex
   return block;
 };
 
-const checkSeasonInsert = (insert: RowInsert, ctx: GuardContext): void => {
-  const where = `row ${insert.row + 1} (${insert.title} S${insert.season})`;
-  const block = checkInsertPlacement(insert, where, ctx);
-
+/**
+ * Every rule a season row being *created* obeys, whichever insert creates it.
+ * A season row joining a block that exists and the one written under a new show
+ * row are the same row, so they are held to one checklist — kept as two, a rule
+ * hardened on one path leaves the other on the old behaviour and nothing fails.
+ *
+ * `block` is the two facts the runtime's scope turns on. For a season insert
+ * they come off the grid; for a block they come off the show row the same batch
+ * writes, which is what makes the rule answerable a row before the row exists.
+ */
+const checkSeasonRowFill = (fill: readonly BlockCell[], block: Pick<ShowBlock, 'type' | 'ids'>, ctx: GuardContext): void => {
   // Shape first, so the field-specific rules below run against a cell whose
   // field, column and emptiability the whitelists have already settled.
-  for (const cell of insert.fill) {
-    if (cell.row !== insert.row) refuse(`${cell.address}: an insert may only fill the row it creates.`);
-    if (cell.previous !== undefined) refuse(`${cell.address}: a new row cannot have a previous value.`);
-    // No alignment: the row does not exist in the snapshot, so there is nothing
-    // to compare. `checkInsertPlacement` pinning the row to its block covers
-    // the bounds an alignment check would add.
-    checkShape(cell, INSERT_FIELDS, EMPTIABLE_INSERTS, ctx);
-  }
+  //
+  // No alignment: the row does not exist in the snapshot, so there is nothing
+  // to compare. Each caller pins the row it creates to a block, which covers
+  // the bounds an alignment check would add.
+  for (const cell of fill) checkShape(cell, INSERT_FIELDS, EMPTIABLE_INSERTS, ctx);
 
   // A runtime carried by an insert needs *more* care than one on an edit: the
   // same fill creates the row and dates it, so neither the blank-cell rule
@@ -366,7 +382,7 @@ const checkSeasonInsert = (insert: RowInsert, ctx: GuardContext): void => {
   // Every such cell, not the first: requests are written in order and the
   // last wins, so checking one while writing two is a bound that does not
   // bind.
-  for (const runtime of insert.fill.filter((cell) => cell.field === 'Runtime')) {
+  for (const runtime of fill.filter((cell) => cell.field === 'Runtime')) {
     checkRuntimeScope(`${runtime.address} (Runtime)`, block);
     checkRuntimeMinutes(`${runtime.address} (Runtime)`, runtime.value);
   }
@@ -377,11 +393,23 @@ const checkSeasonInsert = (insert: RowInsert, ctx: GuardContext): void => {
   // clear exists to prevent. Nothing else stands between the value and the
   // sheet here: the row has no cell to be blank and no note of its own to
   // recognise.
-  const dated = insert.fill.some((cell) => cell.field === 'End');
-  for (const note of insert.fill.filter((cell) => cell.field === 'Note')) {
+  const dated = fill.some((cell) => cell.field === 'End');
+  for (const note of fill.filter((cell) => cell.field === 'Note')) {
     if (dated) refuse(`${note.address} (Note): a row created with an end date may not also carry a watch note.`);
     checkWatchedNote(`${note.address} (Note)`, note.value, ctx.serialCeiling);
   }
+};
+
+const checkSeasonInsert = (insert: RowInsert, ctx: GuardContext): void => {
+  const where = `row ${insert.row + 1} (${insert.title} S${insert.season})`;
+  const block = checkInsertPlacement(insert, where, ctx);
+
+  for (const cell of insert.fill) {
+    if (cell.row !== insert.row) refuse(`${cell.address}: an insert may only fill the row it creates.`);
+    if (cell.previous !== undefined) refuse(`${cell.address}: a new row cannot have a previous value.`);
+  }
+
+  checkSeasonRowFill(insert.fill, block, ctx);
 };
 
 // --- The block insert --------------------------------------------------------
@@ -418,29 +446,36 @@ const EMPTIABLE_BLOCK = new Set<ShowField>();
  */
 const BLOCK_REQUIRED: readonly ShowField[] = ['Show', 'Franchise', 'Type', 'id', ...ROLLUP_FIELDS];
 
+const isRollup = (field: ShowField): field is RollupField => (ROLLUP_FIELDS as readonly ShowField[]).includes(field);
+
 /**
- * The cells that are formulas rather than values — the five roll-ups and the
- * artwork link.
+ * Whether the cell is a formula rather than a value — the five roll-ups and the
+ * artwork link, and nothing else on a show row.
  *
  * The single exception to never writing a formula, and the reason it is safe:
  * this batch writes the formula that does the rolling up, at the row it is
  * being written to, and nothing revisits the cell afterwards. So each is
  * checked against the template for *that* row rather than let through
  * `checkCellShape`, which refuses a formula unconditionally.
+ *
+ * A predicate rather than a `Set`, because the answer has to narrow: it is what
+ * lets `templateFor` take a parameter whose null can only mean "no bucket".
  */
-const TEMPLATE_FIELDS = new Set<ShowField>([...ROLLUP_FIELDS, 'Banner']);
+const isTemplate = (field: ShowField): field is RollupField | 'Banner' => isRollup(field) || field === 'Banner';
 
-const isRollup = (field: ShowField): field is RollupField => (ROLLUP_FIELDS as readonly ShowField[]).includes(field);
-
-const isHeaderName = (field: ShowField): field is HeaderName => (HEADERS as readonly ShowField[]).includes(field);
-
-/** The exact text a template cell must hold, or null for a `Banner` with no bucket to link into. */
-const templateFor = (field: ShowField, row: number, ctx: GuardContext): string | null =>
+/**
+ * The exact text a template cell must hold, or null for a `Banner` with no
+ * bucket to link into — which is the only thing null can mean here, because
+ * the parameter admits nothing else. Widened to `ShowField` it would also mean
+ * "not a template field at all", and the one caller's refusal would then read
+ * an unrelated field as a missing bucket.
+ */
+const templateFor = (field: RollupField | 'Banner', row: number, ctx: GuardContext): string | null =>
   isRollup(field) ? showRowFormulas(ctx.grid.columns, row)[field]
-  : field === 'Banner' && ctx.showBucket !== null ? artworkFormula(ctx.grid.columns.Show, row, ctx.showBucket)
+  : ctx.showBucket !== null ? artworkFormula(ctx.grid.columns.Show, row, ctx.showBucket)
   : null;
 
-const checkTemplateCell = (cell: BlockCell, where: string, ctx: GuardContext): void => {
+const checkTemplateCell = (cell: BlockCell & { field: RollupField | 'Banner' }, where: string, ctx: GuardContext): void => {
   // A link with no bucket behind it is a broken image for the life of the row,
   // and the row is never revisited to fix it.
   const expected = templateFor(cell.field, cell.row, ctx);
@@ -496,17 +531,9 @@ const checkShowValue = (cell: BlockCell, value: ExtendedValue, where: string, in
     case 'Genre':
       if (typeof text !== 'string' || !isGenre(text)) refuse(`${where}: ${describeValue(value)} is not one of the genres the renderer colours.`);
       return;
-    case 'Genres': {
-      if (typeof text !== 'string') refuse(`${where}: Genres must be text.`);
-      // No secondaries is a real state, and `''.split(',')` is `['']`, which is
-      // not a genre — refusing that would make the planner's decision to omit
-      // the cell load-bearing for the guard.
-      if (!text) return;
-      const tokens = text.split(',').map((token) => token.trim());
-      if (tokens.length > MAX_SECONDARY_GENRES) refuse(`${where}: ${tokens.length} genres exceeds the ${MAX_SECONDARY_GENRES} this column holds.`);
-      for (const token of tokens) if (!isGenre(token)) refuse(`${where}: ${token} is not one of the genres the renderer colours.`);
+    case 'Genres':
+      checkGenresValue(value, where, refuse);
       return;
-    }
     case 'Network':
       // Non-empty text and nothing more: the vocabulary is open — 76 distinct
       // networks across the tab — so a closed set would refuse a real one.
@@ -521,11 +548,12 @@ const checkShowValue = (cell: BlockCell, value: ExtendedValue, where: string, in
 
 const checkShowRowCell = (cell: BlockCell, where: string, insert: BlockInsert, ctx: GuardContext): void => {
   if (!BLOCK_SHOW_FIELDS.has(cell.field)) refuse(`${where}: not a field a new show row may carry.`);
-  if (TEMPLATE_FIELDS.has(cell.field)) {
-    const column = ctx.showColumns[cell.field];
-    if (column === undefined) refuse(`${where}: ${cell.field} has no resolved column on this tab.`);
-    if (cell.column !== column) refuse(`${where}: column ${cell.column} does not match the resolved position of ${cell.field}.`);
-    checkTemplateCell(cell, where, ctx);
+  if (isTemplate(cell.field)) {
+    // The position rule on its own, because these cells skip `checkCellShape`
+    // — a template built against a different header map counts a block's
+    // height off whatever column now sits there.
+    checkCellPosition(cell, ctx.showColumns, refuse);
+    checkTemplateCell({ ...cell, field: cell.field }, where, ctx);
     return;
   }
   const value = checkCellShape(cell, { allowed: BLOCK_SHOW_FIELDS, emptiable: EMPTIABLE_BLOCK, columns: ctx.showColumns }, refuse);
@@ -533,17 +561,18 @@ const checkShowRowCell = (cell: BlockCell, where: string, insert: BlockInsert, c
 };
 
 /**
- * The season row under a new show row is an ordinary inserted season row, and
- * is held to the identical whitelist — it is the same row, written by the same
- * planner code, and a block that could fill columns a season insert cannot
- * would be a second write surface with no reason to exist.
+ * What the season row under a new show row is asked that an ordinary inserted
+ * season row is not: the column vocabulary in this tab's own words, and that
+ * the row is for the season the block was built for. Everything else about it
+ * is `checkSeasonRowFill`, the one checklist both inserts run — it is the same
+ * row, written by the same planner code, and a block that could fill columns a
+ * season insert cannot would be a second write surface with no reason to exist.
  */
-const checkBlockSeasonCell = (cell: BlockCell, where: string, insert: BlockInsert, ctx: GuardContext): void => {
+const checkBlockSeasonCell = (cell: BlockCell, where: string, insert: BlockInsert): void => {
   // `id` is not in `INSERT_FIELDS`, which is what stops the season row carrying
   // one: it inherits the show row's, and an id of its own would make its season
   // number the entry's rather than the block's.
   if (!isHeaderName(cell.field) || !INSERT_FIELDS.has(cell.field)) refuse(`${where}: not a field a new season row may carry.`);
-  checkShape({ ...cell, field: cell.field }, INSERT_FIELDS, EMPTIABLE_INSERTS, ctx);
 
   if (cell.field === 'Season') {
     const season = cell.value?.numberValue;
@@ -564,6 +593,11 @@ const checkBlockSeasonCell = (cell: BlockCell, where: string, insert: BlockInser
 const checkBlockInsert = (insert: BlockInsert, ctx: GuardContext): void => {
   const { grid } = ctx;
   const where = `rows ${insert.row + 1}-${insert.row + insert.rows} (${insert.title} S${insert.season})`;
+  // Which row a cell landed on decides every rule that applies to it, so the
+  // split is made once. A cell on neither row is in neither list and is
+  // refused by the bounds check in the routing loop below.
+  const showFill = insert.fill.filter((cell) => cell.row === insert.row);
+  const seasonFill = insert.fill.filter((cell) => cell.row === insert.row + 1);
 
   // A show row with no season under it is a block whose roll-ups count the
   // *next* block's rows as their own, and a season row with no show row above
@@ -593,7 +627,8 @@ const checkBlockInsert = (insert: BlockInsert, ctx: GuardContext): void => {
   // Two ways the tab already holds this show, and both would be a duplicate
   // block: the id somewhere on the grid, or a block under the same title key.
   if (gridIds(grid).has(insert.id)) refuse(`${where}: SIMKL id ${insert.id} is already on the tab.`);
-  const holder = grid.blocks.find((block) => titleKey(block.title) === titleKey(insert.title));
+  const key = titleKey(insert.title);
+  const holder = grid.blocks.find((block) => titleKey(block.title) === key);
   if (holder) refuse(`${where}: row ${holder.row + 1} already holds ${holder.title}.`);
 
   for (const cell of insert.fill) {
@@ -601,52 +636,35 @@ const checkBlockInsert = (insert: BlockInsert, ctx: GuardContext): void => {
     if (cell.row !== insert.row && cell.row !== insert.row + 1) refuse(`${cellWhere}: a block may only fill the two rows it creates.`);
     if (cell.previous !== undefined) refuse(`${cellWhere}: a new row cannot have a previous value.`);
     if (cell.row === insert.row) checkShowRowCell(cell, cellWhere, insert, ctx);
-    else checkBlockSeasonCell(cell, cellWhere, insert, ctx);
+    else checkBlockSeasonCell(cell, cellWhere, insert);
   }
 
   // Per row, not per block: `Season` on the season row and `Start` on the show
   // row are the same field id at two different columns, and counted together
   // the second would read as a repeat of the first.
-  for (const row of [insert.row, insert.row + 1]) {
-    const fields = insert.fill.filter((cell) => cell.row === row).map((cell) => cell.field);
+  for (const [row, fill] of [[insert.row, showFill], [insert.row + 1, seasonFill]] as const) {
+    const fields = fill.map((cell) => cell.field);
     const duplicated = fields.find((field, i) => fields.indexOf(field) !== i);
     if (duplicated) refuse(`${where}: ${SHOW_FIELD_LABELS[duplicated]} is filled twice on row ${row + 1}.`);
   }
 
-  const filled = new Set(insert.fill.filter((cell) => cell.row === insert.row).map((cell) => cell.field));
+  const filled = new Set(showFill.map((cell) => cell.field));
   for (const field of BLOCK_REQUIRED) {
     if (!filled.has(field)) refuse(`${where}: a show row must carry ${SHOW_FIELD_LABELS[field]}.`);
   }
 
-  const seasonFill = insert.fill.filter((cell) => cell.row === insert.row + 1);
   if (!seasonFill.some((cell) => cell.field === 'Season')) refuse(`${where}: a block must carry the season row it was built for.`);
-
-  // A dated row is never revisited, so a note created beside an `End` is one
-  // nothing can ever remove — the exact state the clear exists to prevent.
-  const dated = seasonFill.some((cell) => cell.field === 'End');
-  for (const note of seasonFill.filter((cell) => cell.field === 'Note')) {
-    if (dated) refuse(`${note.address} (Note): a row created with an end date may not also carry a watch note.`);
-    checkWatchedNote(`${note.address} (Note)`, note.value, ctx.serialCeiling);
-  }
 
   // The runtime's scope, re-derived from the **planned show row**: the block is
   // not in the grid yet, so `runtimeScopeOk` has nothing to read. The two facts
   // it asks for are both on the fill — the type this row will carry, and
   // whether it carries an id at all — and reading them off the plan is what
   // makes the same rule answerable a row before the row exists.
-  const planned: ShowBlock = {
-    row: insert.row,
-    title: insert.title,
-    status: null,
-    type: insert.fill.find((cell) => cell.row === insert.row && cell.field === 'Type')?.value?.stringValue?.toLowerCase() ?? null,
-    ids: parseIds({ userEnteredValue: insert.fill.find((cell) => cell.row === insert.row && cell.field === 'id')?.value }),
-    franchise: insert.franchise,
-    seasons: [],
+  const planned: Pick<ShowBlock, 'type' | 'ids'> = {
+    type: showFill.find((cell) => cell.field === 'Type')?.value?.stringValue?.toLowerCase() ?? null,
+    ids: parseIds({ userEnteredValue: showFill.find((cell) => cell.field === 'id')?.value }),
   };
-  for (const runtime of seasonFill.filter((cell) => cell.field === 'Runtime')) {
-    checkRuntimeScope(`${runtime.address} (Runtime)`, planned);
-    checkRuntimeMinutes(`${runtime.address} (Runtime)`, runtime.value);
-  }
+  checkSeasonRowFill(seasonFill, planned, ctx);
 };
 
 const checkInsert = (insert: Insert, ctx: GuardContext): void => {
@@ -670,7 +688,7 @@ export const assertPlanSafe = (
     grid,
     serialCeiling: maxSerial(now, timezone),
     showBucket,
-    showColumns: { ...grid.columns, ...grid.blockColumns },
+    showColumns: grid.fields,
     showRows: new Set(grid.blocks.map((b) => b.row)),
     seasonRows: new Map(grid.blocks.flatMap((b) => b.seasons.map((s) => [s.row, { season: s, block: b }] as const))),
   };

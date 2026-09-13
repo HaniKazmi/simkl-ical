@@ -400,6 +400,25 @@ const TVDB_GENRES: Record<string, string> = {
 };
 
 /**
+ * An upstream's genre names through a mapping table: dropped where the table
+ * has no entry, deduped, and **in the order the upstream sent them**, which is
+ * the signal both tables exist to preserve.
+ *
+ * One loop for TVDB's table here and TMDB's in `movies/values.ts`. Two tables
+ * and two orderings, but one rule about what a mapped list is — and the drop,
+ * the dedupe and the order are exactly the three things a second copy could
+ * quietly stop doing.
+ */
+export const mapGenres = (names: readonly (string | undefined)[], table: Record<string, string>): string[] => {
+  const out: string[] = [];
+  for (const name of names) {
+    const mapped = name === undefined ? undefined : table[name];
+    if (mapped && !out.includes(mapped)) out.push(mapped);
+  }
+  return out;
+};
+
+/**
  * TVDB's list, mapped and deduped, **in the order TVDB sent it** — which is
  * TVDB's own genre-id order on all 189 show records measured (Science Fiction
  * 2, Horror 6, Drama 12, Crime 14, Comedy 15, Documentary 16, Adventure 18,
@@ -411,14 +430,7 @@ const TVDB_GENRES: Record<string, string> = {
  * The first survivor is the block's `Genre` and the rest are its `Genres` —
  * the shape `mappedGenres` gives a film, with TVDB as the ordered source.
  */
-export const mappedTvdbGenres = (names: readonly string[]): string[] => {
-  const out: string[] = [];
-  for (const name of names) {
-    const mapped = TVDB_GENRES[name];
-    if (mapped && !out.includes(mapped)) out.push(mapped);
-  }
-  return out;
-};
+export const mappedTvdbGenres = (names: readonly string[]): string[] => mapGenres(names, TVDB_GENRES);
 
 /**
  * How the `Network` column spells a broadcaster SIMKL names differently. An

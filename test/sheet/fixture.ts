@@ -12,7 +12,7 @@
  * glob only collects `*.test.ts`, so this file never runs as a suite.
  */
 
-import { a1, parseGrid, showFieldColumn, type Grid, type HeaderName, type ShowField } from '../../src/sheet/2-grid.ts';
+import { a1, parseGrid, type Grid, type HeaderName, type ShowField } from '../../src/sheet/2-grid.ts';
 import { artworkFormula, dateSerial, ROLLUP_FIELDS, showRowFormulas, SHOW_TYPE } from '../../src/sheet/values.ts';
 import { emptyPlan, type BlockCell, type BlockInsert, type CellEdit, type Insert, type RowInsert, type SheetPlan } from '../../src/sheet/4-plan.ts';
 import { indexLibrary, type TitleProgress } from '../../src/sheet/1-index.ts';
@@ -168,7 +168,7 @@ export const gridFixture = (...named: NamedRow[]): GridFixture => {
   };
 
   const blockCell = (row: number, field: ShowField, value: ExtendedValue | undefined): BlockCell => {
-    const column = showFieldColumn(grid, field);
+    const column = grid.fields[field];
     if (column === undefined) throw new Error(`${field} is not a column on this fixture's tab`);
     return { row, column, field, previous: undefined, value, address: a1(row, column), note: 'new block' };
   };
@@ -199,27 +199,32 @@ export const gridFixture = (...named: NamedRow[]): GridFixture => {
   ): BlockInsert => {
     const index = indexOf(row);
     const formulas = showRowFormulas(grid.columns, index);
+    // Pushed rather than spread in conditionally: a spread of an empty array
+    // has no element type to infer from, so every optional cell would need a
+    // cast — and a cast is what would let a wrong field id through here, in the
+    // one file every insert assertion is written against.
     const show: Array<[ShowField, ExtendedValue]> = [
       ['Show', { stringValue: title }],
       ['Franchise', { stringValue: franchise }],
       ['Type', { stringValue: SHOW_TYPE }],
       ['id', { stringValue: String(id) }],
-      ...ROLLUP_FIELDS.map((field) => [field, { formulaValue: formulas[field] }] as [ShowField, ExtendedValue]),
-      ...(bucket === null ? [] : ([['Banner', { formulaValue: artworkFormula(grid.columns.Show, index, bucket) }]] as Array<[ShowField, ExtendedValue]>)),
-      ...(status === null ? [] : ([['Status', { stringValue: status }]] as Array<[ShowField, ExtendedValue]>)),
-      ...(genre === null ? [] : ([['Genre', { stringValue: genre }]] as Array<[ShowField, ExtendedValue]>)),
-      ...(genres === null ? [] : ([['Genres', { stringValue: genres }]] as Array<[ShowField, ExtendedValue]>)),
-      ...(network === null ? [] : ([['Network', { stringValue: network }]] as Array<[ShowField, ExtendedValue]>)),
-      ...(certificate === null ? [] : ([['Certificate', { numberValue: certificate }]] as Array<[ShowField, ExtendedValue]>)),
     ];
+    for (const field of ROLLUP_FIELDS) show.push([field, { formulaValue: formulas[field] }]);
+    if (bucket !== null) show.push(['Banner', { formulaValue: artworkFormula(grid.columns.Show, index, bucket) }]);
+    if (status !== null) show.push(['Status', { stringValue: status }]);
+    if (genre !== null) show.push(['Genre', { stringValue: genre }]);
+    if (genres !== null) show.push(['Genres', { stringValue: genres }]);
+    if (network !== null) show.push(['Network', { stringValue: network }]);
+    if (certificate !== null) show.push(['Certificate', { numberValue: certificate }]);
+
     const under: Array<[ShowField, ExtendedValue]> = [
       ['Season', { numberValue: season }],
       ['Episode', { numberValue: 2 }],
       ['Start', { numberValue: TODAY - 9 }],
-      ...(note === null ? [] : ([['Note', { stringValue: note }]] as Array<[ShowField, ExtendedValue]>)),
-      ...(runtime === null ? [] : ([['Runtime', { numberValue: runtime }]] as Array<[ShowField, ExtendedValue]>)),
-      ...(end === null ? [] : ([['End', { numberValue: end }]] as Array<[ShowField, ExtendedValue]>)),
     ];
+    if (note !== null) under.push(['Note', { stringValue: note }]);
+    if (runtime !== null) under.push(['Runtime', { numberValue: runtime }]);
+    if (end !== null) under.push(['End', { numberValue: end }]);
 
     return {
       kind: 'block',

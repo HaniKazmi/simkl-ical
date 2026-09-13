@@ -13,7 +13,7 @@
  */
 
 import { errorMessage } from '../shared/errors.ts';
-import { a1, BLOCK_HEADERS, HEADERS, isFormulaValue, parseGrid, sameValue, type Grid, type HeaderName, type ShowField } from './2-grid.ts';
+import { a1, HEADERS, isFormulaValue, parseGrid, sameValue, type Grid, type HeaderName, type ShowField } from './2-grid.ts';
 import { spanRows } from './6-requests.ts';
 import type { SheetPlan } from './4-plan.ts';
 import type { CellData, ExtendedValue } from '../api/google/types.ts';
@@ -30,32 +30,6 @@ import type { SheetSnapshot } from './io/spreadsheet.ts';
  * carry hand-maintained values a user edits between polls.
  */
 const INSPECTED: HeaderName[] = HEADERS.filter((header) => header !== 'id' && header !== 'Type');
-
-/**
- * Every column a show row may be written into: all ten required headers plus
- * whichever of the six block columns the tab resolves — wider than `INSPECTED`
- * at both ends.
- *
- * These are the columns whose position must not move during the write, and the
- * set is the whole of what a block's fill addresses. The fill writes by index,
- * so a column that moved under it puts a value in whatever column took its
- * place: `id` and `Type` are as load-bearing there as `Franchise`, even though
- * the cell diff spares all three on a pre-existing row. An unresolved optional
- * column compares `undefined === undefined` and passes, which is what keeps the
- * six optional.
- *
- * `columnsOf` has to name them for a second reason: `verifyAgainst` walks an
- * inserted row over that map alone and drains its expectations there, so left
- * at the required ten every block insert reports its six block cells as writes
- * that are not in the sheet, and rolls itself back.
- *
- * `inspected` stays `INSPECTED` all the same. The artwork page writes
- * `Artwork` under its own lock and a reader retypes a `Franchise` by hand, and
- * the sync never writes one of these on a row that already exists — so
- * diffing them on pre-existing rows would add a rollback trigger that protects
- * nothing.
- */
-const SHOW_COLUMNS: ShowField[] = [...HEADERS, ...BLOCK_HEADERS];
 
 /**
  * What the diff needs from one planned write. Structural, because the two tabs
@@ -185,25 +159,32 @@ export interface VerifiedTab<G, H extends string, P extends VerifiablePlan> {
   rowKind: string;
   parse: (snapshot: SheetSnapshot) => G;
   /**
+   * Every column the tab resolves, which is both the whole of what a write may
+   * address and the whole of what must not move under it. A fill writes by
+   * index, so a column that moved puts its value in whatever column took its
+   * place — and a column a write can reach but this map omits is one the
+   * inserted-row walk finds nothing at, so the insert reports its own cells as
+   * writes that are not in the sheet and rolls itself back.
+   *
    * `Partial`, because a tab may resolve a column optionally — a header it
-   * need not carry answers undefined, and every loop below skips it. `id` is
+   * need not carry is simply absent, and every loop below skips it. `id` is
    * exempt so the join-key rule always has a column to compare: it is the one
-   * check that catches a row deleted under the write, and a spec whose headers
+   * check that catches a row deleted under the write, and a spec whose map
    * omitted `id` would disable it silently.
    */
   columnsOf: (grid: G) => Partial<Record<H, number>> & Record<'id', number>;
   snapshotOf: (grid: G) => SheetSnapshot;
   /**
-   * Every header whose column must not move during the write.
+   * The subset of those columns the cell diff inspects, which is narrower than
+   * the map at both ends: the sync writes some columns it never inspects on a
+   * pre-existing row — the artwork page writes `Artwork` under its own lock and
+   * a reader retypes a `Franchise` by hand — so diffing them would add a
+   * rollback trigger that protects nothing.
    *
    * `H` is the tab's own header union, not `string`: widened, a misspelled
    * header compiles, `columnsOf` answers undefined for it, that column drops
-   * out of the inspected set, and a concurrent human edit to it verifies
-   * clean. `H` also has to cover `id`, because the join-key rule below is what
-   * catches a row deleted under the write.
+   * out of the inspected set, and a concurrent human edit to it verifies clean.
    */
-  headers: readonly H[];
-  /** The subset of those the cell diff inspects. */
   inspected: readonly H[];
   /**
    * The row indices whose set must survive the write unchanged. Show rows on
@@ -238,8 +219,14 @@ export const verifyAgainst = <G, H extends string, P extends VerifiablePlan>(
   } catch (err) {
     return { ok: false, problems: [`${spec.tab} no longer parses: ${errorMessage(err)}`], landed: true, deleteRows: [] };
   }
+  // The two maps must agree key for key, over the union of what each resolved:
+  // a column that moved is caught by the index, and one that appeared or
+  // disappeared under the write by the key being in only one of them. Read off
+  // the maps rather than a listed set of headers, so the columns checked are
+  // exactly the columns the write could address.
   const afterColumns = spec.columnsOf(afterGrid);
-  for (const header of spec.headers) {
+  const headers = [...Object.keys(beforeColumns), ...Object.keys(afterColumns).filter((header) => !(header in beforeColumns))] as H[];
+  for (const header of headers) {
     if (afterColumns[header] !== beforeColumns[header]) problems.push(`the ${header} column moved during the write`);
   }
   if (problems.length) return { ok: false, problems, landed: true, deleteRows: [] };
@@ -282,6 +269,10 @@ export const verifyAgainst = <G, H extends string, P extends VerifiablePlan>(
   for (let row = 0; row < beforeSnapshot.rows.length; row += 1) {
     const target = shiftRow(row, inserts);
     for (const column of columns) {
+      // The `id` clause is not redundant: `id` is deliberately out of
+      // `inspected`, and its own rule below is the one check that catches a row
+      // deleted under the write.
+      if (column !== beforeColumns.id && !inspected.has(column)) continue;
       const was = entered(beforeSnapshot, row, column);
       const now = entered(after, target, column);
       const key = `${target}:${column}`;
@@ -355,9 +346,8 @@ const SHOW_GRID: VerifiedTab<Grid, ShowField, SheetPlan> = {
   tab: 'the sheet',
   rowKind: 'show rows',
   parse: parseGrid,
-  columnsOf: (grid) => ({ ...grid.columns, ...grid.blockColumns }),
+  columnsOf: (grid) => grid.fields,
   snapshotOf: (grid) => grid.snapshot,
-  headers: SHOW_COLUMNS,
   inspected: INSPECTED,
   rowsOf: (grid) => grid.blocks.map((block) => block.row),
 };

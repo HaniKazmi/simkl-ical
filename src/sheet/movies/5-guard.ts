@@ -17,13 +17,23 @@
  * The value conventions it shares with the planner (`values.ts`) are one copy
  * on purpose: a bound that exists twice can disagree, and any gap is a
  * whole-plan refusal on good data. The budget, the shape every written cell
- * has and the alignment check are `guard-core.ts`, shared with the show grid's
- * guard for the same reason.
+ * has, the alignment check and the `Genres` list both tabs hold under one
+ * vocabulary are `guard-core.ts`, shared with the show grid's guard for the
+ * same reason.
  */
 
 import { config } from '../../shared/config.ts';
 import { maxSerial, plausibleRuntime, plausibleSerial } from '../values.ts';
-import { checkBudgets, checkCellAlignment, checkCellShape, describeValue, PlanRefusal, type Refuse, type SpentBudget } from '../guard-core.ts';
+import {
+  checkBudgets,
+  checkCellAlignment,
+  checkCellShape,
+  checkGenresValue,
+  describeValue,
+  PlanRefusal,
+  type Refuse,
+  type SpentBudget,
+} from '../guard-core.ts';
 import {
   FORMAT_CINEMA,
   FORMAT_HOME,
@@ -31,7 +41,6 @@ import {
   isFilmType,
   isFormat,
   isGenre,
-  MAX_SECONDARY_GENRES,
   plausibleReleaseSerial,
   plausibleScore,
   releaseCeiling as releaseHorizon,
@@ -146,18 +155,9 @@ const checkValue = (field: MovieHeaderName, value: ExtendedValue, where: string,
         refuse(`${where}: ${describeValue(value)} is not one of the genres the renderer colours.`);
       }
       return;
-    case 'Genres': {
-      if (typeof value.stringValue !== 'string') refuse(`${where}: Genres must be text.`);
-      // No secondaries is a real state — 27 rows on the tab hold it — and
-      // `''.split(',')` is `['']`, which is not a genre. Refusing that would
-      // make the planner's decision to omit the cell load-bearing for the
-      // guard's correctness, which is the coupling these rules exist to avoid.
-      if (!value.stringValue) return;
-      const tokens = value.stringValue.split(',').map((token) => token.trim());
-      if (tokens.length > MAX_SECONDARY_GENRES) refuse(`${where}: ${tokens.length} genres exceeds the ${MAX_SECONDARY_GENRES} this column holds.`);
-      for (const token of tokens) if (!isGenre(token)) refuse(`${where}: ${token} is not one of the genres the renderer colours.`);
+    case 'Genres':
+      checkGenresValue(value, where, refuse);
       return;
-    }
     case 'Format':
       // One of two words, as text. The tab fills this column on every row, and
       // a boolean here is the shape the column does not hold at all.

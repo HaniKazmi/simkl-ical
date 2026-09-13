@@ -27,7 +27,7 @@ import { dateSerial, maxSerial, movieKey, plausibleRuntime, plausibleSerial, rec
 import { movieAddress, movieCellAt, MOVIE_LABELS, nextFilmRow, type MovieGrid, type MovieHeaderName } from './2-grid.ts';
 import { filmIsWatched, type FilmProgress } from './1-index.ts';
 import type { FilmFacts } from './3-catalogue.ts';
-import { MAX_LOOKUPS_PER_PASS, type PlanRecord } from '../4-plan.ts';
+import { compareWatched, MAX_LOOKUPS_PER_PASS, type PlanRecord } from '../4-plan.ts';
 import { formatCell, plausibleReleaseSerial, plausibleScore, releaseCeiling, typeCell, watchedInCinema } from './values.ts';
 
 // --- The plan --------------------------------------------------------------
@@ -430,11 +430,7 @@ const planInsert = (
   // the show half's "add it by hand" line is not removed but merely moved.
   const missing = [...index.values()]
     .filter((film) => filmIsWatched(film) && !onTab.has(film.id) && !(film.anime && (onShowGrid === null || onShowGrid.has(film.id))))
-    .sort((a, b) => {
-      if (!a.watchedAt) return b.watchedAt ? 1 : 0;
-      if (!b.watchedAt) return -1;
-      return Temporal.Instant.compare(a.watchedAt, b.watchedAt);
-    });
+    .sort((a, b) => compareWatched(a.watchedAt, b.watchedAt, a.id - b.id));
 
   // The declared grid has to have a row to give, and that is a fact about the
   // grid, so it is asked once and before any lookup: a full tab is a standing

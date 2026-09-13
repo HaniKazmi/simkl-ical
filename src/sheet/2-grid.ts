@@ -83,18 +83,7 @@ export type ShowField = HeaderName | BlockHeaderName;
 export const SHOW_FIELD_LABELS: Record<ShowField, string> = { ...SHOW_LABELS, ...BLOCK_LABELS };
 
 /** Whether a field is one of the ten a Shows tab must carry, rather than one of the six it may. */
-const isRequiredField = (field: ShowField): field is HeaderName => (HEADERS as readonly ShowField[]).includes(field);
-
-/**
- * A show field's resolved column, or undefined where the tab does not carry
- * it — which only the six optional ones can be.
- *
- * One resolution for planner and guard: the guard re-derives the column of
- * every cell a block insert fills, and a second copy free to disagree would
- * refuse whole plans over a column both halves can see.
- */
-export const showFieldColumn = (grid: { columns: ColumnMap; blockColumns: BlockColumns }, field: ShowField): number | undefined =>
-  isRequiredField(field) ? grid.columns[field] : grid.blockColumns[field];
+export const isHeaderName = (field: ShowField): field is HeaderName => (HEADERS as readonly ShowField[]).includes(field);
 
 /**
  * The pair that identifies this tab's header row — see `findHeaderRow`. The
@@ -370,6 +359,16 @@ export interface Grid {
   snapshot: SheetSnapshot;
   columns: ColumnMap;
   blockColumns: BlockColumns;
+  /**
+   * Every show field's resolved column, the ten and the six in one map —
+   * undefined only where the tab does not carry one of the six.
+   *
+   * One resolution for planner, guard and verifier: the guard re-derives the
+   * column of every cell a block insert fills and the verifier reads the same
+   * set to decide which columns must not move, so a second merge free to
+   * disagree would refuse whole plans over a column both halves can see.
+   */
+  fields: ColumnMap & BlockColumns;
   blocks: ShowBlock[];
 }
 
@@ -447,7 +446,7 @@ export const parseGrid = (snapshot: SheetSnapshot): Grid => {
     });
   }
 
-  return { snapshot, columns, blockColumns, blocks };
+  return { snapshot, columns, blockColumns, fields: { ...columns, ...blockColumns }, blocks };
 };
 
 /**
@@ -500,7 +499,7 @@ export const duplicateIds = (blocks: ShowBlock[]): Set<number> => {
  * describe the whole season. This is how anime is laid out — one record per
  * cour — and it is a fact about where the ids sit, never about `Type`.
  */
-export const usesCourModel = (block: ShowBlock): boolean => block.ids.length === 0;
+export const usesCourModel = (block: Pick<ShowBlock, 'ids'>): boolean => block.ids.length === 0;
 
 /**
  * Whether a block's season numbers can address TVDB seasons at all — the scope
@@ -513,5 +512,9 @@ export const usesCourModel = (block: ShowBlock): boolean => block.ids.length ===
  * cours of a franchise share one TVDB id. Attack on Titan's six records all
  * point at tvdb 267440, whose season 1 holds 25 episodes against their
  * 25/12/12/16/12/2.
+ *
+ * The two facts and not the block, so the guard can ask it of a block being
+ * *created*: the type the show row will carry and whether it carries an id are
+ * both on the fill, a row before the row exists.
  */
-export const runtimeScopeOk = (block: ShowBlock): boolean => block.type === 'show' && block.ids.length > 0;
+export const runtimeScopeOk = (block: Pick<ShowBlock, 'type' | 'ids'>): boolean => block.type === 'show' && block.ids.length > 0;
