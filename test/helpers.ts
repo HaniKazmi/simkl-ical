@@ -10,11 +10,13 @@ import { config, type Config } from '../src/shared/config.ts';
 import { clearSheetRuns } from '../src/sheet/io/journal.ts';
 import { clearHardcoverToken } from '../src/api/hardcover/client.ts';
 import { clearBaseline } from '../src/sheet/io/baseline.ts';
-import { dateSerial } from '../src/sheet/values.ts';
+import { dateSerial, showRowFormulas } from '../src/sheet/values.ts';
+import { HEADERS, SHOW_LABELS } from '../src/sheet/2-grid.ts';
 
 import type { Calendars } from '../src/feed/io/calendar.ts';
 import type { SheetSnapshot } from '../src/sheet/io/spreadsheet.ts';
 import type { CellData } from '../src/api/google/types.ts';
+import type { ColumnMap } from '../src/sheet/2-grid.ts';
 import type { CalendarEntry, CalendarFile, LibraryItem, ShowMetadata, SyncType } from '../src/api/simkl/types.ts';
 import type { Library } from '../src/library.ts';
 import { isoOf, plainDateIn } from '../src/shared/dates.ts';
@@ -323,6 +325,22 @@ export const sheetSnapshot = (
 });
 
 /**
+ * `SHEET_HEADERS` as the sync's own column map, so a fixture row and a planned
+ * one are built from the same resolution: a label moved in the list re-letters
+ * both, and neither can be right while the other is wrong.
+ */
+export const SHEET_COLUMNS: ColumnMap = Object.fromEntries(HEADERS.map((name) => [name, col(SHEET_HEADERS, SHOW_LABELS[name])])) as ColumnMap;
+
+/**
+ * The row the fixture's roll-up formulas name — one number for every show row,
+ * whatever index it lands on. Nothing that reads these cells compares the
+ * reference to the row it sits in: the guard asks only that the cell holds a
+ * formula, and the verifier compares formulas for still being formulas,
+ * because Sheets rewrites a relative reference under an insert.
+ */
+const SHOW_FIXTURE_ROW = 1;
+
+/**
  * A show row, in `SHEET_HEADERS` order. Shared rather than per file: these are
  * label-keyed rows and a missed edit shifts every index in a file without
  * failing loudly. The five derived cells are formulas, as on the real sheet —
@@ -335,20 +353,22 @@ export const showRow = (
   id: number | string | null = null,
   type = 'show',
   { artwork = null, franchise = null }: { artwork?: string | null; franchise?: string | null } = {},
-): CellSpec[] =>
-  rowByLabel(SHEET_HEADERS, {
+): CellSpec[] => {
+  const formulas = showRowFormulas(SHEET_COLUMNS, SHOW_FIXTURE_ROW);
+  return rowByLabel(SHEET_HEADERS, {
     Title: title,
     Franchise: franchise,
     Type: type,
     Status: status,
-    Season: { formula: '=IF($O2=0,"",OFFSET($I2,$O2,0))', value: 1 },
-    Episodes: { formula: '=IF($O2=0,"",SUM(OFFSET($K2,1,0,$O2)))', value: 6 },
-    'Start Date': { formula: '=IF($O2=0,"",LET(r,OFFSET($M2,1,0,$O2),IF(COUNT(r)=0,"",MIN(r))))', value: 45000 },
-    'End Date': { formula: '=IF($O2=0,"",LET(r,OFFSET($N2,1,0,$O2),IF(COUNT(r)=0,"",MAX(r))))', value: 45010 },
-    'Seasons / Last Watched': { formula: '=IFERROR(MATCH("*",OFFSET($A2,1,0,40),0)-1,COUNTA(OFFSET($I2,1,0,40)))', value: 2 },
+    Season: { formula: formulas.Season, value: 1 },
+    Episodes: { formula: formulas.Episode, value: 6 },
+    'Start Date': { formula: formulas.Start, value: 45000 },
+    'End Date': { formula: formulas.End, value: 45010 },
+    'Seasons / Last Watched': { formula: formulas.Note, value: 2 },
     ID: id,
     Artwork: artwork,
   });
+};
 
 /**
  * A season row, in `SHEET_HEADERS` order. `runtime: null` leaves the cell

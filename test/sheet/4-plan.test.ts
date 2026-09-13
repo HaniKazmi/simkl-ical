@@ -478,7 +478,7 @@ test('a season already answered is not demanded again', () => {
 // --- status ----------------------------------------------------------------
 
 test('the status rule runs in order, and says nothing where it knows nothing', () => {
-  const base = { id: 1, title: 'X', status: 'watching', lastWatchedAt: null, watchedCount: 10, totalCount: 10, notAiredCount: 0, seasons: new Map() };
+  const base = { id: 1, type: 'shows' as const, title: 'X', status: 'watching', lastWatchedAt: null, watchedCount: 10, totalCount: 10, notAiredCount: 0, seasons: new Map() };
 
   assert.equal(deriveStatus({ ...base, status: 'dropped' }), 'Abandoned');
   assert.equal(deriveStatus({ ...base, watchedCount: 8 }), 'Watching');
@@ -501,7 +501,7 @@ test('Cancelled is never produced, and is overwritten when activity resumes', ()
   for (const detailStatus of ['ended', 'airing', 'tba', 'cancelled', 'canceled']) {
     for (const status of ['watching', 'completed', 'dropped']) {
       const derived = deriveStatus(
-        { id: 1, title: 'X', status, lastWatchedAt: null, watchedCount: 10, totalCount: 10, notAiredCount: 0, seasons: new Map() },
+        { id: 1, type: 'shows' as const, title: 'X', status, lastWatchedAt: null, watchedCount: 10, totalCount: 10, notAiredCount: 0, seasons: new Map() },
         { detailStatus },
       );
       if (derived) produced.add(derived);
@@ -925,7 +925,7 @@ test('planRecord keeps where and what changed, and drops the diagnostics', () =>
     edits: [
       { row: 8, column: 3, field: 'Episode', previous: { numberValue: 3 }, value: { numberValue: 5 }, address: 'K9', note: 'Fargo S2: 3 -> 5 episodes' },
     ],
-    insert: { row: 609, title: 'Fargo', season: 3, fill: [], note: 'Fargo: new season row at 610, 4 episodes' },
+    insert: { kind: 'season', row: 609, rows: 1, title: 'Fargo', season: 3, fill: [], note: 'Fargo: new season row at 610, 4 episodes' },
     skips: [{ code: 'duplicate-season', message: 'Severance S1: two rows claim season 1' }],
     notes: ['Andor: not on the sheet'],
     deferredInserts: 2,

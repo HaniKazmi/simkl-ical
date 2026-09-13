@@ -9,35 +9,19 @@
  */
 
 import { plainDateIn, releaseDate } from '../../shared/dates.ts';
-import { artworkKeyFor, artworkLink, dateSerial } from '../values.ts';
+import { CERTIFICATE_AGES, artworkKeyFor, artworkLink, dateSerial } from '../values.ts';
 import { config } from '../../shared/config.ts';
 import type { TmdbBackdrop, TmdbMovie, TmdbRelease } from '../../api/tmdb/types.ts';
 
-// --- Genres ----------------------------------------------------------------
-
 /**
- * The renderer's closed set. A value outside it colours as nothing, so the
- * guard refuses one rather than letting it reach the sheet.
- *
- * `Abstract` is in the vocabulary and nothing maps to it: no TMDB genre means
- * it, and no row on the tab uses it. It stays hand-only.
+ * The genre and certificate vocabularies are the parent's: the twelve words
+ * the renderer colours are one closed set across both tabs, and the BBFC ages
+ * are one scale. Re-exported rather than re-imported at each call site so this
+ * tab's modules have one place to read its conventions from.
  */
-const GENRE_VOCABULARY = [
-  'Abstract',
-  'Action',
-  'Adventure',
-  'Comedy',
-  'Drama',
-  'Fantasy',
-  'Horror',
-  'Mystery',
-  'Romance',
-  'Sci-Fi',
-  'Thriller',
-  'True Story',
-] as const;
+export { genresCell, isCertificate, isGenre, MAX_SECONDARY_GENRES } from '../values.ts';
 
-const VOCABULARY = new Set<string>(GENRE_VOCABULARY);
+// --- Genres ----------------------------------------------------------------
 
 /**
  * TMDB's nineteen film genres onto ours. Anything absent is dropped.
@@ -69,15 +53,6 @@ const TMDB_GENRES: Record<string, string> = {
 };
 
 /**
- * The tab holds at most three secondary genres — measured, with no row
- * carrying four. A film mapping to more is truncated rather than refused: the
- * extras are the least significant in TMDB's own ordering.
- */
-export const MAX_SECONDARY_GENRES = 3;
-
-export const isGenre = (value: string): boolean => VOCABULARY.has(value);
-
-/**
  * TMDB's list, mapped and deduped, **in TMDB's own order** — which is
  * significance order, and the reason this reads TMDB rather than SIMKL, whose
  * genres arrive sorted alphabetically with that signal gone.
@@ -95,9 +70,6 @@ export const mappedGenres = (movie: TmdbMovie | undefined): string[] => {
   }
   return out;
 };
-
-/** The `Genres` cell: the secondaries, comma-separated the way the tab spells it. */
-export const genresCell = (secondary: readonly string[]): string => secondary.join(', ');
 
 // --- Release dates and the cinema window -----------------------------------
 
@@ -216,20 +188,6 @@ export const typeCell = (anime: boolean): string => (anime ? TYPE_ANIME : TYPE_F
 export const isFilmType = (value: string): boolean => FILM_TYPES.has(value);
 
 // --- Certificate -----------------------------------------------------------
-
-/**
- * The `Rating` column is the BBFC certificate as a minimum age. `12A` and `12`
- * are the same age; the letters differ only in whether an adult must come too.
- *
- * Agrees with 332 of the 338 rows TMDB carries a GB certificate for.
- */
-const CERTIFICATE_AGES: Record<string, number> = { U: 3, PG: 7, '12A': 12, '12': 12, '15': 15, '18': 18 };
-
-const CERTIFICATE_VALUES: readonly number[] = [3, 7, 12, 15, 18];
-
-const RATINGS = new Set(CERTIFICATE_VALUES);
-
-export const isCertificate = (value: number): boolean => RATINGS.has(value);
 
 /**
  * The GB certificate, or null when TMDB carries none or one outside the BBFC

@@ -15,7 +15,7 @@
 
 import { instantFrom } from '../shared/dates.ts';
 import { itemStatus } from '../api/simkl/item.ts';
-import type { LibraryItem } from '../api/simkl/types.ts';
+import type { LibraryItem, SyncType } from '../api/simkl/types.ts';
 import type { Library } from '../library.ts';
 
 export interface SeasonProgress {
@@ -29,6 +29,13 @@ export interface SeasonProgress {
 export interface TitleProgress {
   id: number;
   title: string;
+  /**
+   * Which top-level response key the record arrived under — `shows` or `anime`
+   * here, `movies` filtered out below. The record itself carries no such field:
+   * both nest their title under `show`, and an anime record is a show record
+   * plus `anime_type`.
+   */
+  type: SyncType;
   /** `item.status` — the only membership there is, one record per title. */
   status: string | null;
   lastWatchedAt: Temporal.Instant | null;
@@ -80,6 +87,7 @@ export const indexLibrary = (library: Library | null | undefined): Map<number, T
     out.set(id, {
       id,
       title: item.show?.title ?? item.movie?.title ?? String(id),
+      type,
       status: itemStatus(item),
       lastWatchedAt: instantFrom(item.last_watched_at),
       watchedCount: item.watched_episodes_count ?? 0,

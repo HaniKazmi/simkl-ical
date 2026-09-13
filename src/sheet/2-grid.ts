@@ -14,6 +14,12 @@ import type { SheetSnapshot } from './io/spreadsheet.ts';
  * The columns the sync reads or writes, named by what they *are* to this code
  * rather than by what the sheet calls them. Only the ten: requiring `Genre`
  * would make renaming a column the sync never touches a hard failure.
+ *
+ * `BLOCK_HEADERS` below name six more the sync also reads, resolved
+ * optionally rather than joining this list — the artwork page parses a Shows
+ * tab that can lack a Franchise column entirely
+ * (`test/artwork/1-index.test.ts:97-105`), and a block insert that needs one
+ * of the six declines rather than writing a half-filled row.
  */
 export const HEADERS = ['Show', 'Status', 'Note', 'Season', 'Episode', 'Start', 'End', 'Runtime', 'id', 'Type'] as const;
 
@@ -43,6 +49,38 @@ export const SHOW_LABELS: Record<HeaderName, string> = {
   id: 'ID',
   Type: 'Type',
 };
+
+/**
+ * Six more columns the sync reads, resolved optionally by
+ * `resolveOptionalColumns` rather than joining `HEADERS`: the artwork page
+ * parses a Shows tab that can lack a Franchise column at all
+ * (`test/artwork/1-index.test.ts:97-105`), so a column here being unresolved
+ * is a fact about the tab, not a reason to fail closed the way a missing
+ * required label is.
+ */
+export const BLOCK_HEADERS = ['Franchise', 'Genre', 'Genres', 'Network', 'Certificate', 'Banner'] as const;
+
+export type BlockHeaderName = (typeof BLOCK_HEADERS)[number];
+
+/**
+ * `Banner`'s label is the literal `'Artwork'` here rather than `values.ts`'s
+ * `ARTWORK_LABEL`: `values.ts` imports this module already, so importing the
+ * other way would be a cycle evaluated at module load.
+ * `test/sheet/2-grid.test.ts` pins the two strings equal.
+ */
+export const BLOCK_LABELS: Record<BlockHeaderName, string> = {
+  Franchise: 'Franchise',
+  Genre: 'Genre',
+  Genres: 'Other Genres',
+  Network: 'Network',
+  Certificate: 'Certificate',
+  Banner: 'Artwork',
+};
+
+/** Every field the show tab can carry: the ten required, plus the six optional. */
+export type ShowField = HeaderName | BlockHeaderName;
+
+export const SHOW_FIELD_LABELS: Record<ShowField, string> = { ...SHOW_LABELS, ...BLOCK_LABELS };
 
 /**
  * The pair that identifies this tab's header row — see `findHeaderRow`. The
@@ -185,6 +223,17 @@ export const findHeaderRow = (rows: CellData[][], required: readonly string[]): 
   throw new GridError(`No header row in the first ${HEADER_SEARCH_ROWS} rows — looked for one containing ${required.join(' and ')}.`);
 };
 
+/** Every column index a label appears at, folded — shared by both resolvers below. */
+const indexLabels = (headerCells: CellData[], width: number): Map<string, number[]> => {
+  const found = new Map<string, number[]>();
+  for (let column = 0; column < width; column += 1) {
+    const label = fold(textOf(headerCells[column]) ?? '');
+    if (!label) continue;
+    found.set(label, [...(found.get(label) ?? []), column]);
+  }
+  return found;
+};
+
 /**
  * Column index per field. Every label must appear exactly once: a duplicate
  * makes "which column is the episode count" unanswerable, and the wrong answer
@@ -206,12 +255,7 @@ export const resolveColumns = <H extends string>(
   headers: readonly H[],
   labelOf: (header: H) => string,
 ): Record<H, number> => {
-  const found = new Map<string, number[]>();
-  for (let column = 0; column < width; column += 1) {
-    const label = fold(textOf(headerCells[column]) ?? '');
-    if (!label) continue;
-    found.set(label, [...(found.get(label) ?? []), column]);
-  }
+  const found = indexLabels(headerCells, width);
 
   const columns = {} as Record<H, number>;
   const problems: string[] = [];
@@ -223,6 +267,30 @@ export const resolveColumns = <H extends string>(
     else columns[header] = matches[0] as number;
   }
   if (problems.length) throw new GridError(`Cannot resolve the header row: ${problems.join('; ')}.`);
+  return columns;
+};
+
+/**
+ * The optional counterpart of `resolveColumns`: a label that is missing, or
+ * one that is duplicated, is simply absent from the result rather than a
+ * thrown error. A duplicate here is exactly as unresolvable as it is for a
+ * required column — there is no way to say which of two columns to read or
+ * write — but an optional field has a caller that can decline gracefully,
+ * where a required one has none.
+ */
+export const resolveOptionalColumns = <H extends string>(
+  headerCells: CellData[],
+  width: number,
+  headers: readonly H[],
+  labelOf: (header: H) => string,
+): Partial<Record<H, number>> => {
+  const found = indexLabels(headerCells, width);
+
+  const columns: Partial<Record<H, number>> = {};
+  for (const header of headers) {
+    const matches = found.get(fold(labelOf(header))) ?? [];
+    if (matches.length === 1) columns[header] = matches[0] as number;
+  }
   return columns;
 };
 
@@ -272,12 +340,22 @@ export interface ShowBlock {
   type: string | null;
   /** Ids on the *show* row. A season row's own id wins over these. */
   ids: number[];
+  /**
+   * The Franchise cell's text. Null when the column is unresolved or the
+   * cell is blank; placement then sorts the block by the title rule, which is
+   * where a reader who left the cell blank finds it.
+   */
+  franchise: string | null;
   seasons: SeasonRow[];
 }
+
+/** Column index per `BlockHeaderName`, absent for any of the six not resolved. */
+export type BlockColumns = Partial<Record<BlockHeaderName, number>>;
 
 export interface Grid {
   snapshot: SheetSnapshot;
   columns: ColumnMap;
+  blockColumns: BlockColumns;
   blocks: ShowBlock[];
 }
 
@@ -305,6 +383,7 @@ export const parseGrid = (snapshot: SheetSnapshot): Grid => {
   // sync.
   const width = Math.max(snapshot.columnCount, ...rows.map((r) => r.length));
   const columns = resolveColumns(rows[headerRow] ?? [], width, HEADERS, (header) => SHOW_LABELS[header]);
+  const blockColumns = resolveOptionalColumns(rows[headerRow] ?? [], width, BLOCK_HEADERS, (header) => BLOCK_LABELS[header]);
 
   const blocks: ShowBlock[] = [];
   for (let row = headerRow + 1; row < rows.length; row += 1) {
@@ -326,6 +405,7 @@ export const parseGrid = (snapshot: SheetSnapshot): Grid => {
         status: textOf(cells[columns.Status]),
         type: textOf(cells[columns.Type])?.toLowerCase() ?? null,
         ids: parseIds(cells[columns.id]),
+        franchise: blockColumns.Franchise === undefined ? null : textOf(cells[blockColumns.Franchise]),
         seasons: [],
       });
       continue;
@@ -353,7 +433,7 @@ export const parseGrid = (snapshot: SheetSnapshot): Grid => {
     });
   }
 
-  return { snapshot, columns, blocks };
+  return { snapshot, columns, blockColumns, blocks };
 };
 
 /**

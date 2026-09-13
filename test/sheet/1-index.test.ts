@@ -29,6 +29,15 @@ test('films are skipped by type — the whole block model is inapplicable', () =
   assert.deepEqual([...index.keys()], [1]);
 });
 
+// A record's own fields carry no way to tell an anime cour from a show
+// season: both nest their title under `show`. The response key it arrived
+// under is the only place that fact exists.
+test('type comes from the response key the record arrived under, not the record', () => {
+  const index = indexLibrary(libraryOf({ id: 1, type: 'anime' }, { id: 2, type: 'shows' }));
+  assert.equal(index.get(1)?.type, 'anime');
+  assert.equal(index.get(2)?.type, 'shows');
+});
+
 test('a cour is complete on its own counters, since one anime entry is one season', () => {
   const progress = indexLibrary(libraryOf({ id: 1, watched: 12, total: 12, notAired: 0 })).get(1)!;
   assert.equal(courComplete(progress), true);

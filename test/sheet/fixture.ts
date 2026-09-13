@@ -113,7 +113,9 @@ export const gridFixture = (...named: NamedRow[]): GridFixture => {
   const insertAt = (row: string | number, season: number, { title = 'Fargo', runtime = 45, end = null, note = null }: InsertOptions = {}): RowInsert => {
     const index = indexOf(row);
     return {
+      kind: 'season',
       row: index,
+      rows: 1,
       title,
       season,
       fill: (

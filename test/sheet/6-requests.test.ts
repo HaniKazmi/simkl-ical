@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { deleteRowRequests, toRequests, writesFor } from '../../src/sheet/6-requests.ts';
+import { deleteRowRequests, rowsTouched, toRequests, writesFor, type PlannedWrites } from '../../src/sheet/6-requests.ts';
 import { fx, planOf, TODAY } from './fixture.ts';
 
 /** The batch as a readable shape: what each request is, and which row it hits. */
@@ -46,6 +46,37 @@ test('an inserted row inherits the formats of the row above it', () => {
   const insert = requests.find((r) => 'insertDimension' in r);
   assert.ok(insert && 'insertDimension' in insert);
   assert.equal(insert.insertDimension.inheritFromBefore, true);
+});
+
+/**
+ * A span, the shape a block takes: two contiguous rows, and a fill spread
+ * across both. Structural, because this module reads no field name — the show
+ * planner's own insert is one row.
+ */
+const spanPlan = (): PlannedWrites => {
+  const insert = fx.insertAt(fx.end, 3);
+  return { edits: [], insert: { ...insert, rows: 2, fill: insert.fill.map((cell, i) => (i === 0 ? cell : { ...cell, row: cell.row + 1 })) } };
+};
+
+// One request for the whole span. Two requests of one row each would put the
+// second row above the first row's fill, and a request that stopped short by a
+// row would push the second row's fill onto a row the sheet already had.
+test('a span is inserted as one request covering every row of it', () => {
+  const inserts = toRequests(writesFor(spanPlan(), fx.grid)).filter((r) => 'insertDimension' in r);
+  assert.equal(inserts.length, 1);
+  assert.deepEqual(inserts[0]!.insertDimension.range, { sheetId: fx.grid.snapshot.sheetId, dimension: 'ROWS', startIndex: fx.end, endIndex: fx.end + 2 });
+});
+
+test('the fill of a span is written at the row each cell names', () => {
+  const written = toRequests(writesFor(spanPlan(), fx.grid)).flatMap((r) => ('updateCells' in r ? [r.updateCells.range.startRowIndex] : []));
+  assert.deepEqual([...new Set(written)].sort(), [fx.end, fx.end + 1]);
+});
+
+// `SHEET_MAX_ROWS` is a blast radius, and a two-row block that counts as one
+// row spends half of what it takes.
+test('the rows a plan touches counts every row of a span', () => {
+  assert.equal(rowsTouched(spanPlan()), 2);
+  assert.equal(rowsTouched(planOf([], fx.insertAt(fx.end, 3))), 1);
 });
 
 test('row deletions are emitted descending', () => {

@@ -75,8 +75,16 @@ export interface CellEdit {
 }
 
 export interface RowInsert {
+  /**
+   * What the plan's one insert slot holds. A consumer that has to branch reads
+   * this rather than inferring the shape from the span's height, which says
+   * how tall an insert is and never what it is.
+   */
+  kind: 'season';
   /** Where the new row lands. Rows at and below this index shift down by one. */
   row: number;
+  /** One row: a season row joins a block that already exists. */
+  rows: 1;
   title: string;
   season: number;
   /** Cells written into the new row. It has no `previous` — it did not exist. */
@@ -108,10 +116,12 @@ export interface Skip {
 export interface SheetPlan {
   edits: CellEdit[];
   /**
-   * At most one row per run, carried by the type: plan indices are pre-write
-   * but `insertDimension` applies cumulatively, so a second insert would land
-   * a row above where it was planned — and `verify` makes the same unshifted
-   * assumption.
+   * At most one insert per run, carried by the type: plan indices are
+   * pre-write but `insertDimension` applies cumulatively, so a second insert
+   * would land a row above where it was planned — and `verify` makes the same
+   * unshifted assumption. One insert may still span more than one row, which
+   * `rows` carries; a span is contiguous and applies as a single request, so
+   * nothing shifts underneath it.
    */
   insert: RowInsert | null;
   /** Rows deliberately left alone, with the reason. Reported, never acted on. */
@@ -1302,7 +1312,9 @@ const planInsert = (
   }));
 
   return {
+    kind: 'season',
     row,
+    rows: 1,
     title: block.title,
     season: candidate.number,
     fill,

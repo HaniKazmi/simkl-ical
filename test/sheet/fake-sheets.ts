@@ -129,7 +129,11 @@ export const fakeSheets = ({
       return {};
     }
     if ('insertDimension' in request) {
-      tabs.get(request.insertDimension.range.sheetId)?.splice(request.insertDimension.range.startIndex, 0, []);
+      const { sheetId, startIndex, endIndex } = request.insertDimension.range;
+      // One request inserts a whole span, so a two-row block arrives as two
+      // blank rows here — spliced in one, the second row's fill would land on
+      // the row the span pushed down.
+      tabs.get(sheetId)?.splice(startIndex, 0, ...Array.from({ length: endIndex - startIndex }, () => []));
       return {};
     }
     if ('deleteDimension' in request) {

@@ -1,7 +1,22 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { columnLetter, duplicateIds, findHeaderRow, GridError, HEADERS, idsFor, parseGrid, parseIds, resolveColumns, SHOW_LABELS } from '../../src/sheet/2-grid.ts';
-import { cellOf, col, sheetSnapshot, SHEET_HEADERS, type CellSpec, seasonRow, showRow } from '../helpers.ts';
+import {
+  BLOCK_HEADERS,
+  BLOCK_LABELS,
+  columnLetter,
+  duplicateIds,
+  findHeaderRow,
+  GridError,
+  HEADERS,
+  idsFor,
+  parseGrid,
+  parseIds,
+  resolveColumns,
+  resolveOptionalColumns,
+  SHOW_LABELS,
+} from '../../src/sheet/2-grid.ts';
+import { ARTWORK_LABEL } from '../../src/sheet/values.ts';
+import { cellOf, col, rowByLabel, sheetSnapshot, SHEET_HEADERS, type CellSpec, seasonRow, showRow } from '../helpers.ts';
 
 const H = SHEET_HEADERS;
 const labelOf = (h: (typeof HEADERS)[number]) => SHOW_LABELS[h];
@@ -171,4 +186,65 @@ test('a row carrying only an id is not read as a season row', () => {
   idOnly[col(H, 'ID')] = 3381;
   const grid = parseGrid(sheetSnapshot([H, show('Fargo', 'Ended', 100), idOnly]));
   assert.deepEqual(grid.blocks[0]?.seasons, []);
+});
+
+// --- block columns -----------------------------------------------------------
+
+test('the six block columns resolve from the live header order', () => {
+  const grid = parseGrid(sheetSnapshot([H, show('Fargo', 'Ended', 3381, 'show')]));
+  assert.deepEqual(grid.blockColumns, {
+    Franchise: col(H, 'Franchise'),
+    Genre: col(H, 'Genre'),
+    Genres: col(H, 'Other Genres'),
+    Network: col(H, 'Network'),
+    Certificate: col(H, 'Certificate'),
+    Banner: col(H, 'Artwork'),
+  });
+});
+
+// A column an optional field is missing is a fact about the tab, not a
+// reason to fail closed the way a missing required column is.
+test('a header lacking an optional column parses without throwing, leaving it unresolved', () => {
+  const noNetwork = H.filter((label) => label !== 'Network');
+  const rows = [noNetwork, rowByLabel(noNetwork, { Title: 'Fargo', Status: 'Ended', Type: 'show', ID: 3381 })];
+  const grid = parseGrid(sheetSnapshot(rows));
+  assert.equal(grid.blockColumns.Network, undefined);
+});
+
+test('a duplicated optional column resolves to absent, not a thrown error', () => {
+  const duped = [...H, 'Genre'];
+  const rows = [duped, [...rowByLabel(H, { Title: 'Fargo', Status: 'Ended', Type: 'show', ID: 3381 }), null]];
+  const grid = parseGrid(sheetSnapshot(rows));
+  assert.equal(grid.blockColumns.Genre, undefined);
+  // The other five are untouched by one column's duplicate.
+  assert.equal(grid.blockColumns.Franchise, col(H, 'Franchise'));
+});
+
+test('resolveOptionalColumns answers absent rather than throwing, for both failure shapes', () => {
+  const labelOf = (h: (typeof BLOCK_HEADERS)[number]) => BLOCK_LABELS[h];
+  const missing = H.filter((label) => label !== 'Certificate');
+  assert.deepEqual(resolveOptionalColumns(missing.map(cellOf), missing.length, BLOCK_HEADERS, labelOf).Certificate, undefined);
+
+  const duplicated = [...H, 'Network'];
+  assert.deepEqual(resolveOptionalColumns(duplicated.map(cellOf), duplicated.length, BLOCK_HEADERS, labelOf).Network, undefined);
+});
+
+test('a block\'s franchise reads the Franchise cell as text, and is null when the cell or the column is absent', () => {
+  const noFranchise = H.filter((label) => label !== 'Franchise');
+  const grid = parseGrid(
+    sheetSnapshot([
+      H,
+      show('Fargo', 'Ended', 3381, 'show', { franchise: 'Fargo' }),
+      show('Silo', 'Watching', 7, 'show'),
+    ]),
+  );
+  assert.equal(grid.blocks[0]?.franchise, 'Fargo');
+  assert.equal(grid.blocks[1]?.franchise, null);
+
+  const without = parseGrid(sheetSnapshot([noFranchise, rowByLabel(noFranchise, { Title: 'Fargo', Status: 'Ended', Type: 'show', ID: 3381 })]));
+  assert.equal(without.blocks[0]?.franchise, null);
+});
+
+test('BLOCK_LABELS.Banner matches values.ts\'s ARTWORK_LABEL, kept as a literal here to avoid a cycle', () => {
+  assert.equal(BLOCK_LABELS.Banner, ARTWORK_LABEL);
 });

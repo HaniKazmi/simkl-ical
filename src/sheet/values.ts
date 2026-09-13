@@ -1,15 +1,20 @@
 /**
- * The sheet's value conventions — how a date and a runtime become a cell — one
- * copy for planner and guard both.
+ * The sheet's value conventions — how a date, a runtime, a genre and a whole
+ * show row become cells — one copy for planner, guard and the test fixture.
  *
  * The bounds matter most. Refusal is whole-plan, so a planner value the guard
  * rejects stops every unrelated edit for as long as the bad row sits inside
  * the activity window. One copy of each bound makes that gap unrepresentable.
+ *
+ * The vocabularies below the bounds are shared by both tabs for the same
+ * reason, one step further out: the films tab's genre and certificate sets are
+ * the show tab's conditional-format sets, so two copies would be two closed
+ * sets drifting apart with nothing to notice.
  */
 
-import { isBlank, isFormula } from './2-grid.ts';
+import { columnLetter, isBlank, isFormula } from './2-grid.ts';
 import { instantFrom, plainDateFrom, plainDateIn } from '../shared/dates.ts';
-import type { HeaderName } from './2-grid.ts';
+import type { ColumnMap, HeaderName } from './2-grid.ts';
 import type { CellData } from '../api/google/types.ts';
 
 /** Sheets counts days from 1899-12-30. */
@@ -283,4 +288,337 @@ export const artworkKeyOf = (url: string | null | undefined, bucket: string): st
   } catch {
     return null;
   }
+};
+
+// --- Vocabularies both tabs share -------------------------------------------
+
+/**
+ * The renderer's closed set of genres. A value outside it colours as nothing
+ * on either tab, so the guard refuses one rather than letting it reach the
+ * sheet.
+ *
+ * One set for films and shows because it *is* one set: the twelve words are
+ * the show tab's conditional-format vocabulary and the films tab's alike, and
+ * a second copy would be a second closed set free to drift.
+ *
+ * `Abstract` is in the vocabulary and nothing maps to it: no TMDB or TVDB
+ * genre means it, and no row uses it. It stays hand-only.
+ */
+export const GENRE_VOCABULARY = [
+  'Abstract',
+  'Action',
+  'Adventure',
+  'Comedy',
+  'Drama',
+  'Fantasy',
+  'Horror',
+  'Mystery',
+  'Romance',
+  'Sci-Fi',
+  'Thriller',
+  'True Story',
+] as const;
+
+const VOCABULARY = new Set<string>(GENRE_VOCABULARY);
+
+export const isGenre = (value: string): boolean => VOCABULARY.has(value);
+
+/**
+ * Either tab holds at most three secondary genres — measured, with no row
+ * carrying four. A title mapping to more is truncated rather than refused: the
+ * extras are the least significant in the upstream's own ordering.
+ */
+export const MAX_SECONDARY_GENRES = 3;
+
+/** The `Genres` cell: the secondaries, comma-separated the way both tabs spell it. */
+export const genresCell = (secondary: readonly string[]): string => secondary.join(', ');
+
+/**
+ * The `Certificate` column is the BBFC certificate as a minimum age. `12A` and
+ * `12` are the same age; the letters differ only in whether an adult must come
+ * too.
+ *
+ * Agrees with 332 of the 338 film rows TMDB carries a GB certificate for, and
+ * with 161 of the 189 show blocks; 10 of those blocks have no GB rating at all
+ * and stay blank.
+ */
+export const CERTIFICATE_AGES: Record<string, number> = { U: 3, PG: 7, '12A': 12, '12': 12, '15': 15, '18': 18 };
+
+const CERTIFICATES = new Set<number>([3, 7, 12, 15, 18]);
+
+export const isCertificate = (value: number): boolean => CERTIFICATES.has(value);
+
+/**
+ * TVDB's genre names onto the vocabulary. Anything absent is dropped.
+ *
+ * `Documentary` → `True Story` is the one rename that is not a spelling, and
+ * it is the rename the films map already makes.
+ *
+ * `History` is dropped for the reason the films map drops it: it is fiction as
+ * often as fact — a series set in the past carries it beside one that
+ * happened — and nothing in the payload separates the two.
+ *
+ * `Animation`, `Anime`, `Crime`, `Mini-Series`, `Family`, `Children`, `War`,
+ * `Western`, `Martial Arts`, `Sport`, `Musical`, `Soap`, `Reality`, `Talk
+ * Show`, `Game Show`, `Travel` and `Food` are dropped because the vocabulary
+ * has nowhere to put them.
+ */
+const TVDB_GENRES: Record<string, string> = {
+  Action: 'Action',
+  Adventure: 'Adventure',
+  Comedy: 'Comedy',
+  Documentary: 'True Story',
+  Drama: 'Drama',
+  Fantasy: 'Fantasy',
+  Horror: 'Horror',
+  Mystery: 'Mystery',
+  Romance: 'Romance',
+  'Science Fiction': 'Sci-Fi',
+  Suspense: 'Thriller',
+  Thriller: 'Thriller',
+};
+
+/**
+ * TVDB's list, mapped and deduped, **in the order TVDB sent it** — which is
+ * TVDB's own genre-id order on all 189 show records measured (Science Fiction
+ * 2, Horror 6, Drama 12, Crime 14, Comedy 15, Documentary 16, Adventure 18,
+ * Action 19, Fantasy 21, Suspense 22, Thriller 24, Romance 27, Mystery 31).
+ * A fixed priority rather than a per-series judgement, and it is close to the
+ * priority the tab itself picks by: the first survivor reproduces 128 of 189
+ * primaries, where every TMDB-ordered rule measured reaches 108 to 120.
+ *
+ * The first survivor is the block's `Genre` and the rest are its `Genres` —
+ * the shape `mappedGenres` gives a film, with TVDB as the ordered source.
+ */
+export const mappedTvdbGenres = (names: readonly string[]): string[] => {
+  const out: string[] = [];
+  for (const name of names) {
+    const mapped = TVDB_GENRES[name];
+    if (mapped && !out.includes(mapped)) out.push(mapped);
+  }
+  return out;
+};
+
+/**
+ * How the `Network` column spells a broadcaster SIMKL names differently. An
+ * absent entry is the identity: the map holds only the names that disagree.
+ *
+ * The four BBC channels collapse because the column names the broadcaster, not
+ * the channel; `STARZ` and `FOX` are the same name in the tab's own casing;
+ * `HBO Max` and `Max` are both HBO, which is what the tab files those titles
+ * under. Through this map SIMKL's `network` agrees with 185 of the 189 blocks
+ * measured — the same 185 TVDB's `originalNetwork` gives, where TMDB gives 144.
+ */
+const NETWORKS: Record<string, string> = {
+  'BBC One': 'BBC',
+  'BBC Two': 'BBC',
+  'BBC Three': 'BBC',
+  'BBC Four': 'BBC',
+  STARZ: 'Starz',
+  FOX: 'Fox',
+  'HBO Max': 'HBO',
+  Max: 'HBO',
+  'CBS All Access': 'CBS',
+  'Paramount+ with Showtime': 'Paramount+',
+  'AMC+': 'AMC',
+};
+
+/** The `Network` cell for an upstream name, or null where there is no name to write. */
+export const networkCell = (name: string | null | undefined): string | null => {
+  const trimmed = name?.trim();
+  if (!trimmed) return null;
+  return NETWORKS[trimmed] ?? trimmed;
+};
+
+// --- The show row a block insert writes --------------------------------------
+
+/**
+ * How the `Type` column spells a series. Lowercase, as every show row on the
+ * tab holds it, and beside the films tab's `film`/`anime` so a reader
+ * filtering on `anime` gets both.
+ *
+ * Only `show` is ever written: an anime block uses the cour model, where a new
+ * cour is a separate SIMKL title, so the sync inserts no anime block.
+ */
+export const SHOW_TYPE = 'show';
+
+/**
+ * The `Status` column's closed set — the five values the 189 blocks hold.
+ * `Cancelled` is never produced by `deriveStatus`, because SIMKL cannot tell
+ * "axed" from "ended"; it is in the vocabulary because the tab holds it, and a
+ * value the guard refuses is a value the sheet cannot keep.
+ */
+export const STATUS_VOCABULARY = ['Ended', 'Abandoned', 'Cancelled', 'Up To Date', 'Watching'] as const;
+
+const STATUSES = new Set<string>(STATUS_VOCABULARY);
+
+export const isStatus = (value: string): boolean => STATUSES.has(value);
+
+/**
+ * The show-row cells that roll up from the season rows beneath them. Every one
+ * is a formula, which is why the batch that creates a block is the single
+ * exception to never writing one: it writes the formula that will do the
+ * rolling up, and nothing revisits the cell afterwards.
+ */
+const ROLLUP = ['Season', 'Episode', 'Start', 'End', 'Note'] as const;
+
+/** A show-row roll-up column. `showRowFormulas` answers a `Record` over this, so a sixth field is a compile error rather than a cell silently left blank. */
+export type RollupField = (typeof ROLLUP)[number];
+
+export const ROLLUP_FIELDS: readonly RollupField[] = ROLLUP;
+
+/**
+ * How far down the block-height helper looks for the next show row. Part of
+ * the one formula shape all 309 blocks carry, so it is the sheet's number
+ * rather than a choice made here: a different value in a new row's formula
+ * would count a block's height by a different rule than every row above it.
+ */
+const BLOCK_SCAN_ROWS = 40;
+
+/**
+ * The five roll-up formulas for a show row, in the live text — one shape on
+ * all 309 blocks.
+ *
+ * `row` is zero-based and the A1 number in the formula is one higher. Every
+ * column letter comes off the *resolved* map rather than a literal, because
+ * columns are resolved by label and the user rearranges them: a hardcoded `$O`
+ * would go on counting a block's height off whatever column now sits there,
+ * and the four cells that read it would be quietly wrong for the life of the
+ * row.
+ *
+ * `Note` is the helper the other four read — the number of season rows under
+ * this one — which is why it appears inside each of them.
+ */
+export const showRowFormulas = (columns: ColumnMap, row: number): Record<RollupField, string> => {
+  const n = row + 1;
+  const at = (field: HeaderName): string => `$${columnLetter(columns[field])}${n}`;
+  const height = at('Note');
+  return {
+    Season: `=IF(${height}=0,"",OFFSET(${at('Season')},${height},0))`,
+    Episode: `=IF(${height}=0,"",SUM(OFFSET(${at('Episode')},1,0,${height})))`,
+    Start: `=IF(${height}=0,"",LET(r,OFFSET(${at('Start')},1,0,${height}),IF(COUNT(r)=0,"",MIN(r))))`,
+    End: `=IF(${height}=0,"",LET(r,OFFSET(${at('End')},1,0,${height}),IF(COUNT(r)=0,"",MAX(r))))`,
+    Note: `=IFERROR(MATCH("*",OFFSET(${at('Show')},1,0,${BLOCK_SCAN_ROWS}),0)-1,COUNTA(OFFSET(${at('Season')},1,0,${BLOCK_SCAN_ROWS})))`,
+  };
+};
+
+/**
+ * The `Artwork` cell a new show row takes: the static link for whatever the
+ * title cell beside it holds, as a formula rather than a literal.
+ *
+ * The formula is the shape 291 of the 309 rows carry, and `artworkLink`
+ * produces its output byte for byte for the same title — so `artworkKeyOf` and
+ * the artwork page read a row the sync wrote and one written by hand the same
+ * way. The reference is relative, so Sheets rewrites it under a later insert,
+ * which is exactly the case the verifier compares formulas for still being
+ * formulas rather than for their text.
+ */
+export const artworkFormula = (showColumn: number, row: number, bucket: string): string =>
+  `=CONCAT("${ARTWORK_HOST}/${bucket}/",${columnLetter(showColumn)}${row + 1})`;
+
+// --- Where a block goes ------------------------------------------------------
+
+/**
+ * The `Title` cell for an upstream title: the title minus one trailing
+ * ` (US)`/` (UK)`. The marker is SIMKL's way of separating two records of one
+ * name, and the block holding one of them needs no disambiguation from a
+ * remake that is not on the tab.
+ *
+ * Those two suffixes exactly, and case-sensitively: `V (2009)` is a title the
+ * tab holds verbatim, and a rule loose enough to take a parenthesised year
+ * would take it too.
+ *
+ * The rule reproduces 166 of the 189 titles the tab holds exactly; `titleKey`
+ * below is what covers the rest.
+ */
+export const titleCell = (title: string): string => title.replace(/ \((?:US|UK)\)$/, '').trim();
+
+/**
+ * The `Franchise` cell for a title: the title minus one leading article.
+ *
+ * That reproduces 247 of the 309 blocks — 215 where the franchise is the title
+ * exactly, and 32 more where it is the title minus its article. The other 62
+ * are hand judgements no rule reaches (`Agatha Christie`, `DC`, `Arthurian`),
+ * so a new block lands one cell short of right rather than in the wrong place.
+ *
+ * The article has to be a whole word: `Theodore` starts with `The` and is not
+ * an article away from `odore`.
+ */
+export const franchiseKeyFor = (title: string): string =>
+  title
+    .trim()
+    .replace(/^(?:the|an|a)\s+/i, '')
+    .trim();
+
+/**
+ * How two franchises sort — the tab's own order, and the order a new block is
+ * placed in.
+ *
+ * The locale is pinned rather than left to the host's: a Mac and the container
+ * image do not default to the same one, and a comparator that changes under
+ * the process would place a block where the guard then re-derives a different
+ * row.
+ *
+ * Under exactly these options all 309 blocks are in order, with no inversions.
+ * Both options earn their place: `sensitivity: 'base'` alone puts `13 Reasons
+ * Why` before `3%`, one inversion, and `numeric` is what settles it; adding
+ * `ignorePunctuation` introduces five.
+ */
+export const compareFranchise = (a: string, b: string): number => a.localeCompare(b, 'en', { numeric: true, sensitivity: 'base' });
+
+/**
+ * The key that decides whether the tab already holds a title — the same
+ * normalisation placement uses, case-folded.
+ *
+ * The tab's titles differ from SIMKL's by a leading article, a `(US)` suffix
+ * and casing: 162 of 189 agree with the raw title and 183 under this key. A
+ * hand-typed block `Last Of Us` has to hold `The Last of Us` back, and what a
+ * false match costs is one note asking for the id, where a missed one costs a
+ * duplicate block.
+ */
+export const titleKey = (title: string): string => franchiseKeyFor(titleCell(title)).toLowerCase();
+
+/**
+ * What placement needs of a block, structurally: a parsed `ShowBlock`
+ * satisfies it, and so does a guard's own re-derivation built from less.
+ */
+export interface PlaceableBlock {
+  row: number;
+  title: string;
+  /** The `Franchise` cell's text, where the tab carries that column. */
+  franchise?: string | null;
+  seasons: readonly { row: number }[];
+}
+
+/**
+ * The franchise a block sorts under: its own cell, and the title rule where
+ * the cell is blank or the column is not on the tab. A blank cell sorts the
+ * block where its title puts it, which is where the reader left it.
+ */
+export const blockFranchise = (block: PlaceableBlock): string => block.franchise ?? franchiseKeyFor(block.title);
+
+/** The last row a block occupies: its final season row, or the show row itself for a block with none. */
+export const blockEnd = (block: PlaceableBlock): number => block.seasons.at(-1)?.row ?? block.row;
+
+/**
+ * The row a new block's show row goes on, or null when the tab holds no block
+ * to place it against.
+ *
+ * Three rules in order, and the first is why this is a walk rather than a
+ * binary search: a block sharing a franchise goes **after the last** block of
+ * it, because within a franchise the tab's order is loose — 15 inversions
+ * across 309 blocks — so no comparison can find a position inside the group.
+ * Failing that the block goes above the first franchise that sorts after it,
+ * and failing that below everything.
+ *
+ * The row is pre-write, like every other plan index.
+ */
+export const placeBlock = (blocks: readonly PlaceableBlock[], franchise: string): number | null => {
+  const last = blocks.at(-1);
+  if (!last) return null;
+  let sameFranchise: PlaceableBlock | undefined;
+  for (const block of blocks) if (compareFranchise(blockFranchise(block), franchise) === 0) sameFranchise = block;
+  if (sameFranchise) return blockEnd(sameFranchise) + 1;
+  const after = blocks.find((block) => compareFranchise(blockFranchise(block), franchise) > 0);
+  return after ? after.row : blockEnd(last) + 1;
 };
