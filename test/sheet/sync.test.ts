@@ -5,10 +5,12 @@ import { join } from 'node:path';
 import { SheetSync } from '../../src/sheet/sync.ts';
 import { clearTokenCache } from '../../src/api/google/auth.ts';
 import { clearTokenCache as clearTvdbTokenCache } from '../../src/api/tvdb/auth.ts';
-import { cellOf, col, daysAgo, jsonResponse, libraryOf, quiet, recorder, SHEET_HEADERS, todaySerial, withConfig, withFetch, withFreshJournal, type CellSpec, seasonRow, showRow } from '../helpers.ts';
+import { cellOf, col, daysAgo, jsonResponse, libraryOf, quiet, recorder, SHEET_COLUMNS, SHEET_HEADERS, todaySerial, withConfig, withFetch, withFreshJournal, type CellSpec, seasonRow, showRow } from '../helpers.ts';
 import { CREDENTIAL, DEFAULT_GRID, fakeSheets, type FakeSheetsOptions } from './fake-sheets.ts';
 import { sheetRuns } from '../../src/sheet/io/journal.ts';
 import { withSheetLock } from '../../src/sheet/io/lock.ts';
+import { artworkFormula, dateSerial, showRowFormulas } from '../../src/sheet/values.ts';
+import type { CellData } from '../../src/api/google/types.ts';
 import type { Library } from '../../src/library.ts';
 import { plainDateIn } from '../../src/shared/dates.ts';
 
@@ -949,5 +951,408 @@ test('a run that wrote nothing leaves the change to be planned again', async () 
       assert.ok(again.record.edits.some((e) => e.address === S1_START), 'report mode wrote nothing, so the change is still pending');
     },
     fargo(30),
+  );
+});
+
+// --- a block for a show with no row -----------------------------------------
+//
+// A TV show the tab has no block for, watched twice into a season that has
+// finished airing — so a run must ask all three upstreams: SIMKL for the detail
+// and the episode list, TVDB for the genres and the season's runtimes, TMDB for
+// the content rating. Each test below withholds one of those answers.
+//
+// `Severance` sorts after `Fargo` under `compareFranchise`, so the block lands
+// below the grid's one block rather than under the header, where
+// `inheritFromBefore` would take the header's formats.
+
+const NEW_SHOW = { id: 900, title: 'Severance' } as const;
+const FIRST_WATCH = daysAgo(9);
+const LAST_WATCH = daysAgo(2);
+
+const NEW_SHOW_LIBRARY: Library = libraryOf({
+  id: NEW_SHOW.id,
+  title: NEW_SHOW.title,
+  status: 'watching',
+  seasons: { 1: [FIRST_WATCH, LAST_WATCH] },
+  watched: 2,
+  total: 9,
+});
+
+/** The detail every `/tv/{id}` answers with: the ids both show-facts lookups ride on. */
+const NEW_SHOW_DETAIL = { title: NEW_SHOW.title, status: 'airing', runtime: 45, network: 'Apple TV+', ids: { tvdb: '111', tmdb: '222' } };
+
+/** Season 1 fully aired, which is what makes the season runtime askable. */
+const NEW_SHOW_EPISODES = Array.from({ length: 9 }, (_, i) => ({ season: 1, episode: i + 1, type: 'episode', aired: true }));
+
+/**
+ * TVDB's two answers, told apart by path. `/extended` carries the genre list
+ * in TVDB's own genre-id order, which is the order the primary is picked out
+ * of; `/episodes/official` is the season runtime, and its episode count must
+ * agree with SIMKL's or the average is refused.
+ */
+const tvdbSeries = (genres: string[] = ['Drama', 'Science Fiction', 'Suspense'], minutes = 47) => (url: string) => {
+  if (url.includes('/extended')) return jsonResponse({ data: { genres: genres.map((name, i) => ({ id: i, name })) } });
+  if (url.includes('/episodes/official')) return jsonResponse({ data: { episodes: NEW_SHOW_EPISODES.map((e) => ({ number: e.episode, runtime: minutes })) } });
+  throw new Error(`unexpected TVDB request: ${url}`);
+};
+
+const tmdbRating = (rating = '15') => () => jsonResponse({ content_ratings: { results: [{ iso_3166_1: 'GB', rating }] } });
+
+const SHOW_BUCKET = 'shows-bucket';
+
+/** Both keys, both buckets: everything a block needs, so a test can withhold one. */
+const withBlockKeys = (over: Parameters<typeof withConfig>[0], fn: () => Promise<void>) =>
+  withConfig(
+    {
+      sheetId: 'SID',
+      sheetSyncMode: 'apply',
+      googleKeyBase64: CREDENTIAL,
+      timezone: 'Europe/London',
+      tvdbApiKey: 'k',
+      tmdbApiKey: 't',
+      artworkMovieBucket: 'films-bucket',
+      artworkShowBucket: SHOW_BUCKET,
+      ...over,
+    },
+    fn,
+  );
+
+const blockServer = (over: Parameters<typeof server>[0] = {}) =>
+  server({ grid: DEFAULT_GRID, episodes: NEW_SHOW_EPISODES, detail: NEW_SHOW_DETAIL, tvdb: tvdbSeries(), tmdb: tmdbRating(), ...over });
+
+/** Upstream calls as origin + path, sorted: the two facts run in parallel, so raw order is a race. */
+const upstream = (calls: string[]): string[] =>
+  calls
+    .filter((c) => !c.includes('googleapis.com'))
+    .map((c) => `${new URL(c).origin}${new URL(c).pathname}`)
+    .sort();
+
+const cell = (rows: CellData[][], row: number, label: string) => rows[row]?.[col(H, label)]?.userEnteredValue;
+
+test('a TV show with no block gets one, in one run, from three upstreams', async () => {
+  clearTokenCache();
+  clearTvdbTokenCache();
+  const sheet = blockServer();
+  await withFreshJournal(async () => {
+    const log = recorder();
+    await withBlockKeys({}, () =>
+      withFetch(sheet.handler, async (calls) => {
+        const result = await new SheetSync({ logger: log }).run(NEW_SHOW_LIBRARY);
+        assert.equal(result.status, 'applied', result.error ?? '');
+
+        // One call per upstream fact, and nothing asked twice.
+        assert.deepEqual(upstream(calls), [
+          'https://api.simkl.com/tv/900',
+          'https://api.simkl.com/tv/episodes/900',
+          'https://api.themoviedb.org/3/tv/222',
+          'https://api4.thetvdb.com/v4/login',
+          'https://api4.thetvdb.com/v4/series/111/episodes/official',
+          'https://api4.thetvdb.com/v4/series/111/extended',
+        ]);
+        assert.ok(
+          calls.some((c) => c.includes('/3/tv/222') && c.includes('append_to_response=content_ratings')),
+          'the ratings ride the detail request rather than costing a second one',
+        );
+        assert.ok(calls.some((c) => c.includes('/episodes/official') && c.includes('season=1')));
+        // Four planning passes is what a block costs — the runtime target is
+        // only reached once the genres and the certificate are in hand.
+        assert.doesNotMatch(log.lines.join('\n'), /still demanding lookups/);
+
+        // Two rows, in franchise order: under Fargo's last season row.
+        const rows = sheet.tab('Shows');
+        assert.equal(rows.length, DEFAULT_GRID.length + 2);
+        assert.equal(cell(rows, 4, 'Title')?.stringValue, 'Severance');
+        assert.equal(cell(rows, 4, 'Franchise')?.stringValue, 'Severance');
+        assert.equal(cell(rows, 4, 'Genre')?.stringValue, 'Drama', 'TVDB’s own order, mapped to the tab’s vocabulary');
+        assert.equal(cell(rows, 4, 'Other Genres')?.stringValue, 'Sci-Fi, Thriller');
+        assert.equal(cell(rows, 4, 'Network')?.stringValue, 'Apple TV+', 'SIMKL’s, through the spelling map');
+        assert.equal(cell(rows, 4, 'Certificate')?.numberValue, 15, 'TMDB’s GB rating, as an age');
+        assert.equal(cell(rows, 4, 'Type')?.stringValue, 'show');
+        assert.equal(cell(rows, 4, 'Status')?.stringValue, 'Watching');
+        // Text, as all 189 live show rows hold it: a number compares unequal to
+        // every other id cell, so the next run would not recognise its own block.
+        assert.deepEqual(cell(rows, 4, 'ID'), { stringValue: '900' });
+
+        // The five roll-ups and the artwork link, byte for byte — the one place
+        // the sync writes a formula, and a wrong reference here is a frozen
+        // number nothing would ever notice.
+        const formulas = showRowFormulas(SHEET_COLUMNS, 4);
+        assert.equal(cell(rows, 4, 'Season')?.formulaValue, formulas.Season);
+        assert.equal(cell(rows, 4, 'Episodes')?.formulaValue, formulas.Episode);
+        assert.equal(cell(rows, 4, 'Start Date')?.formulaValue, formulas.Start);
+        assert.equal(cell(rows, 4, 'End Date')?.formulaValue, formulas.End);
+        assert.equal(cell(rows, 4, 'Seasons / Last Watched')?.formulaValue, formulas.Note);
+        assert.equal(cell(rows, 4, 'Artwork')?.formulaValue, artworkFormula(SHEET_COLUMNS.Show, 4, SHOW_BUCKET));
+        assert.equal(cell(rows, 4, 'Episode Length (min)'), undefined, 'blank on a show row, as on all 309 live ones');
+
+        // The season row under it is a season insert's own: count, dates and
+        // the note that dates the count.
+        assert.equal(cell(rows, 5, 'Season')?.numberValue, 1);
+        assert.equal(cell(rows, 5, 'Episodes')?.numberValue, 2);
+        assert.equal(cell(rows, 5, 'Start Date')?.numberValue, dateSerial(plainDateIn(Temporal.Instant.from(FIRST_WATCH), 'Europe/London')));
+        assert.equal(cell(rows, 5, 'Seasons / Last Watched')?.stringValue, plainDateIn(Temporal.Instant.from(LAST_WATCH), 'Europe/London').toString());
+        assert.equal(cell(rows, 5, 'Episode Length (min)')?.numberValue, 47, 'the season’s own average, not SIMKL’s show-wide 45');
+        assert.equal(cell(rows, 5, 'End Date'), undefined, 'part-watched, so the row goes in open');
+        assert.equal(cell(rows, 5, 'ID'), undefined, 'the season row inherits the block’s id rather than repeating it');
+
+        const recorded = sheetRuns().find((r) => r.tab === 'shows');
+        assert.equal(recorded?.status, 'applied');
+        assert.equal(recorded?.inserts[0]?.address, 'rows 5-6');
+        assert.match(recorded?.inserts[0]?.note ?? '', /Severance \(simkl 900\): new block at rows 5-6, S1 with 2 episodes/);
+      }),
+    );
+  });
+});
+
+// A cell on a show row is written once and never revisited, so a fact that did
+// not come back leaves the whole block for the next poll rather than landing a
+// row with a blank `Genre` for good.
+test('a TVDB outage adds no block, asks for another poll, and the next one adds it', async () => {
+  clearTokenCache();
+  clearTvdbTokenCache();
+  let answering = false;
+  const sheet = blockServer({
+    tvdb: (url: string) => (!answering && url.includes('/extended') ? new Response('boom', { status: 503 }) : tvdbSeries()(url)),
+  });
+  await withBlockKeys({}, () =>
+    withFetch(sheet.handler, async () => {
+      const sync = new SheetSync({ logger: quiet });
+      const first = await sync.run(NEW_SHOW_LIBRARY);
+      assert.equal(first.status, 'idle');
+      assert.equal(first.retry, true, 'the work is known to be waiting');
+      assert.equal(sheet.tab('Shows').length, DEFAULT_GRID.length, 'and no half-filled row was added');
+
+      answering = true;
+      assert.equal((await sync.run(NEW_SHOW_LIBRARY)).status, 'applied');
+      assert.equal(cell(sheet.tab('Shows'), 4, 'Genre')?.stringValue, 'Drama', 'the block lands once TVDB answers');
+    }),
+  );
+});
+
+// A rejected key is a fact about the token and not about any series, and both
+// keys are read at start-up: settling the waiting shows would file them as ones
+// TMDB has nothing for, and asking again every poll settles nothing.
+test('a TMDB 401 latches for the process, and nothing is asked of it again', async () => {
+  clearTokenCache();
+  clearTvdbTokenCache();
+  let asked = 0;
+  const sheet = blockServer({
+    tmdb: () => {
+      asked += 1;
+      return new Response('{"status_message":"invalid token"}', { status: 401 });
+    },
+  });
+  await withBlockKeys({}, () =>
+    withFetch(sheet.handler, async () => {
+      const log = recorder();
+      const sync = new SheetSync({ logger: log });
+      await sync.run(NEW_SHOW_LIBRARY);
+      assert.ok(asked > 0, 'it was asked once');
+      assert.match(log.lines.join('\n'), /TMDB rejected the credential/);
+
+      const rejected = asked;
+      log.lines.length = 0;
+      const again = await sync.run(NEW_SHOW_LIBRARY);
+      assert.equal(again.status, 'idle');
+      assert.equal(asked, rejected, 'and never again this process');
+      assert.match(log.lines.join('\n'), /1 show\(s\) need a block and the credential was rejected; fix TMDB_API_KEY and restart/);
+      assert.equal(sheet.tab('Shows').length, DEFAULT_GRID.length);
+    }),
+  );
+});
+
+// The same rule against the other key. TVDB counts a 403 as `account` too,
+// where TMDB does not — there it is a stricter reading of a wider class, and
+// here it costs the same restart.
+test('a TVDB 401 latches for the process, and nothing is asked of it again', async () => {
+  clearTokenCache();
+  clearTvdbTokenCache();
+  let asked = 0;
+  const sheet = blockServer({
+    tvdb: (url: string) => {
+      if (!url.includes('/extended')) return tvdbSeries()(url);
+      asked += 1;
+      return new Response('{"message":"unauthorized"}', { status: 401 });
+    },
+  });
+  await withBlockKeys({}, () =>
+    withFetch(sheet.handler, async () => {
+      const log = recorder();
+      const sync = new SheetSync({ logger: log });
+      await sync.run(NEW_SHOW_LIBRARY);
+      assert.ok(asked > 0, 'it was asked');
+      assert.match(log.lines.join('\n'), /TVDB rejected the credential/);
+
+      const rejected = asked;
+      log.lines.length = 0;
+      assert.equal((await sync.run(NEW_SHOW_LIBRARY)).status, 'idle');
+      assert.equal(asked, rejected, 'and never again this process');
+      assert.match(log.lines.join('\n'), /1 show\(s\) need a block and the credential was rejected; fix TVDB_API_KEY and restart/);
+      assert.equal(sheet.tab('Shows').length, DEFAULT_GRID.length);
+    }),
+  );
+});
+
+// TMDB answers a throttled or blocked request with 403 as readily as a rejected
+// token, so a 403 must not latch: the series waits a poll and is asked again.
+test('a TMDB 403 is asked again on the next poll', async () => {
+  clearTokenCache();
+  clearTvdbTokenCache();
+  let blocked = true;
+  const sheet = blockServer({ tmdb: () => (blocked ? new Response('nope', { status: 403 }) : tmdbRating()()) });
+  await withBlockKeys({}, () =>
+    withFetch(sheet.handler, async (calls) => {
+      const sync = new SheetSync({ logger: quiet });
+      const first = await sync.run(NEW_SHOW_LIBRARY);
+      assert.equal(first.retry, true, 'a transient failure asks for another poll');
+      assert.equal(sheet.tab('Shows').length, DEFAULT_GRID.length);
+
+      blocked = false;
+      calls.length = 0;
+      assert.equal((await sync.run(NEW_SHOW_LIBRARY)).status, 'applied');
+      assert.ok(calls.some((c) => c.includes('/3/tv/222')), 'TMDB is asked again rather than settled');
+      assert.equal(cell(sheet.tab('Shows'), 4, 'Certificate')?.numberValue, 15);
+    }),
+  );
+});
+
+// A block is two rows, so a rollback has to delete both: a delete that took
+// only the show row would leave its season row orphaned under the block above,
+// where the paste cannot reach it — the restore overwrites a range, it does not
+// shrink the grid.
+test('a block that does not verify is rolled back, both of its rows deleted first', async () => {
+  clearTokenCache();
+  clearTvdbTokenCache();
+  const sheet = blockServer({ meddle: (state) => void (state[2]![col(H, 'Episodes')] = cellOf(99)) });
+  const typed = () => JSON.stringify(sheet.tab('Shows').map((row) => row.map((c) => c.userEnteredValue ?? null)));
+  const original = typed();
+
+  await withBlockKeys({}, () =>
+    withFetch(sheet.handler, async () => {
+      const result = await new SheetSync({ logger: quiet }).run(NEW_SHOW_LIBRARY);
+      assert.equal(result.status, 'rolled-back', result.error ?? '');
+      assert.equal(result.record.inserts.length, 1, 'the undone run still reports the block it planned');
+
+      assert.ok(sheet.batches[0]?.includes('insertDimension'), 'the write batch carried the insert');
+      assert.deepEqual(sheet.batches[1], ['deleteDimension', 'deleteDimension'], 'both rows go, and the delete travels alone');
+      assert.deepEqual(sheet.batches[2], ['copyPaste']);
+      assert.equal(typed(), original, 'every cell holds exactly what it held before the write');
+    }),
+  );
+});
+
+// One insert per run, and a season row joining a block that exists wins it. The
+// lookups the block still needs are then the *next* poll's: fetched now, every
+// pass to the ceiling would spend another round on a row that cannot land.
+test('a season insert takes the slot, and the block’s facts are left for the next poll', async () => {
+  clearTokenCache();
+  clearTvdbTokenCache();
+  // Fargo has a row for season 1 only and has been watched into season 2,
+  // which is still airing — so its insert needs no runtime lookup of its own.
+  const grid: CellSpec[][] = [H, show('Fargo', 'Watching', 3381), season(1, 6, 44000)];
+  const episodes = [
+    ...NEW_SHOW_EPISODES,
+    ...Array.from({ length: 5 }, (_, i) => ({ season: 2, episode: i + 1, type: 'episode', aired: i < 2 })),
+  ];
+  const library = libraryOf(
+    { id: 3381, title: 'Fargo', status: 'watching', seasons: { 1: [daysAgo(400)], 2: [daysAgo(4), daysAgo(3)] }, watched: 3, total: 14, notAired: 3 },
+    { id: NEW_SHOW.id, title: NEW_SHOW.title, status: 'watching', seasons: { 1: [FIRST_WATCH, LAST_WATCH] }, watched: 2, total: 9 },
+  );
+
+  const sheet = blockServer({ grid, episodes });
+  await withBlockKeys({}, () =>
+    withFetch(sheet.handler, async (calls) => {
+      const sync = new SheetSync({ logger: quiet });
+      const first = await sync.run(library);
+      assert.equal(first.status, 'applied', first.error ?? '');
+      assert.equal(first.record.inserts[0]?.address, 'row 4', 'the season row took the slot');
+      assert.equal(first.retry, true, 'and the block the run left standing asks for another poll');
+      assert.deepEqual(
+        upstream(calls).filter((c) => c.includes('/series/') || c.includes('/3/tv/')),
+        [],
+        'nothing is asked of TVDB or TMDB for a block this run cannot insert',
+      );
+
+      calls.length = 0;
+      const second = await sync.run(library);
+      assert.equal(second.status, 'applied', second.error ?? '');
+      assert.equal(second.record.inserts[0]?.address, 'rows 5-6', 'the next run adds the block');
+      assert.equal(cell(sheet.tab('Shows'), 4, 'Title')?.stringValue, 'Severance');
+    }),
+  );
+});
+
+// Gating rather than degrading: those cells are written once, and a blank one
+// reads as a series with no genre rather than as an install with no key. The
+// gate sits above the SIMKL demand, so the show costs no request at all.
+test('with either key unset nothing is added and nothing is looked up', async () => {
+  for (const [missing, key] of [
+    ['tvdbApiKey', 'TVDB_API_KEY'],
+    ['tmdbApiKey', 'TMDB_API_KEY'],
+  ] as const) {
+    clearTokenCache();
+    clearTvdbTokenCache();
+    const sheet = blockServer();
+    await withBlockKeys({ [missing]: undefined }, () =>
+      withFetch(sheet.handler, async (calls) => {
+        const log = recorder();
+        const result = await new SheetSync({ logger: log }).run(NEW_SHOW_LIBRARY);
+        assert.equal(result.status, 'idle');
+        assert.match(log.lines.join('\n'), new RegExp(`1 show\\(s\\) have no row; set ${key} to have a block added for them`));
+        assert.deepEqual(upstream(calls), [], `${key}: no upstream is asked about a show no block can be built for`);
+        assert.equal(sheet.tab('Shows').length, DEFAULT_GRID.length);
+      }),
+    );
+  }
+});
+
+/**
+ * The FRESH re-read plans against a grid that changed underneath it, and a
+ * block's two fact lookups can spend a minute apiece obeying `Retry-After`
+ * against the 120s snapshot budget. So a demand that first appears on a later
+ * attempt waits for the next poll, which costs nothing: the block lands a poll
+ * later either way.
+ *
+ * The demand has to be *new* on attempt 2 for the gate to be what holds it —
+ * `made` already blocks re-asking what attempt 1 asked. So the tab starts with
+ * a block holding the same title under a different id, which holds the show
+ * back with no demand at all, and that block disappears from the second read.
+ */
+test('a re-plan does not pick up the fact lookups a changed grid revealed', async () => {
+  clearTokenCache();
+  clearTvdbTokenCache();
+  const grid: CellSpec[][] = [...DEFAULT_GRID, show('Severance', 'Watching', 777)];
+  const sheet = blockServer({ grid });
+  let reads = 0;
+  const handler = (url: string, init?: RequestInit) => {
+    if (url.includes('sheets.googleapis.com') && url.includes('ranges=')) {
+      reads += 1;
+      // Between attempt 1 and attempt 2 the row holding the title goes.
+      if (reads === 2) sheet.tab('Shows').splice(4, 1);
+    }
+    return sheet.handler(url, init);
+  };
+
+  await withRunawayClock(() =>
+    withBlockKeys({}, () =>
+      withFetch(handler, async (calls) => {
+        // Fargo's count has moved, so there is something to write and the run
+        // reaches the freshness gate at all.
+        const result = await new SheetSync({ logger: quiet }).run(
+          libraryOf(
+            { id: 3381, title: 'Fargo', status: 'watching', seasons: { 1: [daysAgo(400)], 2: Array.from({ length: 5 }, (_, i) => daysAgo(10 - i)) }, watched: 6, total: 16, notAired: 5 },
+            { id: NEW_SHOW.id, title: NEW_SHOW.title, status: 'watching', seasons: { 1: [FIRST_WATCH, LAST_WATCH] }, watched: 2, total: 9 },
+          ),
+        );
+        assert.equal(result.status, 'failed', 'the runaway clock never lets a write out');
+        assert.ok(reads > 1, 'the grid really was re-read');
+        assert.ok(calls.some((c) => c.includes('api.simkl.com/tv/900')), 'the catalogue the changed grid revealed is still read');
+        assert.deepEqual(
+          upstream(calls).filter((c) => c.includes('/series/') || c.includes('/3/tv/')),
+          [],
+          'but no block fact is fetched on a re-plan',
+        );
+      }),
+    ),
   );
 });

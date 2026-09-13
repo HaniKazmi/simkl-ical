@@ -13,7 +13,7 @@
  */
 
 import { errorMessage } from '../shared/errors.ts';
-import { a1, HEADERS, isFormulaValue, parseGrid, sameValue, type Grid, type HeaderName } from './2-grid.ts';
+import { a1, BLOCK_HEADERS, HEADERS, isFormulaValue, parseGrid, sameValue, type Grid, type HeaderName, type ShowField } from './2-grid.ts';
 import { spanRows } from './6-requests.ts';
 import type { SheetPlan } from './4-plan.ts';
 import type { CellData, ExtendedValue } from '../api/google/types.ts';
@@ -30,6 +30,32 @@ import type { SheetSnapshot } from './io/spreadsheet.ts';
  * carry hand-maintained values a user edits between polls.
  */
 const INSPECTED: HeaderName[] = HEADERS.filter((header) => header !== 'id' && header !== 'Type');
+
+/**
+ * Every column a show row may be written into: all ten required headers plus
+ * whichever of the six block columns the tab resolves — wider than `INSPECTED`
+ * at both ends.
+ *
+ * These are the columns whose position must not move during the write, and the
+ * set is the whole of what a block's fill addresses. The fill writes by index,
+ * so a column that moved under it puts a value in whatever column took its
+ * place: `id` and `Type` are as load-bearing there as `Franchise`, even though
+ * the cell diff spares all three on a pre-existing row. An unresolved optional
+ * column compares `undefined === undefined` and passes, which is what keeps the
+ * six optional.
+ *
+ * `columnsOf` has to name them for a second reason: `verifyAgainst` walks an
+ * inserted row over that map alone and drains its expectations there, so left
+ * at the required ten every block insert reports its six block cells as writes
+ * that are not in the sheet, and rolls itself back.
+ *
+ * `inspected` stays `INSPECTED` all the same. The artwork page writes
+ * `Artwork` under its own lock and a reader retypes a `Franchise` by hand, and
+ * the sync never writes one of these on a row that already exists — so
+ * diffing them on pre-existing rows would add a rollback trigger that protects
+ * nothing.
+ */
+const SHOW_COLUMNS: ShowField[] = [...HEADERS, ...BLOCK_HEADERS];
 
 /**
  * What the diff needs from one planned write. Structural, because the two tabs
@@ -325,13 +351,13 @@ export const verifyAgainst = <G, H extends string, P extends VerifiablePlan>(
 };
 
 /** The show grid's answers to the five questions above. */
-const SHOW_GRID: VerifiedTab<Grid, HeaderName, SheetPlan> = {
+const SHOW_GRID: VerifiedTab<Grid, ShowField, SheetPlan> = {
   tab: 'the sheet',
   rowKind: 'show rows',
   parse: parseGrid,
-  columnsOf: (grid) => grid.columns,
+  columnsOf: (grid) => ({ ...grid.columns, ...grid.blockColumns }),
   snapshotOf: (grid) => grid.snapshot,
-  headers: INSPECTED,
+  headers: SHOW_COLUMNS,
   inspected: INSPECTED,
   rowsOf: (grid) => grid.blocks.map((block) => block.row),
 };

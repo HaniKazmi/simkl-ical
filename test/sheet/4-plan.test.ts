@@ -1964,6 +1964,16 @@ test('a run with a credential unset names the key once and adds nothing', () => 
   assert.deepEqual(demands.genres, [], 'nothing is asked of an upstream there is no key for');
 });
 
+// The credential gate sits above the SIMKL demand, so a show no block can be
+// built for costs no request at all — not one a day, for ever, for a detail
+// nothing can use.
+test('a show waiting on an unset credential is not even looked up', () => {
+  for (const facts of [{ tvdb: false, tmdb: true }, { tvdb: true, tmdb: false }]) {
+    const { demands } = blocks({ genres: undefined, certificate: undefined }, { facts });
+    assert.deepEqual(demands.catalogue, [], `${JSON.stringify(facts)}: nothing is asked of SIMKL either`);
+  }
+});
+
 // A rejection is a fact about the token, and both keys are read at start-up:
 // no block is settled, nothing further is asked, and the fix arrives with a
 // restart.
@@ -2068,7 +2078,7 @@ test('a season row for an existing block takes the slot ahead of a new block', (
   const { plan } = planSync(tab.grid, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } });
   assert.equal(plan.insert?.kind, 'season');
   assert.equal(plan.deferredInserts, 1);
-  assert.match(plan.notes.join('\n'), /Severance S1 is ready to add — deferred/);
+  assert.match(plan.notes.join('\n'), /Severance \(simkl \d+\): a block waits for the next run/);
 });
 
 // Oldest first, so the sheet gains blocks in the order the shows were started
@@ -2089,7 +2099,7 @@ test('two blocks ready at once are ordered by their first watch, and the second 
   const { plan } = planSync(blockGrid.grid, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } });
   assert.equal(plan.insert?.title, 'Utopia', 'started three weeks earlier');
   assert.equal(plan.deferredInserts, 1);
-  assert.match(plan.notes.join('\n'), /Severance S1 is ready to add — deferred/);
+  assert.match(plan.notes.join('\n'), /Severance \(simkl \d+\): a block waits for the next run/);
 });
 
 // `hold` and `plantowatch` are no information, never a reason to write — so

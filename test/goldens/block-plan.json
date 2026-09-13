@@ -1,0 +1,133 @@
+{
+  "edits": [],
+  "inserts": [
+    {
+      "address": "rows 5-6",
+      "title": "Severance",
+      "season": 1,
+      "note": "Severance (simkl 900): new block at rows 5-6, S1 with 2 episodes"
+    }
+  ],
+  "fill": [
+    {
+      "row": 5,
+      "column": "A",
+      "field": "Show",
+      "value": "Severance"
+    },
+    {
+      "row": 5,
+      "column": "B",
+      "field": "Franchise",
+      "value": "Severance"
+    },
+    {
+      "row": 5,
+      "column": "G",
+      "field": "Type",
+      "value": "show"
+    },
+    {
+      "row": 5,
+      "column": "P",
+      "field": "id",
+      "value": "900"
+    },
+    {
+      "row": 5,
+      "column": "I",
+      "field": "Season",
+      "value": "=IF($O5=0,\"\",OFFSET($I5,$O5,0))"
+    },
+    {
+      "row": 5,
+      "column": "K",
+      "field": "Episode",
+      "value": "=IF($O5=0,\"\",SUM(OFFSET($K5,1,0,$O5)))"
+    },
+    {
+      "row": 5,
+      "column": "M",
+      "field": "Start",
+      "value": "=IF($O5=0,\"\",LET(r,OFFSET($M5,1,0,$O5),IF(COUNT(r)=0,\"\",MIN(r))))"
+    },
+    {
+      "row": 5,
+      "column": "N",
+      "field": "End",
+      "value": "=IF($O5=0,\"\",LET(r,OFFSET($N5,1,0,$O5),IF(COUNT(r)=0,\"\",MAX(r))))"
+    },
+    {
+      "row": 5,
+      "column": "O",
+      "field": "Note",
+      "value": "=IFERROR(MATCH(\"*\",OFFSET($A5,1,0,40),0)-1,COUNTA(OFFSET($I5,1,0,40)))"
+    },
+    {
+      "row": 5,
+      "column": "Q",
+      "field": "Banner",
+      "value": "=CONCAT(\"https://storage.googleapis.com/reference-shows/\",A5)"
+    },
+    {
+      "row": 5,
+      "column": "H",
+      "field": "Status",
+      "value": "Watching"
+    },
+    {
+      "row": 5,
+      "column": "C",
+      "field": "Genre",
+      "value": "Drama"
+    },
+    {
+      "row": 5,
+      "column": "D",
+      "field": "Genres",
+      "value": "Sci-Fi, Thriller"
+    },
+    {
+      "row": 5,
+      "column": "E",
+      "field": "Network",
+      "value": "Apple TV+"
+    },
+    {
+      "row": 5,
+      "column": "F",
+      "field": "Certificate",
+      "value": 15
+    },
+    {
+      "row": 6,
+      "column": "I",
+      "field": "Season",
+      "value": 1
+    },
+    {
+      "row": 6,
+      "column": "K",
+      "field": "Episode",
+      "value": 2
+    },
+    {
+      "row": 6,
+      "column": "M",
+      "field": "Start",
+      "value": 46244
+    },
+    {
+      "row": 6,
+      "column": "O",
+      "field": "Note",
+      "value": "2026-08-17"
+    },
+    {
+      "row": 6,
+      "column": "L",
+      "field": "Runtime",
+      "value": 45
+    }
+  ]
+}

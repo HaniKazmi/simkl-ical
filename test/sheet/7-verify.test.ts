@@ -127,6 +127,44 @@ test('a header that moved during the write fails before anything else is inspect
   assert.match(result.problems.join('; '), /column moved during the write/);
 });
 
+// A block's show row is filled by resolved column index, so a column that
+// moved under the write puts a value in whatever column took its place. Every
+// column that fill can address is checked, including the three the cell diff
+// spares on a pre-existing row because a hand maintains them.
+test('a column a block’s fill addresses is checked for moving, ID and Type included', () => {
+  const swapped = (a: string, b: string) => {
+    const shuffled = [...H];
+    const [i, j] = [col(H, a), col(H, b)];
+    [shuffled[i], shuffled[j]] = [shuffled[j]!, shuffled[i]!];
+    return sheetSnapshot([shuffled, ...fx.rows.slice(1)]);
+  };
+
+  for (const [a, b, named] of [
+    ['Franchise', 'Genre', /the Franchise column moved during the write/],
+    ['Type', 'Status', /the Type column moved during the write/],
+    ['ID', 'Artwork', /the id column moved during the write/],
+  ] as const) {
+    const result = verify(before, swapped(a, b), planOf([editOf('fargoS2', 'Episode', 8)]));
+    assert.equal(result.ok, false, `${a}/${b}`);
+    assert.match(result.problems.join('; '), named);
+  }
+});
+
+// The other half of that rule: these columns are optional, so a tab carrying
+// none of them must verify, not compare `undefined` against `undefined` and
+// call it a move.
+test('a tab with no Franchise column at all still verifies', () => {
+  const rows = fx.rows.map((row) => [...row]);
+  rows[0] = [...H];
+  rows[0]![col(H, 'Franchise')] = 'Something Else';
+  const grid = parseGrid(sheetSnapshot(rows));
+
+  const changed = rows.map((row) => [...row]);
+  changed[fx.at.fargoS2!]![grid.columns.Episode] = 8;
+  const result = verify(grid, sheetSnapshot(changed), planOf([editOf('fargoS2', 'Episode', 8)]));
+  assert.equal(result.ok, true, result.problems.join('; '));
+});
+
 // --- inserts ---------------------------------------------------------------
 
 const insertFixture = () => {

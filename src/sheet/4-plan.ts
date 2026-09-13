@@ -39,7 +39,6 @@ import {
   showFieldColumn,
   usesCourModel,
   type BlockHeaderName,
-  type ColumnMap,
   type Grid,
   type HeaderName,
   type SeasonRow,
@@ -1670,6 +1669,20 @@ const planBlocks = (ctx: BlockContext, index: Map<number, TitleProgress>, seen: 
       continue;
     }
 
+    // The slot. One insert per run, and the season rows of blocks that already
+    //    exist are planned before this walk, so a taken slot is known here.
+    //    Every block behind it defers before asking for anything: the lookups
+    //    it needs are the next run's — fetched now, every pass to the ceiling
+    //    would spend another round on rows this run cannot add — and the
+    //    deferral is what arms the retry that brings that run soon rather than
+    //    on the library's next move. Not lost, but it must say so: a silent
+    //    deferral reads exactly like a show the sync never noticed.
+    if (plan.insert !== null) {
+      plan.deferredInserts += 1;
+      plan.notes.push(`${label}: a block waits for the next run — one insert is added per run`);
+      continue;
+    }
+
     // 4. What SIMKL holds. Both ids arrive on the same detail response, so
     //    either being absent is that call not having answered — the state the
     //    store leaves until `/tv/{id}` lands, and the one that must not be read
@@ -1698,11 +1711,39 @@ const planBlocks = (ctx: BlockContext, index: Map<number, TitleProgress>, seen: 
       continue;
     }
 
-    // 6. The two cells only those upstreams can fill. Absent is unanswered and
-    //    the block waits; null is answered-with-nothing, which lands the block
-    //    with that cell blank — the same absent-versus-settled distinction
-    //    `runtimeAnswer` draws, and for the same reason: every cell on a show
-    //    row is written once, so closing one on a 503 forfeits it for good.
+    // 6. Which season the block's one row is for. No rows yet, so nothing is
+    //    covered and the earliest watched season inside the window wins.
+    const candidate = insertTarget(progress, titles, cutoff, new Set());
+    if (!candidate) continue;
+    const seasonLabel = `${label} S${candidate.season.number}`;
+
+    // 7. Everything the detail unlocks, asked for in one pass: the two cells
+    //    only TVDB and TMDB can fill, and the season's episode runtimes. All
+    //    three need only the join keys the detail carried, so demanding them
+    //    together keeps a block to three planning passes — catalogue, then
+    //    these, then the plan — where asking for the runtime only after the
+    //    genres answered would spend the fourth, and the ceiling's whole
+    //    headroom, on a dependency that does not exist.
+    //
+    //    For the cells, absent is unanswered and the block waits; null is
+    //    answered-with-nothing, which lands the block with that cell blank —
+    //    the same absent-versus-settled distinction `runtimeAnswer` draws, and
+    //    for the same reason: every cell on a show row is written once, so
+    //    closing one on a 503 forfeits it for good.
+    //
+    //    The runtime is demanded exactly as a season insert demands one —
+    //    gated on *airing*, since a mid-air season's SIMKL count has not
+    //    settled and `averageRuntime` checks TVDB's against it. Unlike a season
+    //    insert, an unanswered runtime holds the **block** back rather than
+    //    landing the row open. A season row inserted into an existing block is
+    //    revisited by the per-row path, which fills the cell when the row
+    //    closes; the show row above it is not revisited at all, so a block is
+    //    built in one batch or not at all, and waiting a poll costs nothing
+    //    but the poll.
+    const runtime = insertRuntimeOf(candidate, titles);
+    const runtimePending = candidate.aired && runtime.target !== null && runtime.minutes === undefined;
+    if (runtimePending && runtime.target !== null) ctx.demands.runtimes.push(runtime.target);
+
     const { genres, certificate } = entry;
     if (genres === undefined || certificate === undefined) {
       if (genres === undefined && ctx.demands.genres.length < MAX_LOOKUPS_PER_PASS) ctx.demands.genres.push({ id: progress.id, tvdbId });
@@ -1713,31 +1754,12 @@ const planBlocks = (ctx: BlockContext, index: Map<number, TitleProgress>, seen: 
       plan.skips.push({ code: 'awaiting-lookup', message: `${label}: waiting on ${waitingOn.join(' and ')} before a block can be added` });
       continue;
     }
-
-    // 7. Which season the block's one row is for. No rows yet, so nothing is
-    //    covered and the earliest watched season inside the window wins.
-    const candidate = insertTarget(progress, titles, cutoff, new Set());
-    if (!candidate) continue;
-    const seasonLabel = `${label} S${candidate.season.number}`;
-
-    // 8. Its runtime, demanded exactly as a season insert demands one — gated
-    //    on *airing*, since a mid-air season's SIMKL count has not settled and
-    //    `averageRuntime` checks TVDB's against it.
-    //
-    //    Unlike a season insert, an unanswered runtime holds the **block**
-    //    back rather than landing the row open. A season row inserted into an
-    //    existing block is revisited by the per-row path, which fills the cell
-    //    when the row closes; the show row above it is not revisited at all, so
-    //    a block is built in one batch or not at all, and waiting a poll costs
-    //    nothing but the poll.
-    const runtime = insertRuntimeOf(candidate, titles);
-    if (candidate.aired && runtime.target && runtime.minutes === undefined) {
-      ctx.demands.runtimes.push(runtime.target);
+    if (runtimePending) {
       plan.skips.push({ code: 'awaiting-runtimes', message: `${seasonLabel}: waiting on its episode runtimes before a block can be added` });
       continue;
     }
 
-    // 9. Where it goes — Franchise order, which is the tab's own order.
+    // 8. Where it goes — Franchise order, which is the tab's own order.
     const franchise = franchiseKeyFor(title);
     const row = placeBlock(grid.blocks, franchise);
     if (row === null) {
@@ -1755,7 +1777,7 @@ const planBlocks = (ctx: BlockContext, index: Map<number, TitleProgress>, seen: 
       continue;
     }
 
-    // 10. The cells. The season row is `seasonCells`' — the same six a season
+    // 9. The cells. The season row is `seasonCells`' — the same six a season
     //     insert writes, because it is the same row.
     const filled = seasonCells(candidate, runtime, entry, ctx.timezone);
     if (filled === null) {
@@ -1816,15 +1838,9 @@ const planBlocks = (ctx: BlockContext, index: Map<number, TitleProgress>, seen: 
       }${blankRuntimeNoteOf(filled, candidate.complete)}`,
     };
 
-    // One insert per run, and a season row for a block that already exists
-    // wins: it was planned in the walk above, where this runs after it. Not
-    // lost — the next run re-plans the whole sheet — but it must say so, since
-    // a silent deferral reads exactly like a show the sync never noticed.
-    if (plan.insert === null) plan.insert = insert;
-    else {
-      plan.deferredInserts += 1;
-      plan.notes.push(`${insert.title} S${insert.season} is ready to add — deferred, one row is added per run`);
-    }
+    // Free by construction: a taken slot defers the block above, before any
+    // lookup is asked for.
+    plan.insert = insert;
   }
 
   if (awaitingCredential) {
@@ -1898,11 +1914,10 @@ const insertAddress = (insert: Insert): string => (insert.rows === 1 ? `row ${in
 /**
  * A human-readable rendering of a plan, for the log and for `report` mode.
  *
- * The driver hands over the grid's column map and the description needs none
- * of it: every planned cell already carries the A1 it will be written at, and
- * a block fills six columns `ColumnMap` does not name at all.
+ * Takes no column map: every planned cell already carries the A1 it will be
+ * written at, and a block fills six columns `ColumnMap` does not name at all.
  */
-export const describePlan = (plan: SheetPlan, _columns: ColumnMap): string[] => {
+export const describePlan = (plan: SheetPlan): string[] => {
   const lines: string[] = [];
   for (const e of plan.edits) lines.push(`  edit   ${e.address.padEnd(7)} ${e.note}`);
   if (plan.insert) {

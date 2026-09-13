@@ -31,7 +31,7 @@
  * `errors.sheet` and `/healthz`.
  */
 
-import { artworkConfigured, config, moviesSyncConfigured } from '../shared/config.ts';
+import { artworkConfigured, config, moviesSyncConfigured, tvdbConfigured } from '../shared/config.ts';
 import { errorMessage } from '../shared/errors.ts';
 import type { Logger } from '../shared/logger.ts';
 import { SheetsAccessError } from '../api/google/client.ts';
@@ -40,6 +40,8 @@ import { readSnapshot, type SheetSnapshot } from './io/spreadsheet.ts';
 import { withSheetLock } from './io/lock.ts';
 import { fetchCatalogue, type CatalogueRequest } from './io/catalogue.ts';
 import { fetchSeasonRuntimes, runtimeKeyOf, type RuntimeRequest } from './io/runtimes.ts';
+import { fetchSeriesGenres, type SeriesRequest } from './io/tvdb-series.ts';
+import { fetchShowCertificates, type CertificateRequest } from './io/tmdb-tv.ts';
 import { classify } from '../api/tvdb/client.ts';
 import { parseGrid, type Grid } from './2-grid.ts';
 import { indexLibrary, type TitleProgress } from './1-index.ts';
@@ -75,10 +77,11 @@ const FRESH_MS = 120_000;
 const MAX_ATTEMPTS = 3;
 
 /**
- * Planning passes per attempt. Three suffice — catalogues, the runtimes they
- * reveal, the final plan — so hitting this means a demand is escaping the
- * `made` bookkeeping: worth a degraded run and a log line rather than a poll
- * that never returns.
+ * Planning passes per attempt. Three is what a season insert and a new block
+ * both cost — the catalogue, then everything its join keys unlock, then the
+ * pass that plans the insert — so the fourth is headroom, and hitting this
+ * means a demand is escaping the `made` bookkeeping: worth a degraded run and
+ * a log line rather than a poll that never returns.
  */
 const MAX_PASSES = 4;
 
@@ -134,6 +137,9 @@ export interface SheetSyncResult {
 interface RunLookups {
   catalogue: Set<number>;
   runtimes: Set<string>;
+  /** SIMKL ids whose genres and certificate this run has asked their upstream for. */
+  genres: Set<number>;
+  certificates: Set<number>;
   failures: number;
 }
 
@@ -144,6 +150,25 @@ const outcome = (
   // one.
   { record = { edits: [], inserts: [] }, error = null, retry = false }: Partial<Omit<SheetSyncResult, 'status'>> = {},
 ): SheetSyncResult => ({ status, record, error, retry });
+
+/**
+ * What one planning attempt of the show half plans against: the grid it read,
+ * the library's projections, the run's lookup bookkeeping, and the two
+ * settings a block's show row is written under. Named rather than a parameter
+ * list, because eight positional arguments of which three are maps is a call
+ * site no reader can check.
+ */
+interface ShowPass {
+  grid: Grid;
+  index: Map<number, TitleProgress>;
+  starts: Baseline;
+  filed: Set<number>;
+  made: RunLookups;
+  /** Which attempt this is. A FRESH re-read is the second, and asks for less. */
+  attempt: number;
+  showBucket: string | null;
+  facts: { tvdb: boolean; tmdb: boolean };
+}
 
 /**
  * What one poll's halves share, built fresh in `run()` and handed to each.
@@ -502,7 +527,19 @@ export class SheetSync {
     // must not re-issue them — failed ones included, which stay unstamped in
     // the store so the *next poll* retries them, but would otherwise stall
     // this run on exactly the fetches that aged its snapshot.
-    const made: RunLookups = { catalogue: new Set(), runtimes: new Set(), failures: 0 };
+    const made: RunLookups = { catalogue: new Set(), runtimes: new Set(), genres: new Set(), certificates: new Set(), failures: 0 };
+
+    // The bucket a new block's `Artwork` cell links into, read here in the
+    // shell and handed to planner and guard alike — one value, so the two
+    // cannot disagree about whether that cell may be written at all. The whole
+    // artwork feature and not the bucket name alone, for the films half's
+    // reason: the column is written once, and a link nothing can put an object
+    // behind is a broken image for the life of the row.
+    const showBucket = artworkConfigured() ? (config.artworkShowBucket ?? null) : null;
+    // Both credentials, read here for the reason every numbered module takes
+    // its inputs as options rather than reading `config` mid-body — and once
+    // per run rather than per pass, since both are start-up settings.
+    const facts = { tvdb: tvdbConfigured(config), tmdb: Boolean(config.tmdbApiKey) };
 
     return {
       tab: 'shows',
@@ -514,11 +551,11 @@ export class SheetSync {
         poll.showGridIds = gridIds(grid);
       },
       plan: async (grid, attempt) => {
-        const result = await this.planToFixpoint(grid, index, starts, filed, made, attempt, poll.signal);
-        return { ...result, failures: made.failures, unfetched: false };
+        const { result, unfetched } = await this.planToFixpoint({ grid, index, starts, filed, made, attempt, showBucket, facts }, poll.signal);
+        return { ...result, failures: made.failures, unfetched };
       },
-      guard: (plan, grid, spent) => assertPlanSafe(plan, grid, { spent }),
-      describe: (plan, grid) => describePlan(plan, grid.columns),
+      guard: (plan, grid, spent) => assertPlanSafe(plan, grid, { spent, showBucket }),
+      describe: (plan) => describePlan(plan),
       record: planRecord,
       verify,
       empty: emptyPlan,
@@ -527,37 +564,61 @@ export class SheetSync {
 
   /**
    * Plan, fetch what the plan is missing, and re-plan, until a pass demands
-   * nothing new.
+   * nothing this run will make.
    *
    * Terminates because every key fetched — or failed — enters `made` and is
    * never asked again this run, and the demand set is a function of grid,
-   * library and store, which only gains answers. In practice three passes:
-   * catalogues, the runtimes they revealed, a final plan. The pass ceiling is
-   * a backstop on that argument, not part of it: a demand kind whose keys
-   * escaped `made` would spin here inside the poll, and the timer that skips
-   * ticks while a job runs would wedge the whole service over an optional
-   * spreadsheet column.
+   * library and store, which only gains answers. Three passes: catalogues,
+   * then everything the answered catalogues unlock — a closing season's
+   * runtimes, and a new block's genres, certificate and season runtime, all
+   * keyed off the same detail — then a final plan. The `Promise.all` is what
+   * keeps that second pass one round trip: four upstreams with no data
+   * dependency, whose latencies would otherwise stack against the snapshot
+   * budget. The pass ceiling is a
+   * backstop on the termination argument, not part of it: a demand kind whose
+   * keys escaped `made` would spin here inside the poll, and the timer that
+   * skips ticks while a job runs would wedge the whole service over an
+   * optional spreadsheet column.
+   *
+   * `unfetched` says the planner wanted lookups this run declined to make, so
+   * the loop can ask for another poll: nothing else will ask for them, and
+   * only a write can drain them.
    */
   private async planToFixpoint(
-    grid: Grid,
-    index: Map<number, TitleProgress>,
-    starts: Baseline,
-    filed: Set<number>,
-    made: RunLookups,
-    attempt: number,
+    { grid, index, starts, filed, made, attempt, showBucket, facts }: ShowPass,
     signal: AbortSignal | undefined,
-  ): Promise<PlanResult> {
+  ): Promise<{ result: PlanResult; unfetched: boolean }> {
     // One instant for every pass: two passes disagreeing about which blocks
     // sit inside the activity cut-off would fetch a block and then plan it as
     // out of scope, or the reverse.
     const now = Temporal.Now.instant();
 
     for (let pass = 1; ; pass += 1) {
-      const result = planSync(grid, index, this.store.titles, { now, baseline: baseline(), starts, filed });
+      const result = planSync(grid, index, this.store.titles, {
+        now,
+        baseline: baseline(),
+        starts,
+        filed,
+        showBucket,
+        facts,
+        factsRejected: this.store.factsRejected,
+      });
       const { demands } = result;
+
+      // The two a block's show row waits on, fetched on the first planning
+      // attempt only — the runtimes' reason, since a FRESH re-read plans
+      // against a grid that changed underneath it — and only while this run
+      // has not yet chosen its insert. One block lands per run, so the
+      // lookups the blocks behind it need are the next poll's: fetched now,
+      // every pass to the ceiling spends another `MAX_LOOKUPS_PER_PASS`.
+      const askFacts = attempt === 1 && result.plan.insert === null;
+      const pendingGenres = demands.genres.filter((request) => !made.genres.has(request.id));
+      const pendingCertificates = demands.certificates.filter((request) => !made.certificates.has(request.id));
+      const unfetched = !askFacts && pendingGenres.length + pendingCertificates.length > 0;
+
       if (pass > MAX_PASSES) {
         this.log.warn(`sheet sync: still demanding lookups after ${MAX_PASSES} planning passes; continuing with what is in hand`);
-        return result;
+        return { result, unfetched };
       }
 
       // The planner demands with no memory; staleness is the store's
@@ -574,13 +635,17 @@ export class SheetSync {
       // them. `made` already blocks re-fetching what this run asked.
       const runtimes =
         attempt === 1 ? demands.runtimes.filter((request) => !made.runtimes.has(runtimeKeyOf(request.tvdbId, request.season))) : [];
-      if (!catalogue.length && !runtimes.length) return result;
+      const genres = askFacts ? pendingGenres : [];
+      const certificates = askFacts ? pendingCertificates : [];
+      if (!catalogue.length && !runtimes.length && !genres.length && !certificates.length) return { result, unfetched };
 
       // Different upstreams with no data dependency, so their latencies
       // overlap rather than stack against the snapshot budget.
       await Promise.all([
         catalogue.length ? this.readCatalogue(catalogue, index, made, signal) : null,
         runtimes.length ? this.readRuntimes(runtimes, made, signal) : null,
+        genres.length ? this.readGenres(genres, made, signal) : null,
+        certificates.length ? this.readCertificates(certificates, made, signal) : null,
       ]);
     }
   }
@@ -642,6 +707,70 @@ export class SheetSync {
     this.log.info(`sheet sync: read ${requests.length} season runtime(s) from TVDB`);
     if (fetched.unavailable.length) {
       this.log.warn(`TVDB has no record for ${fetched.unavailable.length} season(s): ${fetched.unavailable.join(', ')}`);
+    }
+  }
+
+  /**
+   * Fetch and fold one round of series genres, and mark them made.
+   *
+   * A rejected credential is a fact about the token and not about any series,
+   * which is why `lookupPool` lets it escape rather than filing every waiting
+   * show as one TVDB knows nothing about: settling them would leave their
+   * `Genre` cells blank for good, on rows nothing revisits. Both keys are read
+   * at start-up, so the rejection is held for the life of the process and the
+   * fix arrives with a restart. Nothing else escapes the pool — a login outage
+   * classifies as transient and lands in `failed`, which is a retryable
+   * failure and re-asked next poll.
+   */
+  private async readGenres(requests: SeriesRequest[], made: RunLookups, signal: AbortSignal | undefined): Promise<void> {
+    for (const { id } of requests) made.genres.add(id);
+
+    let fetched;
+    try {
+      fetched = await fetchSeriesGenres(requests, { signal });
+    } catch (err) {
+      if (classify(err) !== 'account') throw err;
+      this.store.rejectFacts('tvdb');
+      this.log.error(`TVDB rejected the credential; no show block will be built until TVDB_API_KEY is fixed and the service restarted: ${errorMessage(err)}`);
+      return;
+    }
+
+    this.store.foldGenres(requests, fetched);
+    made.failures += fetched.failed.length;
+
+    this.log.info(`sheet sync: read the genres of ${requests.length} series from TVDB`);
+    if (fetched.unavailable.length) {
+      this.log.warn(`TVDB has no record for ${fetched.unavailable.length} series: ${fetched.unavailable.join(', ')}`);
+    }
+  }
+
+  /**
+   * Fetch and fold one round of content ratings, and mark them made.
+   *
+   * `readGenres`' rule, against the other credential. TMDB counts only a 401
+   * as `account`, so a 403 — a throttle, a WAF — lands in `failed` and the
+   * same series is asked about on the next poll, rather than latching a
+   * rejection no restart is needed for.
+   */
+  private async readCertificates(requests: CertificateRequest[], made: RunLookups, signal: AbortSignal | undefined): Promise<void> {
+    for (const { id } of requests) made.certificates.add(id);
+
+    let fetched;
+    try {
+      fetched = await fetchShowCertificates(requests, { signal });
+    } catch (err) {
+      if (tmdbClassify(err) !== 'account') throw err;
+      this.store.rejectFacts('tmdb');
+      this.log.error(`TMDB rejected the credential; no show block will be built until TMDB_API_KEY is fixed and the service restarted: ${errorMessage(err)}`);
+      return;
+    }
+
+    this.store.foldCertificates(requests, fetched);
+    made.failures += fetched.failed.length;
+
+    this.log.info(`sheet sync: read the content ratings of ${requests.length} series from TMDB`);
+    if (fetched.unavailable.length) {
+      this.log.warn(`TMDB has no record for ${fetched.unavailable.length} series: ${fetched.unavailable.join(', ')}`);
     }
   }
 
