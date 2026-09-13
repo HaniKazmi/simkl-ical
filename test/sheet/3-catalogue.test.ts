@@ -6,9 +6,10 @@ import {
   needsLookup,
   seasonComplete,
   seasonShapes,
+  tmdbIdOf,
   tvdbIdOf,
 } from '../../src/sheet/3-catalogue.ts';
-import { runtimeMinutes } from '../../src/sheet/values.ts';
+import { certificateFor, runtimeMinutes } from '../../src/sheet/values.ts';
 import { indexLibrary } from '../../src/sheet/1-index.ts';
 import { libraryOf } from '../helpers.ts';
 
@@ -96,6 +97,32 @@ test('the tvdb id is read as a number, and anything else is simply absent', () =
   assert.equal(tvdbIdOf(undefined), null);
   assert.equal(tvdbIdOf({ ids: { tvdb: 'not-a-number' } }), null);
   assert.equal(tvdbIdOf({ ids: { tvdb: '0' } }), null);
+});
+
+test('the tmdb id is read the same way, off the same record', () => {
+  assert.equal(tmdbIdOf({ ids: { tmdb: '95396' } }), 95396);
+  assert.equal(tmdbIdOf({ ids: { tmdb: ' 95396 ' } }), 95396);
+  assert.equal(tmdbIdOf({ ids: {} }), null);
+  assert.equal(tmdbIdOf(undefined), null);
+  assert.equal(tmdbIdOf({ ids: { tmdb: 'tt0903747' } }), null);
+  assert.equal(tmdbIdOf({ ids: { tmdb: '0' } }), null);
+});
+
+// The array arrives in no contracted order and the US entry leads on most
+// series, so a positional pick writes the wrong age into a cell nothing
+// revisits.
+test('the certificate is the GB entry by territory, wherever it sits', () => {
+  assert.equal(certificateFor({ content_ratings: { results: [{ iso_3166_1: 'US', rating: 'TV-MA' }, { iso_3166_1: 'GB', rating: '15' }] } }), 15);
+  assert.equal(certificateFor({ content_ratings: { results: [{ iso_3166_1: 'GB', rating: 'U' }] } }), 3);
+});
+
+test('a series with no GB rating, or one outside the BBFC set, leaves the cell blank', () => {
+  assert.equal(certificateFor({ content_ratings: { results: [{ iso_3166_1: 'US', rating: 'TV-14' }] } }), null);
+  assert.equal(certificateFor({ content_ratings: { results: [{ iso_3166_1: 'GB', rating: 'TV-14' }] } }), null);
+  assert.equal(certificateFor({ content_ratings: { results: [{ iso_3166_1: 'GB', rating: '' }] } }), null);
+  assert.equal(certificateFor({ content_ratings: { results: [] } }), null);
+  assert.equal(certificateFor({}), null);
+  assert.equal(certificateFor(undefined), null);
 });
 
 // --- the store -------------------------------------------------------------
@@ -188,6 +215,131 @@ test('settling seasons as unusable records null for every pending request', () =
 
   store.settleSeasonsUnusable([{ id: 1, tvdbId: 99, season: 1 }]);
   assert.equal(store.titles.get(1)?.seasonRuntimes.get(1), null, 'settled with nothing usable');
+});
+
+// --- the facts a new block writes ------------------------------------------
+
+const detailOf = (over: Record<string, unknown> = {}) => ({
+  status: 'ended',
+  runtime: 45,
+  title: 'Severance',
+  network: 'BBC One',
+  ids: { tvdb: '99', tmdb: '95396' },
+  ...over,
+});
+
+test('a detail fold carries the title, the network cell and the tmdb join key', () => {
+  const store = new CatalogueStore();
+  store.foldCatalogue(
+    [{ id: 1, detail: true }],
+    { episodes: new Map(), details: new Map([[1, detailOf()]]), failed: [], unavailable: [] },
+    index(),
+    { at: NOW, tvdbEnabled: true },
+  );
+
+  const held = store.titles.get(1);
+  assert.equal(held?.title, 'Severance');
+  assert.equal(held?.network, 'BBC', 'through the spelling map, ready to write');
+  assert.equal(held?.tmdbId, 95396);
+});
+
+// The two ids take opposite treatments: a null `tvdbId` says "no runtime
+// obtainable", which is the right default with no key, where a null `tmdbId`
+// would have the planner ask for a block by hand when the fix is setting
+// TMDB_API_KEY.
+test('the tmdb id folds in whatever the TVDB credential is doing', () => {
+  const store = new CatalogueStore();
+  store.foldCatalogue(
+    [{ id: 1, detail: true }],
+    { episodes: new Map(), details: new Map([[1, detailOf()]]), failed: [], unavailable: [] },
+    index(),
+    { at: NOW, tvdbEnabled: false },
+  );
+  assert.equal(store.titles.get(1)?.tvdbId, null);
+  assert.equal(store.titles.get(1)?.tmdbId, 95396);
+});
+
+test('a genre fold maps into the vocabulary and keeps the order TVDB sent', () => {
+  const store = new CatalogueStore();
+  store.foldGenres([{ id: 1, tvdbId: 99 }], {
+    genres: new Map([[1, ['Science Fiction', 'Crime', 'Drama']]]),
+    failed: [],
+    unavailable: [],
+  });
+  // Crime has no column to go in; Sci-Fi leads because TVDB sent it first,
+  // which is what makes it the block's primary genre.
+  assert.deepEqual(store.titles.get(1)?.genres, ['Sci-Fi', 'Drama']);
+});
+
+// Three states, and the planner reads all three: a settled empty list lets the
+// block land with the cells blank, where an absent key makes it wait a poll.
+test('a series TVDB has but files under nothing is settled, not pending', () => {
+  const store = new CatalogueStore();
+  store.foldGenres([{ id: 1, tvdbId: 99 }], { genres: new Map([[1, ['Reality']]]), failed: [], unavailable: [] });
+  assert.deepEqual(store.titles.get(1)?.genres, [], 'answered, nothing in the vocabulary');
+});
+
+test('a 404 settles the genres as null and a failed lookup leaves them absent', () => {
+  const store = new CatalogueStore();
+  store.foldGenres([{ id: 1, tvdbId: 99 }, { id: 2, tvdbId: 98 }], {
+    genres: new Map(),
+    failed: [2],
+    unavailable: [1],
+  });
+  assert.equal(store.titles.get(1)?.genres, null, 'gone, so asking again never helps');
+  assert.equal(store.titles.get(2)?.genres, undefined, 'a transient failure is not settled');
+});
+
+// A recorded answer is the answer: a later 404 must not blank a series that
+// has already said what it is.
+test('an unavailable never overwrites genres already recorded', () => {
+  const store = new CatalogueStore();
+  store.foldGenres([{ id: 1, tvdbId: 99 }], { genres: new Map([[1, ['Drama']]]), failed: [], unavailable: [] });
+  store.foldGenres([{ id: 1, tvdbId: 99 }], { genres: new Map(), failed: [], unavailable: [1] });
+  assert.deepEqual(store.titles.get(1)?.genres, ['Drama']);
+});
+
+test('a certificate fold records the GB age, and a 404 records the absence of one', () => {
+  const store = new CatalogueStore();
+  store.foldCertificates([{ id: 1, tmdbId: 95396 }, { id: 2, tmdbId: 95397 }], {
+    shows: new Map([[1, { content_ratings: { results: [{ iso_3166_1: 'GB', rating: '15' }] } }]]),
+    failed: [],
+    unavailable: [2],
+  });
+  assert.equal(store.titles.get(1)?.certificate, 15);
+  assert.equal(store.titles.get(2)?.certificate, null);
+});
+
+// The distinction the cell rests on: null lets the block land blank, absent
+// makes it wait, and only the second is worth another request.
+test('a failed certificate lookup is left absent so the next poll asks again', () => {
+  const store = new CatalogueStore();
+  store.foldCertificates([{ id: 1, tmdbId: 95396 }], { shows: new Map(), failed: [1], unavailable: [] });
+  assert.equal(store.titles.get(1)?.certificate, undefined);
+});
+
+// A series TMDB answers for and carries no GB entry is settled with nothing —
+// 10 of the 189 blocks measured, and their cells stay blank.
+test('a series TMDB has no GB rating for is settled as null, not left pending', () => {
+  const store = new CatalogueStore();
+  store.foldCertificates([{ id: 1, tmdbId: 95396 }], {
+    shows: new Map([[1, { content_ratings: { results: [{ iso_3166_1: 'US', rating: 'TV-MA' }] } }]]),
+    failed: [],
+    unavailable: [],
+  });
+  assert.equal(store.titles.get(1)?.certificate, null);
+});
+
+// A rejection is a fact about the token, so it is held apart from the answers:
+// settling the pending blocks would have the planner ask for rows by hand that
+// the upstream could build the moment the key is fixed.
+test('a rejected credential is recorded by name and settles no title', () => {
+  const store = new CatalogueStore();
+  store.foldCertificates([{ id: 1, tmdbId: 95396 }], { shows: new Map(), failed: [1], unavailable: [] });
+  assert.equal(store.factsRejected, null);
+  store.rejectFacts('tmdb');
+  assert.equal(store.factsRejected, 'tmdb');
+  assert.equal(store.titles.get(1)?.certificate, undefined, 'still pending, not settled blank');
 });
 
 // --- the re-read gate ------------------------------------------------------

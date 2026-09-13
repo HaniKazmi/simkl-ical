@@ -237,11 +237,13 @@ export interface EpisodeDetail {
 /**
  * `/tv/{id}` and `/anime/{id}`.
  *
- * Three fields are read. `status` separates a show that has ended from one
- * between seasons, which the episode list cannot express. `runtime` is the
- * show-wide "most common length", which a newly inserted season row takes for
- * its runtime cell. `ids.tvdb` is the join key to the per-episode runtimes,
- * which SIMKL holds but does not serve.
+ * Four fields and two ids are read. `status` separates a show that has ended
+ * from one between seasons, which the episode list cannot express. `runtime` is
+ * the show-wide "most common length", which a newly inserted season row takes
+ * for its runtime cell. `title` and `network` are two of the cells a new block's
+ * show row is filled with. `ids.tvdb` is the join key to the per-episode
+ * runtimes, which SIMKL holds but does not serve; `ids.tmdb` the join key to a
+ * series' certificate, which SIMKL holds only as the US TV rating.
  */
 export interface ShowDetail {
   title?: string;
@@ -249,6 +251,12 @@ export interface ShowDetail {
   status?: string;
   /** Minutes, and **per episode** — "most common length", not a season or series total. */
   runtime?: number | null;
+  /**
+   * The broadcaster, in SIMKL's spelling — `FOX`, `Nippon TV`. Through
+   * `networkCell` it agrees with 185 of the 189 blocks measured, which is what
+   * TVDB's `originalNetwork` gives and 41 more than TMDB's.
+   */
+  network?: string | null;
   ids?: LibraryIds;
 }
 

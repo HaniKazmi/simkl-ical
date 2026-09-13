@@ -54,6 +54,24 @@ export interface TmdbMovie {
 }
 
 /**
+ * A series' certificate in one territory. No release is attached, where a
+ * film's `release_dates` entry carries a type and a date — so there is nothing
+ * to prefer between here, only a territory to pick.
+ */
+export interface TmdbContentRating {
+  iso_3166_1?: string;
+  /** The territory's own rating — `15` in GB, `TV-MA` in US. Empty string when unrated. */
+  rating?: string;
+}
+
+/** `/tv/{id}?append_to_response=content_ratings`. Only the GB certificate is read. */
+export interface TmdbTv {
+  /** TMDB's own title for the series; a block writes SIMKL's. */
+  name?: string;
+  content_ratings?: { results?: TmdbContentRating[] };
+}
+
+/**
  * One image from `/movie/{id}/images`, which carries what the appended
  * `images` on a film's detail does not: dimensions and the vote count.
  * Written from live responses like the rest.

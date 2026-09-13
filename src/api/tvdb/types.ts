@@ -27,6 +27,18 @@ export interface TvdbSeasonResponse {
   data?: { episodes?: TvdbEpisode[] };
 }
 
+/**
+ * `GET /series/{id}/extended`, which carries the whole series record; only the
+ * genre list is read.
+ *
+ * The order is TVDB's own genre-id order on all 189 series measured, and that
+ * order is what decides a block's primary genre — see `mappedTvdbGenres`, which
+ * keeps it.
+ */
+export interface TvdbSeriesResponse {
+  data?: { genres?: { id?: number; name?: string }[] };
+}
+
 export interface TvdbLoginResponse {
   data?: { token?: string };
 }

@@ -16,6 +16,7 @@ import { columnLetter, isBlank, isFormula } from './2-grid.ts';
 import { instantFrom, plainDateFrom, plainDateIn } from '../shared/dates.ts';
 import type { ColumnMap, HeaderName } from './2-grid.ts';
 import type { CellData } from '../api/google/types.ts';
+import type { TmdbTv } from '../api/tmdb/types.ts';
 
 /** Sheets counts days from 1899-12-30. */
 const SHEET_EPOCH = Temporal.PlainDate.from('1899-12-30');
@@ -347,6 +348,26 @@ export const CERTIFICATE_AGES: Record<string, number> = { U: 3, PG: 7, '12A': 12
 const CERTIFICATES = new Set<number>([3, 7, 12, 15, 18]);
 
 export const isCertificate = (value: number): boolean => CERTIFICATES.has(value);
+
+/**
+ * A series' `Certificate` cell from TMDB's content ratings, or null to leave it
+ * blank.
+ *
+ * The GB entry is picked **by territory**, never by position: TMDB contracts no
+ * ordering and this cell is written once, so an order-dependent answer is wrong
+ * for as long as the row exists. There is nothing to prefer between the way
+ * `certificateOf` prefers a film's theatrical rating — an entry here carries a
+ * territory and a rating with no release attached, where a film's
+ * `release_dates` carries one entry per release.
+ *
+ * Null covers three states the cell cannot tell apart and does not need to: no
+ * GB entry (10 of the 189 blocks measured), an empty `rating`, and a rating
+ * outside the BBFC set. A blank reads as unfinished; a guessed age does not.
+ */
+export const certificateFor = (tv: TmdbTv | undefined): number | null => {
+  const gb = tv?.content_ratings?.results?.find((entry) => entry.iso_3166_1 === 'GB');
+  return CERTIFICATE_AGES[gb?.rating?.trim() ?? ''] ?? null;
+};
 
 /**
  * TVDB's genre names onto the vocabulary. Anything absent is dropped.
