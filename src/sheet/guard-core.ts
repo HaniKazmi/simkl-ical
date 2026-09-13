@@ -9,10 +9,7 @@
  * spec. What is here names no field and belongs to neither tab: the budget, the
  * shape every written cell has, and the alignment check — is this address the
  * row the plan thinks it is — which is the one rule that catches a plan built
- * against a different grid, the one catastrophic failure the feature has. The
- * `Genres` value rule joins them because the two tabs hold that column under
- * one vocabulary, so each guard says which of its fields is a genre list and
- * this says what a genre list is.
+ * against a different grid, the one catastrophic failure the feature has.
  *
  * One copy because a rule like that hardened in one guard and not the other
  * fails nothing: the other tab stays on the old behaviour and no test notices.
@@ -23,7 +20,6 @@
 
 import type { ExtendedValue } from '../api/google/types.ts';
 import { isFormula, sameValue } from './2-grid.ts';
-import { isGenre, MAX_SECONDARY_GENRES } from './values.ts';
 import type { SheetSnapshot } from './io/spreadsheet.ts';
 import type { PlannedWrites } from './6-requests.ts';
 import { rowsTouched } from './6-requests.ts';
@@ -84,24 +80,6 @@ export interface GuardedCell<H extends string> {
   previous: ExtendedValue | undefined;
   value: ExtendedValue | undefined;
 }
-
-/**
- * A `Genres` cell: a comma-separated list of the genres the renderer colours,
- * no longer than the column holds.
- *
- * No secondaries is a real state — 27 rows on the films tab hold it — and
- * `''.split(',')` is `['']`, which is not a genre. Refusing that would make
- * each planner's decision to omit the cell load-bearing for the guard's
- * correctness, which is the coupling these rules exist to avoid.
- */
-export const checkGenresValue = (value: ExtendedValue | undefined, where: string, refuse: Refuse): void => {
-  const text = value?.stringValue;
-  if (typeof text !== 'string') refuse(`${where}: Genres must be text.`);
-  if (!text) return;
-  const tokens = text.split(',').map((token) => token.trim());
-  if (tokens.length > MAX_SECONDARY_GENRES) refuse(`${where}: ${tokens.length} genres exceeds the ${MAX_SECONDARY_GENRES} this column holds.`);
-  for (const token of tokens) if (!isGenre(token)) refuse(`${where}: ${token} is not one of the genres the renderer colours.`);
-};
 
 /**
  * Where a planned cell says it goes, against where the header map puts its

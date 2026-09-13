@@ -47,7 +47,18 @@ import type { FailureKind, PoolFailures } from '../api/pool.ts';
 import { parseGrid, type Grid } from './2-grid.ts';
 import { indexLibrary, type TitleProgress } from './1-index.ts';
 import { CATALOGUE_MAX_AGE, CatalogueStore, needsLookup, type FactsCredential } from './3-catalogue.ts';
-import { describePlan, emptyPlan, gridIds, observeWatches, planRecord, planSync, type PlanRecord, type PlanResult, type SheetPlan } from './4-plan.ts';
+import {
+  describePlan,
+  emptyLookupBudget,
+  emptyPlan,
+  gridIds,
+  observeWatches,
+  planRecord,
+  planSync,
+  type PlanRecord,
+  type PlanResult,
+  type SheetPlan,
+} from './4-plan.ts';
 import { rowsTouched, toRequests, writesFor, type PlannedWrites } from './6-requests.ts';
 import { verify, type Verification } from './7-verify.ts';
 import { parseMovieGrid, type MovieGrid } from './movies/2-grid.ts';
@@ -582,6 +593,14 @@ export class SheetSync {
     // sit inside the activity cut-off would fetch a block and then plan it as
     // out of scope, or the reverse.
     const now = Temporal.Now.instant();
+    // One allowance for every pass of this attempt. Per pass it would multiply
+    // by the pass ceiling: a cold start's block walk asks for
+    // `MAX_LOOKUPS_PER_PASS` details, the fetch answers them, and the next pass
+    // finds the *next* unanswered titles and asks for as many again — four
+    // times the burst the cap names, inside a run whose snapshot goes stale at
+    // 120s. A FRESH re-read is a new attempt and gets a new allowance, because
+    // it plans against a grid that changed underneath it.
+    const lookupBudget = emptyLookupBudget();
 
     for (let pass = 1; ; pass += 1) {
       const result = planSync(grid, index, this.store.titles, {
@@ -590,15 +609,16 @@ export class SheetSync {
         starts,
         filed,
         factsRejected: this.store.factsRejected,
+        lookupBudget,
       });
       const { demands } = result;
 
       // The two a block's show row waits on, fetched on the first planning
       // attempt only — the runtimes' reason, since a FRESH re-read plans
       // against a grid that changed underneath it — and only while this run
-      // has not yet chosen its insert. One block lands per run, so the
-      // lookups the blocks behind it need are the next poll's: fetched now,
-      // every pass to the ceiling spends another `MAX_LOOKUPS_PER_PASS`.
+      // has not yet chosen its insert. One block lands per run, so the lookups
+      // the blocks behind it need are the next poll's, and paying for them now
+      // buys a row nothing can add until then.
       const askFacts = attempt === 1 && result.plan.insert === null;
       const pendingGenres = demands.genres.filter((request) => !made.genres.has(request.id));
       const pendingCertificates = demands.certificates.filter((request) => !made.certificates.has(request.id));

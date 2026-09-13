@@ -307,9 +307,18 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   never revisited and a cell left blank because a 503 read as an answer is blank for the life of
   the row. Both `TVDB_API_KEY` and `TMDB_API_KEY` gate block inserts rather than degrading them,
   the films rule: a block with no genre and no certificate costs more to finish by hand than a row
-  that was never added. A credential the upstream rejects is held by name in `factsRejected` for
+  that was never added. Every credential the upstream rejects is held by name in `factsRejected` for
   the life of the process, because both keys are read at start-up — asking again every poll settles
-  nothing, and settling the waiting shows would file them as ones the upstream has nothing for.
+  nothing, and settling the waiting shows would file them as ones the upstream has nothing for. The
+  note names all of them, because named one at a time an operator fixes a key, restarts, and is told
+  about the other. The lookups a block earns are capped per **attempt** rather than per pass, in
+  `LookupBudget`: the planner runs to a fixpoint, so a cap reset on every pass is the cap multiplied
+  by the pass ceiling.
+  A block also needs `BLOCK_SCAN_ROWS` of declared grid beneath it: the block-height helper every
+  roll-up reads is an `OFFSET` window that far down, and Sheets answers `#REF!` for one running past
+  the last row, so those five cells would error and VERIFY would roll the write back every poll. The
+  planner declines, the way the films half declines a full tab — a guard refusal is whole-plan, and
+  a tab with no room is a standing state until someone extends it.
   The block's first season row is the earliest season watched **inside the activity window**, the
   same window a season insert obeys: a show whose earlier seasons were watched before the window
   gets a block starting at the recent one, and those earlier rows are added by hand — a season

@@ -17,9 +17,8 @@
  * The value conventions it shares with the planner (`values.ts`) are one copy
  * on purpose: a bound that exists twice can disagree, and any gap is a
  * whole-plan refusal on good data. The budget, the shape every written cell
- * has, the alignment check and the `Genres` list both tabs hold under one
- * vocabulary are `guard-core.ts`, shared with the show grid's guard for the
- * same reason.
+ * has and the alignment check are `guard-core.ts`, shared with the show grid's
+ * guard for the same reason.
  */
 
 import { config } from '../../shared/config.ts';
@@ -28,7 +27,6 @@ import {
   checkBudgets,
   checkCellAlignment,
   checkCellShape,
-  checkGenresValue,
   describeValue,
   PlanRefusal,
   type Refuse,
@@ -37,6 +35,7 @@ import {
 import {
   FORMAT_CINEMA,
   FORMAT_HOME,
+  genreListProblem,
   isCertificate,
   isFilmType,
   isFormat,
@@ -155,9 +154,13 @@ const checkValue = (field: MovieHeaderName, value: ExtendedValue, where: string,
         refuse(`${where}: ${describeValue(value)} is not one of the genres the renderer colours.`);
       }
       return;
-    case 'Genres':
-      checkGenresValue(value, where, refuse);
+    case 'Genres': {
+      const list = value.stringValue;
+      if (typeof list !== 'string') refuse(`${where}: Genres must be text.`);
+      const problem = genreListProblem(list);
+      if (problem !== null) refuse(`${where}: ${problem}.`);
       return;
+    }
     case 'Format':
       // One of two words, as text. The tab fills this column on every row, and
       // a boolean here is the shape the column does not hold at all.
@@ -224,6 +227,12 @@ const checkEdit = (cell: FilmCellEdit, ctx: FilmGuardContext): void => {
 
 const checkInsert = (insert: FilmRowInsert, ctx: FilmGuardContext): void => {
   const { grid } = ctx;
+
+  // A film row is one row — the tab is flat, with no block to keep together.
+  // Stated here rather than left to the literal type: the plan reaches the
+  // guard as data, and a span the plan called one row while covering two is
+  // budgeted, verified and rolled back over one of them.
+  if (insert.rows !== 1) refuse(`insert at row ${insert.row + 1}: a film insert is one row, never ${insert.rows}.`);
 
   const expected = nextFilmRow(grid);
   // Room first, because the placement rule below pins the row to exactly one

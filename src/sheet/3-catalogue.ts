@@ -407,7 +407,7 @@ export class CatalogueStore {
   }
 
   /**
-   * Which show-facts credential has been rejected this process, or null.
+   * Which show-facts credentials have been rejected this process.
    *
    * `FilmStore.rejected`'s reason, and its lifetime: a rejection is a fact
    * about the token and not about any series, so settling the pending blocks
@@ -416,14 +416,15 @@ export class CatalogueStore {
    * a fixed one arrives with a restart — and every poll in between would
    * otherwise spend its lookups on the same 401.
    *
-   * One slot rather than two: a block needs both upstreams to answer, so
-   * either rejection holds every block back, and what the note has to carry is
-   * the name of the key to fix.
+   * Every rejection, accumulated: a block needs both upstreams, so the note the
+   * planner writes has to name every key standing between the operator and a
+   * restart that works. A single slot the second rejection overwrote would name
+   * one key, send the operator round, and name the other.
    */
-  factsRejected: FactsCredential | null = null;
+  readonly factsRejected = new Set<FactsCredential>();
 
   rejectFacts(which: FactsCredential): void {
-    this.factsRejected = which;
+    this.factsRejected.add(which);
   }
 
   /**

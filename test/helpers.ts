@@ -11,7 +11,7 @@ import { clearSheetRuns } from '../src/sheet/io/journal.ts';
 import { clearHardcoverToken } from '../src/api/hardcover/client.ts';
 import { clearTokenCache as clearTvdbTokenCache } from '../src/api/tvdb/auth.ts';
 import { clearBaseline } from '../src/sheet/io/baseline.ts';
-import { dateSerial, showRowFormulas } from '../src/sheet/values.ts';
+import { BLOCK_SCAN_ROWS, dateSerial, showRowFormulas } from '../src/sheet/values.ts';
 import { HEADERS, SHOW_LABELS } from '../src/sheet/2-grid.ts';
 
 import type { Calendars } from '../src/feed/io/calendar.ts';
@@ -332,6 +332,11 @@ export const rowByLabel = (headers: readonly string[], cells: Partial<Record<str
  * data, and that headroom is what an insert lands in. Defaulted with room for
  * the same reason: a fixture whose grid stops at its last row cannot express
  * an append, so a bound checked against it would look wrong when it is right.
+ *
+ * The tail is `BLOCK_SCAN_ROWS` deep because that is what a *block* needs: its
+ * roll-ups read a 40-row window below the show row, and the planner declines a
+ * block with less than that beneath it, so a shorter tail would decline every
+ * block fixture for a reason the test is not about.
  */
 export const sheetSnapshot = (
   rows: CellSpec[][],
@@ -339,7 +344,7 @@ export const sheetSnapshot = (
 ): SheetSnapshot => ({
   sheetId,
   title: 'Shows',
-  rowCount: rowCount ?? rows.length + 10,
+  rowCount: rowCount ?? rows.length + BLOCK_SCAN_ROWS + 10,
   columnCount: columnCount ?? Math.max(...rows.map((r) => r.length)),
   rows: rows.map((row) => row.map(cellOf)),
   readAtMono: performance.now(),

@@ -207,6 +207,28 @@ test('an insert with no season row above it is refused', () => {
   refuses(planOf([], fx.insertAt(fx.at.fargoS1!, 1)), /no season row above the insertion point/);
 });
 
+// The row *immediately* above, which is what `inheritFromBefore` copies:
+// `parseGrid` keeps a block open across an all-blank spacer row, so a season
+// row anywhere above it says nothing about the formats a row landing under the
+// spacer inherits.
+test('an insert landing under a spacer row inside the block is refused', () => {
+  const spaced = gridFixture(
+    show('fargo', 'Fargo'),
+    season('fargoS1', 1, 6, 44000),
+    raw('spacer', new Array(H.length).fill(null)),
+    season('fargoS3', 3, 4, 44500),
+  );
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], spaced.insertAt(spaced.below.fargoS1!, 2)), spaced.grid));
+  refuses(planOf([], spaced.insertAt(spaced.at.fargoS3!, 2)), /no season row above the insertion point/, spaced.grid);
+});
+
+// `spanRows` is what the budget counts, VERIFY inspects and a rollback deletes,
+// so a span calling itself one row while filling two is verified over one row
+// and rolled back over one, leaving the other standing.
+test('a season insert is exactly one row', () => {
+  refuses(planOf([], { ...fx.insertAt(fx.end, 3), rows: 2 as 1 }), /a season insert is one row/);
+});
+
 test('an insert outside its own block is refused', () => {
   const two = gridFixture(show('fargo', 'Fargo'), season('fargoS1', 1, 6, 44000), show('silo', 'Silo', { status: 'Watching' }), season('siloS1', 1, 3, null));
   const insert = { ...two.insertAt(two.end, 2), title: 'Fargo' };
@@ -490,7 +512,7 @@ test('a block is never inserted at or above the header row', () => {
 // inside it. Asked before placement, which would otherwise be the only rule
 // that could fire.
 test('a block with no room left in the declared grid is refused', () => {
-  refuses(planOf([], fx.blockAt(13)), /there is no room for a block/);
+  refuses(planOf([], fx.blockAt(fx.grid.snapshot.rowCount - 1)), /there is no room for a block/);
 });
 
 // A row landing mid-block splits it, and every roll-up above the split starts

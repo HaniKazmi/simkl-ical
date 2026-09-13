@@ -358,10 +358,12 @@ export type BlockColumns = Partial<Record<BlockHeaderName, number>>;
 export interface Grid {
   snapshot: SheetSnapshot;
   columns: ColumnMap;
-  blockColumns: BlockColumns;
   /**
    * Every show field's resolved column, the ten and the six in one map —
-   * undefined only where the tab does not carry one of the six.
+   * undefined only where the tab does not carry one of the six. The one
+   * reading of "which column is this field at": the six on their own answer no
+   * question any caller asks, and a second map to reach them is a second thing
+   * to keep in agreement.
    *
    * One resolution for planner, guard and verifier: the guard re-derives the
    * column of every cell a block insert fills and the verifier reads the same
@@ -446,7 +448,7 @@ export const parseGrid = (snapshot: SheetSnapshot): Grid => {
     });
   }
 
-  return { snapshot, columns, blockColumns, fields: { ...columns, ...blockColumns }, blocks };
+  return { snapshot, columns, fields: { ...columns, ...blockColumns }, blocks };
 };
 
 /**

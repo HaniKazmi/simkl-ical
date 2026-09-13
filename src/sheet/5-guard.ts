@@ -34,6 +34,7 @@ import {
 import {
   artworkFormula,
   blockEnd,
+  genreListProblem,
   isCertificate,
   isGenre,
   isStatus,
@@ -57,7 +58,6 @@ import {
   checkCellAlignment,
   checkCellPosition,
   checkCellShape,
-  checkGenresValue,
   describeValue,
   PlanRefusal,
   type Refuse,
@@ -127,8 +127,6 @@ interface GuardContext {
   /** Tomorrow in the viewer's zone — see `maxSerial`. */
   serialCeiling: number;
   showBucket: string | null;
-  /** Every column a show row can be written into: the required ten and whichever of the six the tab carries. */
-  showColumns: Partial<Record<ShowField, number>>;
   showRows: Set<number>;
   /**
    * The block comes along because the runtime rule is about the block, not
@@ -343,12 +341,14 @@ const checkInsertPlacement = (insert: RowInsert, where: string, ctx: GuardContex
     // season 0 is specials, maintained by hand.
     refuse(`${where}: only whole numbered seasons may be inserted.`);
   }
-  // findLast, not find: the nearest block above is where the new row lands,
-  // and inheritFromBefore takes formats from the row immediately above — a
-  // show row's formats render a correct date serial as `46265`.
+  // findLast, not find: the nearest block above is where the new row lands.
   const block = ctx.grid.blocks.findLast((b) => b.row < insert.row);
   if (!block || block.title !== insert.title) refuse(`${where}: the insertion point is not inside ${insert.title}'s block.`);
-  if (!block.seasons.some((s) => s.row < insert.row)) {
+  // `inheritFromBefore` takes formats from the row *immediately* above, and a
+  // show row's render a correct date serial as `46265` — so does a spacer row,
+  // which `parseGrid` keeps a block open across. The same question the block
+  // insert asks one row up.
+  if (!ctx.seasonRows.has(insert.row - 1)) {
     refuse(`${where}: no season row above the insertion point to inherit formats from.`);
   }
   return block;
@@ -402,6 +402,12 @@ const checkSeasonRowFill = (fill: readonly BlockCell[], block: Pick<ShowBlock, '
 
 const checkSeasonInsert = (insert: RowInsert, ctx: GuardContext): void => {
   const where = `row ${insert.row + 1} (${insert.title} S${insert.season})`;
+  // A season row is one row, and `spanRows` is what the budget counts, VERIFY
+  // inspects and a rollback deletes. Stated here rather than left to the
+  // literal type: the plan reaches the guard as data, and a span the plan
+  // called one row while filling two would be verified over one and rolled
+  // back over one, leaving the other standing.
+  if (insert.rows !== 1) refuse(`${where}: a season insert is one row, never ${insert.rows}.`);
   const block = checkInsertPlacement(insert, where, ctx);
 
   for (const cell of insert.fill) {
@@ -531,9 +537,13 @@ const checkShowValue = (cell: BlockCell, value: ExtendedValue, where: string, in
     case 'Genre':
       if (typeof text !== 'string' || !isGenre(text)) refuse(`${where}: ${describeValue(value)} is not one of the genres the renderer colours.`);
       return;
-    case 'Genres':
-      checkGenresValue(value, where, refuse);
+    case 'Genres': {
+      const list = value.stringValue;
+      if (typeof list !== 'string') refuse(`${where}: Genres must be text.`);
+      const problem = genreListProblem(list);
+      if (problem !== null) refuse(`${where}: ${problem}.`);
       return;
+    }
     case 'Network':
       // Non-empty text and nothing more: the vocabulary is open — 76 distinct
       // networks across the tab — so a closed set would refuse a real one.
@@ -552,11 +562,11 @@ const checkShowRowCell = (cell: BlockCell, where: string, insert: BlockInsert, c
     // The position rule on its own, because these cells skip `checkCellShape`
     // — a template built against a different header map counts a block's
     // height off whatever column now sits there.
-    checkCellPosition(cell, ctx.showColumns, refuse);
+    checkCellPosition(cell, ctx.grid.fields, refuse);
     checkTemplateCell({ ...cell, field: cell.field }, where, ctx);
     return;
   }
-  const value = checkCellShape(cell, { allowed: BLOCK_SHOW_FIELDS, emptiable: EMPTIABLE_BLOCK, columns: ctx.showColumns }, refuse);
+  const value = checkCellShape(cell, { allowed: BLOCK_SHOW_FIELDS, emptiable: EMPTIABLE_BLOCK, columns: ctx.grid.fields }, refuse);
   if (value !== undefined) checkShowValue(cell, value, where, insert);
 };
 
@@ -688,7 +698,6 @@ export const assertPlanSafe = (
     grid,
     serialCeiling: maxSerial(now, timezone),
     showBucket,
-    showColumns: grid.fields,
     showRows: new Set(grid.blocks.map((b) => b.row)),
     seasonRows: new Map(grid.blocks.flatMap((b) => b.seasons.map((s) => [s.row, { season: s, block: b }] as const))),
   };

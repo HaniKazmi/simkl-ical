@@ -7,6 +7,7 @@ import { clearTokenCache } from '../../src/api/google/auth.ts';
 import { clearTokenCache as clearTvdbTokenCache } from '../../src/api/tvdb/auth.ts';
 import { cellOf, col, daysAgo, jsonResponse, libraryOf, quiet, recorder, SHEET_COLUMNS, SHEET_HEADERS, todaySerial, withConfig, withFetch, withFreshJournal, type CellSpec, seasonRow, showRow } from '../helpers.ts';
 import { CREDENTIAL, DEFAULT_GRID, fakeSheets, type FakeSheetsOptions } from './fake-sheets.ts';
+import { MAX_LOOKUPS_PER_PASS } from '../../src/sheet/4-plan.ts';
 import { sheetRuns } from '../../src/sheet/io/journal.ts';
 import { withSheetLock } from '../../src/sheet/io/lock.ts';
 import { artworkFormula, dateSerial, showRowFormulas } from '../../src/sheet/values.ts';
@@ -1280,6 +1281,34 @@ test('a season insert takes the slot, and the block’s facts are left for the n
       assert.equal(cell(sheet.tab('Shows'), 4, 'Title')?.stringValue, 'Severance');
     }),
   );
+});
+
+// The planner runs to a fixpoint, so a lookup allowance reset on every pass is
+// an allowance multiplied by the pass ceiling: the pass after a fetch finds the
+// next unanswered titles and asks for as many again, inside a run whose
+// snapshot goes stale at 120s. One allowance per attempt is what the sync
+// threads.
+test('a cold start asks SIMKL for one pass’s worth of details across the whole run', async () => {
+  clearTokenCache();
+  clearTvdbTokenCache();
+  const unlisted = Array.from({ length: 10 }, (_, i) => ({
+    id: 900 + i,
+    title: `Unlisted ${i}`,
+    status: 'watching',
+    seasons: { 1: [FIRST_WATCH, LAST_WATCH] },
+    watched: 2,
+    total: 9,
+  }));
+  const sheet = blockServer();
+  await withFreshJournal(async () => {
+    await withBlockKeys({}, () =>
+      withFetch(sheet.handler, async (calls) => {
+        await new SheetSync({ logger: recorder() }).run(libraryOf(...unlisted));
+        const asked = new Set(calls.filter((c) => c.startsWith('https://api.simkl.com/tv/') && !c.includes('/episodes/')));
+        assert.equal(asked.size, MAX_LOOKUPS_PER_PASS, 'the passes after the first spend what the first left, not a fresh allowance');
+      }),
+    );
+  });
 });
 
 // Gating rather than degrading: those cells are written once, and a blank one

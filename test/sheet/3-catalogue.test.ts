@@ -336,10 +336,20 @@ test('a series TMDB has no GB rating for is settled as null, not left pending', 
 test('a rejected credential is recorded by name and settles no title', () => {
   const store = new CatalogueStore();
   store.foldCertificates([{ id: 1, tmdbId: 95396 }], { shows: new Map(), failed: [1], unavailable: [] });
-  assert.equal(store.factsRejected, null);
+  assert.deepEqual([...store.factsRejected], []);
   store.rejectFacts('tmdb');
-  assert.equal(store.factsRejected, 'tmdb');
+  assert.deepEqual([...store.factsRejected], ['tmdb']);
   assert.equal(store.titles.get(1)?.certificate, undefined, 'still pending, not settled blank');
+});
+
+// Both keys are read at start-up, so one restart has to be enough: a second
+// rejection landing on top of the first would leave the operator fixing one
+// key, restarting, and being told about the other.
+test('a second rejection joins the first rather than replacing it', () => {
+  const store = new CatalogueStore();
+  store.rejectFacts('tmdb');
+  store.rejectFacts('tvdb');
+  assert.deepEqual([...store.factsRejected].sort(), ['tmdb', 'tvdb']);
 });
 
 // --- the re-read gate ------------------------------------------------------

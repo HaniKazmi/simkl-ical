@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  BLOCK_HEADERS,
   BLOCK_LABELS,
   columnLetter,
   duplicateIds,
@@ -188,9 +189,12 @@ test('a row carrying only an id is not read as a season row', () => {
 
 // --- block columns -----------------------------------------------------------
 
+// One map for every show field, the ten required and the six optional: what a
+// planner, a guard or a verifier asks for a column is the field, never which
+// of the two lists it came from.
 test('the six block columns resolve from the live header order', () => {
   const grid = parseGrid(sheetSnapshot([H, show('Fargo', 'Ended', 3381, 'show')]));
-  assert.deepEqual(grid.blockColumns, {
+  assert.deepEqual(Object.fromEntries(BLOCK_HEADERS.map((field) => [field, grid.fields[field]])), {
     Franchise: col(H, 'Franchise'),
     Genre: col(H, 'Genre'),
     Genres: col(H, 'Other Genres'),
@@ -206,16 +210,16 @@ test('a header lacking an optional column parses without throwing, leaving it un
   const noNetwork = H.filter((label) => label !== 'Network');
   const rows = [noNetwork, rowByLabel(noNetwork, { Title: 'Fargo', Status: 'Ended', Type: 'show', ID: 3381 })];
   const grid = parseGrid(sheetSnapshot(rows));
-  assert.equal(grid.blockColumns.Network, undefined);
+  assert.equal(grid.fields.Network, undefined);
 });
 
 test('a duplicated optional column resolves to absent, not a thrown error', () => {
   const duped = [...H, 'Genre'];
   const rows = [duped, [...rowByLabel(H, { Title: 'Fargo', Status: 'Ended', Type: 'show', ID: 3381 }), null]];
   const grid = parseGrid(sheetSnapshot(rows));
-  assert.equal(grid.blockColumns.Genre, undefined);
+  assert.equal(grid.fields.Genre, undefined);
   // The other five are untouched by one column's duplicate.
-  assert.equal(grid.blockColumns.Franchise, col(H, 'Franchise'));
+  assert.equal(grid.fields.Franchise, col(H, 'Franchise'));
 });
 
 test('a block\'s franchise reads the Franchise cell as text, and is null when the cell or the column is absent', () => {

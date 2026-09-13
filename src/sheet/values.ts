@@ -335,6 +335,29 @@ export const MAX_SECONDARY_GENRES = 3;
 export const genresCell = (secondary: readonly string[]): string => secondary.join(', ');
 
 /**
+ * What is wrong with a `Genres` cell's text, or null where nothing is: a
+ * comma-separated list of the genres the renderer colours, no longer than the
+ * column holds.
+ *
+ * Here rather than in either guard because the two tabs hold the column under
+ * one vocabulary, and beside `genresCell`, which produces every value this
+ * checks — a bound that exists twice is a whole-plan refusal waiting to fire on
+ * good data. Each guard says which of its fields is a genre list, and phrases
+ * the refusal in its own words.
+ *
+ * No secondaries is a real state — 27 rows on the films tab hold it — and
+ * `''.split(',')` is `['']`, which is not a genre. Refusing that would make
+ * each planner's decision to omit the cell load-bearing for the guard.
+ */
+export const genreListProblem = (list: string): string | null => {
+  if (!list) return null;
+  const tokens = list.split(',').map((token) => token.trim());
+  if (tokens.length > MAX_SECONDARY_GENRES) return `${tokens.length} genres exceeds the ${MAX_SECONDARY_GENRES} this column holds`;
+  const unknown = tokens.find((token) => !isGenre(token));
+  return unknown === undefined ? null : `${unknown} is not one of the genres the renderer colours`;
+};
+
+/**
  * The `Certificate` column is the BBFC certificate as a minimum age. `12A` and
  * `12` are the same age; the letters differ only in whether an adult must come
  * too.
@@ -505,8 +528,13 @@ export const ROLLUP_FIELDS: readonly RollupField[] = ROLLUP;
  * the one formula shape all 309 blocks carry, so it is the sheet's number
  * rather than a choice made here: a different value in a new row's formula
  * would count a block's height by a different rule than every row above it.
+ *
+ * Exported because it is also a bound on *where* a block may be inserted:
+ * `OFFSET` answers `#REF!` for a window running past the last row of the tab,
+ * so a block with fewer than this many rows beneath it would carry roll-ups
+ * that error rather than total.
  */
-const BLOCK_SCAN_ROWS = 40;
+export const BLOCK_SCAN_ROWS = 40;
 
 /**
  * The five roll-up formulas for a show row, in the live text — one shape on

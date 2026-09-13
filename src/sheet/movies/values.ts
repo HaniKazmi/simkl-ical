@@ -19,7 +19,7 @@ import type { TmdbBackdrop, TmdbMovie, TmdbRelease } from '../../api/tmdb/types.
  * are one scale. Re-exported rather than re-imported at each call site so this
  * tab's modules have one place to read its conventions from.
  */
-export { genresCell, isCertificate, isGenre, MAX_SECONDARY_GENRES } from '../values.ts';
+export { genreListProblem, genresCell, isCertificate, isGenre, MAX_SECONDARY_GENRES } from '../values.ts';
 
 // --- Genres ----------------------------------------------------------------
 

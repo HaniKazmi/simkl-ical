@@ -12,6 +12,7 @@
 
 import { generateKeyPairSync } from 'node:crypto';
 import type { CellData, SheetRequest } from '../../src/api/google/types.ts';
+import { BLOCK_SCAN_ROWS } from '../../src/sheet/values.ts';
 import { BOOK_SHEET_HEADERS, cellOf, filmRow, jsonResponse, MOVIE_SHEET_HEADERS, SHEET_HEADERS, seasonRow, showRow, type CellSpec } from '../helpers.ts';
 
 // A real key, because the assertion is really signed; stubbing node:crypto
@@ -230,8 +231,10 @@ export const fakeSheets = ({
               title: titles.get(sheetId) ?? 'Sheet1',
               // Declared with headroom, as a real tab is: an append lands in
               // the blank rows past the data, so a grid that stops at its last
-              // row cannot model one.
-              gridProperties: { rowCount: rows.length + 10, columnCount: widthOf(sheetId) },
+              // row cannot model one. `BLOCK_SCAN_ROWS` deep, because a block's
+              // roll-ups read that far below its show row and the planner
+              // declines a block with less than that beneath it.
+              gridProperties: { rowCount: rows.length + BLOCK_SCAN_ROWS + 10, columnCount: widthOf(sheetId) },
             },
             data: [{ rowData: rows.map((row) => ({ values: row })) }],
           },

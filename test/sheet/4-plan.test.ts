@@ -2,9 +2,19 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { assertPlanSafe } from '../../src/sheet/5-guard.ts';
 import { parseGrid } from '../../src/sheet/2-grid.ts';
-import { deriveStatus, MAX_LOOKUPS_PER_PASS, observeWatches, planRecord, planSync, statusSource, type PlanOptions, type SheetPlan } from '../../src/sheet/4-plan.ts';
-import { artworkFormula, ROLLUP_FIELDS, showRowFormulas } from '../../src/sheet/values.ts';
-import { BLOCK_SHOW, blockLibrary, gridFixture, season as namedSeason, show as namedShow } from './fixture.ts';
+import {
+  deriveStatus,
+  emptyLookupBudget,
+  MAX_LOOKUPS_PER_PASS,
+  observeWatches,
+  planRecord,
+  planSync,
+  statusSource,
+  type PlanOptions,
+  type SheetPlan,
+} from '../../src/sheet/4-plan.ts';
+import { artworkFormula, BLOCK_SCAN_ROWS, ROLLUP_FIELDS, showRowFormulas } from '../../src/sheet/values.ts';
+import { BLOCK_SHOW, blockLibrary, gridFixture, season as namedSeason, raw as namedRaw, show as namedShow } from './fixture.ts';
 import { seasonShapes, type TitleCatalogue } from '../../src/sheet/3-catalogue.ts';
 import { indexLibrary } from '../../src/sheet/1-index.ts';
 import { dateSerial, seasonKey, type Baseline } from '../../src/sheet/values.ts';
@@ -1926,6 +1936,32 @@ test('anime keeps the add-it-by-hand note rather than becoming a block', () => {
   assert.match(plan.notes.join('\n'), /Severance \(simkl 900\) has recent activity and no row/);
 });
 
+// The question a block turns on first is whether there is a row to add at all,
+// and the answer is a projection of the library: asked after the lookups, a
+// title whose recent watching is all specials costs a SIMKL detail, TVDB's
+// genres and TMDB's certificate every poll, for a block nothing would build.
+test('a show with no numbered season inside the window is reported, never added, and costs no lookup', () => {
+  // SIMKL's season 0 is specials, which `seasonsOf` drops — so a title watched
+  // only there has no season a row could be for.
+  const specials = blocks({ genres: undefined, certificate: undefined }, {}, { seasons: { 0: [daysAgo(9), daysAgo(2)] } });
+  assert.equal(specials.plan.insert, null);
+  assert.match(specials.plan.notes.join('\n'), /Severance \(simkl 900\) has recent activity and no row/);
+  assert.deepEqual(specials.demands.catalogue, [], 'nothing is asked of SIMKL for a title with no row to gain');
+  assert.deepEqual(specials.demands.genres, []);
+  assert.deepEqual(specials.demands.certificates, []);
+});
+
+// `last_watched_at` is what SIMKL moves when anything about the record is
+// written, and the walk reads it to decide whether a title is worth looking at
+// — but which season a row would be for is decided by the episode stamps, and
+// those can all sit outside the window the title's own stamp is inside.
+test('a show whose episodes were all watched outside the window is reported, never added', () => {
+  const stale = blocks({ genres: undefined, certificate: undefined }, {}, { seasons: { 1: [daysAgo(400), daysAgo(300)] }, lastWatchedAt: daysAgo(2) });
+  assert.equal(stale.plan.insert, null);
+  assert.match(stale.plan.notes.join('\n'), /Severance \(simkl 900\) has recent activity and no row/);
+  assert.deepEqual(stale.demands.catalogue, []);
+});
+
 // A hand block "Last Of Us" has to hold "The Last of Us" back: what a false
 // match costs is one note, where a missed one costs a duplicate block.
 test('a title the tab already holds under a different id is held back', () => {
@@ -1981,10 +2017,18 @@ test('a show waiting on an unset credential is not even looked up', () => {
 // no block is settled, nothing further is asked, and the fix arrives with a
 // restart.
 test('a rejected credential names the key to fix and asks for nothing', () => {
-  const { plan, demands } = blocks({ genres: undefined }, { factsRejected: 'tvdb' });
+  const { plan, demands } = blocks({ genres: undefined }, { factsRejected: new Set(['tvdb'] as const) });
   assert.equal(plan.insert, null);
   assert.deepEqual(plan.notes, ['1 show(s) need a block and the credential was rejected; fix TVDB_API_KEY and restart']);
   assert.deepEqual(demands.genres, []);
+});
+
+// One restart has to fix everything standing in the way: named one at a time,
+// the operator corrects a key, restarts, and is told about the other.
+test('both credentials rejected are named in one note', () => {
+  const { plan } = blocks({ genres: undefined }, { factsRejected: new Set(['tvdb', 'tmdb'] as const) });
+  assert.equal(plan.insert, null);
+  assert.deepEqual(plan.notes, ['1 show(s) need a block and the credential was rejected; fix TVDB_API_KEY and TMDB_API_KEY and restart']);
 });
 
 // Null is SIMKL answering that it holds no id, which no poll changes.
@@ -2053,6 +2097,28 @@ test('a block that would sort first, under the header, is declined', () => {
   assert.match(plan.skips.find((s) => s.code === 'no-format-row')?.message ?? '', /no season row above it to inherit formats from/);
 });
 
+// The block-height helper is `OFFSET(<Show cell>, 1, 0, BLOCK_SCAN_ROWS)`, and
+// Sheets answers `#REF!` for a window past the last row of the tab — so a block
+// landing nearer than that to the end carries five roll-ups that error, and
+// VERIFY rolls the write back on every poll until the tab is extended.
+test('a block needs the rows its roll-ups scan below it, and is declined without them', () => {
+  const { index, titles } = blockLibrary();
+  const declaring = (rowCount: number) => ({ ...blockGrid.grid, snapshot: { ...blockGrid.grid.snapshot, rowCount } });
+  const plan = (rowCount: number) =>
+    planSync(declaring(rowCount), index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true }, showBucket: null }).plan;
+
+  const needed = blockGrid.end + 2 + BLOCK_SCAN_ROWS;
+  const tight = plan(needed - 1);
+  assert.equal(tight.insert, null);
+  assert.match(
+    tight.skips.find((s) => s.code === 'no-room')?.message ?? '',
+    /declares only \d+ rows and a block's roll-ups read 40 rows below its show row; add rows to the tab/,
+  );
+  // A skip, not a refusal: a full tab is a standing state until someone
+  // extends it, and a guard refusal would stop every edit on every other row.
+  assert.equal(plan(needed).insert?.kind, 'block');
+});
+
 // A block is placed relative to the blocks already there, so a tab holding
 // none has nothing to sort against — and no season row anywhere to inherit
 // number formats from either. The first block on a tab is the reader's.
@@ -2062,6 +2128,34 @@ test('a tab with no blocks at all has nothing to place a block against', () => {
   const { plan } = planSync(empty, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } });
   assert.equal(plan.insert, null);
   assert.match(plan.skips.find((s) => s.code === 'no-format-row')?.message ?? '', /the tab holds no block to place it against/);
+});
+
+// `parseGrid` keeps a block open across an all-blank spacer row, and
+// `inheritFromBefore` copies the row *immediately* above the insertion point —
+// so a season row anywhere above it carries no number format to a row landing
+// under the spacer, and a correct date serial renders as `46265`.
+test('a season row that would land under a spacer row inside the block is declined', () => {
+  const spaced = gridFixture(
+    namedShow('fargo', 'Fargo', { status: 'Watching' }),
+    namedSeason('fargoS1', 1, 6, 44000),
+    namedRaw('spacer', new Array(H.length).fill(null)),
+    namedSeason('fargoS3', 3, 4, 44500),
+  );
+  const index = indexLibrary(
+    libraryOf({
+      id: 1,
+      title: 'Fargo',
+      status: 'watching',
+      seasons: { 1: [daysAgo(400)], 2: [daysAgo(9), daysAgo(2)], 3: [daysAgo(300)] },
+      watched: 4,
+      total: 4,
+    }),
+  );
+  const titles = new Map<number, TitleCatalogue>([[1, { shapes: seasonShapes(eps(2, 2)), status: 'ended', runtime: 45, seasonRuntimes: new Map() }]]);
+
+  const { plan } = planSync(spaced.grid, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } });
+  assert.equal(plan.insert, null);
+  assert.match(plan.skips.find((s) => s.code === 'no-format-row')?.message ?? '', /no season row above the insertion point/);
 });
 
 // --- one insert per run -----------------------------------------------------
@@ -2154,12 +2248,50 @@ test('the lookups a pass asks for are capped per upstream', () => {
   const ids = Array.from({ length: 12 }, (_, i) => 900 + i);
   const index = indexLibrary(libraryOf(...ids.map((id) => ({ id, title: `Show ${id}`, status: 'watching', seasons: { 1: [daysAgo(9), daysAgo(2)] }, watched: 2, total: 9 }))));
   const titles = new Map<number, TitleCatalogue>(
-    ids.map((id) => [id, { ...blockLibrary({ genres: undefined, certificate: undefined }).titles.get(900)!, title: `Show ${id}` }]),
+    ids.map((id) => [
+      id,
+      { ...blockLibrary({ genres: undefined, certificate: undefined, seasonRuntimes: new Map() }).titles.get(900)!, title: `Show ${id}` },
+    ]),
   );
   const { demands } = planSync(blockGrid.grid, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } });
   assert.equal(demands.genres.length, MAX_LOOKUPS_PER_PASS);
   assert.equal(demands.certificates.length, MAX_LOOKUPS_PER_PASS);
+  // TVDB's season runtimes are the third upstream the walk asks, and the list
+  // they go into also carries the season path's asks — which are bounded by the
+  // sheet where these are bounded by the library minus the sheet, so the cap is
+  // counted over the walk's own pushes rather than over the list.
+  assert.equal(demands.runtimes.length, MAX_LOOKUPS_PER_PASS);
   assert.equal(demands.catalogue.length, 12, 'a title whose detail is already in hand does not count against the cap');
+});
+
+// The planner runs to a fixpoint, so a cap reset on every pass is a cap
+// multiplied by the pass ceiling: the pass after a fetch finds the *next*
+// unanswered titles and asks for as many again, inside a run whose snapshot
+// goes stale at 120s.
+test('one attempt’s lookups are capped across its passes, not per pass', () => {
+  const ids = Array.from({ length: 16 }, (_, i) => 900 + i);
+  const index = indexLibrary(
+    libraryOf(...ids.map((id) => ({ id, title: `Show ${id}`, status: 'watching', seasons: { 1: [daysAgo(9), daysAgo(2)] }, watched: 2, total: 9 }))),
+  );
+  const lookupBudget = emptyLookupBudget();
+  const options = { timezone: TZ, facts: { tvdb: true, tmdb: true }, lookupBudget };
+  const first = planSync(blockGrid.grid, index, new Map(), options);
+  const second = planSync(blockGrid.grid, index, new Map(), options);
+  assert.equal(first.demands.catalogue.length, MAX_LOOKUPS_PER_PASS);
+  assert.equal(second.demands.catalogue.length, 0, 'the second pass of one attempt spends what the first left');
+});
+
+// A caller planning once gets this pass's own allowance, so the budget is a
+// thing the fixpoint threads rather than a thing every caller has to know
+// about.
+test('a pass given no budget starts with a full one', () => {
+  const ids = Array.from({ length: 16 }, (_, i) => 900 + i);
+  const index = indexLibrary(
+    libraryOf(...ids.map((id) => ({ id, title: `Show ${id}`, status: 'watching', seasons: { 1: [daysAgo(9), daysAgo(2)] }, watched: 2, total: 9 }))),
+  );
+  const options = { timezone: TZ, facts: { tvdb: true, tmdb: true } };
+  assert.equal(planSync(blockGrid.grid, index, new Map(), options).demands.catalogue.length, MAX_LOOKUPS_PER_PASS);
+  assert.equal(planSync(blockGrid.grid, index, new Map(), options).demands.catalogue.length, MAX_LOOKUPS_PER_PASS);
 });
 
 // The block walk's own catalogue asks, capped for the reason

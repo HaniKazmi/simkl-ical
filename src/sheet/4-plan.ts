@@ -48,6 +48,7 @@ import { courComplete, type SeasonProgress, type TitleProgress } from './1-index
 import {
   artworkFormula,
   blockEnd,
+  BLOCK_SCAN_ROWS,
   franchiseKeyFor,
   genresCell,
   MAX_SECONDARY_GENRES,
@@ -174,8 +175,38 @@ export type Insert = RowInsert | BlockInsert;
  * — a suspended token, a WAF, a throttle — records nothing, so the same titles
  * are demanded next poll; capped, that is a handful of requests every half
  * hour rather than one per unlisted title.
+ *
+ * For the block walk the figure is per **attempt**, not per pass: the sync runs
+ * the planner to a fixpoint, and a cap reset on every pass multiplies by the
+ * pass ceiling — a cold start would ask for four times this many details in one
+ * run, which is the burst the number exists to prevent. `LookupBudget` is what
+ * carries the count across the passes of one attempt.
  */
 export const MAX_LOOKUPS_PER_PASS = 8;
+
+/**
+ * How many lookups of each kind the block walk has already asked for this
+ * attempt — mutable, and the one thing a planning pass carries out of itself.
+ *
+ * A deliberate exception to this module being pure, and the narrowest one that
+ * answers the question: what a pass may ask for depends on what its
+ * predecessors asked for, and nothing else the planner returns can say that,
+ * because a demand an earlier pass made has since been answered and is no
+ * longer in any demand list. Defaulted per call, so a caller that does not
+ * thread one gets a fresh budget and this pass's own behaviour.
+ *
+ * Four counters rather than one: the four are four upstreams with four
+ * credentials, and a single total would let a cold start's details starve the
+ * genres of the one block the run can actually insert.
+ */
+export interface LookupBudget {
+  detail: number;
+  genres: number;
+  certificates: number;
+  runtimes: number;
+}
+
+export const emptyLookupBudget = (): LookupBudget => ({ detail: 0, genres: 0, certificates: 0, runtimes: 0 });
 
 /**
  * Why a row was deliberately left alone. `code` is what a test or a grouping
@@ -193,7 +224,8 @@ export type SkipCode =
   | 'awaiting-lookup'
   | 'unlinked-block'
   | 'no-episode-list'
-  | 'no-format-row';
+  | 'no-format-row'
+  | 'no-room';
 
 export interface Skip {
   code: SkipCode;
@@ -250,11 +282,13 @@ export interface PlanDemands {
    * upstreams with two credentials and two join keys; a block needs both, so a
    * single list could not say which half came back.
    *
-   * Both are capped at `MAX_LOOKUPS_PER_PASS` and both empty once every block
-   * candidate is answered — settled-with-nothing included. `catalogue` is
-   * capped only over the part of it the block walk adds for a title it holds
-   * no detail for: the demands an in-scope block earns are bounded by the
-   * sheet, where those are bounded by the library minus the sheet.
+   * Both are capped at `MAX_LOOKUPS_PER_PASS` for the attempt, through
+   * `LookupBudget`, and both empty once every block candidate is answered —
+   * settled-with-nothing included. `catalogue` is capped only over the part of
+   * it the block walk adds for a title it holds no detail for, and `runtimes`
+   * only over the part the block walk adds: the demands an in-scope block earns
+   * are bounded by the sheet, where those are bounded by the library minus the
+   * sheet.
    */
   genres: SeriesRequest[];
   certificates: CertificateRequest[];
@@ -332,11 +366,18 @@ export interface PlanOptions {
    */
   facts?: { tvdb: boolean; tmdb: boolean };
   /**
-   * Which credential an upstream has rejected this process, or null.
+   * Which credentials an upstream has rejected this process.
    * `CatalogueStore.factsRejected` — a fact about the token, not about any
-   * series, so no block is settled and no further lookup is asked for.
+   * series, so no block is settled and no further lookup is asked for. Every
+   * one of them, because the note has to name every key a restart needs fixed.
    */
-  factsRejected?: FactsCredential | null;
+  factsRejected?: ReadonlySet<FactsCredential>;
+  /**
+   * The block walk's lookup allowance for this attempt, shared across the
+   * passes of the plan-fetch fixpoint. A fresh one per call by default, which
+   * is the behaviour of a caller planning once.
+   */
+  lookupBudget?: LookupBudget;
 }
 
 const cellAt = (grid: Grid, row: number, column: number): CellData | undefined => grid.snapshot.rows[row]?.[column];
@@ -616,10 +657,32 @@ const coveredSeasons = (block: ShowBlock): Set<number> =>
   new Set(block.seasons.map((s) => s.season).filter((n): n is number => n !== null && Number.isInteger(n)));
 
 /**
- * Which season a title would gain a row for. `source` is the entry
- * `statusSource` named for an existing block, already resolved and cleared of
- * duplicate-id claims — one derivation of "which entry drives this block"
- * serves the Status write, the insert, and its runtime alike.
+ * Which season a title would gain a row for, out of the library alone: the
+ * earliest watched inside the window that no row covers.
+ *
+ * Apart from `insertTarget` because it asks nothing of the catalogue, so it
+ * answers the same before a lookup as after — which is what lets the block walk
+ * settle that a title has no row to gain before paying for its detail. One
+ * copy, because a walk pre-screening on a predicate of its own would pay for
+ * the lookups of every title this then declines, or report as unaddable a title
+ * this would have placed.
+ */
+const insertableSeason = (source: TitleProgress, cutoff: Temporal.Instant, covered: Set<number>): SeasonProgress | undefined =>
+  [...source.seasons.values()]
+    .filter((s) => s.watched > 0 && !covered.has(s.number) && within(s.lastWatchedAt, cutoff))
+    .sort((a, b) => a.number - b.number)[0];
+
+/** The two catalogue facts a chosen season's row turns on, read off the shape the store holds. */
+const candidateOf = (source: TitleProgress, season: SeasonProgress, titles: Map<number, TitleCatalogue>): InsertCandidate => {
+  const shape = titles.get(source.id)?.shapes.get(season.number);
+  return { source, season, aired: seasonAired(shape), complete: seasonComplete(shape, season.watched) };
+};
+
+/**
+ * The season and the two catalogue facts about it, together. `source` is the
+ * entry `statusSource` named for an existing block, already resolved and
+ * cleared of duplicate-id claims — one derivation of "which entry drives this
+ * block" serves the Status write, the insert, and its runtime alike.
  *
  * A season inserted complete is dated by the same fill that creates it, so
  * its runtime has one chance to be asked for — before the row exists. Hence
@@ -640,13 +703,8 @@ const insertTarget = (
   cutoff: Temporal.Instant,
   covered: Set<number>,
 ): InsertCandidate | null => {
-  const season = [...source.seasons.values()]
-    .filter((s) => s.watched > 0 && !covered.has(s.number) && within(s.lastWatchedAt, cutoff))
-    .sort((a, b) => a.number - b.number)[0];
-  if (!season) return null;
-
-  const shape = titles.get(source.id)?.shapes.get(season.number);
-  return { source, season, aired: seasonAired(shape), complete: seasonComplete(shape, season.watched) };
+  const season = insertableSeason(source, cutoff, covered);
+  return season === undefined ? null : candidateOf(source, season, titles);
 };
 
 /** Everything the insert's runtime decision reads, computed once per candidate. */
@@ -1169,7 +1227,8 @@ export const planSync = (
     filed,
     showBucket = showArtworkBucket(config),
     facts = { tvdb: tvdbConfigured(config), tmdb: tmdbConfigured(config) },
-    factsRejected = null,
+    factsRejected = new Set<FactsCredential>(),
+    lookupBudget = emptyLookupBudget(),
   }: PlanOptions = {},
 ): PlanResult => {
   const plan = emptyPlan();
@@ -1388,7 +1447,7 @@ export const planSync = (
   // above have already taken the run's one insert slot where they wanted it: a
   // row joining a block that exists is worth more than a block that can wait a
   // poll, and both cannot land together because plan indices are pre-write.
-  planBlocks({ grid, plan, demands, titles, cutoff, timezone, showBucket, facts, factsRejected }, index, seen, filed);
+  planBlocks({ grid, plan, demands, titles, cutoff, timezone, showBucket, facts, factsRejected, budget: lookupBudget }, index, seen, filed);
 
   return { plan, demands, observed, writing };
 };
@@ -1502,10 +1561,12 @@ const planInsert = (
   const after = whole.find((s) => (s.season as number) > season.number);
   const row = after ? after.row : blockEnd(block) + 1;
 
-  // inheritFromBefore takes formats from the row above. Without a season row
-  // there, it inherits the *show* row's, and a correct date serial renders as
-  // `46265`.
-  if (!block.seasons.some((s) => s.row < row)) {
+  // inheritFromBefore takes formats from the row *immediately* above, so that
+  // is the row the question is about: `parseGrid` keeps a block open across an
+  // all-blank or id-only spacer row, and a season row anywhere above it carries
+  // no formats to a row landing under the spacer — a correct date serial
+  // renders as `46265`.
+  if (!block.seasons.some((s) => s.row === row - 1)) {
     return { code: 'no-format-row', message: `${label}: would be added, but there is no season row above the insertion point to inherit formats from` };
   }
 
@@ -1557,7 +1618,8 @@ interface BlockContext {
   timezone: string;
   showBucket: string | null;
   facts: { tvdb: boolean; tmdb: boolean };
-  factsRejected: FactsCredential | null;
+  factsRejected: ReadonlySet<FactsCredential>;
+  budget: LookupBudget;
 }
 
 /**
@@ -1611,6 +1673,31 @@ const buildBlock = (ctx: BlockContext, seasonRows: ReadonlySet<number>, { progre
   const row = placeBlock(grid.blocks, franchise);
   if (row === null) {
     return { code: 'no-format-row', message: `${seasonLabel}: would be added, but the tab holds no block to place it against` };
+  }
+  // Room in the declared grid, for the block's two rows and for the window its
+  // roll-ups read. The block-height helper is
+  // `OFFSET(<Show cell>, 1, 0, BLOCK_SCAN_ROWS)`, and Sheets answers `#REF!`
+  // for a window running past the last row of the tab — so a block landing
+  // nearer than that to the end carries five roll-ups that error, VERIFY's
+  // error-value pass finds them, and the write is rolled back on every poll
+  // for as long as the tab stays that size.
+  //
+  // Declined here rather than left to the guard, the films half's rule: a
+  // guard refusal is whole-plan, so a tab with no room would stop every edit
+  // on every other row, every poll — and a full tab is a standing state until
+  // someone extends it. A last block added by hand has the same exposure, and
+  // a person reading `#REF!` in the cell fixes it, where this would retry in
+  // silence.
+  //
+  // The window the helper names is rows `row + 1` through
+  // `row + BLOCK_SCAN_ROWS`, so the strict bound is one row below this one —
+  // and `insertDimension` grows the grid by two, which is two more. Slack in
+  // the only direction that cannot produce a `#REF!`.
+  if (row + 2 + BLOCK_SCAN_ROWS > grid.snapshot.rowCount) {
+    return {
+      code: 'no-room',
+      message: `${seasonLabel}: would be added at row ${row + 1}, but the tab declares only ${grid.snapshot.rowCount} rows and a block's roll-ups read ${BLOCK_SCAN_ROWS} rows below its show row; add rows to the tab`,
+    };
   }
   // `inheritFromBefore` takes formats from the row above, and a block sorting
   // first would take the *header* row's: a correct date serial renders as
@@ -1745,7 +1832,6 @@ const planBlocks = (ctx: BlockContext, index: Map<number, TitleProgress>, seen: 
   let notedColumns = false;
   let awaitingCredential = 0;
   let awaitingFixedCredential = 0;
-  let detailAsks = 0;
 
   for (const progress of candidates) {
     const entry = titles.get(progress.id);
@@ -1783,7 +1869,22 @@ const planBlocks = (ctx: BlockContext, index: Map<number, TitleProgress>, seen: 
       continue;
     }
 
-    // 2. A column a show row needs that the tab does not carry, resolved above.
+    // 2. Which season the block's one row would be for. No rows yet, so nothing
+    //    is covered and the earliest watched season inside the window wins.
+    //
+    //    Asked before any lookup, because no lookup changes it: the answer is a
+    //    projection of the library alone. A title with nothing to insert is one
+    //    whose recent watching is all specials, or whose window-crossing
+    //    `last_watched_at` belongs to episodes stamped outside it — reported
+    //    the way a title on the wrong tab is, and costing no request a poll for
+    //    a detail nothing would use.
+    const season = insertableSeason(progress, cutoff, new Set());
+    if (season === undefined) {
+      plan.notes.push(missingRowNote(progress));
+      continue;
+    }
+
+    // 3. A column a show row needs that the tab does not carry, resolved above.
     //    One note per run, because one note is all there is to say.
     if (unresolved.length) {
       if (!notedColumns) {
@@ -1793,7 +1894,7 @@ const planBlocks = (ctx: BlockContext, index: Map<number, TitleProgress>, seen: 
       continue;
     }
 
-    // 3. The two credentials, before any lookup is asked for: a block needs
+    // 4. The two credentials, before any lookup is asked for: a block needs
     //    both upstreams to answer, so either being unset holds every candidate
     //    back — counted and named once, because what the operator can do about
     //    it is one thing and not one thing per show — and a SIMKL detail fetched
@@ -1805,7 +1906,7 @@ const planBlocks = (ctx: BlockContext, index: Map<number, TitleProgress>, seen: 
     // A rejection is a fact about the token, not about any series, and both
     // keys are read at start-up — so nothing is demanded and nothing is
     // settled: the fix arrives with a restart.
-    if (ctx.factsRejected !== null) {
+    if (ctx.factsRejected.size) {
       awaitingFixedCredential += 1;
       continue;
     }
@@ -1824,7 +1925,7 @@ const planBlocks = (ctx: BlockContext, index: Map<number, TitleProgress>, seen: 
       continue;
     }
 
-    // 4. What SIMKL holds. Both ids arrive on the same detail response, so
+    // 5. What SIMKL holds. Both ids arrive on the same detail response, so
     //    either being absent is that call not having answered — the state the
     //    store leaves until `/tv/{id}` lands, and the one that must not be read
     //    as "no id", which would tell the operator to add by hand a block a
@@ -1840,9 +1941,9 @@ const planBlocks = (ctx: BlockContext, index: Map<number, TitleProgress>, seen: 
     //    no TVDB id, no episode list — spend the whole allowance on every pass
     //    and starve every title behind them for good.
     const detailed = entry !== undefined && entry.tvdbId !== undefined && entry.tmdbId !== undefined;
-    if (detailed || detailAsks < MAX_LOOKUPS_PER_PASS) {
+    if (detailed || ctx.budget.detail < MAX_LOOKUPS_PER_PASS) {
       ctx.demands.catalogue.push({ id: progress.id, episodes: true, detail: true });
-      if (!detailed) detailAsks += 1;
+      if (!detailed) ctx.budget.detail += 1;
     }
     if (entry === undefined || entry.tvdbId === undefined || entry.tmdbId === undefined) {
       plan.skips.push({ code: 'awaiting-lookup', message: `${label}: waiting on SIMKL's detail before a block can be added` });
@@ -1856,7 +1957,7 @@ const planBlocks = (ctx: BlockContext, index: Map<number, TitleProgress>, seen: 
       continue;
     }
 
-    // 5. The join keys themselves. Null is SIMKL answering that it holds
+    // 6. The join keys themselves. Null is SIMKL answering that it holds
     //    none, which no poll changes, so the block is named once as one to add
     //    by hand rather than waited on forever.
     const { tvdbId, tmdbId } = entry;
@@ -1866,10 +1967,10 @@ const planBlocks = (ctx: BlockContext, index: Map<number, TitleProgress>, seen: 
       continue;
     }
 
-    // 6. Which season the block's one row is for. No rows yet, so nothing is
-    //    covered and the earliest watched season inside the window wins.
-    const candidate = insertTarget(progress, titles, cutoff, new Set());
-    if (!candidate) continue;
+    // The season chosen above, plus the two facts the episode list settles
+    // about it — which is why the candidate is only completed here, where the
+    // detail is known to have landed.
+    const candidate = candidateOf(progress, season, titles);
     const seasonLabel = `${label} S${candidate.season.number}`;
 
     // 7. Everything the detail unlocks, asked for in one pass: the two cells
@@ -1895,15 +1996,31 @@ const planBlocks = (ctx: BlockContext, index: Map<number, TitleProgress>, seen: 
     //    closes; the show row above it is not revisited at all, so a block is
     //    built in one batch or not at all, and waiting a poll costs nothing
     //    but the poll.
+    //
+    //    Each of the three is capped against the budget rather than against
+    //    the length of its demand list. `runtimes` carries the season path's
+    //    pushes too, which are bounded by the sheet where these are bounded by
+    //    the library minus the sheet — counted together, one dormant tab's
+    //    closing rows would spend the whole allowance, or one cold start's
+    //    blocks would stop a closing row being asked about at all. The skip
+    //    below is unconditional on the push: a block waits for its runtime
+    //    whether or not this pass had an ask left to spend on it.
     const runtime = insertRuntimeOf(candidate, titles);
     const runtimePending = candidate.aired && runtime.target !== null && runtime.minutes === undefined;
-    if (runtimePending && runtime.target !== null) ctx.demands.runtimes.push(runtime.target);
+    if (runtimePending && runtime.target !== null && ctx.budget.runtimes < MAX_LOOKUPS_PER_PASS) {
+      ctx.demands.runtimes.push(runtime.target);
+      ctx.budget.runtimes += 1;
+    }
 
     const { genres, certificate } = entry;
     if (genres === undefined || certificate === undefined) {
-      if (genres === undefined && ctx.demands.genres.length < MAX_LOOKUPS_PER_PASS) ctx.demands.genres.push({ id: progress.id, tvdbId });
-      if (certificate === undefined && ctx.demands.certificates.length < MAX_LOOKUPS_PER_PASS) {
+      if (genres === undefined && ctx.budget.genres < MAX_LOOKUPS_PER_PASS) {
+        ctx.demands.genres.push({ id: progress.id, tvdbId });
+        ctx.budget.genres += 1;
+      }
+      if (certificate === undefined && ctx.budget.certificates < MAX_LOOKUPS_PER_PASS) {
         ctx.demands.certificates.push({ id: progress.id, tmdbId });
+        ctx.budget.certificates += 1;
       }
       const waitingOn = [...(genres === undefined ? ['TVDB'] : []), ...(certificate === undefined ? ['TMDB'] : [])];
       plan.skips.push({ code: 'awaiting-lookup', message: `${label}: waiting on ${waitingOn.join(' and ')} before a block can be added` });
@@ -1934,8 +2051,10 @@ const planBlocks = (ctx: BlockContext, index: Map<number, TitleProgress>, seen: 
     plan.notes.push(`${awaitingCredential} show(s) have no row; set ${keys.join(' and ')} to have a block added for them`);
   }
   if (awaitingFixedCredential) {
-    const key = ctx.factsRejected === 'tvdb' ? 'TVDB_API_KEY' : 'TMDB_API_KEY';
-    plan.notes.push(`${awaitingFixedCredential} show(s) need a block and the credential was rejected; fix ${key} and restart`);
+    // Every rejected key, so one restart is enough: named one at a time, an
+    // operator with both wrong fixes one, restarts, and is told about the other.
+    const keys = [...(ctx.factsRejected.has('tvdb') ? ['TVDB_API_KEY'] : []), ...(ctx.factsRejected.has('tmdb') ? ['TMDB_API_KEY'] : [])];
+    plan.notes.push(`${awaitingFixedCredential} show(s) need a block and the credential was rejected; fix ${keys.join(' and ')} and restart`);
   }
 };
 

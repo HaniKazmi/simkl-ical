@@ -189,6 +189,14 @@ test('the first row goes under the header, wherever the header is', () => {
   assert.equal(nextFilmRow(titled), 2);
 });
 
+// `spanRows` is what the budget counts, VERIFY inspects and a rollback deletes,
+// so a span calling itself one row while covering two is verified over one row
+// and rolled back over one, leaving the other standing. The tab is flat, with
+// no block to keep together, so one is the only height a film insert has.
+test('a film insert is exactly one row', () => {
+  refuses(filmPlanOf([], { ...ffx.insert(), rows: 2 } as unknown as ReturnType<typeof ffx.insert>), ffx.grid, /a film insert is one row/);
+});
+
 test('a tab whose declared grid is full has no row to add', () => {
   // `rowCount` is a count, so the last usable 0-based index is one below it.
   // A tab trimmed to exactly its data has nowhere for the next film to go.
