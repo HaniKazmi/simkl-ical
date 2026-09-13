@@ -25,7 +25,7 @@
  * disagreement. See `followUpstream`.
  */
 
-import { config, tvdbConfigured } from '../shared/config.ts';
+import { config, showArtworkBucket, tmdbConfigured, tvdbConfigured } from '../shared/config.ts';
 import {
   a1,
   duplicateIds,
@@ -1140,8 +1140,8 @@ export const planSync = (
     baseline = new Map(),
     starts,
     filed,
-    showBucket = config.artworkShowBucket ?? null,
-    facts = { tvdb: tvdbConfigured(config), tmdb: Boolean(config.tmdbApiKey) },
+    showBucket = showArtworkBucket(config),
+    facts = { tvdb: tvdbConfigured(config), tmdb: tmdbConfigured(config) },
     factsRejected = null,
   }: PlanOptions = {},
 ): PlanResult => {

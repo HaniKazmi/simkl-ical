@@ -16,7 +16,7 @@
  */
 
 import { apiGet, classify } from '../../api/tmdb/client.ts';
-import { lookupPool, type PoolFailures } from '../../api/pool.ts';
+import { keyedLookup, type PoolFailures } from '../../api/pool.ts';
 import type { TmdbTv } from '../../api/tmdb/types.ts';
 
 /** One series to look up. `id` is the SIMKL title the caller folds the answer back onto. */
@@ -38,24 +38,16 @@ export const fetchShowCertificates = async (
   requests: CertificateRequest[],
   { signal, concurrency = 4 }: { signal?: AbortSignal; concurrency?: number } = {},
 ): Promise<ShowCertificates> => {
-  const merged = new Map<number, CertificateRequest>();
-  for (const request of requests) merged.set(request.id, request);
-
-  const shows = new Map<number, TmdbTv>();
-
-  const { failed, unavailable } = await lookupPool<CertificateRequest, number>(
-    [...merged.values()],
-    (request) => request.id,
-    async ({ id, tmdbId }) => {
-      const body = await apiGet<TmdbTv>(`/tv/${tmdbId}`, {
+  const { answers, failed, unavailable } = await keyedLookup(
+    requests,
+    ({ tmdbId }) =>
+      apiGet<TmdbTv>(`/tv/${tmdbId}`, {
         component: 'show-facts',
         params: { append_to_response: 'content_ratings' },
         signal,
-      });
-      shows.set(id, body);
-    },
+      }),
     { concurrency, classify },
   );
 
-  return { shows, failed, unavailable };
+  return { shows: answers, failed, unavailable };
 };

@@ -17,7 +17,7 @@
  */
 
 import { apiGet, classify } from '../../api/tvdb/client.ts';
-import { lookupPool, type PoolFailures } from '../../api/pool.ts';
+import { keyedLookup, type PoolFailures } from '../../api/pool.ts';
 import type { TvdbSeriesResponse } from '../../api/tvdb/types.ts';
 
 /** One series to look up. `id` is the SIMKL title the caller folds the answer back onto. */
@@ -40,23 +40,17 @@ export const fetchSeriesGenres = async (
   requests: SeriesRequest[],
   { signal, concurrency = 4 }: { signal?: AbortSignal; concurrency?: number } = {},
 ): Promise<SeriesGenres> => {
-  const merged = new Map<number, SeriesRequest>();
-  for (const request of requests) merged.set(request.id, request);
-
-  const genres = new Map<number, string[]>();
-
-  const { failed, unavailable } = await lookupPool<SeriesRequest, number>(
-    [...merged.values()],
-    (request) => request.id,
-    async ({ id, tvdbId }) => {
+  const { answers, failed, unavailable } = await keyedLookup(
+    requests,
+    async ({ tvdbId }) => {
       const body = await apiGet<TvdbSeriesResponse>(`/series/${tvdbId}/extended`, { component: 'show-facts', signal });
       // The names alone, since that is what the mapping reads. A record with
       // no name is dropped: it is a field missing from the payload, not a
       // genre TVDB named.
-      genres.set(id, body.data?.genres?.flatMap((genre) => (genre.name ? [genre.name] : [])) ?? []);
+      return body.data?.genres?.flatMap((genre) => (genre.name ? [genre.name] : [])) ?? [];
     },
     { concurrency, classify },
   );
 
-  return { genres, failed, unavailable };
+  return { genres: answers, failed, unavailable };
 };

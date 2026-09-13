@@ -12,7 +12,7 @@
  */
 
 import { apiGet, classify } from '../../../api/tmdb/client.ts';
-import { lookupPool, type PoolFailures } from '../../../api/pool.ts';
+import { keyedLookup, type PoolFailures } from '../../../api/pool.ts';
 import type { TmdbMovie } from '../../../api/tmdb/types.ts';
 
 /** One film to look up. `id` is the SIMKL title the caller folds the answer back onto. */
@@ -34,27 +34,19 @@ export const fetchFilms = async (
   requests: FilmRequest[],
   { signal, concurrency = 4 }: { signal?: AbortSignal; concurrency?: number } = {},
 ): Promise<FilmDetails> => {
-  const merged = new Map<number, FilmRequest>();
-  for (const request of requests) merged.set(request.id, request);
-
-  const films = new Map<number, TmdbMovie>();
-
-  const { failed, unavailable } = await lookupPool<FilmRequest, number>(
-    [...merged.values()],
-    (request) => request.id,
-    async ({ id, tmdbId }) => {
-      const body = await apiGet<TmdbMovie>(`/movie/${tmdbId}`, {
+  const { answers, failed, unavailable } = await keyedLookup(
+    requests,
+    ({ tmdbId }) =>
+      apiGet<TmdbMovie>(`/movie/${tmdbId}`, {
         component: 'movie-catalogue',
         // English images only. A null-language backdrop is usually a poster
         // crop and a foreign one carries the wrong title across it, so asking
         // for the rest would only be payload to filter back out.
         params: { append_to_response: 'release_dates,credits,images', include_image_language: 'en' },
         signal,
-      });
-      films.set(id, body);
-    },
+      }),
     { concurrency, classify },
   );
 
-  return { films, failed, unavailable };
+  return { films: answers, failed, unavailable };
 };

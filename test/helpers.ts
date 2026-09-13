@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { config, type Config } from '../src/shared/config.ts';
 import { clearSheetRuns } from '../src/sheet/io/journal.ts';
 import { clearHardcoverToken } from '../src/api/hardcover/client.ts';
+import { clearTokenCache as clearTvdbTokenCache } from '../src/api/tvdb/auth.ts';
 import { clearBaseline } from '../src/sheet/io/baseline.ts';
 import { dateSerial, showRowFormulas } from '../src/sheet/values.ts';
 import { HEADERS, SHOW_LABELS } from '../src/sheet/2-grid.ts';
@@ -203,6 +204,26 @@ export const jsonResponse = (body: unknown, { lastModified }: { lastModified?: s
     status: 200,
     headers: lastModified ? { 'content-type': 'application/json', 'last-modified': lastModified } : { 'content-type': 'application/json' },
   });
+
+/**
+ * A configured TVDB with the login answered, so a test writes only the series
+ * response it is about.
+ *
+ * Host-qualified, and the prefix covers both endpoints under `/v4/series/`: a
+ * bare `/series/` or `/tv/` test would match SIMKL's paths and TMDB's, and
+ * answering one upstream with another's body makes a test assert nothing.
+ * Anything else throws rather than being answered by accident. A test that
+ * wants the login itself to fail keeps its own handler.
+ */
+export const withTvdb = (respond: (url: string) => Response, fn: (calls: string[]) => Promise<void>): Promise<void> => {
+  clearTvdbTokenCache();
+  return withConfig({ tvdbApiKey: 'k' }, () =>
+    withFetch((url) => {
+      if (url === 'https://api4.thetvdb.com/v4/login') return jsonResponse({ data: { token: 't' } });
+      if (url.startsWith('https://api4.thetvdb.com/v4/series/')) return respond(url);
+      throw new Error(`unexpected request: ${url}`);
+    }, fn));
+};
 
 /** A complete, valid saved feed. `store.test.ts` contrasts truncations against it. */
 export const ICS = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR';

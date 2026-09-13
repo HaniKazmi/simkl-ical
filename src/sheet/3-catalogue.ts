@@ -88,10 +88,14 @@ export const seasonComplete = (shape: SeasonShape | undefined, watched: number):
 
 /**
  * SIMKL sends every external id as a string. Anything that is not a positive
- * whole number is "no id", never an error — both lookups keyed on one are
+ * whole number is "no id", never an error — every lookup keyed on one is
  * additive, and a title without one leaves a cell blank rather than failing.
+ *
+ * Exported for the films half, which reads the same field off a film record.
+ * One parse, so a value one half files as an id cannot be one the other files
+ * as no id at all.
  */
-const externalId = (raw: string | undefined): number | null => {
+export const externalId = (raw: string | undefined): number | null => {
   if (typeof raw !== 'string') return null;
   const id = Number(raw.trim());
   return Number.isInteger(id) && id > 0 ? id : null;
@@ -364,39 +368,42 @@ export class CatalogueStore {
   }
 
   /**
-   * Fold a genre lookup in. The reduction to the tab's vocabulary happens
-   * here, not in the source: which names the sheet has a column for is a rule
-   * about the sheet, and the source's job is one HTTP call.
+   * Fold one show-fact lookup in, reducing each answer to the cell it becomes.
+   * The reduction happens here, not in the source: which names the sheet has a
+   * column for and which territory rates a series are rules about the sheet,
+   * and the source's job is one HTTP call.
    *
    * `foldCatalogue`'s stamping rule, with the entry's own key as the record
    * rather than a stamp: a **settled** answer is always recorded — a 404
    * included — because an unrecorded key is re-requested every poll forever; a
    * **retryable** failure is never recorded, so the next poll asks again.
    */
-  foldGenres(requests: readonly SeriesRequest[], { genres, unavailable }: SeriesGenres): void {
+  private foldFact<T, F extends 'genres' | 'certificate'>(
+    requests: readonly { id: number }[],
+    answers: Map<number, T>,
+    unavailable: readonly number[],
+    field: F,
+    reduce: (answer: T) => TitleCatalogue[F],
+  ): void {
     for (const request of requests) {
-      const names = genres.get(request.id);
-      if (names) this.entry(request.id).genres = mappedTvdbGenres(names);
+      const answer = answers.get(request.id);
+      if (answer !== undefined) this.entry(request.id)[field] = reduce(answer);
     }
-    // A 404 is TVDB not knowing this series, which no amount of asking
+    // A 404 is the upstream not knowing this series, which no amount of asking
     // changes. Never over an answer already held: a series that answered once
     // is answered.
     for (const id of unavailable) {
       const entry = this.entry(id);
-      if (entry.genres === undefined) entry.genres = null;
+      if (entry[field] === undefined) entry[field] = null;
     }
   }
 
-  /** The same discipline for the certificate, and the same three states. */
+  foldGenres(requests: readonly SeriesRequest[], { genres, unavailable }: SeriesGenres): void {
+    this.foldFact(requests, genres, unavailable, 'genres', mappedTvdbGenres);
+  }
+
   foldCertificates(requests: readonly CertificateRequest[], { shows, unavailable }: ShowCertificates): void {
-    for (const request of requests) {
-      const tv = shows.get(request.id);
-      if (tv) this.entry(request.id).certificate = certificateFor(tv);
-    }
-    for (const id of unavailable) {
-      const entry = this.entry(id);
-      if (entry.certificate === undefined) entry.certificate = null;
-    }
+    this.foldFact(requests, shows, unavailable, 'certificate', certificateFor);
   }
 
   /**

@@ -16,7 +16,7 @@
  * data.
  */
 
-import { config } from '../shared/config.ts';
+import { config, showArtworkBucket } from '../shared/config.ts';
 import {
   HEADERS,
   isBlank,
@@ -663,7 +663,7 @@ export const assertPlanSafe = (
     spent = { edits: 0, rows: 0 },
     now = Temporal.Now.instant(),
     timezone = config.timezone,
-    showBucket = config.artworkShowBucket ?? null,
+    showBucket = showArtworkBucket(config),
   }: SafetyLimits = {},
 ): void => {
   const ctx: GuardContext = {

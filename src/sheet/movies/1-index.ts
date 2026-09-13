@@ -21,6 +21,7 @@
 
 import { instantFrom } from '../../shared/dates.ts';
 import { itemStatus } from '../../api/simkl/item.ts';
+import { externalId } from '../3-catalogue.ts';
 import type { Library } from '../../library.ts';
 import type { LibraryItem } from '../../api/simkl/types.ts';
 
@@ -69,12 +70,12 @@ export interface FilmProgress {
  * SIMKL sends the TMDB id as a string, the way it sends the TVDB one. A
  * non-numeric or absent value is "no TMDB id", never an error: the film simply
  * cannot be filed.
+ *
+ * Takes the raw string where the show half's `tmdbIdOf` takes a whole record:
+ * an anime film nests its ids under `show` and a film under `movie`, so the
+ * caller picks the record and this names the field.
  */
-export const tmdbIdOf = (raw: string | undefined): number | null => {
-  if (typeof raw !== 'string') return null;
-  const id = Number(raw.trim());
-  return Number.isInteger(id) && id > 0 ? id : null;
-};
+export const tmdbIdOf = (raw: string | undefined): number | null => externalId(raw);
 
 const isAnimeFilm = (type: string, item: LibraryItem): boolean => type === 'anime' && item.anime_type === ANIME_FILM;
 

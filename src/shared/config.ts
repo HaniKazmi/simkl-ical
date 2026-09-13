@@ -320,6 +320,13 @@ export const sheetSyncConfigured = (c: Config = config): boolean =>
 export const tvdbConfigured = (c: Config = config): boolean => Boolean(c.tvdbApiKey);
 
 /**
+ * Whether a film's or a series' TMDB facts can be looked up at all.
+ * `tvdbConfigured`'s shape, and a single test for its reason: the credential
+ * has no target to pair with.
+ */
+export const tmdbConfigured = (c: Config = config): boolean => Boolean(c.tmdbApiKey);
+
+/**
  * Whether the films tab can be synced: the sheet sync itself, plus a TMDB
  * token — the one switch, since eight of that tab's sixteen columns come from
  * TMDB and a row inserted with them blank is worse than no row.
@@ -327,7 +334,7 @@ export const tvdbConfigured = (c: Config = config): boolean => Boolean(c.tvdbApi
  * `moviesSheetName` is not tested: it always has a value, so the test would say
  * "a tab was named" on every machine, the way `googleCredentialsPath` would.
  */
-export const moviesSyncConfigured = (c: Config = config): boolean => sheetSyncConfigured(c) && Boolean(c.tmdbApiKey);
+export const moviesSyncConfigured = (c: Config = config): boolean => sheetSyncConfigured(c) && tmdbConfigured(c);
 
 /**
  * Whether the artwork page can be served: both tabs syncable (it reads and
@@ -337,6 +344,19 @@ export const moviesSyncConfigured = (c: Config = config): boolean => sheetSyncCo
  */
 export const artworkConfigured = (c: Config = config): boolean =>
   moviesSyncConfigured(c) && tvdbConfigured(c) && Boolean(c.artworkMovieBucket) && Boolean(c.artworkShowBucket);
+
+/**
+ * The bucket a new show row's `Artwork` formula may link into, or null.
+ *
+ * The whole artwork feature and not the bucket name alone: that cell is
+ * written once and never revisited, so a link nothing can put an object behind
+ * is a broken image for the life of the row, and only a served artwork page
+ * can put one there. One answer for the planner, the guard and the sync alike
+ * — the looser reading is what any caller omitting the option would otherwise
+ * get, and two answers to "may this cell be written at all" is a refusal
+ * waiting to fire on good data.
+ */
+export const showArtworkBucket = (c: Config = config): string | null => (artworkConfigured(c) ? (c.artworkShowBucket ?? null) : null);
 
 /**
  * Whether books can be listed and picked for. A gate of its own rather than a

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
-import { artworkConfigured, booksArtworkConfigured, buildConfig, config, requireClientId, requireTemporal, requireValidTimezone, sheetSyncConfigured, tvdbConfigured } from '../../src/shared/config.ts';
+import { artworkConfigured, booksArtworkConfigured, buildConfig, config, requireClientId, requireTemporal, requireValidTimezone, sheetSyncConfigured, showArtworkBucket, tmdbConfigured, tvdbConfigured } from '../../src/shared/config.ts';
 import { withTimeout } from '../../src/shared/signals.ts';
 import { withConfig } from '../helpers.ts';
 import { spawnSync } from 'node:child_process';
@@ -243,4 +243,27 @@ test('books neither gate the rest of the page nor are gated by it', () => {
   const booksOnly = { SHEET_ID: 'SID', GOOGLE_SA_KEY_B64: 'x', BOOKS_SHEET_NAME: 'Books', ARTWORK_BOOK_BUCKET: 'books', HARDCOVER_TOKEN_PATH: '/t' };
   assert.equal(booksArtworkConfigured(buildConfig(booksOnly)), true);
   assert.equal(artworkConfigured(buildConfig(booksOnly)), false);
+});
+
+/**
+ * A show row's `Artwork` cell is written once and nothing revisits it, so a
+ * link no page can put an object behind is a broken image for the life of the
+ * row. The bucket name alone does not say a page exists to fill it, and this
+ * is the one place the planner and the guard both read: answering the looser
+ * question here writes that link on every install that merely named a bucket.
+ */
+test('a new show row takes a bucket link only where the artwork page is served', () => {
+  const served = { SHEET_ID: 'SID', GOOGLE_SA_KEY_B64: 'x', TMDB_API_KEY: 'm', TVDB_API_KEY: 'v', ARTWORK_MOVIE_BUCKET: 'm', ARTWORK_SHOW_BUCKET: 's' };
+  assert.equal(showArtworkBucket(buildConfig(served)), 's');
+  assert.equal(showArtworkBucket(buildConfig({})), null);
+  for (const key of ['TMDB_API_KEY', 'TVDB_API_KEY', 'ARTWORK_MOVIE_BUCKET', 'ARTWORK_SHOW_BUCKET', 'SHEET_ID'] as const) {
+    assert.equal(showArtworkBucket(buildConfig({ ...served, [key]: undefined })), null, `${key} unset leaves the cell out`);
+  }
+});
+
+// The credential has no target to pair with, the way SHEET_ID pairs with a
+// Google key, so the whole test is its presence.
+test('TMDB facts need the token alone', () => {
+  assert.equal(tmdbConfigured(buildConfig({})), false);
+  assert.equal(tmdbConfigured(buildConfig({ TMDB_API_KEY: 'm' })), true);
 });

@@ -31,7 +31,7 @@
  * `errors.sheet` and `/healthz`.
  */
 
-import { artworkConfigured, config, moviesSyncConfigured, tvdbConfigured } from '../shared/config.ts';
+import { artworkConfigured, config, moviesSyncConfigured } from '../shared/config.ts';
 import { errorMessage } from '../shared/errors.ts';
 import type { Logger } from '../shared/logger.ts';
 import { SheetsAccessError } from '../api/google/client.ts';
@@ -40,12 +40,13 @@ import { readSnapshot, type SheetSnapshot } from './io/spreadsheet.ts';
 import { withSheetLock } from './io/lock.ts';
 import { fetchCatalogue, type CatalogueRequest } from './io/catalogue.ts';
 import { fetchSeasonRuntimes, runtimeKeyOf, type RuntimeRequest } from './io/runtimes.ts';
-import { fetchSeriesGenres, type SeriesRequest } from './io/tvdb-series.ts';
-import { fetchShowCertificates, type CertificateRequest } from './io/tmdb-tv.ts';
+import { fetchSeriesGenres } from './io/tvdb-series.ts';
+import { fetchShowCertificates } from './io/tmdb-tv.ts';
 import { classify } from '../api/tvdb/client.ts';
+import type { FailureKind, PoolFailures } from '../api/pool.ts';
 import { parseGrid, type Grid } from './2-grid.ts';
 import { indexLibrary, type TitleProgress } from './1-index.ts';
-import { CATALOGUE_MAX_AGE, CatalogueStore, needsLookup } from './3-catalogue.ts';
+import { CATALOGUE_MAX_AGE, CatalogueStore, needsLookup, type FactsCredential } from './3-catalogue.ts';
 import { describePlan, emptyPlan, gridIds, observeWatches, planRecord, planSync, type PlanRecord, type PlanResult, type SheetPlan } from './4-plan.ts';
 import { rowsTouched, toRequests, writesFor, type PlannedWrites } from './6-requests.ts';
 import { verify, type Verification } from './7-verify.ts';
@@ -153,10 +154,9 @@ const outcome = (
 
 /**
  * What one planning attempt of the show half plans against: the grid it read,
- * the library's projections, the run's lookup bookkeeping, and the two
- * settings a block's show row is written under. Named rather than a parameter
- * list, because eight positional arguments of which three are maps is a call
- * site no reader can check.
+ * the library's projections, and the run's lookup bookkeeping. Named rather
+ * than a parameter list, because six positional arguments of which three are
+ * maps is a call site no reader can check.
  */
 interface ShowPass {
   grid: Grid;
@@ -166,8 +166,6 @@ interface ShowPass {
   made: RunLookups;
   /** Which attempt this is. A FRESH re-read is the second, and asks for less. */
   attempt: number;
-  showBucket: string | null;
-  facts: { tvdb: boolean; tmdb: boolean };
 }
 
 /**
@@ -529,18 +527,6 @@ export class SheetSync {
     // this run on exactly the fetches that aged its snapshot.
     const made: RunLookups = { catalogue: new Set(), runtimes: new Set(), genres: new Set(), certificates: new Set(), failures: 0 };
 
-    // The bucket a new block's `Artwork` cell links into, read here in the
-    // shell and handed to planner and guard alike — one value, so the two
-    // cannot disagree about whether that cell may be written at all. The whole
-    // artwork feature and not the bucket name alone, for the films half's
-    // reason: the column is written once, and a link nothing can put an object
-    // behind is a broken image for the life of the row.
-    const showBucket = artworkConfigured() ? (config.artworkShowBucket ?? null) : null;
-    // Both credentials, read here for the reason every numbered module takes
-    // its inputs as options rather than reading `config` mid-body — and once
-    // per run rather than per pass, since both are start-up settings.
-    const facts = { tvdb: tvdbConfigured(config), tmdb: Boolean(config.tmdbApiKey) };
-
     return {
       tab: 'shows',
       sheetName: config.sheetName,
@@ -551,10 +537,14 @@ export class SheetSync {
         poll.showGridIds = gridIds(grid);
       },
       plan: async (grid, attempt) => {
-        const { result, unfetched } = await this.planToFixpoint({ grid, index, starts, filed, made, attempt, showBucket, facts }, poll.signal);
+        const { result, unfetched } = await this.planToFixpoint({ grid, index, starts, filed, made, attempt }, poll.signal);
         return { ...result, failures: made.failures, unfetched };
       },
-      guard: (plan, grid, spent) => assertPlanSafe(plan, grid, { spent, showBucket }),
+      // The bucket a new block's `Artwork` cell may link into is neither
+      // half's to decide: `showArtworkBucket` is what planner and guard both
+      // default to, so the two cannot disagree about whether that cell may be
+      // written at all.
+      guard: (plan, grid, spent) => assertPlanSafe(plan, grid, { spent }),
       describe: (plan) => describePlan(plan),
       record: planRecord,
       verify,
@@ -585,7 +575,7 @@ export class SheetSync {
    * only a write can drain them.
    */
   private async planToFixpoint(
-    { grid, index, starts, filed, made, attempt, showBucket, facts }: ShowPass,
+    { grid, index, starts, filed, made, attempt }: ShowPass,
     signal: AbortSignal | undefined,
   ): Promise<{ result: PlanResult; unfetched: boolean }> {
     // One instant for every pass: two passes disagreeing about which blocks
@@ -599,8 +589,6 @@ export class SheetSync {
         baseline: baseline(),
         starts,
         filed,
-        showBucket,
-        facts,
         factsRejected: this.store.factsRejected,
       });
       const { demands } = result;
@@ -644,8 +632,33 @@ export class SheetSync {
       await Promise.all([
         catalogue.length ? this.readCatalogue(catalogue, index, made, signal) : null,
         runtimes.length ? this.readRuntimes(runtimes, made, signal) : null,
-        genres.length ? this.readGenres(genres, made, signal) : null,
-        certificates.length ? this.readCertificates(certificates, made, signal) : null,
+        genres.length
+          ? this.readFacts(genres, made, {
+              credential: 'tvdb',
+              key: 'TVDB_API_KEY',
+              kind: 'genres',
+              what: 'the genres',
+              classify,
+              fetch: fetchSeriesGenres,
+              fold: (requests, fetched) => this.store.foldGenres(requests, fetched),
+            }, signal)
+          : null,
+        certificates.length
+          ? this.readFacts(certificates, made, {
+              credential: 'tmdb',
+              key: 'TMDB_API_KEY',
+              kind: 'certificates',
+              what: 'the content ratings',
+              // TMDB's own classify, and the one place the two upstreams
+              // differ: it counts only a 401 as `account`, so a 403 — a
+              // throttle, a WAF — lands in `failed` and the same series is
+              // asked about next poll rather than latching a rejection no
+              // restart is needed for.
+              classify: tmdbClassify,
+              fetch: fetchShowCertificates,
+              fold: (requests, fetched) => this.store.foldCertificates(requests, fetched),
+            }, signal)
+          : null,
       ]);
     }
   }
@@ -711,66 +724,68 @@ export class SheetSync {
   }
 
   /**
-   * Fetch and fold one round of series genres, and mark them made.
+   * Fetch and fold one round of a block's show-facts, and mark them made.
    *
-   * A rejected credential is a fact about the token and not about any series,
-   * which is why `lookupPool` lets it escape rather than filing every waiting
-   * show as one TVDB knows nothing about: settling them would leave their
-   * `Genre` cells blank for good, on rows nothing revisits. Both keys are read
-   * at start-up, so the rejection is held for the life of the process and the
-   * fix arrives with a restart. Nothing else escapes the pool — a login outage
-   * classifies as transient and lands in `failed`, which is a retryable
-   * failure and re-asked next poll.
+   * One protocol for both upstreams, because both answer the same question —
+   * a cell a block's show row is written with once and nothing revisits — and
+   * both handle a rejected credential the same way. A rejection is a fact
+   * about the token and not about any series, which is why `lookupPool` lets
+   * it escape rather than filing every waiting show as one the upstream knows
+   * nothing about: settling them would leave those cells blank for good. Both
+   * keys are read at start-up, so the latch is held for the life of the
+   * process and the fix arrives with a restart. Nothing else escapes the pool
+   * — a login outage classifies as transient and lands in `failed`, which is
+   * retryable and re-asked next poll.
+   *
+   * `readRuntimes` keeps its own copy of the shape and must not be folded in
+   * here: its `account` branch **settles** the pending seasons, which is the
+   * opposite rule, and correct there because a runtime cell left blank still
+   * closes a row.
    */
-  private async readGenres(requests: SeriesRequest[], made: RunLookups, signal: AbortSignal | undefined): Promise<void> {
-    for (const { id } of requests) made.genres.add(id);
+  private async readFacts<R extends { id: number }, F extends PoolFailures<number>>(
+    requests: R[],
+    made: RunLookups,
+    {
+      credential,
+      key,
+      kind,
+      what,
+      classify: classifyFailure,
+      fetch,
+      fold,
+    }: {
+      credential: FactsCredential;
+      /** The setting the operator has to fix, named in the log. */
+      key: 'TVDB_API_KEY' | 'TMDB_API_KEY';
+      /** Which of the run's lookup sets these ids enter. */
+      kind: 'genres' | 'certificates';
+      /** What was read, for the log line: "read <what> of 3 series from TVDB". */
+      what: string;
+      classify: (err: unknown) => FailureKind;
+      fetch: (requests: R[], options: { signal?: AbortSignal }) => Promise<F>;
+      fold: (requests: R[], fetched: F) => void;
+    },
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
+    const upstream = credential.toUpperCase();
+    for (const { id } of requests) made[kind].add(id);
 
     let fetched;
     try {
-      fetched = await fetchSeriesGenres(requests, { signal });
+      fetched = await fetch(requests, { signal });
     } catch (err) {
-      if (classify(err) !== 'account') throw err;
-      this.store.rejectFacts('tvdb');
-      this.log.error(`TVDB rejected the credential; no show block will be built until TVDB_API_KEY is fixed and the service restarted: ${errorMessage(err)}`);
+      if (classifyFailure(err) !== 'account') throw err;
+      this.store.rejectFacts(credential);
+      this.log.error(`${upstream} rejected the credential; no show block will be built until ${key} is fixed and the service restarted: ${errorMessage(err)}`);
       return;
     }
 
-    this.store.foldGenres(requests, fetched);
+    fold(requests, fetched);
     made.failures += fetched.failed.length;
 
-    this.log.info(`sheet sync: read the genres of ${requests.length} series from TVDB`);
+    this.log.info(`sheet sync: read ${what} of ${requests.length} series from ${upstream}`);
     if (fetched.unavailable.length) {
-      this.log.warn(`TVDB has no record for ${fetched.unavailable.length} series: ${fetched.unavailable.join(', ')}`);
-    }
-  }
-
-  /**
-   * Fetch and fold one round of content ratings, and mark them made.
-   *
-   * `readGenres`' rule, against the other credential. TMDB counts only a 401
-   * as `account`, so a 403 — a throttle, a WAF — lands in `failed` and the
-   * same series is asked about on the next poll, rather than latching a
-   * rejection no restart is needed for.
-   */
-  private async readCertificates(requests: CertificateRequest[], made: RunLookups, signal: AbortSignal | undefined): Promise<void> {
-    for (const { id } of requests) made.certificates.add(id);
-
-    let fetched;
-    try {
-      fetched = await fetchShowCertificates(requests, { signal });
-    } catch (err) {
-      if (tmdbClassify(err) !== 'account') throw err;
-      this.store.rejectFacts('tmdb');
-      this.log.error(`TMDB rejected the credential; no show block will be built until TMDB_API_KEY is fixed and the service restarted: ${errorMessage(err)}`);
-      return;
-    }
-
-    this.store.foldCertificates(requests, fetched);
-    made.failures += fetched.failed.length;
-
-    this.log.info(`sheet sync: read the content ratings of ${requests.length} series from TMDB`);
-    if (fetched.unavailable.length) {
-      this.log.warn(`TMDB has no record for ${fetched.unavailable.length} series: ${fetched.unavailable.join(', ')}`);
+      this.log.warn(`${upstream} has no record for ${fetched.unavailable.length} series: ${fetched.unavailable.join(', ')}`);
     }
   }
 

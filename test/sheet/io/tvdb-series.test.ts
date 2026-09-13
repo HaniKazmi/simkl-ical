@@ -2,26 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fetchSeriesGenres } from '../../../src/sheet/io/tvdb-series.ts';
 import { clearTokenCache } from '../../../src/api/tvdb/auth.ts';
-import { jsonResponse, withConfig, withFetch } from '../../helpers.ts';
+import { jsonResponse, withConfig, withFetch, withTvdb } from '../../helpers.ts';
 
 const series = (...names: string[]) =>
   jsonResponse({ data: { genres: names.map((name, i) => ({ id: i + 1, name })) } });
-
-/**
- * A configured TVDB with the login answered, so each test writes only the
- * series response it is about. Host-qualified: a bare path test would match
- * SIMKL's `/tv/` and TMDB's, and answering one upstream with another's body
- * makes a test assert nothing.
- */
-const withTvdb = (respond: (url: string) => Response, fn: (calls: string[]) => Promise<void>): Promise<void> => {
-  clearTokenCache();
-  return withConfig({ tvdbApiKey: 'k' }, () =>
-    withFetch((url) => {
-      if (url === 'https://api4.thetvdb.com/v4/login') return jsonResponse({ data: { token: 't' } });
-      if (url.startsWith('https://api4.thetvdb.com/v4/series/')) return respond(url);
-      throw new Error(`unexpected request: ${url}`);
-    }, fn));
-};
 
 const seriesCalls = (calls: string[]) => calls.filter((c) => c.includes('/series/'));
 
