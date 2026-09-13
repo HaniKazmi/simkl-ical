@@ -25,31 +25,56 @@
  * disagreement. See `followUpstream`.
  */
 
-import { config } from '../shared/config.ts';
+import { config, showArtworkBucket, tmdbConfigured, tvdbConfigured } from '../shared/config.ts';
 import {
   a1,
-  columnLetter,
+  BLOCK_HEADERS,
   duplicateIds,
   idsFor,
   isBlank,
   isFormula,
   numberOf,
   runtimeScopeOk,
+  SHOW_FIELD_LABELS,
   SHOW_LABELS,
   usesCourModel,
-  type ColumnMap,
   type Grid,
   type HeaderName,
   type SeasonRow,
   type ShowBlock,
+  type ShowField,
 } from './2-grid.ts';
 import { courComplete, type SeasonProgress, type TitleProgress } from './1-index.ts';
-import { maxSerial, ownsNote, plausibleSerial, recordedSerial, runtimeMinutes, seasonKey, TRACKED_FIELDS, watchedNote, watchSerial } from './values.ts';
+import {
+  artworkFormula,
+  blockEnd,
+  BLOCK_SCAN_ROWS,
+  franchiseKeyFor,
+  genresCell,
+  MAX_SECONDARY_GENRES,
+  maxSerial,
+  ownsNote,
+  placeBlock,
+  plausibleSerial,
+  recordedSerial,
+  ROLLUP_FIELDS,
+  runtimeMinutes,
+  seasonKey,
+  showRowFormulas,
+  SHOW_TYPE,
+  titleCell,
+  titleKey,
+  TRACKED_FIELDS,
+  watchedNote,
+  watchSerial,
+} from './values.ts';
 import type { Baseline, TrackedField } from './values.ts';
 import { instantFrom, isoOf } from '../shared/dates.ts';
-import { seasonAired, seasonComplete, type SeasonShape, type TitleCatalogue } from './3-catalogue.ts';
+import { seasonAired, seasonComplete, type FactsCredential, type SeasonShape, type TitleCatalogue } from './3-catalogue.ts';
 import type { RuntimeRequest } from './io/runtimes.ts';
 import type { CatalogueRequest } from './io/catalogue.ts';
+import type { SeriesRequest } from './io/tvdb-series.ts';
+import type { CertificateRequest } from './io/tmdb-tv.ts';
 import type { CellData, ExtendedValue } from '../api/google/types.ts';
 
 // --- The plan's shapes ------------------------------------------------------
@@ -75,14 +100,113 @@ export interface CellEdit {
 }
 
 export interface RowInsert {
+  /**
+   * What the plan's one insert slot holds. A consumer that has to branch reads
+   * this rather than inferring the shape from the span's height, which says
+   * how tall an insert is and never what it is.
+   */
+  kind: 'season';
   /** Where the new row lands. Rows at and below this index shift down by one. */
   row: number;
+  /** One row: a season row joins a block that already exists. */
+  rows: 1;
   title: string;
   season: number;
   /** Cells written into the new row. It has no `previous` — it did not exist. */
   fill: CellEdit[];
   note: string;
 }
+
+/**
+ * One cell of a new show row. A block writes six columns no season row has, so
+ * its fill is keyed on `ShowField` rather than `HeaderName` — the same cell in
+ * every other respect, which is what `Omit` states: a second shape here would
+ * be a second thing BUILD and VERIFY have to read.
+ */
+export type BlockCell = Omit<CellEdit, 'field'> & { field: ShowField };
+
+/**
+ * A whole block: a show row and the first season row under it, created
+ * together.
+ *
+ * Together, and never in two runs. A show row alone is a block with no
+ * seasons, whose roll-up formulas count the *next* block's rows as their own;
+ * a season row alone joins whichever block sits above it. Neither is a state
+ * the sheet can be left in for a poll.
+ */
+export interface BlockInsert {
+  kind: 'block';
+  /** The show row. Rows at and below this index shift down by two. */
+  row: number;
+  /** Two rows: the show row at `row`, its first season row at `row + 1`. */
+  rows: 2;
+  /** The SIMKL id the show row's `id` cell carries — what every later run matches the block by. */
+  id: number;
+  /** What the `Show` cell is written with, so the guard re-derives against the value rather than the upstream. */
+  title: string;
+  /** What the `Franchise` cell is written with, and the key placement was decided on. */
+  franchise: string;
+  season: number;
+  /** Cells on both rows. It has no `previous` — neither row existed. */
+  fill: BlockCell[];
+  note: string;
+}
+
+/**
+ * The plan's one insert slot. A consumer that has to branch reads `kind`
+ * rather than inferring the shape from the span's height, which says how tall
+ * an insert is and never what it is.
+ */
+export type Insert = RowInsert | BlockInsert;
+
+/**
+ * How many lookups one pass may make, per list: the two show-facts upstreams,
+ * and the block walk's own SIMKL detail asks for titles it holds nothing for.
+ *
+ * Only one row is inserted per run, so a larger burst buys nothing: what it
+ * buys is a cold start on a full library issuing one request per unlisted
+ * title — several hundred — inside a run whose snapshot goes stale at 120s,
+ * and doing it again after every restart, since the store is process-local. A
+ * handful covers the settled and unanswerable titles queued ahead of the next
+ * insertable one; the rest arrive on later polls, which is the rate rows land
+ * at anyway.
+ *
+ * It also bounds what a standing failure costs. A 403 that fails every request
+ * — a suspended token, a WAF, a throttle — records nothing, so the same titles
+ * are demanded next poll; capped, that is a handful of requests every half
+ * hour rather than one per unlisted title.
+ *
+ * For the block walk the figure is per **attempt**, not per pass: the sync runs
+ * the planner to a fixpoint, and a cap reset on every pass multiplies by the
+ * pass ceiling — a cold start would ask for four times this many details in one
+ * run, which is the burst the number exists to prevent. `LookupBudget` is what
+ * carries the count across the passes of one attempt.
+ */
+export const MAX_LOOKUPS_PER_PASS = 8;
+
+/**
+ * How many lookups of each kind the block walk has already asked for this
+ * attempt — mutable, and the one thing a planning pass carries out of itself.
+ *
+ * A deliberate exception to this module being pure, and the narrowest one that
+ * answers the question: what a pass may ask for depends on what its
+ * predecessors asked for, and nothing else the planner returns can say that,
+ * because a demand an earlier pass made has since been answered and is no
+ * longer in any demand list. Defaulted per call, so a caller that does not
+ * thread one gets a fresh budget and this pass's own behaviour.
+ *
+ * Four counters rather than one: the four are four upstreams with four
+ * credentials, and a single total would let a cold start's details starve the
+ * genres of the one block the run can actually insert.
+ */
+export interface LookupBudget {
+  detail: number;
+  genres: number;
+  certificates: number;
+  runtimes: number;
+}
+
+export const emptyLookupBudget = (): LookupBudget => ({ detail: 0, genres: 0, certificates: 0, runtimes: 0 });
 
 /**
  * Why a row was deliberately left alone. `code` is what a test or a grouping
@@ -97,8 +221,11 @@ export type SkipCode =
   | 'unusable-timestamp'
   | 'season-fragment'
   | 'awaiting-runtimes'
+  | 'awaiting-lookup'
+  | 'unlinked-block'
   | 'no-episode-list'
-  | 'no-format-row';
+  | 'no-format-row'
+  | 'no-room';
 
 export interface Skip {
   code: SkipCode;
@@ -108,12 +235,14 @@ export interface Skip {
 export interface SheetPlan {
   edits: CellEdit[];
   /**
-   * At most one row per run, carried by the type: plan indices are pre-write
-   * but `insertDimension` applies cumulatively, so a second insert would land
-   * a row above where it was planned — and `verify` makes the same unshifted
-   * assumption.
+   * At most one insert per run, carried by the type: plan indices are
+   * pre-write but `insertDimension` applies cumulatively, so a second insert
+   * would land a row above where it was planned — and `verify` makes the same
+   * unshifted assumption. One insert may still span more than one row, which
+   * `rows` carries; a span is contiguous and applies as a single request, so
+   * nothing shifts underneath it.
    */
-  insert: RowInsert | null;
+  insert: Insert | null;
   /** Rows deliberately left alone, with the reason. Reported, never acted on. */
   skips: Skip[];
   /** Everything else worth a human's attention — new shows, new cours. */
@@ -128,10 +257,41 @@ export interface SheetPlan {
 
 export const emptyPlan = (): SheetPlan => ({ edits: [], insert: null, skips: [], notes: [], deferredInserts: 0 });
 
+/**
+ * Oldest first, a title with no watch date last, and `tie` to settle two
+ * watched the same day — both halves order their insert candidates this way, so
+ * the sheet gains rows in the order the titles were started.
+ *
+ * The tie-break is not decoration. One row is added per run, so the comparator
+ * decides which title that is, and two watched the same evening would otherwise
+ * be ordered by whatever `Map` iteration gave: the pair would swap between
+ * polls, and each poll would add whichever the sort happened to put first.
+ */
+export const compareWatched = (a: Temporal.Instant | null, b: Temporal.Instant | null, tie: number): number => {
+  if (a === null || b === null) return (a === null ? 1 : 0) - (b === null ? 1 : 0) || tie;
+  return Temporal.Instant.compare(a, b) || tie;
+};
+
 /** What the planner could not decide without: fetch these and re-plan. */
 export interface PlanDemands {
   catalogue: CatalogueRequest[];
   runtimes: RuntimeRequest[];
+  /**
+   * TVDB series whose genre list a new block is waiting on, and TMDB series
+   * whose certificate it is. Two lists rather than one because they are two
+   * upstreams with two credentials and two join keys; a block needs both, so a
+   * single list could not say which half came back.
+   *
+   * Both are capped at `MAX_LOOKUPS_PER_PASS` for the attempt, through
+   * `LookupBudget`, and both empty once every block candidate is answered —
+   * settled-with-nothing included. `catalogue` is capped only over the part of
+   * it the block walk adds for a title it holds no detail for, and `runtimes`
+   * only over the part the block walk adds: the demands an in-scope block earns
+   * are bounded by the sheet, where those are bounded by the library minus the
+   * sheet.
+   */
+  genres: SeriesRequest[];
+  certificates: CertificateRequest[];
 }
 
 export interface PlanResult {
@@ -184,6 +344,40 @@ export interface PlanOptions {
    * which tab a title belongs on is not a fact about the title.
    */
   filed?: Set<number>;
+  /**
+   * The bucket a new show row's `Artwork` formula links into, or null, where
+   * the cell is left out entirely. Null covers an install with no artwork
+   * bucket *and* one whose bucket is named while the artwork page is not
+   * served — only a served page can put an object behind the link, and
+   * `showArtworkBucket` in `shared/config.ts` is that rule.
+   *
+   * Null rather than a missing cell decided downstream: the column is written
+   * once and never revisited, so a link nothing can put an object behind is a
+   * broken image for the life of the row — the same rule the films insert's
+   * banner follows.
+   */
+  showBucket?: string | null;
+  /**
+   * Whether each show-facts credential is set. A block needs both — TVDB for
+   * its genres, TMDB for its certificate — and without one it is not inserted
+   * at all rather than inserted with the cell blank: those cells are written
+   * once, and a blank one reads as a series with no genre rather than as an
+   * install with no key. Gating rather than degrading, the films rule.
+   */
+  facts?: { tvdb: boolean; tmdb: boolean };
+  /**
+   * Which credentials an upstream has rejected this process.
+   * `CatalogueStore.factsRejected` — a fact about the token, not about any
+   * series, so no block is settled and no further lookup is asked for. Every
+   * one of them, because the note has to name every key a restart needs fixed.
+   */
+  factsRejected?: ReadonlySet<FactsCredential>;
+  /**
+   * The block walk's lookup allowance for this attempt, shared across the
+   * passes of the plan-fetch fixpoint. A fresh one per call by default, which
+   * is the behaviour of a caller planning once.
+   */
+  lookupBudget?: LookupBudget;
 }
 
 const cellAt = (grid: Grid, row: number, column: number): CellData | undefined => grid.snapshot.rows[row]?.[column];
@@ -194,6 +388,26 @@ const str = (stringValue: string): ExtendedValue => ({ stringValue });
 const edit = (grid: Grid, row: number, field: HeaderName, value: ExtendedValue | undefined, note: string): CellEdit => {
   const column = grid.columns[field];
   return { row, column, field, previous: cellAt(grid, row, column)?.userEnteredValue, value, address: a1(row, column), note };
+};
+
+/**
+ * A cell on a row that does not exist yet, or null where the tab carries no
+ * column for the field — which only the six optional ones can be, and which
+ * every caller drops rather than writing a cell at no address.
+ *
+ * Never `edit`: the row is created by the same batch, so reading a `previous`
+ * off the snapshot would read whatever currently sits at that index — a real
+ * cell of a different row.
+ */
+const fillCell = <F extends ShowField>(
+  grid: Grid,
+  row: number,
+  field: F,
+  value: ExtendedValue,
+  note: string,
+): (Omit<CellEdit, 'field'> & { field: F }) | null => {
+  const column = grid.fields[field];
+  return column === undefined ? null : { row, column, field, previous: undefined, value, address: a1(row, column), note };
 };
 
 // --- Eligibility -----------------------------------------------------------
@@ -434,10 +648,41 @@ interface InsertCandidate {
 }
 
 /**
- * Which season a block would gain a row for. `source` is the entry
- * `statusSource` named, already resolved and cleared of duplicate-id claims —
- * one derivation of "which entry drives this block" serves the Status write,
- * the insert, and its runtime alike.
+ * Every whole season a block already has a row for, independent of whether
+ * that row resolved: a row the planner declined to read is still a row, and a
+ * second row for the same season is the one insert mistake nothing downstream
+ * could detect.
+ */
+const coveredSeasons = (block: ShowBlock): Set<number> =>
+  new Set(block.seasons.map((s) => s.season).filter((n): n is number => n !== null && Number.isInteger(n)));
+
+/**
+ * Which season a title would gain a row for, out of the library alone: the
+ * earliest watched inside the window that no row covers.
+ *
+ * Apart from `insertTarget` because it asks nothing of the catalogue, so it
+ * answers the same before a lookup as after — which is what lets the block walk
+ * settle that a title has no row to gain before paying for its detail. One
+ * copy, because a walk pre-screening on a predicate of its own would pay for
+ * the lookups of every title this then declines, or report as unaddable a title
+ * this would have placed.
+ */
+const insertableSeason = (source: TitleProgress, cutoff: Temporal.Instant, covered: Set<number>): SeasonProgress | undefined =>
+  [...source.seasons.values()]
+    .filter((s) => s.watched > 0 && !covered.has(s.number) && within(s.lastWatchedAt, cutoff))
+    .sort((a, b) => a.number - b.number)[0];
+
+/** The two catalogue facts a chosen season's row turns on, read off the shape the store holds. */
+const candidateOf = (source: TitleProgress, season: SeasonProgress, titles: Map<number, TitleCatalogue>): InsertCandidate => {
+  const shape = titles.get(source.id)?.shapes.get(season.number);
+  return { source, season, aired: seasonAired(shape), complete: seasonComplete(shape, season.watched) };
+};
+
+/**
+ * The season and the two catalogue facts about it, together. `source` is the
+ * entry `statusSource` named for an existing block, already resolved and
+ * cleared of duplicate-id claims — one derivation of "which entry drives this
+ * block" serves the Status write, the insert, and its runtime alike.
  *
  * A season inserted complete is dated by the same fill that creates it, so
  * its runtime has one chance to be asked for — before the row exists. Hence
@@ -445,32 +690,21 @@ interface InsertCandidate {
  * runtime to have arrived: a row whose number never comes back is inserted
  * open and closed by the per-row path a poll later, so a bug there costs a
  * poll rather than a cell.
+ *
+ * `covered` is the caller's, and so is the scope test that has to precede it
+ * (`runtimeScopeOk` — anime is never inserted into, because one SIMKL record
+ * is one cour and its season numbers do not address rows the user numbers by
+ * broadcast season). A block being created has neither: it holds no rows yet,
+ * and the type it will carry is `SHOW_TYPE` by construction.
  */
 const insertTarget = (
-  block: ShowBlock,
   source: TitleProgress,
   titles: Map<number, TitleCatalogue>,
   cutoff: Temporal.Instant,
+  covered: Set<number>,
 ): InsertCandidate | null => {
-  // Anime is never inserted into: one SIMKL record is one cour, so its season
-  // numbers do not address rows the user numbers by broadcast season. Same
-  // tests as the runtime write — both put something into a row it cannot take
-  // back.
-  if (!runtimeScopeOk(block)) return null;
-
-  // Every whole season the block already has a row for, independent of
-  // whether that row resolved: a row the planner declined to read is still a
-  // row, and a second row for the same season is the one insert mistake
-  // nothing downstream could detect.
-  const covered = new Set(block.seasons.map((s) => s.season).filter((n): n is number => n !== null && Number.isInteger(n)));
-
-  const season = [...source.seasons.values()]
-    .filter((s) => s.watched > 0 && !covered.has(s.number) && within(s.lastWatchedAt, cutoff))
-    .sort((a, b) => a.number - b.number)[0];
-  if (!season) return null;
-
-  const shape = titles.get(source.id)?.shapes.get(season.number);
-  return { source, season, aired: seasonAired(shape), complete: seasonComplete(shape, season.watched) };
+  const season = insertableSeason(source, cutoff, covered);
+  return season === undefined ? null : candidateOf(source, season, titles);
 };
 
 /** Everything the insert's runtime decision reads, computed once per candidate. */
@@ -984,10 +1218,21 @@ export const planSync = (
   grid: Grid,
   index: Map<number, TitleProgress>,
   titles: Map<number, TitleCatalogue>,
-  { now = Temporal.Now.instant(), timezone = config.timezone, sinceDays = config.sheetSinceDays, baseline = new Map(), starts, filed }: PlanOptions = {},
+  {
+    now = Temporal.Now.instant(),
+    timezone = config.timezone,
+    sinceDays = config.sheetSinceDays,
+    baseline = new Map(),
+    starts,
+    filed,
+    showBucket = showArtworkBucket(config),
+    facts = { tvdb: tvdbConfigured(config), tmdb: tmdbConfigured(config) },
+    factsRejected = new Set<FactsCredential>(),
+    lookupBudget = emptyLookupBudget(),
+  }: PlanOptions = {},
 ): PlanResult => {
   const plan = emptyPlan();
-  const demands: PlanDemands = { catalogue: [], runtimes: [] };
+  const demands: PlanDemands = { catalogue: [], runtimes: [], genres: [], certificates: [] };
   const cutoff = cutoffFrom(now, sinceDays);
   const duplicates = duplicateIds(grid.blocks);
   const seen = new Set<number>();
@@ -1163,7 +1408,9 @@ export const planSync = (
         }
       }
 
-      const candidate = insertTarget(block, source, titles, cutoff);
+      // Anime is never inserted into, the same test the runtime write makes:
+      // both put something into a row they cannot take back.
+      const candidate = runtimeScopeOk(block) ? insertTarget(source, titles, cutoff, coveredSeasons(block)) : null;
       if (candidate) {
         // The row this walk cannot reach: the season being inserted has no
         // row yet, and one arriving complete is dated by the same fill that
@@ -1196,54 +1443,44 @@ export const planSync = (
     }
   }
 
-  // Titles SIMKL knows with no row at all. Reported, never added: a new show
-  // is the user's call, and a new anime cour is a separate SIMKL title under
-  // a romaji name that mostly does not match what the sheet calls the series.
-  // Title matching is unreliable enough that this must never try.
-  for (const progress of index.values()) {
-    if (seen.has(progress.id) || !within(progress.lastWatchedAt, cutoff)) continue;
-    // An anime film with no block is not missing a row: the films tab holds it,
-    // and this half still indexes it because 20 of them sit on show-tab rows.
-    if (filed?.has(progress.id)) continue;
-    plan.notes.push(`${progress.title} (simkl ${progress.id}) has recent activity and no row — add it by hand if you want it tracked`);
-  }
+  // Titles SIMKL knows with no row at all. Last, so the season rows planned
+  // above have already taken the run's one insert slot where they wanted it: a
+  // row joining a block that exists is worth more than a block that can wait a
+  // poll, and both cannot land together because plan indices are pre-write.
+  planBlocks({ grid, plan, demands, titles, cutoff, timezone, showBucket, facts, factsRejected, budget: lookupBudget }, index, seen, filed);
 
   return { plan, demands, observed, writing };
 };
 
 /**
- * A season SIMKL says was watched and the block has no row for.
- *
- * Live-action only, whole seasons only. A fractional label — Doctor Who's
- * `13.5`, Attack On Titan's `1.5` — encodes a judgement no rule here could
- * reproduce, and SIMKL's season 0 is specials.
+ * What a new season row holds, and the three facts a caller's note is written
+ * from. One derivation for both inserts: a season row created on its own and
+ * the one created underneath a new show row are the same row, so a second copy
+ * of these six cells is a second set of answers free to disagree.
  */
-const planInsert = (
-  grid: Grid,
-  block: ShowBlock,
-  { source, season: candidate, aired, complete }: InsertCandidate,
+interface SeasonFill {
+  cells: Array<{ field: HeaderName; value: ExtendedValue }>;
+  /** The serial this fill dates the row with, null where it leaves the row open. */
+  end: number | null;
+  /** The minutes written into the runtime cell, null where the cell goes in blank. */
+  runtime: number | null;
+  /** Whether anything can still reach a blank runtime cell. */
+  waiting: boolean;
+}
+
+/**
+ * The cells a season row is created with, or null where SIMKL's first-watch
+ * timestamp names no day the sync writes. A row dated from an epoch stamp is
+ * worse than no row, and there is nothing to fall back to.
+ */
+const seasonCells = (
+  { season: candidate, aired, complete }: InsertCandidate,
   { target, minutes, detailed }: InsertRuntime,
-  titles: Map<number, TitleCatalogue>,
-  { timezone }: { timezone: string },
-): RowInsert | Skip | null => {
-  const label = `${block.title} S${candidate.number}`;
-  const entry = titles.get(source.id);
-
+  entry: TitleCatalogue | undefined,
+  timezone: string,
+): SeasonFill | null => {
   const start = watchSerial(candidate.firstWatchedAt, timezone);
-  if (start === null) return { code: 'unusable-timestamp', message: `${label}: would be added, but its first watch timestamp is unusable` };
-
-  // Keep Season ascending: before the first existing row with a higher
-  // number, or after the last one.
-  const whole = block.seasons.filter((s) => s.season !== null && Number.isInteger(s.season));
-  const after = whole.find((s) => (s.season as number) > candidate.number);
-  const row = after ? after.row : (block.seasons.at(-1)?.row ?? block.row) + 1;
-
-  // inheritFromBefore takes formats from the row above. Without a season row
-  // there, it inherits the *show* row's, and a correct date serial renders as
-  // `46265`.
-  if (!block.seasons.some((s) => s.row < row)) {
-    return { code: 'no-format-row', message: `${label}: would be added, but there is no season row above the insertion point to inherit formats from` };
-  }
+  if (start === null) return null;
 
   // What this row's runtime cell can hold, and whether this fill may date the
   // row. A row created and dated in one batch is never revisited, so its
@@ -1282,43 +1519,543 @@ const planInsert = (
   // last-watched date, a dated one leaves `End` to say it.
   const note = end === null ? watchedNote(candidate.lastWatchedAt, timezone) : null;
 
-  const cells: Array<{ field: HeaderName; value: ExtendedValue }> = [
-    { field: 'Season', value: num(candidate.number) },
-    { field: 'Episode', value: num(candidate.watched) },
-    { field: 'Start', value: num(start) },
-    ...(note === null ? [] : [{ field: 'Note' as const, value: str(note) }]),
-    ...(runtime === null ? [] : [{ field: 'Runtime' as const, value: num(runtime) }]),
-    ...(end === null ? [] : [{ field: 'End' as const, value: num(end) }]),
-  ];
-  const fill: CellEdit[] = cells.map(({ field, value }) => ({
-    row,
-    column: grid.columns[field],
-    field,
-    // The row does not exist yet, so there is nothing it was.
-    previous: undefined,
-    value,
-    address: a1(row, grid.columns[field]),
-    note: `${label}: new row`,
-  }));
+  return {
+    cells: [
+      { field: 'Season', value: num(candidate.number) },
+      { field: 'Episode', value: num(candidate.watched) },
+      { field: 'Start', value: num(start) },
+      ...(note === null ? [] : [{ field: 'Note' as const, value: str(note) }]),
+      ...(runtime === null ? [] : [{ field: 'Runtime' as const, value: num(runtime) }]),
+      ...(end === null ? [] : [{ field: 'End' as const, value: num(end) }]),
+    ],
+    end,
+    runtime,
+    waiting,
+  };
+};
+
+/**
+ * A season SIMKL says was watched and the block has no row for.
+ *
+ * Live-action only, whole seasons only. A fractional label — Doctor Who's
+ * `13.5`, Attack On Titan's `1.5` — encodes a judgement no rule here could
+ * reproduce, and SIMKL's season 0 is specials.
+ */
+const planInsert = (
+  grid: Grid,
+  block: ShowBlock,
+  candidate: InsertCandidate,
+  runtime: InsertRuntime,
+  titles: Map<number, TitleCatalogue>,
+  { timezone }: { timezone: string },
+): RowInsert | Skip | null => {
+  const { season, complete } = candidate;
+  const label = `${block.title} S${season.number}`;
+
+  const filled = seasonCells(candidate, runtime, titles.get(candidate.source.id), timezone);
+  if (filled === null) return { code: 'unusable-timestamp', message: `${label}: would be added, but its first watch timestamp is unusable` };
+
+  // Keep Season ascending: before the first existing row with a higher
+  // number, or after the last one.
+  const whole = block.seasons.filter((s) => s.season !== null && Number.isInteger(s.season));
+  const after = whole.find((s) => (s.season as number) > season.number);
+  const row = after ? after.row : blockEnd(block) + 1;
+
+  // inheritFromBefore takes formats from the row *immediately* above, so that
+  // is the row the question is about: `parseGrid` keeps a block open across an
+  // all-blank or id-only spacer row, and a season row anywhere above it carries
+  // no formats to a row landing under the spacer — a correct date serial
+  // renders as `46265`.
+  if (!block.seasons.some((s) => s.row === row - 1)) {
+    return { code: 'no-format-row', message: `${label}: would be added, but there is no season row above the insertion point to inherit formats from` };
+  }
 
   return {
+    kind: 'season',
     row,
+    rows: 1,
     title: block.title,
-    season: candidate.number,
-    fill,
-    // Why the cell went in blank, where that is not simply "the season is
-    // still running". A row whose runtime nothing can supply is the one a
-    // reader must finish by hand, so it says so rather than leaving an empty
-    // cell to be noticed.
-    note: `${label}: new season row at ${row + 1}, ${candidate.watched} episodes${end === null ? '' : ', ended'}${
-      complete && end === null ? ', added open — its episode runtimes have not come back'
-      // Blank with nothing outstanding is blank for good, dated or not: no
-      // join key, or the key's answer is in and unusable. A row still waiting
-      // is not this, and says nothing.
-      : runtime === null && !waiting ? `, with no episode runtime to fill its ${SHOW_LABELS.Runtime} cell`
-      : ''
-    }`,
+    season: season.number,
+    fill: filled.cells.flatMap(({ field, value }) => fillCell(grid, row, field, value, `${label}: new row`) ?? []),
+    note: `${label}: new season row at ${row + 1}, ${season.watched} episodes${filled.end === null ? '' : ', ended'}${blankRuntimeNoteOf(filled, complete)}`,
   };
+};
+
+/**
+ * Why a new season row's runtime cell went in blank, where that is not simply
+ * "the season is still running". A row whose runtime nothing can supply is the
+ * one a reader must finish by hand, so it says so rather than leaving an empty
+ * cell to be noticed.
+ */
+const blankRuntimeNoteOf = ({ end, runtime, waiting }: SeasonFill, complete: boolean): string =>
+  complete && end === null ? ', added open — its episode runtimes have not come back'
+  // Blank with nothing outstanding is blank for good, dated or not: no join
+  // key, or the key's answer is in and unusable. A row still waiting is not
+  // this, and says nothing.
+  : runtime === null && !waiting ? `, with no episode runtime to fill its ${SHOW_LABELS.Runtime} cell`
+  : '';
+
+// --- The block the tab does not have yet -------------------------------------
+
+/** The note a title with no row gets when no block can be built for it. */
+const missingRowNote = (progress: TitleProgress): string =>
+  `${labelOf(progress.title, progress.id)} has recent activity and no row — add it by hand if you want it tracked`;
+
+/**
+ * How every line about a block names the show: the title the row would carry
+ * and the id the row would be matched by, because a title alone is ambiguous
+ * exactly where this walk declines — two shows the tab files under one name.
+ */
+const labelOf = (title: string, id: number): string => `${title} (simkl ${id})`;
+
+/** Everything the block walk reads that does not vary between candidates. */
+interface BlockContext {
+  grid: Grid;
+  plan: SheetPlan;
+  demands: PlanDemands;
+  titles: Map<number, TitleCatalogue>;
+  cutoff: Temporal.Instant;
+  timezone: string;
+  showBucket: string | null;
+  facts: { tvdb: boolean; tmdb: boolean };
+  factsRejected: ReadonlySet<FactsCredential>;
+  budget: LookupBudget;
+}
+
+/**
+ * The earliest episode of any season this title has a watch date for. What
+ * candidates are ordered by, so the sheet gains blocks in the order the shows
+ * were started rather than in library order — and so two runs of the same
+ * library choose the same block.
+ */
+const firstWatch = (progress: TitleProgress): Temporal.Instant | null =>
+  [...progress.seasons.values()].reduce<Temporal.Instant | null>(
+    (earliest, season) =>
+      season.firstWatchedAt !== null && (earliest === null || Temporal.Instant.compare(season.firstWatchedAt, earliest) < 0)
+        ? season.firstWatchedAt
+        : earliest,
+    null,
+  );
+
+const byFirstWatch = (a: TitleProgress, b: TitleProgress): number => compareWatched(firstWatch(a), firstWatch(b), a.id - b.id);
+
+/**
+ * A candidate every question has been answered for: the row it needs, the
+ * upstream facts its cells are written from, and nothing left absent. Stated as
+ * a type rather than re-derived inside `buildBlock`, so the qualifying walk
+ * cannot hand it a title still waiting on a lookup.
+ */
+interface BlockReady {
+  progress: TitleProgress;
+  /** Answered on both cells only an upstream can fill — null there is settled-with-nothing, which lands the block blank. */
+  entry: TitleCatalogue & { genres: string[] | null; certificate: number | null };
+  /** What the `Show` cell is written with, and the key the collision test was decided on. */
+  title: string;
+  candidate: InsertCandidate;
+  runtime: InsertRuntime;
+}
+
+/**
+ * Where a block goes and what it holds: two rows, sixteen columns, and every
+ * one of them written once and revisited by nothing.
+ *
+ * Qualify then build, the shape `planInsert` has. Both placement refusals and
+ * the unusable timestamp come back as a `Skip` rather than being pushed from
+ * in here, so the walk above keeps its one rule that every exit reports once.
+ */
+const buildBlock = (ctx: BlockContext, seasonRows: ReadonlySet<number>, { progress, entry, title, candidate, runtime }: BlockReady): BlockInsert | Skip => {
+  const { grid } = ctx;
+  const label = labelOf(title, progress.id);
+  const seasonLabel = `${label} S${candidate.season.number}`;
+
+  // Franchise order, which is the tab's own order.
+  const franchise = franchiseKeyFor(title);
+  const row = placeBlock(grid.blocks, franchise);
+  if (row === null) {
+    return { code: 'no-format-row', message: `${seasonLabel}: would be added, but the tab holds no block to place it against` };
+  }
+  // Room in the declared grid, for the block's two rows and for the window its
+  // roll-ups read. The block-height helper is
+  // `OFFSET(<Show cell>, 1, 0, BLOCK_SCAN_ROWS)`, and Sheets answers `#REF!`
+  // for a window running past the last row of the tab — so a block landing
+  // nearer than that to the end carries five roll-ups that error, VERIFY's
+  // error-value pass finds them, and the write is rolled back on every poll
+  // for as long as the tab stays that size.
+  //
+  // Declined here rather than left to the guard, the films half's rule: a
+  // guard refusal is whole-plan, so a tab with no room would stop every edit
+  // on every other row, every poll — and a full tab is a standing state until
+  // someone extends it. A last block added by hand has the same exposure, and
+  // a person reading `#REF!` in the cell fixes it, where this would retry in
+  // silence.
+  //
+  // The window the helper names is rows `row + 1` through
+  // `row + BLOCK_SCAN_ROWS`, so the strict bound is one row below this one —
+  // and `insertDimension` grows the grid by two, which is two more. Slack in
+  // the only direction that cannot produce a `#REF!`.
+  if (row + 2 + BLOCK_SCAN_ROWS > grid.snapshot.rowCount) {
+    return {
+      code: 'no-room',
+      message: `${seasonLabel}: would be added at row ${row + 1}, but the tab declares only ${grid.snapshot.rowCount} rows and a block's roll-ups read ${BLOCK_SCAN_ROWS} rows below its show row; add rows to the tab`,
+    };
+  }
+  // `inheritFromBefore` takes formats from the row above, and a block sorting
+  // first would take the *header* row's: a correct date serial renders as
+  // `46265`. The same rule the season insert applies one row down.
+  if (!seasonRows.has(row - 1)) {
+    return {
+      code: 'no-format-row',
+      message: `${seasonLabel}: would be added at row ${row + 1}, but there is no season row above it to inherit formats from`,
+    };
+  }
+
+  // The season row is `seasonCells`' — the same six a season insert writes,
+  // because it is the same row.
+  const filled = seasonCells(candidate, runtime, entry, ctx.timezone);
+  if (filled === null) {
+    return { code: 'unusable-timestamp', message: `${seasonLabel}: would be added, but its first watch timestamp is unusable` };
+  }
+
+  const { genres, certificate } = entry;
+  const status = deriveStatus(progress, { detailStatus: entry.status, latestSeasonAiring: latestSeasonAiring(entry.shapes) });
+  const formulas = showRowFormulas(grid.columns, row);
+  const secondary = genres === null ? '' : genresCell(genres.slice(1, 1 + MAX_SECONDARY_GENRES));
+  const note = `${label}: new block`;
+
+  const showRow: Array<{ field: ShowField; value: ExtendedValue }> = [
+    { field: 'Show', value: str(title) },
+    { field: 'Franchise', value: str(franchise) },
+    { field: 'Type', value: str(SHOW_TYPE) },
+    // Text, matching all 189 show rows. A number here compares unequal to
+    // every other id cell, so a later run would not recognise its own block.
+    { field: 'id', value: str(String(progress.id)) },
+    // The five cells that roll up from the season rows beneath them, and the
+    // one exception to never writing a formula: this batch writes the formula
+    // that does the rolling up, and nothing revisits the cell afterwards.
+    ...ROLLUP_FIELDS.map((field) => ({ field, value: { formulaValue: formulas[field] } })),
+    ...(ctx.showBucket === null ? [] : [{ field: 'Banner' as const, value: { formulaValue: artworkFormula(grid.columns.Show, row, ctx.showBucket) } }]),
+    ...(status === null ? [] : [{ field: 'Status' as const, value: str(status) }]),
+    // The first survivor of TVDB's own ordering is the primary and the next
+    // three the secondaries. An empty `Genres` is omitted rather than written
+    // blank, the way the films insert omits it.
+    ...(genres === null || genres[0] === undefined ? [] : [{ field: 'Genre' as const, value: str(genres[0]) }]),
+    ...(secondary === '' ? [] : [{ field: 'Genres' as const, value: str(secondary) }]),
+    ...(entry.network ? [{ field: 'Network' as const, value: str(entry.network) }] : []),
+    ...(certificate === null ? [] : [{ field: 'Certificate' as const, value: num(certificate) }]),
+  ];
+
+  return {
+    kind: 'block',
+    row,
+    rows: 2,
+    id: progress.id,
+    title,
+    franchise,
+    season: candidate.season.number,
+    fill: [
+      // Every column here resolved before the walk reached this candidate, or
+      // is one of the required ten, so nothing is dropped. `fillCell` answering
+      // null is what keeps that a fact rather than an assumption — and the
+      // guard requires each of the nine cells a show row cannot do without, so
+      // a dropped one is refused rather than written.
+      ...showRow.flatMap(({ field, value }) => fillCell(grid, row, field, value, note) ?? []),
+      ...filled.cells.flatMap(({ field, value }) => fillCell(grid, row + 1, field, value, note) ?? []),
+    ],
+    note: `${label}: new block at rows ${row + 1}-${row + 2}, S${candidate.season.number} with ${candidate.season.watched} episodes${
+      filled.end === null ? '' : ', ended'
+    }${blankRuntimeNoteOf(filled, candidate.complete)}`,
+  };
+};
+
+/**
+ * Titles SIMKL knows that the tab has no row for: a block for the first TV
+ * show that can have one, and a note for every other.
+ *
+ * **TV only.** An anime block uses the cour model — a new cour is a separate
+ * SIMKL title under a romaji name that mostly does not match what the sheet
+ * calls the series — so a block inserted for one would duplicate a series
+ * already filed as season N of an existing block. Title matching is unreliable
+ * enough that this must never try, which is what keeps the hand-written note.
+ *
+ * Every exit reports once, and the order of the exits is the rule: a title held
+ * back by a collision is not also reported as waiting on TVDB, and a run with
+ * no credential says so once rather than once per show.
+ *
+ * **Recording needs nothing here.** The two tracked fields are recorded
+ * library-wide by `observeWatches`, which walks the library and not the grid,
+ * so a block's seasons are already in `observed` before this runs. And a block
+ * is triggered by a row being *absent*, never by a comparison against the
+ * baseline — so a failed insert re-plans identically on the next poll whatever
+ * was recorded, which is exactly why `writing` gains nothing either.
+ */
+const planBlocks = (ctx: BlockContext, index: Map<number, TitleProgress>, seen: Set<number>, filed: Set<number> | undefined): void => {
+  const { plan, grid, titles, cutoff } = ctx;
+
+  const candidates: TitleProgress[] = [];
+  for (const progress of index.values()) {
+    if (seen.has(progress.id) || !within(progress.lastWatchedAt, cutoff)) continue;
+    // An anime film with no block is not missing a row: the films tab holds it,
+    // and this half still indexes it because 20 of them sit on show-tab rows.
+    if (filed?.has(progress.id)) continue;
+    if (progress.type !== 'shows') {
+      plan.notes.push(missingRowNote(progress));
+      continue;
+    }
+    candidates.push(progress);
+  }
+  // Nothing to walk, and nothing the walk would have said: both credential
+  // notes below count candidates, so with none they are zero.
+  if (candidates.length === 0) return;
+  candidates.sort(byFirstWatch);
+
+  const seasonRows = new Set(grid.blocks.flatMap((block) => block.seasons.map((season) => season.row)));
+
+  // The first block on the tab under each title key — `find`'s answer, asked
+  // once for the whole walk. First and not last: the note names the row that
+  // holds the title, and a second row under the same name is a duplicate the
+  // reader sorts out, not a row this can prefer.
+  const holders = new Map<string, ShowBlock>();
+  for (const block of grid.blocks) {
+    const key = titleKey(block.title);
+    if (!holders.has(key)) holders.set(key, block);
+  }
+
+  // The columns a show row is written into, and which of them the tab does not
+  // carry. Optional by design — the artwork page parses a Shows tab with no
+  // Franchise column at all — so an unresolved one declines every block rather
+  // than failing the parse. A fact about the header row, so it is asked once:
+  // the answer is identical for every candidate, and so is the note.
+  const unresolved = BLOCK_HEADERS.filter((field) => field !== 'Banner' || ctx.showBucket !== null).filter(
+    (field) => grid.fields[field] === undefined,
+  );
+
+  let notedColumns = false;
+  let awaitingCredential = 0;
+  let awaitingFixedCredential = 0;
+
+  for (const progress of candidates) {
+    const entry = titles.get(progress.id);
+    // SIMKL's own title where the detail has answered, the library's until
+    // then — 166 of 189 exact against the tab, 183 ignoring case and a leading
+    // article. Both are normalised the same way, so the cell and the key below
+    // cannot disagree about which show this is.
+    const title = titleCell(entry?.title ?? progress.title);
+    const label = labelOf(title, progress.id);
+
+    // 1. A block that already holds this title. **Both keys**, because the two
+    //    are decided a pass apart: the library title is all the first pass has,
+    //    and the detail's may differ by a `(US)` suffix or a leading article.
+    //    The guard re-derives the collision against the title actually written,
+    //    so one only the planner's later key sees would pass here and refuse
+    //    the whole plan there.
+    //
+    //    Never matched the other way round: the sync refuses to duplicate a
+    //    title, and never *attaches* itself to a row by name.
+    //    The lower row of the two answers, because a `find` over the tab would
+    //    have stopped at the first block matching either.
+    const holder = [holders.get(titleKey(progress.title)), holders.get(titleKey(title))]
+      .filter((block): block is ShowBlock => block !== undefined)
+      .sort((a, b) => a.row - b.row)[0];
+    if (holder) {
+      const ids = blockIds(holder);
+      if (ids.length === 0) {
+        plan.skips.push({
+          code: 'unlinked-block',
+          message: `${label}: row ${holder.row + 1} holds that title and no id; type the id to link it`,
+        });
+      } else {
+        plan.notes.push(`${label}: row ${holder.row + 1} already holds that title under id ${ids.join(', ')}, so no block is added`);
+      }
+      continue;
+    }
+
+    // 2. Which season the block's one row would be for. No rows yet, so nothing
+    //    is covered and the earliest watched season inside the window wins.
+    //
+    //    Asked before any lookup, because no lookup changes it: the answer is a
+    //    projection of the library alone. A title with nothing to insert is one
+    //    whose recent watching is all specials, or whose window-crossing
+    //    `last_watched_at` belongs to episodes stamped outside it — reported
+    //    the way a title on the wrong tab is, and costing no request a poll for
+    //    a detail nothing would use.
+    const season = insertableSeason(progress, cutoff, new Set());
+    if (season === undefined) {
+      plan.notes.push(missingRowNote(progress));
+      continue;
+    }
+
+    // 3. A column a show row needs that the tab does not carry, resolved above.
+    //    One note per run, because one note is all there is to say.
+    if (unresolved.length) {
+      if (!notedColumns) {
+        notedColumns = true;
+        plan.notes.push(`a new show block needs ${unresolved.map((field) => SHOW_FIELD_LABELS[field]).join(', ')} on the tab, so none is added`);
+      }
+      continue;
+    }
+
+    // 4. The two credentials, before any lookup is asked for: a block needs
+    //    both upstreams to answer, so either being unset holds every candidate
+    //    back — counted and named once, because what the operator can do about
+    //    it is one thing and not one thing per show — and a SIMKL detail fetched
+    //    for a block nothing can build is a request a day per show for nothing.
+    if (!ctx.facts.tvdb || !ctx.facts.tmdb) {
+      awaitingCredential += 1;
+      continue;
+    }
+    // A rejection is a fact about the token, not about any series, and both
+    // keys are read at start-up — so nothing is demanded and nothing is
+    // settled: the fix arrives with a restart.
+    if (ctx.factsRejected.size) {
+      awaitingFixedCredential += 1;
+      continue;
+    }
+
+    // The slot. One insert per run, and the season rows of blocks that already
+    //    exist are planned before this walk, so a taken slot is known here.
+    //    Every block behind it defers before asking for anything: the lookups
+    //    it needs are the next run's — fetched now, every pass to the ceiling
+    //    would spend another round on rows this run cannot add — and the
+    //    deferral is what arms the retry that brings that run soon rather than
+    //    on the library's next move. Not lost, but it must say so: a silent
+    //    deferral reads exactly like a show the sync never noticed.
+    if (plan.insert !== null) {
+      plan.deferredInserts += 1;
+      plan.notes.push(`${label}: a block waits for the next run — one insert is added per run`);
+      continue;
+    }
+
+    // 5. What SIMKL holds. Both ids arrive on the same detail response, so
+    //    either being absent is that call not having answered — the state the
+    //    store leaves until `/tv/{id}` lands, and the one that must not be read
+    //    as "no id", which would tell the operator to add by hand a block a
+    //    poll would build.
+    //
+    //    Capped like the two below it, for the reason `MAX_LOOKUPS_PER_PASS`
+    //    gives: it names a cold start on a full library, and this list is the
+    //    unbounded direction — one unlisted title per request, several hundred
+    //    of them, inside a run whose snapshot goes stale at 120s. Only the
+    //    *unanswered* asks count against the cap. An answered title's demand is
+    //    one `sync.ts` drops inside `CATALOGUE_MAX_AGE`, and counting those
+    //    would let a handful of settled-but-unbuildable titles sorted ahead —
+    //    no TVDB id, no episode list — spend the whole allowance on every pass
+    //    and starve every title behind them for good.
+    const detailed = entry !== undefined && entry.tvdbId !== undefined && entry.tmdbId !== undefined;
+    if (detailed || ctx.budget.detail < MAX_LOOKUPS_PER_PASS) {
+      ctx.demands.catalogue.push({ id: progress.id, episodes: true, detail: true });
+      if (!detailed) ctx.budget.detail += 1;
+    }
+    if (entry === undefined || entry.tvdbId === undefined || entry.tmdbId === undefined) {
+      plan.skips.push({ code: 'awaiting-lookup', message: `${label}: waiting on SIMKL's detail before a block can be added` });
+      continue;
+    }
+    // A live-action title with no episode list is a failed lookup, not a show
+    // with no episodes: read as one, its season row would be inserted with a
+    // count and a status derived from nothing.
+    if (!entry.shapes.size) {
+      plan.skips.push({ code: 'no-episode-list', message: `${label}: no episode list came back, so no block is added` });
+      continue;
+    }
+
+    // 6. The join keys themselves. Null is SIMKL answering that it holds
+    //    none, which no poll changes, so the block is named once as one to add
+    //    by hand rather than waited on forever.
+    const { tvdbId, tmdbId } = entry;
+    if (tvdbId === null || tmdbId === null) {
+      const noKey = [...(tvdbId === null ? ['TVDB'] : []), ...(tmdbId === null ? ['TMDB'] : [])];
+      plan.notes.push(`${label} has no ${noKey.join(' or ')} id, so its block has to be added by hand`);
+      continue;
+    }
+
+    // The season chosen above, plus the two facts the episode list settles
+    // about it — which is why the candidate is only completed here, where the
+    // detail is known to have landed.
+    const candidate = candidateOf(progress, season, titles);
+    const seasonLabel = `${label} S${candidate.season.number}`;
+
+    // 7. Everything the detail unlocks, asked for in one pass: the two cells
+    //    only TVDB and TMDB can fill, and the season's episode runtimes. All
+    //    three need only the join keys the detail carried, so demanding them
+    //    together keeps a block to three planning passes — catalogue, then
+    //    these, then the plan — where asking for the runtime only after the
+    //    genres answered would spend the fourth, and the ceiling's whole
+    //    headroom, on a dependency that does not exist.
+    //
+    //    For the cells, absent is unanswered and the block waits; null is
+    //    answered-with-nothing, which lands the block with that cell blank —
+    //    the same absent-versus-settled distinction `runtimeAnswer` draws, and
+    //    for the same reason: every cell on a show row is written once, so
+    //    closing one on a 503 forfeits it for good.
+    //
+    //    The runtime is demanded exactly as a season insert demands one —
+    //    gated on *airing*, since a mid-air season's SIMKL count has not
+    //    settled and `averageRuntime` checks TVDB's against it. Unlike a season
+    //    insert, an unanswered runtime holds the **block** back rather than
+    //    landing the row open. A season row inserted into an existing block is
+    //    revisited by the per-row path, which fills the cell when the row
+    //    closes; the show row above it is not revisited at all, so a block is
+    //    built in one batch or not at all, and waiting a poll costs nothing
+    //    but the poll.
+    //
+    //    Each of the three is capped against the budget rather than against
+    //    the length of its demand list. `runtimes` carries the season path's
+    //    pushes too, which are bounded by the sheet where these are bounded by
+    //    the library minus the sheet — counted together, one dormant tab's
+    //    closing rows would spend the whole allowance, or one cold start's
+    //    blocks would stop a closing row being asked about at all. The skip
+    //    below is unconditional on the push: a block waits for its runtime
+    //    whether or not this pass had an ask left to spend on it.
+    const runtime = insertRuntimeOf(candidate, titles);
+    const runtimePending = candidate.aired && runtime.target !== null && runtime.minutes === undefined;
+    if (runtimePending && runtime.target !== null && ctx.budget.runtimes < MAX_LOOKUPS_PER_PASS) {
+      ctx.demands.runtimes.push(runtime.target);
+      ctx.budget.runtimes += 1;
+    }
+
+    const { genres, certificate } = entry;
+    if (genres === undefined || certificate === undefined) {
+      if (genres === undefined && ctx.budget.genres < MAX_LOOKUPS_PER_PASS) {
+        ctx.demands.genres.push({ id: progress.id, tvdbId });
+        ctx.budget.genres += 1;
+      }
+      if (certificate === undefined && ctx.budget.certificates < MAX_LOOKUPS_PER_PASS) {
+        ctx.demands.certificates.push({ id: progress.id, tmdbId });
+        ctx.budget.certificates += 1;
+      }
+      const waitingOn = [...(genres === undefined ? ['TVDB'] : []), ...(certificate === undefined ? ['TMDB'] : [])];
+      plan.skips.push({ code: 'awaiting-lookup', message: `${label}: waiting on ${waitingOn.join(' and ')} before a block can be added` });
+      continue;
+    }
+    if (runtimePending) {
+      plan.skips.push({ code: 'awaiting-runtimes', message: `${seasonLabel}: waiting on its episode runtimes before a block can be added` });
+      continue;
+    }
+
+    // 8. The block itself, now that every question it turns on is answered.
+    //    `entry` is respelled with the two answers in it, which is what
+    //    `BlockReady` asks for: the checks above narrowed the locals and not
+    //    the record they came off, and a `buildBlock` free to read them as
+    //    absent again would be a second reading of "is this block ready".
+    const built = buildBlock(ctx, seasonRows, { progress, entry: { ...entry, genres, certificate }, title, candidate, runtime });
+    if ('code' in built) {
+      plan.skips.push(built);
+      continue;
+    }
+    // Free by construction: a taken slot defers the block above, before any
+    // lookup is asked for.
+    plan.insert = built;
+  }
+
+  if (awaitingCredential) {
+    const keys = [...(ctx.facts.tvdb ? [] : ['TVDB_API_KEY']), ...(ctx.facts.tmdb ? [] : ['TMDB_API_KEY'])];
+    plan.notes.push(`${awaitingCredential} show(s) have no row; set ${keys.join(' and ')} to have a block added for them`);
+  }
+  if (awaitingFixedCredential) {
+    // Every rejected key, so one restart is enough: named one at a time, an
+    // operator with both wrong fixes one, restarts, and is told about the other.
+    const keys = [...(ctx.factsRejected.has('tvdb') ? ['TVDB_API_KEY'] : []), ...(ctx.factsRejected.has('tmdb') ? ['TMDB_API_KEY'] : [])];
+    plan.notes.push(`${awaitingFixedCredential} show(s) need a block and the credential was rejected; fix ${keys.join(' and ')} and restart`);
+  }
 };
 
 // --- What survives the run --------------------------------------------------
@@ -1369,16 +2106,32 @@ export interface PlanRecord {
  */
 export const planRecord = (plan: SheetPlan): PlanRecord => ({
   edits: plan.edits.map(({ address, field, note }) => ({ address, field: SHOW_LABELS[field], note })),
-  inserts: plan.insert === null ? [] : [{ address: `row ${plan.insert.row + 1}`, title: plan.insert.title, season: plan.insert.season, note: plan.insert.note }],
+  inserts: plan.insert === null ? [] : [{ address: insertAddress(plan.insert), title: plan.insert.title, season: plan.insert.season, note: plan.insert.note }],
 });
 
-/** A human-readable rendering of a plan, for the log and for `report` mode. */
-export const describePlan = (plan: SheetPlan, columns: ColumnMap): string[] => {
+/**
+ * Where an insert landed, for a record read months later beside the sheet. A
+ * span says both its rows: a block is a show row and a season row, and "row
+ * 610" would name half of what the run did.
+ */
+const insertAddress = (insert: Insert): string =>
+  insert.kind === 'season' ? `row ${insert.row + 1}` : `rows ${insert.row + 1}-${insert.row + insert.rows}`;
+
+/**
+ * A human-readable rendering of a plan, for the log and for `report` mode.
+ *
+ * Takes no column map: every planned cell already carries the A1 it will be
+ * written at, and a block fills six columns `ColumnMap` does not name at all.
+ */
+export const describePlan = (plan: SheetPlan): string[] => {
   const lines: string[] = [];
   for (const e of plan.edits) lines.push(`  edit   ${e.address.padEnd(7)} ${e.note}`);
   if (plan.insert) {
-    lines.push(`  insert row ${plan.insert.row + 1}  ${plan.insert.note}`);
-    for (const f of plan.insert.fill) lines.push(`           ${columnLetter(columns[f.field])} ${SHOW_LABELS[f.field]}`);
+    lines.push(`  insert ${insertAddress(plan.insert)}  ${plan.insert.note}`);
+    // The cell's own column, not a second lookup through `columns`: a block
+    // fills six columns that map does not name, and the cell already carries
+    // the index the write will use.
+    for (const f of plan.insert.fill) lines.push(`           ${f.address.padEnd(5)} ${SHOW_FIELD_LABELS[f.field]}`);
   }
   for (const s of plan.skips) lines.push(`  skip   ${s.message}`);
   for (const n of plan.notes) lines.push(`  note   ${n}`);

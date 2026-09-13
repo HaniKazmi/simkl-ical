@@ -207,6 +207,28 @@ test('an insert with no season row above it is refused', () => {
   refuses(planOf([], fx.insertAt(fx.at.fargoS1!, 1)), /no season row above the insertion point/);
 });
 
+// The row *immediately* above, which is what `inheritFromBefore` copies:
+// `parseGrid` keeps a block open across an all-blank spacer row, so a season
+// row anywhere above it says nothing about the formats a row landing under the
+// spacer inherits.
+test('an insert landing under a spacer row inside the block is refused', () => {
+  const spaced = gridFixture(
+    show('fargo', 'Fargo'),
+    season('fargoS1', 1, 6, 44000),
+    raw('spacer', new Array(H.length).fill(null)),
+    season('fargoS3', 3, 4, 44500),
+  );
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], spaced.insertAt(spaced.below.fargoS1!, 2)), spaced.grid));
+  refuses(planOf([], spaced.insertAt(spaced.at.fargoS3!, 2)), /no season row above the insertion point/, spaced.grid);
+});
+
+// `spanRows` is what the budget counts, VERIFY inspects and a rollback deletes,
+// so a span calling itself one row while filling two is verified over one row
+// and rolled back over one, leaving the other standing.
+test('a season insert is exactly one row', () => {
+  refuses(planOf([], { ...fx.insertAt(fx.end, 3), rows: 2 as 1 }), /a season insert is one row/);
+});
+
 test('an insert outside its own block is refused', () => {
   const two = gridFixture(show('fargo', 'Fargo'), season('fargoS1', 1, 6, 44000), show('silo', 'Silo', { status: 'Watching' }), season('siloS1', 1, 3, null));
   const insert = { ...two.insertAt(two.end, 2), title: 'Fargo' };
@@ -234,6 +256,17 @@ test('an insert may only fill its own whitelist, and only its own row', () => {
 
 // Past the snapshot's end both sides read undefined, so the value comparison
 // would agree with itself and wave the write through.
+// The never-write-a-formula rule applied to the planned *value*: the target
+// check cannot see it on an insert, which has no cell in the snapshot at all,
+// and on an edit a formula written over a literal replaces a value with
+// something that recalculates.
+test('a planned formula is refused on an edit and on a season insert alike', () => {
+  refuses(planOf([fx.cell('fargoS2', 'Episode', { formulaValue: '=1+1' })]), /a formula is never written/);
+  const insert = fx.insertAt(fx.end, 3);
+  const formula = { ...insert, fill: insert.fill.map((c) => (c.field === 'Episode' ? { ...c, value: { formulaValue: '=1+1' } } : c)) };
+  refuses(planOf([], formula), /a formula is never written/);
+});
+
 test('a target beyond the end of the snapshot is refused', () => {
   refuses(planOf([{ ...fx.cell('fargoS2', 'Episode', { numberValue: 8 }), row: 99, address: a1(99, fx.grid.columns.Episode), previous: undefined }]), /outside the snapshot/);
 });
@@ -441,4 +474,253 @@ test('every runtime cell an insert carries is bounded, not just the first', () =
     planOf([], { ...insert, fill: [...insert.fill, { ...first, value: { numberValue: 1440 } }] }),
     /not a per-episode runtime in whole minutes/,
   );
+});
+
+// --- the block insert ------------------------------------------------------
+//
+// Every rule below has one test, and each asserts its own message: several of
+// these are defence in depth behind the placement rule, which on a small grid
+// implies both the block-boundary rule and the season-row-above rule. Asserting
+// the message is what keeps "delete this rule and exactly one test fails" true
+// for the rules placement subsumes.
+
+/** Two blocks in franchise order, so a wrong placement is expressible. */
+const twoBlocks = gridFixture(
+  show('alien', 'Alien', { id: 10 }),
+  season('alienS1', 1, 6, 44000),
+  show('zoo', 'Zoo', { id: 20 }),
+  season('zooS1', 1, 6, 44000),
+);
+
+// The baseline the section varies from: this must pass, or every refusal below
+// is vacuous.
+test('a well-formed block below the last season row is allowed', () => {
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], fx.blockAt(fx.end)), fx.grid));
+});
+
+// A show row alone is a block whose roll-ups count the next block's rows as
+// its own; a season row alone joins whichever block sits above it.
+test('a block is exactly two rows', () => {
+  refuses(planOf([], { ...fx.blockAt(fx.end), rows: 3 as 2 }), /a block is a show row and one season row/);
+});
+
+test('a block is never inserted at or above the header row', () => {
+  refuses(planOf([], { ...fx.blockAt(fx.end), row: 0 }), /at or above the header row/);
+});
+
+// `rowCount` is the declared grid, and both rows of the span have to fit
+// inside it. Asked before placement, which would otherwise be the only rule
+// that could fire.
+test('a block with no room left in the declared grid is refused', () => {
+  refuses(planOf([], fx.blockAt(fx.grid.snapshot.rowCount - 1)), /there is no room for a block/);
+});
+
+// A row landing mid-block splits it, and every roll-up above the split starts
+// counting the wrong rows.
+test('a block inside another block rather than between two is refused', () => {
+  refuses(planOf([], fx.blockAt(fx.at.fargoS2!)), /is inside a block rather than between two/);
+});
+
+// inheritFromBefore takes formats from the row above, and a show row's render
+// a correct date serial as 46265. Row 1 is a block boundary and its row above
+// is the header, so this is the rule that fires and not the one before it.
+test('a block with no season row above it is refused', () => {
+  refuses(planOf([], fx.blockAt(fx.at.fargo!)), /no season row above the insertion point/);
+});
+
+// The tab is in Franchise order. Row 5 of the two-block grid is a boundary
+// with a season row above it, so both earlier rules pass and only the order
+// itself refuses.
+test('a block placed anywhere but where Franchise order puts it is refused', () => {
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], twoBlocks.blockAt(3)), twoBlocks.grid));
+  refuses(planOf([], twoBlocks.blockAt(5)), /Franchise order puts Severance at row 4, not 6/, twoBlocks.grid);
+});
+
+// Both are a duplicate block: the same show twice, with two ids or two rows
+// under one name.
+test('a block for an id already on the grid is refused', () => {
+  refuses(planOf([], fx.blockAt(fx.end, { id: 1 })), /SIMKL id 1 is already on the tab/);
+});
+
+test('a block for a title the tab already holds is refused', () => {
+  refuses(planOf([], fx.blockAt(fx.end, { title: 'Fargo', franchise: 'Fargo' })), /row 2 already holds Fargo/);
+});
+
+test('a block may only fill the two rows it creates, and neither has a previous value', () => {
+  const block = fx.blockAt(fx.end);
+  const stray = { ...block, fill: [...block.fill, fx.blockCell(fx.end + 4, 'Network', { stringValue: 'BBC' })] };
+  refuses(planOf([], stray), /may only fill the two rows it creates/);
+
+  const previous = { ...block, fill: block.fill.map((c, i) => (i === 0 ? { ...c, previous: { stringValue: 'x' } } : c)) };
+  refuses(planOf([], previous), /cannot have a previous value/);
+});
+
+// `Episode Length (min)` is blank on all 309 show rows: an episode length is a
+// season's, and the show row's cell is not a roll-up of them.
+test('a show row may not carry a field outside its own whitelist', () => {
+  const block = fx.blockAt(fx.end);
+  refuses(planOf([], { ...block, fill: [...block.fill, fx.blockCell(fx.end, 'Runtime', { numberValue: 45 })] }), /not a field a new show row may carry/);
+});
+
+// The one exception to never writing a formula is the template for the row it
+// lands on. Anything else in that cell is a frozen number where a live roll-up
+// belongs, and nothing revisits a show row to notice.
+test('a roll-up cell must be exactly the template for the row the block lands on', () => {
+  const block = fx.blockAt(fx.end);
+  const wrong = block.fill.map((c) => (c.field === 'Episode' && c.row === fx.end ? fx.blockCell(fx.end, 'Episode', { formulaValue: '=SUM(K5:K9)' }) : c));
+  refuses(planOf([], { ...block, fill: wrong }), /is not the roll-up formula this row takes/);
+
+  // The template for a *different* row is the failure a hand-written literal
+  // invites: the helper it names would count another block's height.
+  const shifted = block.fill.map((c) => (c.field === 'Note' && c.row === fx.end ? { ...c, value: fx.blockAt(fx.at.fargoS1!).fill.find((f) => f.field === 'Note')!.value } : c));
+  refuses(planOf([], { ...block, fill: shifted }), /is not the roll-up formula this row takes/);
+});
+
+test('a literal cell carrying a formula is refused', () => {
+  const block = fx.blockAt(fx.end);
+  const formula = block.fill.map((c) => (c.field === 'Network' ? { ...c, value: { formulaValue: '=A1' } } : c));
+  refuses(planOf([], { ...block, fill: formula }), /a formula is never written/);
+});
+
+// A link with nothing behind it is a broken image for the life of the row.
+test('an artwork link is refused unless the run has a bucket to link into', () => {
+  refuses(planOf([], fx.blockAt(fx.end, { bucket: 'shows' })), /no artwork bucket configured/);
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], fx.blockAt(fx.end, { bucket: 'shows' })), fx.grid, { showBucket: 'shows' }));
+  // The bucket the run holds, not whichever the planner named.
+  assert.throws(
+    () => assertPlanSafe(planOf([], fx.blockAt(fx.end, { bucket: 'other' })), fx.grid, { showBucket: 'shows' }),
+    /is not the roll-up formula this row takes/,
+  );
+});
+
+test('a show row missing any cell nothing will come back to fill is refused', () => {
+  const block = fx.blockAt(fx.end);
+  const without = (field: string) => ({ ...block, fill: block.fill.filter((c) => !(c.row === fx.end && c.field === field)) });
+  refuses(planOf([], without('id')), /a show row must carry ID/);
+  refuses(planOf([], without('Show')), /a show row must carry Title/);
+  refuses(planOf([], without('Franchise')), /a show row must carry Franchise/);
+  refuses(planOf([], without('Type')), /a show row must carry Type/);
+  refuses(planOf([], without('Note')), /a show row must carry Seasons \/ Last Watched/);
+});
+
+// The cells are checked against the insert's own claims, not the upstream's:
+// the title decides the collision test and the franchise decides the row.
+test('the title and franchise cells must say what the block was placed as', () => {
+  const block = fx.blockAt(fx.end);
+  refuses(planOf([], { ...block, title: 'Severance', fill: block.fill.map((c) => (c.field === 'Show' ? { ...c, value: { stringValue: 'Severence' } } : c)) }), /but the block is for Severance/);
+  refuses(planOf([], { ...block, fill: block.fill.map((c) => (c.field === 'Franchise' ? { ...c, value: { stringValue: 'Apple' } } : c)) }), /but the block was placed under Severance/);
+});
+
+// Only `show` is ever inserted: an anime block uses the cour model, where a
+// new cour is a separate SIMKL title.
+test('a block is always typed show', () => {
+  const block = fx.blockAt(fx.end);
+  refuses(planOf([], { ...block, fill: block.fill.map((c) => (c.field === 'Type' ? { ...c, value: { stringValue: 'anime' } } : c)) }), /is not show/);
+});
+
+// Text, matching all 189 show rows: a number compares unequal to every other
+// id cell, so a later run would not recognise its own block.
+test('the id cell is the SIMKL id as text, and the block’s own', () => {
+  const block = fx.blockAt(fx.end);
+  refuses(planOf([], { ...block, fill: block.fill.map((c) => (c.field === 'id' ? { ...c, value: { numberValue: 900 } } : c)) }), /id must be the SIMKL id as text/);
+  refuses(planOf([], { ...block, fill: block.fill.map((c) => (c.field === 'id' ? { ...c, value: { stringValue: '901' } } : c)) }), /but the block is for 900/);
+});
+
+// A closed set, unlike an edit's: nothing revisits an inserted show row, so a
+// status outside the five the tab holds colours as nothing for good.
+test('a block’s status is one of the five the tab holds', () => {
+  const block = fx.blockAt(fx.end);
+  refuses(planOf([], fx.blockAt(fx.end, { status: 'Airing' })), /is not a status this tab holds/);
+  refuses(planOf([], { ...block, fill: block.fill.map((c) => (c.field === 'Status' ? { ...c, value: { numberValue: 1 } } : c)) }), /Status must be non-empty text/);
+  // Omitted entirely is a real state: `deriveStatus` has no opinion on a show
+  // on hold, and the cell stays blank.
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], fx.blockAt(fx.end, { status: null })), fx.grid));
+});
+
+test('a block’s certificate is a BBFC age', () => {
+  refuses(planOf([], fx.blockAt(fx.end, { certificate: 16 })), /is not a BBFC certificate age/);
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], fx.blockAt(fx.end, { certificate: null })), fx.grid));
+});
+
+test('a block’s genres are ones the renderer colours, and no more than three secondaries', () => {
+  refuses(planOf([], fx.blockAt(fx.end, { genre: 'Crime' })), /Crime is not one of the genres/);
+  refuses(planOf([], fx.blockAt(fx.end, { genres: 'Action, Comedy, Drama, Horror' })), /4 genres exceeds the 3/);
+  refuses(planOf([], fx.blockAt(fx.end, { genres: 'Sci-Fi, Anime' })), /Anime is not one of the genres/);
+  // 27 rows on the films tab hold no secondaries at all, and the show tab does
+  // the same: `''.split(',')` is `['']`, which is not a genre.
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], fx.blockAt(fx.end, { genres: '' })), fx.grid));
+});
+
+// The vocabulary is open — 76 distinct networks across the tab — so the rule
+// is that the cell says something, not which broadcaster it names.
+test('a block’s network is non-empty text', () => {
+  refuses(planOf([], fx.blockAt(fx.end, { network: '  ' })), /Network must be non-empty text/);
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], fx.blockAt(fx.end, { network: 'A Channel Nobody Has Heard Of' })), fx.grid));
+});
+
+// Per row, because `Start` on the show row and `Start` on the season row are
+// the same field id at two different columns.
+test('a field filled twice on one row is refused, and the same field on both rows is not', () => {
+  const block = fx.blockAt(fx.end);
+  const twice = { ...block, fill: [...block.fill, fx.blockCell(fx.end, 'Network', { stringValue: 'BBC' })] };
+  refuses(planOf([], twice), /Network is filled twice on row 5/);
+  assert.ok(block.fill.filter((c) => c.field === 'Start').length === 2, 'Start is on both rows of a well-formed block');
+});
+
+// The season row under a new show row is an ordinary inserted season row, held
+// to the identical whitelist — `id` is not on it, so the row inherits the show
+// row's rather than naming a season of its own.
+test('the season row of a block may only carry a season row’s fields', () => {
+  const block = fx.blockAt(fx.end);
+  const status = { ...block, fill: [...block.fill, fx.blockCell(fx.end + 1, 'Status', { stringValue: 'Ended' })] };
+  refuses(planOf([], status), /not a field a new season row may carry/);
+  const id = { ...block, fill: [...block.fill, fx.blockCell(fx.end + 1, 'id', { stringValue: '900' })] };
+  refuses(planOf([], id), /not a field a new season row may carry/);
+});
+
+test('the season row’s number is a whole season, and the one the block was built for', () => {
+  refuses(planOf([], fx.blockAt(fx.end, { season: 0 })), /only whole numbered seasons/);
+  refuses(planOf([], fx.blockAt(fx.end, { season: 1.5 })), /only whole numbered seasons/);
+  const block = fx.blockAt(fx.end);
+  const wrong = { ...block, fill: block.fill.map((c) => (c.field === 'Season' && c.row === fx.end + 1 ? { ...c, value: { numberValue: 4 } } : c)) };
+  refuses(planOf([], wrong), /the season cell says 4 but the block is for S1/);
+});
+
+test('a block with no season row cell at all is refused', () => {
+  const block = fx.blockAt(fx.end);
+  refuses(planOf([], { ...block, fill: block.fill.filter((c) => !(c.row === fx.end + 1 && c.field === 'Season')) }), /must carry the season row it was built for/);
+});
+
+// A dated row is never revisited, so a note created beside an End is one
+// nothing can ever remove — the state the clear exists to prevent.
+test('a block’s season row may not be created dated and noted at once', () => {
+  refuses(planOf([], fx.blockAt(fx.end, { end: TODAY - 1 })), /may not also carry a watch note/);
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], fx.blockAt(fx.end, { end: TODAY - 1, note: null })), fx.grid));
+});
+
+// The same bound an edit's note gets: the note is a last-watched date, which
+// is the same fact `End` carries one column later in the row's life.
+test('a block’s last-watched note is bounded like a watch date', () => {
+  refuses(planOf([], fx.blockAt(fx.end, { note: '2099-01-01' })), /is not a plausible last-watched date/);
+  refuses(planOf([], fx.blockAt(fx.end, { note: 'started it' })), /is not a plausible last-watched date/);
+});
+
+test('a block’s season runtime is bounded in whole minutes', () => {
+  refuses(planOf([], fx.blockAt(fx.end, { runtime: 1440 })), /not a per-episode runtime in whole minutes/);
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], fx.blockAt(fx.end, { runtime: null })), fx.grid));
+});
+
+// The scope rule reads the *planned* show row, because the block is not in the
+// grid yet. `0` is a whole number and a digits string, so it passes every value
+// rule and still names no SIMKL entry — which is exactly what the runtime write
+// may not be given.
+test('a block’s runtime is refused where the planned show row names no SIMKL entry', () => {
+  refuses(planOf([], fx.blockAt(fx.end, { id: 0 })), /live-action block that carries ids on its show row/);
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], fx.blockAt(fx.end, { id: 0, runtime: null })), fx.grid));
+});
+
+// The budget is the poll's blast radius, and a block is two of its rows.
+test('a block counts both of its rows against SHEET_MAX_ROWS', () => {
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], fx.blockAt(fx.end)), fx.grid, { maxRows: 2 }));
+  assert.throws(() => assertPlanSafe(planOf([], fx.blockAt(fx.end)), fx.grid, { maxRows: 1 }), /2 distinct rows this poll exceeds SHEET_MAX_ROWS=1/);
 });

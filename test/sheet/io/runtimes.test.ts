@@ -2,21 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fetchSeasonRuntimes, runtimeKeyOf } from '../../../src/sheet/io/runtimes.ts';
 import { clearTokenCache } from '../../../src/api/tvdb/auth.ts';
-import { jsonResponse, withConfig, withFetch } from '../../helpers.ts';
+import { jsonResponse, withConfig, withFetch, withTvdb } from '../../helpers.ts';
 
 const season = (...runtimes: Array<number | null>) =>
   jsonResponse({ data: { episodes: runtimes.map((runtime, i) => ({ number: i + 1, runtime })) } });
-
-/**
- * A configured TVDB with the login answered, so each test writes only the
- * season response it is about. The one test that wants the login to fail
- * keeps its own handler.
- */
-const withTvdb = (respond: (url: string) => Response, fn: (calls: string[]) => Promise<void>): Promise<void> => {
-  clearTokenCache();
-  return withConfig({ tvdbApiKey: 'k' }, () =>
-    withFetch((url) => (url.endsWith('/login') ? jsonResponse({ data: { token: 't' } }) : respond(url)), fn));
-};
 
 const req = (over: Partial<{ id: number; tvdbId: number; season: number }> = {}) => ({ id: 1, tvdbId: 100, season: 2, ...over });
 const KEY = runtimeKeyOf(100, 2);

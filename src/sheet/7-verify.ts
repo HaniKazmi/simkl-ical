@@ -13,7 +13,8 @@
  */
 
 import { errorMessage } from '../shared/errors.ts';
-import { a1, HEADERS, isFormulaValue, parseGrid, sameValue, type Grid, type HeaderName } from './2-grid.ts';
+import { a1, HEADERS, isFormulaValue, parseGrid, sameValue, type Grid, type HeaderName, type ShowField } from './2-grid.ts';
+import { spanRows } from './6-requests.ts';
 import type { SheetPlan } from './4-plan.ts';
 import type { CellData, ExtendedValue } from '../api/google/types.ts';
 import type { SheetSnapshot } from './io/spreadsheet.ts';
@@ -44,11 +45,16 @@ interface VerifiableCell {
 
 interface VerifiablePlan {
   edits: readonly VerifiableCell[];
-  insert: { row: number; fill: readonly VerifiableCell[] } | null;
+  /** One contiguous span of `rows` rows at `row`, the shape BUILD writes. */
+  insert: { row: number; rows: number; fill: readonly VerifiableCell[] } | null;
 }
 
+/** How far down an insert pushes a pre-existing row: the spans at or above it. */
+const spanAbove = (row: number, inserts: readonly { row: number; rows: number }[]): number =>
+  inserts.filter((insert) => insert.row <= row).reduce((total, insert) => total + insert.rows, 0);
+
 /** Where a pre-existing row ends up once the inserts have been applied. */
-export const shiftRow = (row: number, insertRows: number[]): number => row + insertRows.filter((at) => at <= row).length;
+export const shiftRow = (row: number, inserts: readonly { row: number; rows: number }[]): number => row + spanAbove(row, inserts);
 
 /**
  * Whether a formula's text changing is Sheets' doing rather than ours.
@@ -81,26 +87,27 @@ const entered = (snapshot: SheetSnapshot, row: number, column: number): Extended
  * unknown. A cell that already held the planned value is evidence of nothing,
  * so it does not count.
  */
-const editLanded = (after: SheetSnapshot, edit: VerifiableCell, insertRows: number[]): boolean => {
+const editLanded = (after: SheetSnapshot, edit: VerifiableCell, inserts: readonly { row: number; rows: number }[]): boolean => {
   if (sameValue(edit.previous, edit.value)) return false;
-  return [edit.row, shiftRow(edit.row, insertRows)].some((row) => sameValue(entered(after, row, edit.column), edit.value));
+  return [edit.row, shiftRow(edit.row, inserts)].some((row) => sameValue(entered(after, row, edit.column), edit.value));
 };
 
 /**
- * Whether the row an insert was meant to create is there, and is *ours*.
+ * Whether the rows an insert was meant to create are there, and are *ours*.
  *
- * Every filled cell must match: `insertDimension` puts the row at exactly the
- * index it was given, so anything short of a full match there is a
- * pre-existing row — and the answer decides what a rollback deletes.
+ * Every filled cell must match at the row the plan gave it:
+ * `insertDimension` puts the span at exactly the index it was given, so
+ * anything short of a full match there is a pre-existing row — and the answer
+ * decides what a rollback deletes.
  *
  * Strict on purpose, with a known cost: a concurrent edit to one cell of the
- * new row leaves the insert unrecognised, the rollback deletes nothing, the
- * paste cannot shrink the grid, and the run freezes with the row still there.
+ * new rows leaves the insert unrecognised, the rollback deletes nothing, the
+ * paste cannot shrink the grid, and the run freezes with the rows still there.
  * That is the safe direction. A partial match trades a rare manual repair for
  * a rarer deletion of a row nobody created.
  */
-const insertLanded = (after: SheetSnapshot, insert: { fill: readonly VerifiableCell[]; row: number }): boolean =>
-  insert.fill.length > 0 && insert.fill.every((cell) => sameValue(entered(after, insert.row, cell.column), cell.value));
+const insertLanded = (after: SheetSnapshot, insert: { fill: readonly VerifiableCell[] }): boolean =>
+  insert.fill.length > 0 && insert.fill.every((cell) => sameValue(entered(after, cell.row, cell.column), cell.value));
 
 export interface Verification {
   ok: boolean;
@@ -122,7 +129,11 @@ export interface Verification {
    * when the sheet could not be inspected at all.
    */
   landed: boolean;
-  /** Rows the write created, and only ones this read positively identifies as ours. */
+  /**
+   * Rows the write created, and only ones this read positively identifies as
+   * ours. A landed span contributes every row it covers, so a rollback leaves
+   * none of it behind.
+   */
   deleteRows: number[];
 }
 
@@ -148,23 +159,32 @@ export interface VerifiedTab<G, H extends string, P extends VerifiablePlan> {
   rowKind: string;
   parse: (snapshot: SheetSnapshot) => G;
   /**
-   * `| 'id'` so the join-key rule below always has a column to compare: it is
-   * the one check that catches a row deleted under the write, and a spec whose
-   * headers omitted `id` would disable it silently.
+   * Every column the tab resolves, which is both the whole of what a write may
+   * address and the whole of what must not move under it. A fill writes by
+   * index, so a column that moved puts its value in whatever column took its
+   * place — and a column a write can reach but this map omits is one the
+   * inserted-row walk finds nothing at, so the insert reports its own cells as
+   * writes that are not in the sheet and rolls itself back.
+   *
+   * `Partial`, because a tab may resolve a column optionally — a header it
+   * need not carry is simply absent, and every loop below skips it. `id` is
+   * exempt so the join-key rule always has a column to compare: it is the one
+   * check that catches a row deleted under the write, and a spec whose map
+   * omitted `id` would disable it silently.
    */
-  columnsOf: (grid: G) => Record<H | 'id', number>;
+  columnsOf: (grid: G) => Partial<Record<H, number>> & Record<'id', number>;
   snapshotOf: (grid: G) => SheetSnapshot;
   /**
-   * Every header whose column must not move during the write.
+   * The subset of those columns the cell diff inspects, which is narrower than
+   * the map at both ends: the sync writes some columns it never inspects on a
+   * pre-existing row — the artwork page writes `Artwork` under its own lock and
+   * a reader retypes a `Franchise` by hand — so diffing them would add a
+   * rollback trigger that protects nothing.
    *
    * `H` is the tab's own header union, not `string`: widened, a misspelled
    * header compiles, `columnsOf` answers undefined for it, that column drops
-   * out of the inspected set, and a concurrent human edit to it verifies
-   * clean. `H` also has to cover `id`, because the join-key rule below is what
-   * catches a row deleted under the write.
+   * out of the inspected set, and a concurrent human edit to it verifies clean.
    */
-  headers: readonly H[];
-  /** The subset of those the cell diff inspects. */
   inspected: readonly H[];
   /**
    * The row indices whose set must survive the write unchanged. Show rows on
@@ -187,8 +207,7 @@ export const verifyAgainst = <G, H extends string, P extends VerifiablePlan>(
 ): Verification => {
   const problems: string[] = [];
   const inserts = plan.insert ? [plan.insert] : [];
-  const insertRows = inserts.map((i) => i.row);
-  const inserted = new Set(insertRows);
+  const inserted = new Set(inserts.flatMap((insert) => spanRows(insert)));
   const beforeColumns = spec.columnsOf(before);
   const beforeSnapshot = spec.snapshotOf(before);
 
@@ -200,21 +219,30 @@ export const verifyAgainst = <G, H extends string, P extends VerifiablePlan>(
   } catch (err) {
     return { ok: false, problems: [`${spec.tab} no longer parses: ${errorMessage(err)}`], landed: true, deleteRows: [] };
   }
+  // The two maps must agree key for key, over the union of what each resolved:
+  // a column that moved is caught by the index, and one that appeared or
+  // disappeared under the write by the key being in only one of them. Read off
+  // the maps rather than a listed set of headers, so the columns checked are
+  // exactly the columns the write could address.
   const afterColumns = spec.columnsOf(afterGrid);
-  for (const header of spec.headers) {
+  const headers = [...Object.keys(beforeColumns), ...Object.keys(afterColumns).filter((header) => !(header in beforeColumns))] as H[];
+  for (const header of headers) {
     if (afterColumns[header] !== beforeColumns[header]) problems.push(`the ${header} column moved during the write`);
   }
   if (problems.length) return { ok: false, problems, landed: true, deleteRows: [] };
 
   // Answered before the row-by-row diff because the `grew` mismatch below
   // returns early and needs them: `landed` decides whether there is a
-  // rollback at all, and `created` is the only row a rollback may delete.
-  const created = inserts.filter((insert) => insertLanded(after, insert)).map((insert) => insert.row);
-  const landed = created.length > 0 || plan.edits.some((edit) => editLanded(after, edit, insertRows));
+  // rollback at all, and `created` is the only set of rows a rollback may
+  // delete. A landed span contributes every row it covers, or the rollback
+  // deletes the show row of a block and leaves its season row orphaned.
+  const created = inserts.filter((insert) => insertLanded(after, insert)).flatMap((insert) => spanRows(insert));
+  const landed = created.length > 0 || plan.edits.some((edit) => editLanded(after, edit, inserts));
 
   const grew = after.rows.length - beforeSnapshot.rows.length;
-  if (grew !== insertRows.length) {
-    problems.push(`${spec.tab} grew by ${grew} rows, not ${insertRows.length}`);
+  const planned = inserts.reduce((total, insert) => total + insert.rows, 0);
+  if (grew !== planned) {
+    problems.push(`${spec.tab} grew by ${grew} rows, not ${planned}`);
     return { ok: false, problems, landed, deleteRows: created };
   }
 
@@ -222,21 +250,29 @@ export const verifyAgainst = <G, H extends string, P extends VerifiablePlan>(
   // value, and a `get` that answers undefined for it would read the emptied
   // cell as an unplanned change and roll a correct write back.
   const expected = new Map<string, ExtendedValue | undefined>();
-  for (const edit of plan.edits) expected.set(`${shiftRow(edit.row, insertRows)}:${edit.column}`, edit.value);
+  for (const edit of plan.edits) expected.set(`${shiftRow(edit.row, inserts)}:${edit.column}`, edit.value);
   for (const insert of inserts) {
-    for (const fill of insert.fill) expected.set(`${insert.row}:${fill.column}`, fill.value);
+    for (const fill of insert.fill) expected.set(`${fill.row}:${fill.column}`, fill.value);
   }
 
-  const columns: number[] = Object.values(beforeColumns);
-  const inspected = new Set(spec.inspected.map((h) => beforeColumns[h]));
+  // An unresolved optional column has no index, and `rows[row][undefined]` is
+  // every cell of the row at once.
+  const resolved = (column: number | undefined): column is number => column !== undefined;
+  const columnOf = (header: H): number | undefined => beforeColumns[header];
+  const columns: number[] = Object.values<number | undefined>(beforeColumns).filter(resolved);
+  const inspected = new Set(spec.inspected.map(columnOf).filter(resolved));
   // Only an insert moves rows, and only moved rows get their formulas rewritten.
-  const structural = insertRows.length > 0;
+  const structural = inserts.length > 0;
 
   // --- Pre-existing rows: every inspected cell must be unchanged, or changed
   //     to exactly what was planned.
   for (let row = 0; row < beforeSnapshot.rows.length; row += 1) {
-    const target = shiftRow(row, insertRows);
+    const target = shiftRow(row, inserts);
     for (const column of columns) {
+      // The `id` clause is not redundant: `id` is deliberately out of
+      // `inspected`, and its own rule below is the one check that catches a row
+      // deleted under the write.
+      if (column !== beforeColumns.id && !inspected.has(column)) continue;
       const was = entered(beforeSnapshot, row, column);
       const now = entered(after, target, column);
       const key = `${target}:${column}`;
@@ -286,13 +322,15 @@ export const verifyAgainst = <G, H extends string, P extends VerifiablePlan>(
   //     The `inserted` filter is what makes one comparison serve both: a season
   //     insert is never a show row, so it is a no-op there, while a film insert
   //     *is* a film row and has to come out before the sets can be compared.
-  const beforeRows = spec.rowsOf(before).map((row) => shiftRow(row, insertRows)).join(',');
+  //     A span covering a show row drops out by construction for the same
+  //     reason — every row the plan created is in `inserted`.
+  const beforeRows = spec.rowsOf(before).map((row) => shiftRow(row, inserts)).join(',');
   const afterRows = spec.rowsOf(afterGrid).filter((row) => !inserted.has(row)).join(',');
   if (beforeRows !== afterRows) problems.push(`the set of ${spec.rowKind} changed`);
 
   // --- A formula that broke. Free, because the read already carries it.
   for (let row = 0; row < after.rows.length; row += 1) {
-    const source = inserted.has(row) ? undefined : row - insertRows.filter((at) => at <= row).length;
+    const source = inserted.has(row) ? undefined : row - spanAbove(row, inserts);
     for (const column of columns) {
       if (!cell(after, row, column)?.effectiveValue?.errorValue) continue;
       const had = source === undefined ? false : Boolean(cell(beforeSnapshot, source, column)?.effectiveValue?.errorValue);
@@ -304,13 +342,12 @@ export const verifyAgainst = <G, H extends string, P extends VerifiablePlan>(
 };
 
 /** The show grid's answers to the five questions above. */
-const SHOW_GRID: VerifiedTab<Grid, HeaderName, SheetPlan> = {
+const SHOW_GRID: VerifiedTab<Grid, ShowField, SheetPlan> = {
   tab: 'the sheet',
   rowKind: 'show rows',
   parse: parseGrid,
-  columnsOf: (grid) => grid.columns,
+  columnsOf: (grid) => grid.fields,
   snapshotOf: (grid) => grid.snapshot,
-  headers: INSPECTED,
   inspected: INSPECTED,
   rowsOf: (grid) => grid.blocks.map((block) => block.row),
 };

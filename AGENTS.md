@@ -213,11 +213,23 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
 - **Never write a formula cell, and never write a show row except `Status`** — and, from the
   artwork page only, `Artwork`, under the conditions above. Every derived cell on a show row rolls
   up from the season rows beneath it. Writing one replaces a live roll-up with a frozen number, and
-  nothing would ever notice.
+  nothing would ever notice. **The one exception is the show row of a block the sync itself
+  inserts**, which has no roll-up to replace: the batch that creates a block writes the five
+  formulas that will do the rolling up, plus the `Artwork` link beside them, and nothing revisits
+  the cell afterwards. Both come from one template in `values.ts` — `showRowFormulas` and
+  `artworkFormula`, the single copy planner, guard and the test fixture all read — because a
+  formula the guard re-derives differently refuses the whole plan, and one it re-derives loosely is
+  a frozen number nothing notices. There is one formula shape on all 309 live blocks and Sheets
+  echoes the written text byte-identically, which is what lets VERIFY compare an inserted row's
+  cells exactly; a row merely *shifted* by the insert keeps the looser comparison, for still being
+  a formula rather than for its text. Everywhere else the guard refuses a planned `formulaValue` on
+  the **value** and not only on the target cell, so a formula reaching a cell no target rule
+  inspects — an insert's fill — is unrepresentable rather than caught by whichever rule happens to
+  cover that column.
 - **`Note` is a season-row column and `Status` is a show-row column** — which one a write may touch
   is decided by the row it landed on, in `4-plan.ts` and `5-guard.ts` both: `Note` refuses a show
   row and `Status` refuses a season row. The show row's cell in the note column is the block-height
-  helper formula every roll-up reads, so the unconditional formula refusal covers it before the row
+  helper formula every roll-up reads, so on an edit the formula refusal covers it before the row
   rule does. `Note` is written and moved on while the row is open, and
   the batch that dates the row takes it away: `End` says the same thing, and a row nothing revisits
   must not keep a running one. **Only a cell `ownsNote` accepts may be written into or cleared** —
@@ -253,9 +265,97 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   *being* formulas across an insert rather than for their text. Tightening that back to text
   equality is the one change here that can corrupt the sheet outright — read
   `src/sheet/7-verify.ts` before going near it.
-- **One inserted row per run is carried by the plan's type** — `SheetPlan.insert` is a single value,
+- **One insert per run is carried by the plan's type** — `SheetPlan.insert` is a single value,
   because plan indices are pre-write and `insertDimension` applies cumulatively, so a second insert
-  would land a row high. Do not widen it back to an array.
+  would land a row high. Do not widen it back to an array. That one insert is a contiguous **span**
+  rather than a row: a block is a show row and its first season row, which cannot arrive apart — a
+  show row alone merges the block below it into the one above, and a season row alone belongs to
+  the wrong block. `rows` is required on the shared structural types in `6-requests.ts` and
+  `7-verify.ts`, so the films insert states `1` rather than inheriting it from a default, and
+  `spanRows` is the one answer the budget counts, VERIFY inspects and a rollback deletes — three
+  spellings of it would let a two-row block be budgeted, verified or deleted as one row.
+- **A block is inserted for a TV show only** — `LibraryEntry.type === 'shows'`. An anime block uses
+  the cour model, where a new cour is a separate SIMKL title under a romaji name, so an inserted
+  anime block duplicates a series the tab already files as season N of an existing one. An anime
+  title is reported with a note asking for the block by hand instead. **Title matching never
+  attaches a title to a block, it only refuses to duplicate one**: `titleKey` —
+  `franchiseKeyFor(titleCell(title))`, case-folded,
+  the same normalisation placement uses — holds a candidate back when the tab already carries that
+  title, because the tab's titles differ from SIMKL's by a leading article, a `(US)` suffix and
+  casing (162 of 189 equal SIMKL's raw title, 183 under the key). Attaching on that key instead
+  would file one series' season row under another series' block on a false match, where holding
+  back costs a note asking for the id to be typed in.
+- **A block goes where `Franchise` order says**, which is the tab's own order. Under
+  `compareFranchise` — `localeCompare(…, 'en', { numeric: true, sensitivity: 'base' })`, the locale
+  pinned because a Mac and the container image do not default to the same one, and a comparator
+  that moves under the process places a block where the guard then re-derives a different row — all
+  309 blocks sort with zero inversions; `base` alone has one (`13 Reasons Why` before `3%`) and
+  adding `ignorePunctuation` has five. Three rules in order: same franchise → after the last block
+  of it, because within a franchise the order is loose at 15 inversions and no comparison can find
+  a position inside the group; else before the first block sorting after it; else below everything.
+  A block that would sort first is declined, because its show row would land directly under the
+  header and `inheritFromBefore: true` copies the row above. The default `Franchise` cell is the
+  title minus a leading article, 247 of 309; the other 62 are hand judgements (`Agatha Christie`,
+  `DC`, `Arthurian`), so a new block lands one cell short of right rather than in the wrong place.
+  `placeBlock` is one copy for planner and guard: two walks of these three rules disagree by a row
+  exactly where the tab is irregular, and the guard's answer is what refuses the plan.
+- **A block waits a poll rather than landing half-filled.** Its show row needs the SIMKL detail and
+  episode list, TVDB's genres, TMDB's certificate, and the season's runtime where that season has
+  aired. **Absent** means the lookup has not answered and the block waits; **null** means it
+  answered that nothing is obtainable and that one cell stays blank — the discipline `runtimeAnswer`
+  and the films half already hold, and the one that matters most here, since a dated show row is
+  never revisited and a cell left blank because a 503 read as an answer is blank for the life of
+  the row. Both `TVDB_API_KEY` and `TMDB_API_KEY` gate block inserts rather than degrading them,
+  the films rule: a block with no genre and no certificate costs more to finish by hand than a row
+  that was never added. Every credential the upstream rejects is held by name in `factsRejected` for
+  the life of the process, because both keys are read at start-up — asking again every poll settles
+  nothing, and settling the waiting shows would file them as ones the upstream has nothing for. The
+  note names all of them, because named one at a time an operator fixes a key, restarts, and is told
+  about the other. The lookups a block earns are capped per **attempt** rather than per pass, in
+  `LookupBudget`: the planner runs to a fixpoint, so a cap reset on every pass is the cap multiplied
+  by the pass ceiling.
+  A block also needs `BLOCK_SCAN_ROWS` of declared grid beneath it: the block-height helper every
+  roll-up reads is an `OFFSET` window that far down, and Sheets answers `#REF!` for one running past
+  the last row, so those five cells would error and VERIFY would roll the write back every poll. The
+  planner declines, the way the films half declines a full tab — a guard refusal is whole-plan, and
+  a tab with no room is a standing state until someone extends it.
+  The block's first season row is the earliest season watched **inside the activity window**, the
+  same window a season insert obeys: a show whose earlier seasons were watched before the window
+  gets a block starting at the recent one, and those earlier rows are added by hand — a season
+  finished in 2024 beside one begun in September 2026 gives a block of the second alone.
+- **The six block columns are optional** — `BLOCK_HEADERS` (`Franchise`, `Genre`, `Genres`,
+  `Network`, `Certificate`, `Banner`), resolved by `resolveOptionalColumns` rather than joining the
+  ten required `HEADERS`. The artwork page parses a Shows tab carrying no `Franchise` column at
+  all, so an unresolved one is a fact about the tab rather than grounds to fail the whole run
+  closed the way a missing required label is; a block insert needing a column it cannot resolve
+  declines with a note naming the label. A duplicated label resolves to absent, because two columns
+  under one name name no column.
+- **`Genre` comes from TVDB, `Network` from SIMKL, `Certificate` from TMDB** — each column from the
+  upstream whose own ordering or vocabulary is the one the tab picks by, measured against the 189
+  blocks carrying a single SIMKL id. TVDB sends genres in its own genre-id order (Science Fiction
+  2, Horror 6, Drama 12, Crime 14, Comedy 15, Documentary 16, Adventure 18, Action 19, Fantasy 21,
+  Suspense 22, Thriller 24, Romance 27, Mystery 31), which is a fixed priority; `mappedTvdbGenres`
+  keeps that order and the first survivor reproduces 128 of 189 primaries, where every TMDB-ordered
+  rule measured reaches 108 to 120 — TMDB's TV vocabulary has no Horror, Thriller or Romance at all
+  and folds `Sci-Fi & Fantasy` and `Action & Adventure` into one entry each, and SIMKL's list
+  arrives alphabetical with the significance gone. SIMKL's `network` through the 11-entry spelling
+  map in `networkCell` agrees with 185 of 189 — the same 185 TVDB's `originalNetwork` gives, where
+  TMDB gives 144 — so the column costs no request of its own. `certificateFor` reads TMDB's GB
+  content rating **by territory and never by position**, 161 of 189, with 10 carrying no GB rating
+  and staying blank; TVDB carries a GB rating on 19, and SIMKL's `certification` is the US TV
+  rating. The genre vocabulary is one closed set across both tabs — the show tab's
+  conditional-format values are the films tab's twelve — so it lives in the parent `values.ts` and
+  `movies/values.ts` imports it back; two copies would be two closed sets free to drift apart with
+  nothing to notice.
+- **The show row's look is conditional formatting, not cell formats.** 25 rules cover the data
+  rows: `=$A2<>""` paints every show row across A:Q, and the rest colour `Genre`, `Type`, `Status`
+  and `Certificate` per value, while a season row carries only right-alignment on its numeric
+  columns and `yyyy-mm-dd` on its dates. So a two-row insert with `inheritFromBefore: true` under a
+  season row inherits the right formats for both of its rows and the show row is painted on
+  arrival — there is nothing for the sync to copy, and a batch setting formats would have to send
+  `fields` beyond `userEnteredValue`, which is what keeps every hand-set format on the sheet
+  intact. A block sorting past the last rule's range is unpainted until the ranges are widened by
+  hand.
 - **Every value interpolated into either page goes through the `html` tag.** Show titles,
   spreadsheet contents and upstream error bodies all reach both, so `shared/html.ts` escapes by
   default and `raw()` is reserved for the stylesheets. The safe-HTML brand is a module-private
@@ -601,15 +701,15 @@ the process, and the rest carries its pipeline position in the filename, so `ls`
 | Step | Module |
 | --- | --- |
 | INDEX | `1-index.ts` — library → what was watched, and the early-out that decides whether to read the grid at all |
-| PARSE | `2-grid.ts` — snapshot → blocks, plus the two block predicates (`usesCourModel`, `runtimeScopeOk`) |
-| FOLD | `3-catalogue.ts` — what the upstreams said, reduced and retained across polls: the `CatalogueStore`, the stamping discipline, and the reductions of both payloads |
-| PLAN | `4-plan.ts` — grid + library + catalogue + baseline → `{ plan, demands, observed, writing }`; the sync re-plans until nothing new is demanded, and records `writing` only once the write lands |
-| GUARD | `5-guard.ts` — a checklist of named rules; refuses a plan that does not re-derive |
-| BUILD | `6-requests.ts` — a plan → one ordered batch, plus the rollback request builders |
+| PARSE | `2-grid.ts` — snapshot → blocks, plus the two block predicates (`usesCourModel`, `runtimeScopeOk`); the ten required `HEADERS`, and `BLOCK_HEADERS` through `resolveOptionalColumns` |
+| FOLD | `3-catalogue.ts` — what the upstreams said, reduced and retained across polls: the `CatalogueStore`, the stamping discipline, the reductions of every payload, and `factsRejected` |
+| PLAN | `4-plan.ts` — grid + library + catalogue + baseline → `{ plan, demands, observed, writing }`; the sync re-plans until nothing new is demanded, and records `writing` only once the write lands. One insert per run, a `RowInsert` or a `BlockInsert` |
+| GUARD | `5-guard.ts` — a checklist of named rules; refuses a plan that does not re-derive. `checkBlockInsert` is the block's own checklist beside the season insert's |
+| BUILD | `6-requests.ts` — a plan → one ordered batch, plus the rollback request builders; `spanRows` is what an insert covers |
 | — | `guard-core.ts` — the rules both guards re-derive the same way: budget, cell shape, alignment; each guard passes its own `refuse` |
 | VERIFY | `7-verify.ts` — did the write do exactly what was planned, for either tab: `verifyAgainst` holds the rules and `VerifiedTab` what a tab answers for itself |
-| — | `values.ts` — the sheet's value conventions (serials, runtime bounds, the watch note's shape), one copy for planner and guard |
-| io | `io/spreadsheet.ts` (read/apply/list), `io/catalogue.ts` and `io/runtimes.ts` (fetch only), `io/apply.ts` (the write-and-recover protocol, over an `ApplySpec` either tab supplies), `io/backups.ts` (the snapshot tab's whole life), `io/journal.ts` (the run history), `io/baseline.ts` (what SIMKL last said — the one file here that *decides* something) |
+| — | `values.ts` — the sheet's value conventions (serials, runtime bounds, the watch note's shape, the show row's formula templates, the genre and network maps, where a block sorts), one copy for planner and guard |
+| io | `io/spreadsheet.ts` (read/apply/list), four that fetch only — `io/catalogue.ts`, `io/runtimes.ts`, `io/tvdb-series.ts` (a series' genres) and `io/tmdb-tv.ts` (a series' content ratings) — `io/apply.ts` (the write-and-recover protocol, over an `ApplySpec` either tab supplies), `io/backups.ts` (the snapshot tab's whole life), `io/journal.ts` (the run history), `io/baseline.ts` (what SIMKL last said — the one file here that *decides* something) |
 | — | `sync.ts` — the driver for **both** tabs: one loop (`runTab`) over a per-tab `TabSpec`, the two plan-fetch fixpoints, per-poll state in a `Poll`, the journal choke point |
 
 `src/sheet/movies/` — the films tab. INDEX → PARSE → (PLAN ⇄ FETCH) → GUARD → BUILD → VERIFY
@@ -763,15 +863,23 @@ but answers a non-browser User-Agent with a Cloudflare 403. TVDB is also what si
 its numbers match episode for episode where TMDb's differ by up to five minutes, in both
 directions, with no rule behind it.
 
-**That rejection of TMDb is about per-episode runtimes only.** The films tab reads TMDB for a
-film's genres, certificate, backdrop, collection and release dates, none of which has a TVDB
-equivalent — so the two decisions are about different data and do not disagree. TMDB v4 is at
+**Every column is sourced from the upstream whose own ordering or vocabulary matches how the sheet
+picks, which is why TVDB and TMDB each answer for some of them and neither for all.** The rejection
+of TMDb above is about per-episode runtimes; the same test rejects TMDB for a series' genres, since
+its TV vocabulary has no Horror, Thriller or Romance and its order reproduces 108 to 120 of the 189
+primaries against TVDB's 128. It goes the other way for the films tab's genres, certificate,
+backdrop, collection and release dates, and for a show block's `Certificate`: TVDB carries a GB
+rating on 19 of those 189 series where TMDB carries one on 179. So the decisions are about
+different data and do not disagree. TMDB v4 is at
 <https://developer.themoviedb.org/reference/intro/getting-started>. Three things checked rather
 than assumed: `TMDB_API_KEY` here is the **v4 read access token**, sent as a bearer, because v3's
 `?api_key=` would put the credential into the paths `describeUrl` prints on the status page;
 `append_to_response=release_dates,credits,images` folds a whole row's worth of columns into one
 request; and `include_image_language=en` is what keeps a null-language backdrop — usually a poster
 crop — out of the `Artwork` cell, since 346 of 347 films have a real English one.
+`GET /tv/{id}?append_to_response=content_ratings` is the series form: the ratings ride the detail
+response rather than costing a second request, and the GB entry is picked by its `iso_3166_1`
+because TMDB contracts no ordering and the cell is written once.
 
 `GET /series/{id}/episodes/official?season={n}` returns one season, and one call is one season —
 `links.page_size` is 500 and `next` is null on every season measured, up to a 28-episode cour. Three
@@ -779,6 +887,11 @@ behaviours checked rather than assumed: a season the series does not have answer
 empty list**, not a 404, so it never reaches the failure split; `page` is documented as required and
 is optional; and login accepts a *wrong* pin rather than rejecting it, so the pin proves nothing and
 only an invalid key fails, with `401 InvalidAPIKey`.
+
+`GET /series/{id}/extended` is the other TVDB call the sheet makes: it carries the whole genre
+list, so one call is one series with nothing to page, and the list arrives in TVDB's own genre-id
+order, which is the significance order a show block's `Genre` is picked out of. Its content ratings
+are not the certificate source — a GB one is on 19 of the 189 series measured.
 
 Google's Sheets API is at <https://developers.google.com/workspace/sheets/api/reference/rest>.
 Two things it does not offer, checked rather than assumed: there is no revision surface at all, and

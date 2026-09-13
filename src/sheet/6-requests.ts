@@ -27,12 +27,26 @@ export interface PlannedCell {
 
 export interface PlannedWrites {
   edits: readonly PlannedCell[];
-  insert: { row: number; fill: readonly PlannedCell[] } | null;
+  /**
+   * One contiguous span of `rows` rows starting at `row`, or nothing. A span
+   * rather than a row because a block is a show row and its first season row,
+   * which have to arrive together — a show row alone merges the block below it
+   * into the one above, and a season row alone belongs to the wrong block.
+   */
+  insert: { row: number; rows: number; fill: readonly PlannedCell[] } | null;
 }
+
+/**
+ * Every row one span covers. One copy, because the same answer is what the
+ * budget counts, what VERIFY inspects and what a rollback deletes; three
+ * spellings of it would let a two-row block be budgeted as one row.
+ */
+export const spanRows = (insert: { row: number; rows: number }): number[] =>
+  Array.from({ length: insert.rows }, (_, offset) => insert.row + offset);
 
 /** The distinct rows a plan touches — what `SHEET_MAX_ROWS` counts. */
 export const rowsTouched = (plan: PlannedWrites): number =>
-  new Set([...plan.edits.map((e) => e.row), ...(plan.insert ? [plan.insert.row] : [])]).size;
+  new Set([...plan.edits.map((e) => e.row), ...(plan.insert ? spanRows(plan.insert) : [])]).size;
 
 /**
  * A plan and the grid it was planned against, tied together.
@@ -86,12 +100,12 @@ export const writeCell = (sheetId: number, row: number, column: number, value: E
  * The plan as one ordered batch, in three groups:
  *
  *   a. edits to pre-existing rows, descending by row
- *   b. the insertDimension
- *   c. the new row's fill
+ *   b. the insertDimension, one request for the whole span
+ *   c. the fill, at the row each cell names
  *
- * The fill shares a row index with the insert, so a rule of "edits before
- * inserts" would apply the fill to whatever sits at that index and *then*
- * insert a blank row below it — overwriting a real row, the exact failure
+ * The fill shares its row indices with the insert, so a rule of "edits before
+ * inserts" would apply the fill to whatever sits at those indices and *then*
+ * insert blank rows below them — overwriting real rows, the exact failure
  * this design exists to prevent.
  */
 export const toRequests = (plan: BoundWrites): SheetRequest[] => {
@@ -104,7 +118,7 @@ export const toRequests = (plan: BoundWrites): SheetRequest[] => {
   if (plan.insert) {
     requests.push({
       insertDimension: {
-        range: { sheetId, dimension: 'ROWS', startIndex: plan.insert.row, endIndex: plan.insert.row + 1 },
+        range: { sheetId, dimension: 'ROWS', startIndex: plan.insert.row, endIndex: plan.insert.row + plan.insert.rows },
         inheritFromBefore: true,
       },
     });

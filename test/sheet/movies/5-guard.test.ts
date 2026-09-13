@@ -189,6 +189,14 @@ test('the first row goes under the header, wherever the header is', () => {
   assert.equal(nextFilmRow(titled), 2);
 });
 
+// `spanRows` is what the budget counts, VERIFY inspects and a rollback deletes,
+// so a span calling itself one row while covering two is verified over one row
+// and rolled back over one, leaving the other standing. The tab is flat, with
+// no block to keep together, so one is the only height a film insert has.
+test('a film insert is exactly one row', () => {
+  refuses(filmPlanOf([], { ...ffx.insert(), rows: 2 } as unknown as ReturnType<typeof ffx.insert>), ffx.grid, /a film insert is one row/);
+});
+
 test('a tab whose declared grid is full has no row to add', () => {
   // `rowCount` is a count, so the last usable 0-based index is one below it.
   // A tab trimmed to exactly its data has nowhere for the next film to go.
@@ -360,4 +368,11 @@ test('the guard whitelist and the planner followed set say the same thing', () =
   assert.equal(INSERT_FIELDS.has('SeriesNumber' as MovieHeaderName), false);
   assert.equal(EDIT_FIELDS.has('Series' as MovieHeaderName), false);
   assert.equal(EDIT_FIELDS.has('SeriesNumber' as MovieHeaderName), false);
+});
+
+// The films tab plans no formula today, and one hand-written cell is all it
+// would take. The rule lives in `guard-core.ts`, so it reaches both tabs from
+// one place rather than being assumed away here.
+test('a fill cell carrying a formula is refused', () => {
+  refuses(filmPlanOf([], withValue(ffx.insert(), 'Name', { formulaValue: '=A1' })), ffx.grid, /a formula is never written/);
 });

@@ -27,7 +27,7 @@ import { dateSerial, maxSerial, movieKey, plausibleRuntime, plausibleSerial, rec
 import { movieAddress, movieCellAt, MOVIE_LABELS, nextFilmRow, type MovieGrid, type MovieHeaderName } from './2-grid.ts';
 import { filmIsWatched, type FilmProgress } from './1-index.ts';
 import type { FilmFacts } from './3-catalogue.ts';
-import type { PlanRecord } from '../4-plan.ts';
+import { compareWatched, MAX_LOOKUPS_PER_PASS, type PlanRecord } from '../4-plan.ts';
 import { formatCell, plausibleReleaseSerial, plausibleScore, releaseCeiling, typeCell, watchedInCinema } from './values.ts';
 
 // --- The plan --------------------------------------------------------------
@@ -56,6 +56,8 @@ export interface FilmCellEdit {
 
 export interface FilmRowInsert {
   row: number;
+  /** One row: the films tab is flat, so a film is a row and never a block. */
+  rows: 1;
   id: number;
   title: string;
   /** No `previous`: the row did not exist. */
@@ -87,22 +89,11 @@ export interface FilmPlan {
 export const emptyFilmPlan = (): FilmPlan => ({ edits: [], insert: null, skips: [], notes: [], deferredInserts: 0 });
 
 /**
- * How many films one pass may ask TMDB about.
- *
- * Only one row is inserted per run, so a larger burst buys nothing: what it
- * buys is a cold start on a full library issuing one request per unlisted film
- * — several hundred — inside a run whose snapshot goes stale at 120s, and
- * doing it again after every restart, since the store is process-local. A
- * handful covers the settled and unanswerable films queued ahead of the next
- * insertable one; the rest arrive on later polls, which is the rate rows land
- * at anyway.
- *
- * It also bounds what a standing failure costs. A 403 that fails every request
- * — a suspended token, a WAF, a throttle — records nothing, so the same films
- * are demanded next poll; capped, that is a handful of requests every half
- * hour rather than one per unlisted film.
+ * The parent's cap, re-exported so this half reads it under its own name. One
+ * constant for both tabs: the argument for it is about a run's snapshot budget
+ * and a cold start, neither of which is a fact about films.
  */
-export const MAX_LOOKUPS_PER_PASS = 8;
+export { MAX_LOOKUPS_PER_PASS };
 
 /** One film to look up, and the title its answer is filed under. */
 export interface FilmDemand {
@@ -439,11 +430,7 @@ const planInsert = (
   // the show half's "add it by hand" line is not removed but merely moved.
   const missing = [...index.values()]
     .filter((film) => filmIsWatched(film) && !onTab.has(film.id) && !(film.anime && (onShowGrid === null || onShowGrid.has(film.id))))
-    .sort((a, b) => {
-      if (!a.watchedAt) return b.watchedAt ? 1 : 0;
-      if (!b.watchedAt) return -1;
-      return Temporal.Instant.compare(a.watchedAt, b.watchedAt);
-    });
+    .sort((a, b) => compareWatched(a.watchedAt, b.watchedAt, a.id - b.id));
 
   // The declared grid has to have a row to give, and that is a fact about the
   // grid, so it is asked once and before any lookup: a full tab is a standing
@@ -569,7 +556,7 @@ const buildInsert = (
   if (facts.director) fill.push(fillCell(grid, row, film.id, 'Director', str(facts.director), note));
   if (facts.banner) fill.push(fillCell(grid, row, film.id, 'Banner', str(facts.banner), note));
 
-  return { row, id: film.id, title: film.title, fill, note: `add ${note}` };
+  return { row, rows: 1, id: film.id, title: film.title, fill, note: `add ${note}` };
 };
 
 // --- What survives ---------------------------------------------------------

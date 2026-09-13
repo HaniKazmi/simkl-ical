@@ -5,17 +5,29 @@
  * fetch results into it between planning passes. Stateful but I/O-free — the
  * fetches live in `io/`; every rule about what an answer *means* lives here.
  *
- * Two sources answer what the library cannot: `/tv/episodes/{id}` says which
- * episodes exist and have aired, TVDB says how long they are. The library says
- * only what was watched.
+ * Four sources answer what the library cannot, which says only what was
+ * watched: `/tv/episodes/{id}` says which episodes exist and have aired,
+ * `/tv/{id}` how long one runs and who broadcasts it, TVDB how long a season's
+ * episodes are and which genres a series is filed under, TMDB what it is
+ * certificated at.
  */
 
 import { config, tvdbConfigured } from '../shared/config.ts';
+import { certificateFor, mappedTvdbGenres, networkCell } from './values.ts';
 import type { EpisodeDetail } from '../api/simkl/types.ts';
 import type { TvdbEpisode } from '../api/tvdb/types.ts';
 import type { TitleProgress } from './1-index.ts';
 import type { Catalogue, CatalogueRequest } from './io/catalogue.ts';
 import { runtimeKeyOf, type RuntimeRequest, type SeasonRuntimes } from './io/runtimes.ts';
+import type { SeriesGenres, SeriesRequest } from './io/tvdb-series.ts';
+import type { CertificateRequest, ShowCertificates } from './io/tmdb-tv.ts';
+
+/**
+ * Which upstream a show-facts lookup asked. Named because a rejection is
+ * reported by name — "fix `TVDB_API_KEY` and restart" is the whole of what the
+ * operator can do about one.
+ */
+export type FactsCredential = 'tvdb' | 'tmdb';
 
 // --- Reductions of the raw payloads ----------------------------------------
 
@@ -75,18 +87,31 @@ export const seasonComplete = (shape: SeasonShape | undefined, watched: number):
   seasonAired(shape) && watched >= shape.total;
 
 /**
- * The TVDB id off a SIMKL record — a detail, or a library title — or null.
+ * SIMKL sends every external id as a string. Anything that is not a positive
+ * whole number is "no id", never an error — every lookup keyed on one is
+ * additive, and a title without one leaves a cell blank rather than failing.
  *
- * SIMKL sends it as a string. A non-numeric or absent one is "no TVDB id",
- * never an error: the runtime lookup is additive, and a title without one
- * keeps its runtime cell blank.
+ * Exported for the films half, which reads the same field off a film record.
+ * One parse, so a value one half files as an id cannot be one the other files
+ * as no id at all.
  */
-export const tvdbIdOf = (detail: { ids?: { tvdb?: string } } | undefined): number | null => {
-  const raw = detail?.ids?.tvdb;
+export const externalId = (raw: string | undefined): number | null => {
   if (typeof raw !== 'string') return null;
   const id = Number(raw.trim());
   return Number.isInteger(id) && id > 0 ? id : null;
 };
+
+/**
+ * The TVDB id off a SIMKL record — a detail, or a library title — or null. The
+ * join key to the per-episode runtimes.
+ */
+export const tvdbIdOf = (detail: { ids?: { tvdb?: string } } | undefined): number | null => externalId(detail?.ids?.tvdb);
+
+/**
+ * The TMDB id off the same record, or null. The join key to a series'
+ * certificate. Present on all 189 TV shows measured.
+ */
+export const tmdbIdOf = (detail: { ids?: { tmdb?: string } } | undefined): number | null => externalId(detail?.ids?.tmdb);
 
 /**
  * A season's average episode runtime in whole minutes, or null with no usable
@@ -168,6 +193,44 @@ export interface TitleCatalogue {
    */
   tvdbId?: number | null;
   /**
+   * The join key to a series' certificate. Folded **unconditionally**, where
+   * `tvdbId` is withheld without a credential, because the two nulls reach the
+   * planner as different sentences. No TVDB id means a runtime cell stays
+   * blank, which is the right silent default on an install with no key; no TMDB
+   * id means "add this block by hand", which is the wrong instruction when the
+   * fix is setting `TMDB_API_KEY`. The planner gates the block on the
+   * credential instead, and says so.
+   */
+  tmdbId?: number | null;
+  /**
+   * SIMKL's own title for the show, which a new block's `Show` cell is written
+   * from — 166 of 189 exact against the tab, 183 ignoring case and a leading
+   * `The`. Absent until the detail answers.
+   */
+  title?: string;
+  /**
+   * The `Network` cell, already in the tab's spelling. Null where SIMKL names
+   * no broadcaster, which leaves the cell blank.
+   */
+  network?: string | null;
+  /**
+   * TVDB's genres reduced to the tab's vocabulary, in the order TVDB sent
+   * them: the first is the block's `Genre` and the rest its `Genres`.
+   *
+   * Three states, and the planner reads all three. **Absent**: the lookup has
+   * not answered, so the block waits a poll. **Null**: it answered that nothing
+   * is obtainable — no TVDB id, or a 404 — so the block may land with the cells
+   * blank. An **empty array**: TVDB has the series and none of its genres is in
+   * the vocabulary, which is settled the same way.
+   */
+  genres?: string[] | null;
+  /**
+   * The `Certificate` cell — the GB rating as a minimum age. Same three states
+   * as `genres`: absent is unanswered, null is settled with nothing to write,
+   * which is a series TMDB carries no GB entry for as well as a 404.
+   */
+  certificate?: number | null;
+  /**
    * Season number → average episode runtime in whole minutes, or null for
    * *asked, no usable answer*.
    *
@@ -240,7 +303,7 @@ const sameInstant = (a: Temporal.Instant | null, b: Temporal.Instant | null): bo
  * knowing. Process-local, so a restart re-reads everything — the right answer
  * after a restart anyway.
  *
- * One stamping discipline for both folds: **a retryable failure is never
+ * One stamping discipline for every fold: **a retryable failure is never
  * recorded, so the next poll asks again; a settled answer — "gone" and null
  * included — always is, because an unrecorded key would be re-requested every
  * poll forever.**
@@ -270,11 +333,14 @@ export class CatalogueStore {
       Object.assign(this.entry(id), {
         status: detail.status,
         runtime: detail.runtime,
+        title: detail.title,
+        network: networkCell(detail.network),
         // Withheld without a credential rather than stored and ignored: a null
         // join key already means "no runtime obtainable" to every planner
         // rule, so no second switch exists to be set wrong and strand every
         // row.
         tvdbId: tvdbEnabled ? tvdbIdOf(detail) : null,
+        tmdbId: tmdbIdOf(detail),
       });
     }
 
@@ -299,6 +365,66 @@ export class CatalogueStore {
       const expected = entry?.shapes.get(request.season)?.total ?? 0;
       entry?.seasonRuntimes.set(request.season, averageRuntime(fetched.episodes.get(key), expected));
     }
+  }
+
+  /**
+   * Fold one show-fact lookup in, reducing each answer to the cell it becomes.
+   * The reduction happens here, not in the source: which names the sheet has a
+   * column for and which territory rates a series are rules about the sheet,
+   * and the source's job is one HTTP call.
+   *
+   * `foldCatalogue`'s stamping rule, with the entry's own key as the record
+   * rather than a stamp: a **settled** answer is always recorded — a 404
+   * included — because an unrecorded key is re-requested every poll forever; a
+   * **retryable** failure is never recorded, so the next poll asks again.
+   */
+  private foldFact<T, F extends 'genres' | 'certificate'>(
+    requests: readonly { id: number }[],
+    answers: Map<number, T>,
+    unavailable: readonly number[],
+    field: F,
+    reduce: (answer: T) => TitleCatalogue[F],
+  ): void {
+    for (const request of requests) {
+      const answer = answers.get(request.id);
+      if (answer !== undefined) this.entry(request.id)[field] = reduce(answer);
+    }
+    // A 404 is the upstream not knowing this series, which no amount of asking
+    // changes. Never over an answer already held: a series that answered once
+    // is answered.
+    for (const id of unavailable) {
+      const entry = this.entry(id);
+      if (entry[field] === undefined) entry[field] = null;
+    }
+  }
+
+  foldGenres(requests: readonly SeriesRequest[], { genres, unavailable }: SeriesGenres): void {
+    this.foldFact(requests, genres, unavailable, 'genres', mappedTvdbGenres);
+  }
+
+  foldCertificates(requests: readonly CertificateRequest[], { shows, unavailable }: ShowCertificates): void {
+    this.foldFact(requests, shows, unavailable, 'certificate', certificateFor);
+  }
+
+  /**
+   * Which show-facts credentials have been rejected this process.
+   *
+   * `FilmStore.rejected`'s reason, and its lifetime: a rejection is a fact
+   * about the token and not about any series, so settling the pending blocks
+   * would have the planner tell the operator to add by hand rows the upstream
+   * could build the moment the key is fixed. Both keys are read at start-up, so
+   * a fixed one arrives with a restart — and every poll in between would
+   * otherwise spend its lookups on the same 401.
+   *
+   * Every rejection, accumulated: a block needs both upstreams, so the note the
+   * planner writes has to name every key standing between the operator and a
+   * restart that works. A single slot the second rejection overwrote would name
+   * one key, send the operator round, and name the other.
+   */
+  readonly factsRejected = new Set<FactsCredential>();
+
+  rejectFacts(which: FactsCredential): void {
+    this.factsRejected.add(which);
   }
 
   /**

@@ -9,12 +9,15 @@ import { join } from 'node:path';
 import { config, type Config } from '../src/shared/config.ts';
 import { clearSheetRuns } from '../src/sheet/io/journal.ts';
 import { clearHardcoverToken } from '../src/api/hardcover/client.ts';
+import { clearTokenCache as clearTvdbTokenCache } from '../src/api/tvdb/auth.ts';
 import { clearBaseline } from '../src/sheet/io/baseline.ts';
-import { dateSerial } from '../src/sheet/values.ts';
+import { BLOCK_SCAN_ROWS, dateSerial, showRowFormulas } from '../src/sheet/values.ts';
+import { HEADERS, SHOW_LABELS } from '../src/sheet/2-grid.ts';
 
 import type { Calendars } from '../src/feed/io/calendar.ts';
 import type { SheetSnapshot } from '../src/sheet/io/spreadsheet.ts';
 import type { CellData } from '../src/api/google/types.ts';
+import type { ColumnMap } from '../src/sheet/2-grid.ts';
 import type { CalendarEntry, CalendarFile, LibraryItem, ShowMetadata, SyncType } from '../src/api/simkl/types.ts';
 import type { Library } from '../src/library.ts';
 import { isoOf, plainDateIn } from '../src/shared/dates.ts';
@@ -202,6 +205,26 @@ export const jsonResponse = (body: unknown, { lastModified }: { lastModified?: s
     headers: lastModified ? { 'content-type': 'application/json', 'last-modified': lastModified } : { 'content-type': 'application/json' },
   });
 
+/**
+ * A configured TVDB with the login answered, so a test writes only the series
+ * response it is about.
+ *
+ * Host-qualified, and the prefix covers both endpoints under `/v4/series/`: a
+ * bare `/series/` or `/tv/` test would match SIMKL's paths and TMDB's, and
+ * answering one upstream with another's body makes a test assert nothing.
+ * Anything else throws rather than being answered by accident. A test that
+ * wants the login itself to fail keeps its own handler.
+ */
+export const withTvdb = (respond: (url: string) => Response, fn: (calls: string[]) => Promise<void>): Promise<void> => {
+  clearTvdbTokenCache();
+  return withConfig({ tvdbApiKey: 'k' }, () =>
+    withFetch((url) => {
+      if (url === 'https://api4.thetvdb.com/v4/login') return jsonResponse({ data: { token: 't' } });
+      if (url.startsWith('https://api4.thetvdb.com/v4/series/')) return respond(url);
+      throw new Error(`unexpected request: ${url}`);
+    }, fn));
+};
+
 /** A complete, valid saved feed. `store.test.ts` contrasts truncations against it. */
 export const ICS = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR';
 
@@ -309,6 +332,11 @@ export const rowByLabel = (headers: readonly string[], cells: Partial<Record<str
  * data, and that headroom is what an insert lands in. Defaulted with room for
  * the same reason: a fixture whose grid stops at its last row cannot express
  * an append, so a bound checked against it would look wrong when it is right.
+ *
+ * The tail is `BLOCK_SCAN_ROWS` deep because that is what a *block* needs: its
+ * roll-ups read a 40-row window below the show row, and the planner declines a
+ * block with less than that beneath it, so a shorter tail would decline every
+ * block fixture for a reason the test is not about.
  */
 export const sheetSnapshot = (
   rows: CellSpec[][],
@@ -316,11 +344,27 @@ export const sheetSnapshot = (
 ): SheetSnapshot => ({
   sheetId,
   title: 'Shows',
-  rowCount: rowCount ?? rows.length + 10,
+  rowCount: rowCount ?? rows.length + BLOCK_SCAN_ROWS + 10,
   columnCount: columnCount ?? Math.max(...rows.map((r) => r.length)),
   rows: rows.map((row) => row.map(cellOf)),
   readAtMono: performance.now(),
 });
+
+/**
+ * `SHEET_HEADERS` as the sync's own column map, so a fixture row and a planned
+ * one are built from the same resolution: a label moved in the list re-letters
+ * both, and neither can be right while the other is wrong.
+ */
+export const SHEET_COLUMNS: ColumnMap = Object.fromEntries(HEADERS.map((name) => [name, col(SHEET_HEADERS, SHOW_LABELS[name])])) as ColumnMap;
+
+/**
+ * The row the fixture's roll-up formulas name — one number for every show row,
+ * whatever index it lands on. Nothing that reads these cells compares the
+ * reference to the row it sits in: the guard asks only that the cell holds a
+ * formula, and the verifier compares formulas for still being formulas,
+ * because Sheets rewrites a relative reference under an insert.
+ */
+const SHOW_FIXTURE_ROW = 1;
 
 /**
  * A show row, in `SHEET_HEADERS` order. Shared rather than per file: these are
@@ -335,20 +379,22 @@ export const showRow = (
   id: number | string | null = null,
   type = 'show',
   { artwork = null, franchise = null }: { artwork?: string | null; franchise?: string | null } = {},
-): CellSpec[] =>
-  rowByLabel(SHEET_HEADERS, {
+): CellSpec[] => {
+  const formulas = showRowFormulas(SHEET_COLUMNS, SHOW_FIXTURE_ROW);
+  return rowByLabel(SHEET_HEADERS, {
     Title: title,
     Franchise: franchise,
     Type: type,
     Status: status,
-    Season: { formula: '=IF($O2=0,"",OFFSET($I2,$O2,0))', value: 1 },
-    Episodes: { formula: '=IF($O2=0,"",SUM(OFFSET($K2,1,0,$O2)))', value: 6 },
-    'Start Date': { formula: '=IF($O2=0,"",LET(r,OFFSET($M2,1,0,$O2),IF(COUNT(r)=0,"",MIN(r))))', value: 45000 },
-    'End Date': { formula: '=IF($O2=0,"",LET(r,OFFSET($N2,1,0,$O2),IF(COUNT(r)=0,"",MAX(r))))', value: 45010 },
-    'Seasons / Last Watched': { formula: '=IFERROR(MATCH("*",OFFSET($A2,1,0,40),0)-1,COUNTA(OFFSET($I2,1,0,40)))', value: 2 },
+    Season: { formula: formulas.Season, value: 1 },
+    Episodes: { formula: formulas.Episode, value: 6 },
+    'Start Date': { formula: formulas.Start, value: 45000 },
+    'End Date': { formula: formulas.End, value: 45010 },
+    'Seasons / Last Watched': { formula: formulas.Note, value: 2 },
     ID: id,
     Artwork: artwork,
   });
+};
 
 /**
  * A season row, in `SHEET_HEADERS` order. `runtime: null` leaves the cell

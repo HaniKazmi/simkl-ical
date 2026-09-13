@@ -54,7 +54,10 @@ export type RequestService = 'simkl' | 'cdn' | 'sheets' | 'tvdb' | 'tmdb' | 'har
  * is separate from `films` for the same reason and not the same one: both ask
  * about a film, but `films` is the feed asking SIMKL for a release date and
  * this is the sheet asking TMDB for a row's worth of columns, and only one of
- * them failing stops the films tab. `artwork` is the page: every candidate
+ * them failing stops the films tab. `show-facts` is one label over two hosts —
+ * TVDB for a series' genres and TMDB for its certificate — because they are one
+ * question, the cells a new show block needs, and the host column already tells
+ * the two rows apart. `artwork` is the page: every candidate
  * listing, download, upload and link write it makes, against four upstreams,
  * and none of them on the poll's behalf.
  *
@@ -70,6 +73,7 @@ export type RequestComponent =
   | 'movie-catalogue'
   | 'spreadsheet'
   | 'runtimes'
+  | 'show-facts'
   | 'auth'
   | 'login'
   | 'artwork';

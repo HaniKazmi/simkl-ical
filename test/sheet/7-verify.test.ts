@@ -21,9 +21,19 @@ const withChange = (row: string, field: HeaderName, spec: CellSpec) => {
 
 test('a shift maps a pre-existing row to where the inserts leave it', () => {
   assert.equal(shiftRow(3, []), 3);
-  assert.equal(shiftRow(3, [4]), 3);
-  assert.equal(shiftRow(4, [4]), 5);
-  assert.equal(shiftRow(9, [4, 6]), 11);
+  assert.equal(shiftRow(3, [{ row: 4, rows: 1 }]), 3);
+  assert.equal(shiftRow(4, [{ row: 4, rows: 1 }]), 5);
+  assert.equal(shiftRow(9, [{ row: 4, rows: 1 }, { row: 6, rows: 1 }]), 11);
+});
+
+// A row shifts by the height of what was inserted above it, not by how many
+// inserts there were: a block is one insert and two rows, and counting inserts
+// puts every row below it one high — the one-row misalignment the whole
+// protocol exists to catch.
+test('a shift counts the rows of a span, not the spans', () => {
+  assert.equal(shiftRow(3, [{ row: 4, rows: 2 }]), 3);
+  assert.equal(shiftRow(4, [{ row: 4, rows: 2 }]), 6);
+  assert.equal(shiftRow(9, [{ row: 4, rows: 2 }]), 11);
 });
 
 test('the planned write, and only the planned write, verifies', () => {
@@ -117,6 +127,61 @@ test('a header that moved during the write fails before anything else is inspect
   assert.match(result.problems.join('; '), /column moved during the write/);
 });
 
+// A block's show row is filled by resolved column index, so a column that
+// moved under the write puts a value in whatever column took its place. Every
+// column that fill can address is checked, including the three the cell diff
+// spares on a pre-existing row because a hand maintains them.
+test('a column a block’s fill addresses is checked for moving, ID and Type included', () => {
+  const swapped = (a: string, b: string) => {
+    const shuffled = [...H];
+    const [i, j] = [col(H, a), col(H, b)];
+    [shuffled[i], shuffled[j]] = [shuffled[j]!, shuffled[i]!];
+    return sheetSnapshot([shuffled, ...fx.rows.slice(1)]);
+  };
+
+  for (const [a, b, named] of [
+    ['Franchise', 'Genre', /the Franchise column moved during the write/],
+    ['Type', 'Status', /the Type column moved during the write/],
+    ['ID', 'Artwork', /the id column moved during the write/],
+  ] as const) {
+    const result = verify(before, swapped(a, b), planOf([editOf('fargoS2', 'Episode', 8)]));
+    assert.equal(result.ok, false, `${a}/${b}`);
+    assert.match(result.problems.join('; '), named);
+  }
+});
+
+// The other half of that rule: these columns are optional, so a tab carrying
+// none of them must verify, not compare `undefined` against `undefined` and
+// call it a move.
+test('a tab with no Franchise column at all still verifies', () => {
+  const rows = fx.rows.map((row) => [...row]);
+  rows[0] = [...H];
+  rows[0]![col(H, 'Franchise')] = 'Something Else';
+  const grid = parseGrid(sheetSnapshot(rows));
+
+  const changed = rows.map((row) => [...row]);
+  changed[fx.at.fargoS2!]![grid.columns.Episode] = 8;
+  const result = verify(grid, sheetSnapshot(changed), planOf([editOf('fargoS2', 'Episode', 8)]));
+  assert.equal(result.ok, true, result.problems.join('; '));
+});
+
+// A column resolving under the write and not before it is the same hazard as
+// one that moved: every index below was read off the earlier header row, so a
+// column that was not there then is one nothing checked the write against.
+test('a column that only the read after the write resolves is a move', () => {
+  const rows = fx.rows.map((row) => [...row]);
+  rows[0] = [...H];
+  rows[0]![col(H, 'Franchise')] = 'Something Else';
+  const grid = parseGrid(sheetSnapshot(rows));
+
+  const changed = rows.map((row) => [...row]);
+  changed[0] = [...H];
+  changed[fx.at.fargoS2!]![grid.columns.Episode] = 8;
+  const result = verify(grid, sheetSnapshot(changed), planOf([editOf('fargoS2', 'Episode', 8)]));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join('; '), /the Franchise column moved during the write/);
+});
+
 // --- inserts ---------------------------------------------------------------
 
 const insertFixture = () => {
@@ -131,7 +196,7 @@ const insertFixture = () => {
     address: a1(fx.end, before.columns[field]),
     note: 'new',
   }));
-  return { after, newRow, plan: planOf([], { row: fx.end, title: 'Fargo', season: 3, fill, note: 'new row' }) };
+  return { after, newRow, plan: planOf([], { kind: 'season', row: fx.end, rows: 1, title: 'Fargo', season: 3, fill, note: 'new row' }) };
 };
 
 test('an insert with exactly its planned fill verifies', () => {
@@ -223,7 +288,9 @@ const afterInsertAt3 = (): CellSpec[][] => {
 const insertPlan = (before: ReturnType<typeof parseGrid>): SheetPlan => ({
   edits: [],
   insert: {
+    kind: 'season',
     row: 3,
+    rows: 1,
     title: 'Fargo',
     season: 2,
     fill: (['Season', 'Episode', 'Start'] as HeaderName[]).map((field) => ({
@@ -266,6 +333,113 @@ test('the rewrite exemption does not cover a literal, or a formula replaced by o
   flattened[4]![grid.columns.Episode] = 42;
   const b = verify(grid, sheetSnapshot(flattened), insertPlan(grid));
   assert.equal(b.ok, false, 'a roll-up replaced by a frozen number must not pass');
+});
+
+// --- a span of more than one row ------------------------------------------
+//
+// A block is a show row and its first season row, inserted as one contiguous
+// span. Everything below it shifts by the *height* of the span: counting
+// inserts instead would map Silo's show row onto the span's season row, which
+// is the one-row misalignment the whole protocol exists to catch.
+
+/** The two rows a block occupies, at the index the span starts. `row + 1` is 1-based, the way a formula names its own row. */
+const blockRows = (row: number): CellSpec[][] => [
+  showRowAt(row + 1, 'Halt and Catch Fire', 'Ended', 3, 4),
+  rowByLabel(H, { Season: 1, Episodes: 4, 'Start Date': 45500 }),
+];
+
+/** Fargo (1-2), the new block (3-4), then Silo (5-6) with its formulas rewritten two rows down. */
+const afterBlockAt3 = (): CellSpec[][] => {
+  const rows = rowsWithFormulas();
+  return [...rows.slice(0, 3), ...blockRows(3), showRowAt(6, 'Silo', 'Watching', 2, 3), rows[4]!];
+};
+
+/**
+ * The fill, taken from the rows themselves: every cell the span carries must be
+ * planned, or the inserted-row diff calls it a value nothing planned.
+ */
+const blockFill = (grid: ReturnType<typeof parseGrid>, row: number) =>
+  blockRows(row).flatMap((spec, offset) =>
+    spec.flatMap((cellSpec, column) => {
+      const value = cellOf(cellSpec).userEnteredValue;
+      if (value === undefined) return [];
+      const field = (Object.keys(grid.columns) as HeaderName[]).find((name) => grid.columns[name] === column)!;
+      return [{ row: row + offset, column, field, previous: undefined, value, address: a1(row + offset, column), note: 'new' }];
+    }),
+  );
+
+/**
+ * `rows: 2` reaches the verifier structurally — the show planner's own insert
+ * says `1` — and that a span of two verifies is the property under test.
+ */
+const blockPlan = (grid: ReturnType<typeof parseGrid>): SheetPlan => ({
+  edits: [],
+  insert: { kind: 'block', row: 3, rows: 2, title: 'Halt and Catch Fire', season: 1, fill: blockFill(grid, 3), note: 'new block' } as unknown as SheetPlan['insert'],
+  skips: [],
+  notes: [],
+  deferredInserts: 0,
+});
+
+test('a span whose fill lands on each of its rows verifies', () => {
+  const grid = parseGrid(sheetSnapshot(rowsWithFormulas()));
+  const result = verify(grid, sheetSnapshot(afterBlockAt3()), blockPlan(grid));
+  assert.equal(result.ok, true, result.problems.join('; '));
+  assert.equal(result.landed, true);
+  assert.deepEqual(result.deleteRows, []);
+});
+
+// Every literal on a shifted row moves with the row, so a literal compared
+// against the wrong source row is what a mis-summed shift looks like.
+test('a literal on a row a span pushed down is still strictly compared', () => {
+  const grid = parseGrid(sheetSnapshot(rowsWithFormulas()));
+  const moved = afterBlockAt3();
+  moved[5]![grid.columns.Start] = 99999;
+  const result = verify(grid, sheetSnapshot(moved), blockPlan(grid));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join('; '), /changed without being planned/);
+});
+
+// A batch is atomic, so a span that arrived half-height is not a partial
+// write to reconcile — it is a grid nothing here can reason about.
+test('a sheet that grew by less than the span fails, naming the rows the span planned', () => {
+  const grid = parseGrid(sheetSnapshot(rowsWithFormulas()));
+  const rows = rowsWithFormulas();
+  const half = [...rows.slice(0, 3), blockRows(3)[0]!, showRowAt(5, 'Silo', 'Watching', 2, 3), rows[4]!];
+  const result = verify(grid, sheetSnapshot(half), blockPlan(grid));
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join('; '), /grew by 1 rows, not 2/);
+  assert.deepEqual(result.deleteRows, []);
+});
+
+// A rollback that deleted only the first row would leave the season row behind,
+// attached to whichever block now sits above it.
+test('both rows of a landed span are offered for deletion', () => {
+  const grid = parseGrid(sheetSnapshot(rowsWithFormulas()));
+  const rows = afterBlockAt3();
+  // A concurrent human, on a row the plan never mentioned.
+  rows[2]![grid.columns.Episode] = 99;
+  const result = verify(grid, sheetSnapshot(rows), blockPlan(grid));
+  assert.equal(result.ok, false);
+  assert.equal(result.landed, true);
+  assert.deepEqual(result.deleteRows, [3, 4]);
+});
+
+// The error check asks whether a row's own error is new, so it has to find the
+// row's own pre-write self. Off by the height of the span, it reads a
+// neighbour, and every standing #REF! below a block is reported as one the
+// write broke.
+test('an error a row already carried is not a new one once a span shifts it', () => {
+  const broken = (rows: CellSpec[][], index: number, formulaRow: number) => {
+    const snapshot = sheetSnapshot(rows);
+    snapshot.rows[index]![col(H, 'Episodes')] = {
+      userEnteredValue: { formulaValue: `=IF($O${formulaRow}=0,"",SUM(OFFSET($K${formulaRow},1,0,$O${formulaRow})))` },
+      effectiveValue: { errorValue: { type: 'REF' } },
+    };
+    return snapshot;
+  };
+  const grid = parseGrid(broken(rowsWithFormulas(), 3, 4));
+  const result = verify(grid, broken(afterBlockAt3(), 5, 6), blockPlan(grid));
+  assert.equal(result.ok, true, result.problems.join('; '));
 });
 
 // With no insert there is nothing to rewrite, so the strict comparison stands
