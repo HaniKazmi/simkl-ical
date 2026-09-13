@@ -10,8 +10,10 @@ data.simkl.in/calendar/v2/*.json   (public CDN, airdates, whole database)  ─�
 api.simkl.com/sync/all-items        (OAuth, your library, no dates)         ─┤─ join ─→ ICS
 api.simkl.com/movies/{id}          (per-film release dates)                ─┘
 
-api4.thetvdb.com/v4/series/{id}/episodes/official   (per-episode runtimes)  ─→ the sheet only
-api.themoviedb.org/3/movie/{id}                     (a film's genres, certificate, dates, crew, backdrop) ─→ the sheet only
+api4.thetvdb.com/v4/series/{id}/episodes/official    (per-episode runtimes)                              ─┐
+api4.thetvdb.com/v4/series/{id}/extended             (a show's genres)                                   ─┤
+api.themoviedb.org/3/movie/{id}                     (a film's genres, certificate, dates, crew, backdrop)─┤─ the sheet only
+api.themoviedb.org/3/tv/{id}                        (a show's GB certificate)                            ─┘
 
 api.themoviedb.org/3/movie/{id}/images              (a film's backdrops)     ─┐
 api4.thetvdb.com/v4/series/{id}/artworks            (a show's posters)       ─┤
@@ -19,10 +21,11 @@ api.hardcover.app/v1/graphql                        (a book's edition covers)─
 storage.googleapis.com                              (where a pick is put)    ─┘
 ```
 
-The fourth and fifth are not part of the join. TVDB answers one question the other three cannot —
-how long a season's episodes are — and only for a season the sheet is about to close. TMDB answers
-the eight columns a new row on the sheet's films tab needs and SIMKL does not hold, once per film,
-on the poll that adds its row.
+The four sheet-only calls are not part of the join; each answers something SIMKL does not hold, or
+holds in an order the sheet cannot pick out of. TVDB says how long a season's episodes are, for a
+season the sheet is about to close, and lists a series' genres in its own significance order, for a
+show block being added. TMDB answers the eight columns a new row on the films tab needs, once per
+film, and a series' GB certificate, once per new block.
 
 One poll drives two independent consumers. `Orchestrator` owns the SIMKL library — the only input
 both halves need — plus the timers, and hands the library to `Feed` and `SheetSync` as peers.
@@ -61,12 +64,22 @@ than a genre, and carries no season number.
 
 ### The sheet sync — INDEX → READ/PARSE → (PLAN ⇄ FETCH) → GUARD → BUILD → APPLY → VERIFY → ROLLBACK
 
-Inert unless `SHEET_ID` **and** a Google credential are both set. It writes exactly six things —
+Inert unless `SHEET_ID` **and** a Google credential are both set. It writes exactly seven things —
 a season row's `Episode` count, its `Start` and `End` dates, its `Runtime` in whole minutes *into a
 blank cell only*, a season row's `Note`, which dates that `Episode` count and moves only when it
-does, until `End` arrives to say it better, and a show row's `Status` — and inserts a season row
-when a new season is started. Nothing else, ever. The runtime additionally needs `TVDB_API_KEY`;
-without it the other five behave exactly as they do with it.
+does, until `End` arrives to say it better, a show row's `Status`, and a whole new block for a TV
+show first watched with no block on the tab — and inserts a season row when a new season is
+started. Nothing else, ever. A block needs `TVDB_API_KEY` **and** `TMDB_API_KEY`, and is gated on
+both rather than degrading: the genre and the certificate are two of the columns a show row is read
+by, and a block missing them costs more to finish by hand than one never added. The runtime
+additionally needs `TVDB_API_KEY`; without it the five cell writes behave exactly as they do with
+it.
+
+The block is the single exception to *never write a formula*. It is a show row and its first season
+row in one two-row insert, and the show row it creates has no roll-up to replace: the batch writes
+the five formulas that will do the rolling up, from one template that the guard re-derives and
+VERIFY compares byte for byte. Where the block goes is the tab's own `Franchise` order, under which
+all 309 live blocks sort with no inversions.
 
 `Start` and `End` are the two that **follow SIMKL**, the only two written to a row already dated,
 and the only two that ignore the activity window — a corrected watch date is a recent change that
@@ -80,12 +93,12 @@ switched on.
 | --- | --- | --- |
 | INDEX | The library, reduced to what was watched per title. An empty index ends the run here, before anything is read. | none — the library is already in hand |
 | READ + PARSE | The tab, snapshot → blocks | `GET spreadsheets/{id}` (grid, field-masked) |
-| PLAN ⇄ FETCH | The planner returns a plan **plus what it still needs**; the sync fetches the demands, folds them into the catalogue store, and re-plans until a pass demands nothing new — catalogues first, then the runtimes the catalogues reveal to be worth asking about | `GET /tv/episodes/{id}` and `GET /tv/{id}` or `/anime/{id}` per moved title; `GET api4.thetvdb.com/v4/series/{id}/episodes/official?season={n}` per closing season |
+| PLAN ⇄ FETCH | The planner returns a plan **plus what it still needs**; the sync fetches the demands, folds them into the catalogue store, and re-plans until a pass demands nothing new — catalogues first, then the runtimes and the block facts the catalogues reveal to be worth asking about | `GET /tv/episodes/{id}` and `GET /tv/{id}` or `/anime/{id}` per moved title; `GET api4.thetvdb.com/v4/series/{id}/episodes/official?season={n}` per closing season; `GET api4.thetvdb.com/v4/series/{id}/extended` and `GET api.themoviedb.org/3/tv/{tmdb}?append_to_response=content_ratings` per show awaiting a block |
 | GUARD | A checklist of named rules re-deriving the plan's claims against the snapshot it was built from. Refuses whole; never trims. | none |
 | BUILD | The plan → one ordered batch | none |
 | APPLY | One atomic `batchUpdate`, led by a `duplicateSheet` snapshot of the tab | `POST {id}:batchUpdate`; `GET spreadsheets/{id}?fields=sheets.properties` if the reply is lost |
 | VERIFY | Re-read and diff against what was planned | `GET spreadsheets/{id}` again |
-| ROLLBACK | Only when verify fails: delete the inserted row, re-read, paste the snapshot back | more `batchUpdate` plus reads |
+| ROLLBACK | Only when verify fails: delete every row of the inserted span, re-read, paste the snapshot back | more `batchUpdate` plus reads |
 
 The plan-fetch loop is the load-bearing shape: what to fetch and what to write are one computation,
 so a season the planner waits on is by construction a season the same pass demanded. A snapshot
@@ -138,8 +151,10 @@ expensive or the thing it fetches rarely changes.
 | A title's episode list | that title's `lastWatchedAt` moved, else after **24h** | `GET /tv/episodes/{id}` |
 | A title's status | same trigger as its episode list | `GET /tv/{id}`, or `/anime/{id}` for a cour |
 | A season's episode lengths | that season is completing with a blank runtime cell, or has finished airing on the run that adds its row — then never again | `GET api4.thetvdb.com/v4/series/{id}/episodes/official?season={n}` — one call is one whole season |
-| TVDB access token | first runtime lookup, then every **20 days**, or after any `401` | `POST api4.thetvdb.com/v4/login` |
+| TVDB access token | first TVDB lookup, then every **20 days**, or after any `401` | `POST api4.thetvdb.com/v4/login` |
 | A film's TMDB record | the film is completed and has no row on the films tab; at most **8** per run, and none once the run has chosen the one row it inserts — the rest are the next poll's; never again once answered, for the life of the process | `GET api.themoviedb.org/3/movie/{tmdb}?append_to_response=release_dates,credits,images` — 4 at a time, bearer token from config |
+| A series' genres | a TV show has recent watches and no block on the show tab; the same **8** per run ceiling and the same stop once the run has chosen its insert; never again once answered | `GET api4.thetvdb.com/v4/series/{tvdb}/extended` — one call carries the whole list |
+| A series' certificate | the same trigger and the same ceilings. A key either upstream rejects stops the asking for the life of the process, since both are read at start-up | `GET api.themoviedb.org/3/tv/{tmdb}?append_to_response=content_ratings` |
 | Read the spreadsheet | start of every sheet-sync run, per tab, and again to verify a write | `GET sheets.googleapis.com/v4/spreadsheets/{id}?ranges='Shows'&fields=…`, and the same for the films tab |
 | Write the spreadsheet | a plan passed the guard, in `apply` mode only | `POST …/spreadsheets/{id}:batchUpdate` |
 | List the tabs | after a write, to find or sweep the snapshot tab | `GET …/spreadsheets/{id}?fields=sheets.properties(sheetId,title)` |
@@ -223,7 +238,8 @@ died mid-download must not surface as a 200 carrying unparseable JSON.
 - **A sync run and an artwork page write never overlap.** Both hold `withSheetLock` from their
   first read of the sheet to their last verify. The films verifier inspects `Artwork`, so a page
   write landing inside a sync run is a cell the sync did not plan, and VERIFY would roll the whole
-  tab back over it. The page's write is the one cell on a show row written outside `Status`, and it
+  tab back over it. The page's write is the one cell on an existing show row written outside
+  `Status`, and it
   goes through its own checklist rather than the sync's guard: the sync's whitelists are the
   poll's, and widening them for a click is how one rule ends up holding two jobs.
 - **Books are gated apart from the rest of the artwork page.** `artworkConfigured` is all-or-
@@ -281,8 +297,10 @@ that no code can derive.
   open row and blank on a closed one; `Status` is a show-row cell only, holding the derived state
   the sync writes. Which rule applies is decided by the column, not by the row.
 
-**What may be written** is the guard's checklist (`5-guard.ts`): six whitelisted cells, one
-inserted row per run, nothing but the tracked dates on a closed row, never a formula. The bounds it checks are the same
+**What may be written** is the guard's checklist (`5-guard.ts`): six whitelisted cells, one insert
+per run — a season row, or a two-row block whose show row is filled whole from the template —
+nothing but the tracked dates on a closed row, never a formula except the five roll-ups on a show
+row that same insert creates, which `checkBlockInsert` re-derives one by one. The bounds it checks are the same
 constants the planner writes with (`values.ts`), so a value one emits and the other refuses is
 unrepresentable; the alignment checks — is this address the row the plan thinks it is — stay
 independently derived, because a one-row misalignment is the only catastrophic failure the feature

@@ -218,8 +218,8 @@ a file holding it instead, for a workstation where it already sits beside other 
 value wins if both are set.
 
 Setting the two film and show buckets is also what switches a newly inserted film row's `Artwork` from a TMDB URL to the
-static bucket link; the sync writes that column once, so it only does so where this page exists to
-put an object behind the link.
+static bucket link, and what gives a newly inserted show block that link at all; the sync writes
+that column once, so it only does so where this page exists to put an object behind the link.
 
 The service account needs `roles/storage.objectAdmin` on every bucket above — `objectCreator` cannot overwrite,
 and a re-pick overwrites. If a bucket uses legacy ACLs rather than uniform bucket-level access,
@@ -256,7 +256,8 @@ for the library: the watch detail rides along on the fetch the feed already make
 | `SHEET_SINCE_DAYS`               | `90`       | Counts and statuses need watch activity this recent; dates do not |
 | `SHEET_MAX_EDITS`                | `30`       | Over budget refuses the whole plan rather than trimming it      |
 | `SHEET_MAX_ROWS`                 | `20`       | Distinct rows in one run                                        |
-| `TVDB_API_KEY`                   | —          | **Secret.** Gets each season's *own* average runtime. Unset, the cell falls back to SIMKL's show-wide runtime |
+| `TVDB_API_KEY`                   | —          | **Secret.** Gets each season's *own* average runtime, and a new show block's genres. Unset, the runtime cell falls back to SIMKL's show-wide figure and no block is added |
+| `TMDB_API_KEY`                   | —          | **Secret.** The v4 read access token. Fills eight of the films tab's columns, and a new show block's certificate. Unset, no film row and no block is added |
 | `TVDB_PIN`                       | —          | **Secret.** Only for a user-supported TVDB key; a licensed one logs in without it |
 
 ### Setting it up
@@ -273,10 +274,21 @@ shows what each run actually wrote, and survives a restart.
 
 ### What it does
 
-It writes exactly six things — a season row's episode count, its start and end dates, its
+It writes exactly seven things — a season row's episode count, its start and end dates, its
 average episode runtime in whole minutes *into a blank cell only*, the last-watched note on an
-open season row, and a show row's status — and inserts a season row when you start a new season.
-It never adds a show, never moves a count backwards, and never writes a formula.
+open season row, a show row's status, and a whole new block when you start watching a TV show the
+tab has no rows for — and inserts a season row when you start a new season. It never moves a count
+backwards, and the only formulas it ever writes are the self-sizing ones on a show row it creates
+in the same batch, which are the formulas every other block on the tab already carries.
+
+Adding a block is TV only, and needs both `TVDB_API_KEY` and `TMDB_API_KEY`. An anime series is
+left for you to add by hand: the tab files a new cour as another season of one block, while SIMKL
+files it as a separate title under its romaji name, so there is no way to tell a new series from a
+new cour of one you already have. The new block goes where the `Franchise` column says, and its
+genre comes from TVDB, its network from SIMKL and its certificate from TMDB — each from whichever
+of the three lists that column the way your tab does. If any of that has not answered yet, the
+block waits for the next poll rather than arriving with blank cells, because nothing revisits a
+show row once it exists.
 
 The start and end dates are the two that **keep following SIMKL** after the row is finished: if a
 date changes upstream — you correct a watch date, or rewatch the last episode — the cell is
@@ -296,12 +308,13 @@ write. That record lives in `data/sheet-baseline.json` — keep it on the same v
 since losing it means one silent run that re-records everything and any change made in the meantime
 goes unnoticed.
 
-The runtime is the one part that uses `TVDB_API_KEY`, and it buys accuracy rather than the
-feature: with a key the cell gets that season's own average episode length, and without one it
-gets SIMKL's show-wide runtime for the series. Only a title SIMKL has no runtime for at all
-leaves the cell blank. It is written in the same batch that dates the row, because the runtime
-cell is never revisited once the row is closed — so a season still airing gets its row added with
-the cell blank, waiting for the close to fill it.
+For the runtime, `TVDB_API_KEY` buys accuracy rather than the feature: with a key the cell gets
+that season's own average episode length, and without one it gets SIMKL's show-wide runtime for
+the series. Only a title SIMKL has no runtime for at all leaves the cell blank. It is written in
+the same batch that dates the row, because the runtime cell is never revisited once the row is
+closed — so a season still airing gets its row added with the cell blank, waiting for the close to
+fill it. A new block is the other way round: there the key is the feature, since the genre and the
+certificate are two of the columns a show row is read by.
 
 `TVDB_PIN` is needed only for a user-supported TVDB key; a licensed key logs in with the key
 alone, and the pin is irrelevant when no key is set.
@@ -318,11 +331,12 @@ stopped-writing state and a later clean run would otherwise sweep away the very 
 to repair from. So a `_sync-REPAIR-…` tab in your spreadsheet means something went wrong and is
 waiting for you; delete it once you have copied it back.
 
-Exactly one row is added per run, so starting two seasons between polls adds them over two runs —
-the report names the one it deferred, and the sync asks for the next poll rather than waiting.
+Exactly one insert is made per run — one season row, or the two rows of a new show's block — so
+starting two seasons between polls adds them over two runs; the report names the one it deferred,
+and the sync asks for the next poll rather than waiting.
 
 The sheet has to hold up its end: each show row's derived cells are self-sizing formulas over the
-season rows beneath it, and that is what makes the show row read-only to the sync. See
+season rows beneath it, and that is what makes an existing show row read-only to the sync. See
 [ARCHITECTURE.md](ARCHITECTURE.md#the-sheets-sharp-edges).
 
 ## Behind a reverse proxy
