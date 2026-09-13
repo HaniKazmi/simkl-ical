@@ -83,22 +83,37 @@ export interface GuardedCell<H extends string> {
 
 /**
  * One cell write's shape, existing row or not: a whitelisted field, at the
- * column the header map resolves, holding a finite value — or absent, where the
- * field may be emptied. Absent empties the cell and nothing else does, so an
- * absent value outside the emptiable set is a planner that lost one.
+ * column the header map resolves, holding a finite literal — or absent, where
+ * the field may be emptied. Absent empties the cell and nothing else does, so
+ * an absent value outside the emptiable set is a planner that lost one.
+ *
+ * **A planned formula is refused unconditionally**, which is the
+ * never-write-a-formula rule applied to the value rather than to the target.
+ * On the show grid every derived cell on a show row rolls up from the season
+ * rows beneath it, so a formula written into one replaces a live roll-up with
+ * a frozen number that nothing would ever notice — and an insert has no target
+ * cell at all for `checkCellAlignment` to catch it on. The one exception is the
+ * batch that *creates* a show row, which writes the roll-ups themselves; those
+ * cells are checked against the template instead of coming through here.
+ *
+ * `columns` is partial because a tab need not carry every field this can be
+ * asked about: the six block columns are optional on the Shows tab, and a field
+ * whose column is unresolved has no position to write at.
  *
  * Returns the value for the caller's per-column rules, or undefined for an
  * accepted clear, which has no value to check.
  */
 export const checkCellShape = <H extends string>(
   cell: GuardedCell<H>,
-  { allowed, emptiable, columns }: { allowed: Set<H>; emptiable: Set<H>; columns: Record<H, number> },
+  { allowed, emptiable, columns }: { allowed: Set<H>; emptiable: Set<H>; columns: Partial<Record<H, number>> },
   refuse: Refuse,
 ): ExtendedValue | undefined => {
   const where = `${cell.address} (${cell.field})`;
 
   if (!allowed.has(cell.field)) refuse(`${where}: not a field this sync may write.`);
-  if (cell.column !== columns[cell.field]) {
+  const column = columns[cell.field];
+  if (column === undefined) refuse(`${where}: ${cell.field} has no resolved column on this tab.`);
+  if (cell.column !== column) {
     refuse(`${where}: column ${cell.column} does not match the resolved position of ${cell.field}.`);
   }
 
@@ -107,6 +122,7 @@ export const checkCellShape = <H extends string>(
     if (!emptiable.has(cell.field)) refuse(`${where}: not a field this sync may empty.`);
     return undefined;
   }
+  if (value.formulaValue !== undefined) refuse(`${where}: a formula is never written.`);
   if (value.numberValue !== undefined && !Number.isFinite(value.numberValue)) refuse(`${where}: not a finite number.`);
   return value;
 };

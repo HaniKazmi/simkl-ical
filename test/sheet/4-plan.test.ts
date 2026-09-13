@@ -2,13 +2,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { assertPlanSafe } from '../../src/sheet/5-guard.ts';
 import { parseGrid } from '../../src/sheet/2-grid.ts';
-import { deriveStatus, observeWatches, planRecord, planSync, statusSource, type SheetPlan } from '../../src/sheet/4-plan.ts';
+import { deriveStatus, MAX_LOOKUPS_PER_PASS, observeWatches, planRecord, planSync, statusSource, type PlanOptions, type SheetPlan } from '../../src/sheet/4-plan.ts';
+import { artworkFormula, ROLLUP_FIELDS, showRowFormulas } from '../../src/sheet/values.ts';
+import { blockLibrary, gridFixture, season as namedSeason, show as namedShow } from './fixture.ts';
 import { seasonShapes, type TitleCatalogue } from '../../src/sheet/3-catalogue.ts';
 import { indexLibrary } from '../../src/sheet/1-index.ts';
 import { dateSerial, seasonKey, type Baseline } from '../../src/sheet/values.ts';
 import { isoOf, plainDateIn } from '../../src/shared/dates.ts';
 import type { EpisodeDetail, ShowDetail } from '../../src/api/simkl/types.ts';
-import type { RowInsert } from '../../src/sheet/4-plan.ts';
+import type { Insert } from '../../src/sheet/4-plan.ts';
 import { col, daysAgo, libraryOf, rowByLabel, sheetSnapshot, SHEET_HEADERS, todaySerial, type CellSpec, type ItemSpec, seasonRow, showRow } from '../helpers.ts';
 
 const H = SHEET_HEADERS;
@@ -322,8 +324,8 @@ const adding = (over: Partial<Scenario> & { aired?: number } = {}) => {
   });
 };
 
-const fields = (insert: RowInsert | null): string[] => (insert?.fill ?? []).map((f) => f.field).sort();
-const cellIn = (insert: RowInsert | null, field: string) => insert?.fill.find((f) => f.field === field)?.value;
+const fields = (insert: Insert | null): string[] => (insert?.fill ?? []).map((f) => f.field).sort();
+const cellIn = (insert: Insert | null, field: string) => insert?.fill.find((f) => f.field === field)?.value;
 
 // A blank cell keeps the row eligible for the per-season average later; a
 // filled one the runtime rules refuse for ever.
@@ -636,7 +638,7 @@ test('a title with no row anywhere is reported, never added', () => {
     rows: [show('Frieren', 'Watching', null, 'anime'), season(1, 11, 44000, 1500)],
     items: [
       { id: 1500, title: 'Frieren', status: 'completed', seasons: { 1: watched(11, 3) }, watched: 11, total: 11 },
-      { id: 1600, title: 'Sousou no Frieren 2nd Season', status: 'watching', seasons: { 1: watched(4) } },
+      { id: 1600, type: 'anime' as const, title: 'Sousou no Frieren 2nd Season', status: 'watching', seasons: { 1: watched(4) } },
     ],
     details: { 1500: { status: 'ended' } },
   });
@@ -653,7 +655,7 @@ test('an anime film the films tab places is not a title missing a row', () => {
     rows: [show('Frieren', 'Watching', null, 'anime'), season(1, 11, 44000, 1500)],
     items: [
       { id: 1500, title: 'Frieren', status: 'completed', seasons: { 1: watched(11, 3) }, watched: 11, total: 11 },
-      { id: 1600, title: 'Spirited Away', status: 'completed', seasons: { 1: watched(1) } },
+      { id: 1600, type: 'anime' as const, title: 'Spirited Away', status: 'completed', seasons: { 1: watched(1) } },
     ],
     details: { 1500: { status: 'ended' } },
   };
@@ -1774,4 +1776,350 @@ test('the batch that dates a row records the date it wrote', () => {
   // In `writing`, never `observed`: a value recorded before its write lands is
   // a change banked and never made.
   assert.equal(result().observed.get(KEY)?.End, undefined);
+});
+
+// --- a block the tab does not have yet -------------------------------------
+
+/**
+ * One TV show the grid has no block for, with every fact answered — the state
+ * that lands a block. Each test below varies one input and asserts the block
+ * is held back for that reason alone.
+ *
+ * `facts` is passed explicitly because `test/helpers.ts` blanks both
+ * credentials on import: left to the config default every test here would land
+ * on the "set the keys" note and look like it had passed.
+ */
+const blocks = (catalogue: Partial<TitleCatalogue> = {}, options: PlanOptions = {}, item: Partial<ItemSpec> = {}) =>
+  planSync(blockGrid.grid, blockLibrary(catalogue, item).index, blockLibrary(catalogue, item).titles, {
+    timezone: TZ,
+    facts: { tvdb: true, tmdb: true },
+    showBucket: null,
+    ...options,
+  });
+
+const blockGrid = gridFixture(namedShow('fargo', 'Fargo'), namedSeason('fargoS1', 1, 6, 44000), namedSeason('fargoS2', 2, 3, null));
+
+const valueOf = (insert: Insert | null, row: number, field: string) =>
+  insert?.fill.find((f) => f.row === row && f.field === field)?.value;
+
+test('a TV show the tab has no block for becomes a show row and its first season row', () => {
+  const { plan } = blocks();
+  const insert = plan.insert;
+  assert.equal(insert?.kind, 'block');
+  assert.equal(insert?.rows, 2);
+  // Under Fargo's last season row: Severance sorts after Fargo, and the row
+  // above has to be a season row for the formats to inherit.
+  assert.equal(insert?.row, blockGrid.end);
+  assert.equal(insert?.title, 'Severance');
+  assert.equal(insert?.franchise, 'Severance');
+  assert.equal(insert?.season, 1);
+
+  const show = blockGrid.end;
+  assert.equal(valueOf(insert, show, 'Show')?.stringValue, 'Severance');
+  assert.equal(valueOf(insert, show, 'Franchise')?.stringValue, 'Severance');
+  assert.equal(valueOf(insert, show, 'Type')?.stringValue, 'show');
+  assert.equal(valueOf(insert, show, 'id')?.stringValue, '900', 'text, as all 189 show rows hold it');
+  assert.equal(valueOf(insert, show, 'Status')?.stringValue, 'Watching');
+  assert.equal(valueOf(insert, show, 'Genre')?.stringValue, 'Drama');
+  assert.equal(valueOf(insert, show, 'Genres')?.stringValue, 'Sci-Fi, Thriller');
+  assert.equal(valueOf(insert, show, 'Network')?.stringValue, 'Apple TV+');
+  assert.equal(valueOf(insert, show, 'Certificate')?.numberValue, 15);
+  // The five roll-ups, as the templates for the row they land on.
+  const formulas = showRowFormulas(blockGrid.grid.columns, show);
+  for (const field of ROLLUP_FIELDS) assert.equal(valueOf(insert, show, field)?.formulaValue, formulas[field]);
+
+  assert.equal(valueOf(insert, show + 1, 'Season')?.numberValue, 1);
+  assert.equal(valueOf(insert, show + 1, 'Episode')?.numberValue, 2);
+  assert.equal(valueOf(insert, show + 1, 'id'), undefined, 'the season row inherits the show row’s id');
+});
+
+// The guard refuses one, so the planner must never build one. Both halves ask
+// the same question and neither may answer it alone.
+test('a planned block passes the guard', () => {
+  const { plan } = blocks();
+  assert.doesNotThrow(() => assertPlanSafe(plan, blockGrid.grid, { timezone: TZ }));
+});
+
+// The column is written once and never revisited, so a link with nothing
+// behind it is a broken image for the life of the row.
+test('the artwork formula is written only where a bucket is configured', () => {
+  assert.equal(valueOf(blocks().plan.insert, blockGrid.end, 'Banner'), undefined);
+  const withBucket = blocks({}, { showBucket: 'art' }).plan.insert;
+  assert.equal(valueOf(withBucket, blockGrid.end, 'Banner')?.formulaValue, artworkFormula(blockGrid.grid.columns.Show, blockGrid.end, 'art'));
+  assert.doesNotThrow(() => assertPlanSafe(blocks({}, { showBucket: 'art' }).plan, blockGrid.grid, { timezone: TZ, showBucket: 'art' }));
+});
+
+// The season row a block creates is an ordinary inserted season row, written
+// by the same code: a block whose row differed from the one a season insert
+// would build is two answers to one question.
+test('a block’s season row holds exactly what a season insert into the same block would', () => {
+  const existing = gridFixture(
+    namedShow('sev', 'Severance', { id: 900, status: 'Watching' }),
+    namedSeason('sevS0', 0, 5, 44000),
+  );
+  const { index, titles } = blockLibrary();
+  const seasonInsert = planSync(existing.grid, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } }).plan.insert;
+  assert.equal(seasonInsert?.kind, 'season');
+
+  const cells = (insert: Insert | null, row: number) =>
+    Object.fromEntries((insert?.fill ?? []).filter((f) => f.row === row).map((f) => [f.field, f.value]));
+  assert.deepEqual(cells(blocks().plan.insert, blockGrid.end + 1), cells(seasonInsert, seasonInsert?.row ?? -1));
+});
+
+// --- what a block waits for -------------------------------------------------
+
+test('a block waits while SIMKL’s detail has not answered', () => {
+  const { plan, demands } = blocks({ tvdbId: undefined, tmdbId: undefined, title: undefined });
+  assert.equal(plan.insert, null);
+  assert.equal(plan.skips.find((s) => s.code === 'awaiting-lookup')?.message.includes("SIMKL's detail"), true);
+  assert.deepEqual(demands.catalogue, [{ id: 900, episodes: true, detail: true }]);
+});
+
+// A live-action title with no episode list is a failed lookup, not a show with
+// no episodes: read as one, the season row's count and status come from
+// nothing.
+test('a block waits while no episode list came back', () => {
+  const { plan } = blocks({ shapes: new Map() });
+  assert.equal(plan.insert, null);
+  assert.equal(plan.skips.find((s) => s.code === 'no-episode-list')?.message.includes('no episode list'), true);
+});
+
+test('a block waits on TVDB’s genres and TMDB’s certificate, and asks for both', () => {
+  const both = blocks({ genres: undefined, certificate: undefined });
+  assert.equal(both.plan.insert, null);
+  assert.match(both.plan.skips.find((s) => s.code === 'awaiting-lookup')?.message ?? '', /waiting on TVDB and TMDB/);
+  assert.deepEqual(both.demands.genres, [{ id: 900, tvdbId: 111 }]);
+  assert.deepEqual(both.demands.certificates, [{ id: 900, tmdbId: 222 }]);
+
+  // Answered with nothing is not the same as unanswered: the block lands with
+  // those cells blank, which is what a series TVDB or TMDB has nothing for
+  // looks like for the life of the row.
+  const settled = blocks({ genres: null, certificate: null });
+  assert.equal(settled.plan.insert?.kind, 'block');
+  assert.deepEqual(settled.demands.genres, []);
+  assert.equal(valueOf(settled.plan.insert, blockGrid.end, 'Genre'), undefined);
+  assert.equal(valueOf(settled.plan.insert, blockGrid.end, 'Certificate'), undefined);
+});
+
+// Gated on airing, not watching: mid-air SIMKL's episode count has not
+// settled, and `averageRuntime` checks TVDB's against it. Unlike a season
+// insert, a block waits rather than landing with the cell blank — nothing
+// revisits a show row, so the block is built in one batch or not at all.
+test('a block waits on the season runtime an aired season can still be given', () => {
+  const { plan, demands } = blocks({ seasonRuntimes: new Map() });
+  assert.equal(plan.insert, null);
+  assert.match(plan.skips.find((s) => s.code === 'awaiting-runtimes')?.message ?? '', /episode runtimes/);
+  assert.deepEqual(demands.runtimes, [{ id: 900, tvdbId: 111, season: 1 }]);
+});
+
+// --- what a block is refused for --------------------------------------------
+
+// A new cour is a separate SIMKL title under a romaji name that mostly does
+// not match what the sheet calls the series, so an inserted anime block would
+// duplicate a series already filed as season N of an existing one.
+test('anime keeps the add-it-by-hand note rather than becoming a block', () => {
+  const { plan } = blocks({}, {}, { type: 'anime' });
+  assert.equal(plan.insert, null);
+  assert.match(plan.notes.join('\n'), /Severance \(simkl 900\) has recent activity and no row/);
+});
+
+// A hand block "Last Of Us" has to hold "The Last of Us" back: what a false
+// match costs is one note, where a missed one costs a duplicate block.
+test('a title the tab already holds under a different id is held back', () => {
+  const held = gridFixture(namedShow('sev', 'The Severance', { id: 55 }), namedSeason('sevS1', 1, 6, 44000));
+  const { index, titles } = blockLibrary();
+  const { plan } = planSync(held.grid, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } });
+  assert.equal(plan.insert, null);
+  assert.match(plan.notes.join('\n'), /row 2 already holds that title under id 55/);
+});
+
+test('a title on a block carrying no id at all is skipped, naming the row to link', () => {
+  const unlinked = gridFixture(namedShow('sev', 'Severance', { id: null }), namedSeason('sevS1', 1, 6, 44000));
+  const { index, titles } = blockLibrary();
+  const { plan } = planSync(unlinked.grid, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } });
+  assert.equal(plan.insert, null);
+  const skip = plan.skips.find((s) => s.code === 'unlinked-block');
+  assert.match(skip?.message ?? '', /row 2 holds that title and no id; type the id to link it/);
+});
+
+// The six are optional on the tab by design — the artwork page parses a Shows
+// tab with no Franchise column at all — so an unresolved one declines the
+// block rather than failing the parse.
+test('a tab missing a column a show row is written into gets one note and no block', () => {
+  const headers = SHEET_HEADERS.filter((label) => label !== 'Network');
+  const grid = parseGrid(sheetSnapshot([headers, showRow('Fargo', 'Ended', 1), seasonRow(1, 6, 44000)]));
+  const { index, titles } = blockLibrary();
+  const { plan } = planSync(grid, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } });
+  assert.equal(plan.insert, null);
+  assert.equal(plan.notes.filter((n) => n.includes('a new show block needs Network')).length, 1);
+});
+
+// Gating rather than degrading, the films rule: those cells are written once,
+// and a blank one reads as a series with no genre rather than an install with
+// no key.
+test('a run with a credential unset names the key once and adds nothing', () => {
+  const { plan, demands } = blocks({ genres: undefined, certificate: undefined }, { facts: { tvdb: false, tmdb: true } });
+  assert.equal(plan.insert, null);
+  assert.deepEqual(plan.notes, ['1 show(s) have no row; set TVDB_API_KEY to have a block added for them']);
+  assert.deepEqual(demands.genres, [], 'nothing is asked of an upstream there is no key for');
+});
+
+// A rejection is a fact about the token, and both keys are read at start-up:
+// no block is settled, nothing further is asked, and the fix arrives with a
+// restart.
+test('a rejected credential names the key to fix and asks for nothing', () => {
+  const { plan, demands } = blocks({ genres: undefined }, { factsRejected: 'tvdb' });
+  assert.equal(plan.insert, null);
+  assert.deepEqual(plan.notes, ['1 show(s) need a block and the credential was rejected; fix TVDB_API_KEY and restart']);
+  assert.deepEqual(demands.genres, []);
+});
+
+// Null is SIMKL answering that it holds no id, which no poll changes.
+test('a show SIMKL holds no TVDB or TMDB id for is named once, not waited on', () => {
+  const { plan, demands } = blocks({ tvdbId: null, tmdbId: null, genres: undefined, certificate: undefined });
+  assert.equal(plan.insert, null);
+  assert.match(plan.notes.join('\n'), /has no TVDB or TMDB id, so its block has to be added by hand/);
+  assert.deepEqual(demands.genres, []);
+  assert.deepEqual(demands.certificates, []);
+});
+
+// --- placement --------------------------------------------------------------
+
+const placedIn = (tab: ReturnType<typeof gridFixture>, title: string) => {
+  const { index, titles } = blockLibrary({ title }, { title });
+  return planSync(tab.grid, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } }).plan.insert;
+};
+
+test('a block lands in Franchise order', () => {
+  const tab = gridFixture(
+    namedShow('alien', 'Alien', { id: 10 }),
+    namedSeason('alienS1', 1, 6, 44000),
+    namedShow('zoo', 'Zoo', { id: 20 }),
+    namedSeason('zooS1', 1, 6, 44000),
+  );
+  assert.equal(placedIn(tab, 'Severance')?.row, tab.at.zoo, 'above the first franchise sorting after it');
+  assert.equal(placedIn(tab, 'Zulu')?.row, tab.end, 'below everything when nothing sorts after it');
+});
+
+// The article has to be a whole word — `Theodore` is not an article away from
+// `odore` — and the cell the block is placed by is the one it writes.
+test('a block sorts by its title minus a leading article, and says so in its Franchise cell', () => {
+  const tab = gridFixture(
+    namedShow('alien', 'Alien', { id: 10 }),
+    namedSeason('alienS1', 1, 6, 44000),
+    namedShow('zoo', 'Zoo', { id: 20 }),
+    namedSeason('zooS1', 1, 6, 44000),
+  );
+  const insert = placedIn(tab, 'The Severance');
+  assert.equal(insert?.kind, 'block');
+  assert.equal(insert?.row, tab.at.zoo, 'where Severance goes, not where The goes');
+  assert.equal(insert?.title, 'The Severance');
+  assert.equal(valueOf(insert, tab.at.zoo as number, 'Franchise')?.stringValue, 'Severance');
+});
+
+// Within a franchise the tab's order is loose — 15 inversions across 309
+// blocks — so no comparison can find a position inside the group, and the new
+// block goes after the last one of it.
+test('a block sharing a franchise goes after the last block of it', () => {
+  const tab = gridFixture(
+    namedShow('alien', 'Alien', { id: 10 }),
+    namedSeason('alienS1', 1, 6, 44000),
+    namedShow('zoo', 'Zoo', { id: 20, franchise: 'Severance' }),
+    namedSeason('zooS1', 1, 6, 44000),
+  );
+  assert.equal(placedIn(tab, 'Severance')?.row, tab.end);
+});
+
+// `inheritFromBefore` takes formats from the row above, and the header row's
+// render a correct date serial as `46265`.
+test('a block that would sort first, under the header, is declined', () => {
+  const tab = gridFixture(namedShow('zoo', 'Zoo', { id: 20 }), namedSeason('zooS1', 1, 6, 44000));
+  const { index, titles } = blockLibrary();
+  const { plan } = planSync(tab.grid, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } });
+  assert.equal(plan.insert, null);
+  assert.match(plan.skips.find((s) => s.code === 'no-format-row')?.message ?? '', /no season row above it to inherit formats from/);
+});
+
+// A block is placed relative to the blocks already there, so a tab holding
+// none has nothing to sort against — and no season row anywhere to inherit
+// number formats from either. The first block on a tab is the reader's.
+test('a tab with no blocks at all has nothing to place a block against', () => {
+  const empty = parseGrid(sheetSnapshot([SHEET_HEADERS]));
+  const { index, titles } = blockLibrary();
+  const { plan } = planSync(empty, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } });
+  assert.equal(plan.insert, null);
+  assert.match(plan.skips.find((s) => s.code === 'no-format-row')?.message ?? '', /the tab holds no block to place it against/);
+});
+
+// --- one insert per run -----------------------------------------------------
+
+// Plan indices are pre-write and `insertDimension` applies cumulatively, so a
+// second insert would land a row high. A season row joining a block that
+// already exists is planned in the walk above and wins.
+test('a season row for an existing block takes the slot ahead of a new block', () => {
+  const tab = gridFixture(
+    namedShow('fargo', 'Fargo', { id: 1, status: 'Watching' }),
+    namedSeason('fargoS1', 1, 6, 44000),
+  );
+  const { index, titles } = blockLibrary();
+  index.set(1, indexLibrary(libraryOf({ id: 1, title: 'Fargo', status: 'watching', seasons: { 1: watched(6, 400), 2: watched(3) }, watched: 9, total: 9 })).get(1)!);
+  titles.set(1, { shapes: seasonShapes([...eps(1, 6), ...eps(2, 3)]), status: 'ended', runtime: 45, tvdbId: 5, tmdbId: 6, seasonRuntimes: new Map([[2, 45]]) });
+
+  const { plan } = planSync(tab.grid, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } });
+  assert.equal(plan.insert?.kind, 'season');
+  assert.equal(plan.deferredInserts, 1);
+  assert.match(plan.notes.join('\n'), /Severance S1 is ready to add — deferred/);
+});
+
+// Oldest first, so the sheet gains blocks in the order the shows were started
+// — and so two runs of the same library choose the same one.
+test('two blocks ready at once are ordered by their first watch, and the second is deferred', () => {
+  const index = indexLibrary(
+    libraryOf(
+      { id: 900, title: 'Severance', status: 'watching', seasons: { 1: [daysAgo(9), daysAgo(2)] }, watched: 2, total: 9 },
+      { id: 901, title: 'Utopia', status: 'watching', seasons: { 1: [daysAgo(30), daysAgo(3)] }, watched: 2, total: 9 },
+    ),
+  );
+  const facts = (id: number, title: string): [number, TitleCatalogue] => [
+    id,
+    { ...blockLibrary({ title }).titles.get(900)!, title },
+  ];
+  const titles = new Map<number, TitleCatalogue>([facts(900, 'Severance'), facts(901, 'Utopia')]);
+
+  const { plan } = planSync(blockGrid.grid, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } });
+  assert.equal(plan.insert?.title, 'Utopia', 'started three weeks earlier');
+  assert.equal(plan.deferredInserts, 1);
+  assert.match(plan.notes.join('\n'), /Severance S1 is ready to add — deferred/);
+});
+
+// `hold` and `plantowatch` are no information, never a reason to write — so
+// the cell is left out rather than guessed at, and stays a reader's to fill.
+test('a block for a show on hold carries no Status cell', () => {
+  const { plan } = blocks({}, {}, { status: 'hold' });
+  assert.equal(plan.insert?.kind, 'block');
+  assert.equal(valueOf(plan.insert, blockGrid.end, 'Status'), undefined);
+});
+
+// One request per upstream per title, and no more than eight of each a pass:
+// a cold start on a full library would otherwise issue one per unlisted title
+// inside a run whose snapshot goes stale at 120s.
+test('the lookups a pass asks for are capped per upstream', () => {
+  const ids = Array.from({ length: 12 }, (_, i) => 900 + i);
+  const index = indexLibrary(libraryOf(...ids.map((id) => ({ id, title: `Show ${id}`, status: 'watching', seasons: { 1: [daysAgo(9), daysAgo(2)] }, watched: 2, total: 9 }))));
+  const titles = new Map<number, TitleCatalogue>(
+    ids.map((id) => [id, { ...blockLibrary({ genres: undefined, certificate: undefined }).titles.get(900)!, title: `Show ${id}` }]),
+  );
+  const { demands } = planSync(blockGrid.grid, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } });
+  assert.equal(demands.genres.length, MAX_LOOKUPS_PER_PASS);
+  assert.equal(demands.certificates.length, MAX_LOOKUPS_PER_PASS);
+  assert.equal(demands.catalogue.length, 12, 'the catalogue is the sync’s to gate on its own stamp');
+});
+
+// `rows N-M`, because a block is a show row and a season row and "row 610"
+// would name half of what the run did.
+test('a block is recorded as the span it occupies', () => {
+  const record = planRecord(blocks().plan);
+  assert.deepEqual(record.inserts.map((i) => i.address), [`rows ${blockGrid.end + 1}-${blockGrid.end + 2}`]);
+  assert.equal(record.inserts[0]?.title, 'Severance');
+  assert.equal(record.inserts[0]?.season, 1);
 });

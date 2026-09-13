@@ -361,3 +361,10 @@ test('the guard whitelist and the planner followed set say the same thing', () =
   assert.equal(EDIT_FIELDS.has('Series' as MovieHeaderName), false);
   assert.equal(EDIT_FIELDS.has('SeriesNumber' as MovieHeaderName), false);
 });
+
+// The films tab plans no formula today, and one hand-written cell is all it
+// would take. The rule lives in `guard-core.ts`, so it reaches both tabs from
+// one place rather than being assumed away here.
+test('a fill cell carrying a formula is refused', () => {
+  refuses(filmPlanOf([], withValue(ffx.insert(), 'Name', { formulaValue: '=A1' })), ffx.grid, /a formula is never written/);
+});

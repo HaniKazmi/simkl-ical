@@ -82,6 +82,20 @@ export type ShowField = HeaderName | BlockHeaderName;
 
 export const SHOW_FIELD_LABELS: Record<ShowField, string> = { ...SHOW_LABELS, ...BLOCK_LABELS };
 
+/** Whether a field is one of the ten a Shows tab must carry, rather than one of the six it may. */
+const isRequiredField = (field: ShowField): field is HeaderName => (HEADERS as readonly ShowField[]).includes(field);
+
+/**
+ * A show field's resolved column, or undefined where the tab does not carry
+ * it — which only the six optional ones can be.
+ *
+ * One resolution for planner and guard: the guard re-derives the column of
+ * every cell a block insert fills, and a second copy free to disagree would
+ * refuse whole plans over a column both halves can see.
+ */
+export const showFieldColumn = (grid: { columns: ColumnMap; blockColumns: BlockColumns }, field: ShowField): number | undefined =>
+  isRequiredField(field) ? grid.columns[field] : grid.blockColumns[field];
+
 /**
  * The pair that identifies this tab's header row — see `findHeaderRow`. The
  * two labels no other tab in the file carries together.
