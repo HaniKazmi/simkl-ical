@@ -295,7 +295,7 @@ test('a rejected TMDB credential is said once about the token, and files no film
 test('a backlog is looked up one burst at a time, and drains without stalling', async () => {
   // One row lands per run, so the lookups the films behind it need are the
   // next poll's to make. Fetched now, every pass to the ceiling would spend
-  // another `MAX_LOOKUPS_PER_PASS` and log the pass ceiling as a bookkeeping
+  // another `MAX_LOOKUPS_PER_ATTEMPT` and log the pass ceiling as a bookkeeping
   // bug on healthy data. The trap on the other side: with nothing fetched
   // ahead, the poll that inserts the last film the store knows has nothing
   // deferred to ask for another poll with, and the rest of the backlog waits
@@ -312,7 +312,7 @@ test('a backlog is looked up one burst at a time, and drains without stalling', 
       const first = await poll(library);
       assert.equal(first.status, 'applied', first.error ?? '');
       assert.equal(tmdbCalls(calls), 8, 'one burst, not one per pass');
-      assert.equal(log.lines.some((l) => /still wanted lookups/.test(l)), false, log.lines.join('\n'));
+      assert.equal(log.lines.some((l) => /still demanding lookups/.test(l)), false, log.lines.join('\n'));
       assert.equal(first.retry, true);
 
       // Polls 2–8 insert what the store already holds and ask TMDB nothing.

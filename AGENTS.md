@@ -153,7 +153,10 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   which would go stale the moment the run's own withdrawals moved an entry underneath it. The one
   question no lookup answers is whether the record holds a title entry at all: `anyTitleRecorded`
   scans for it once a poll, in `sync.ts` beside `starts`, and `titleIsNew` reads it.
-  `parseBaselineKey` is the single classifier of which of the three key shapes a stored key has.
+  `parseBaselineKey` is the single classifier of which of the three key shapes a stored key has, for
+  the file's readers; in the planners the shapes are the types `SeasonKey`, `TitleKey` and `MovieKey`,
+  and `withdraw`, `bank`, `forget` and `recorded` take a key's own fields (`RecordOf`), so writing a
+  season's entry with `Status` fails to compile rather than recording a field nothing reads.
   Delta membership held in memory is the
   design not to reach for: an ordinary weekly episode names the whole title, which back-fills every
   season watched years ago, and a restart is a full pull that names nothing, so a change made while
@@ -204,9 +207,10 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   `Status` branches withdraw the same way where the answer is still outstanding — a duplicate id, no
   episode list, or a derived status of null while `/tv/{id}` has not answered — and record where it
   is settled, because a title on `hold` has no derived status and never will, and withdrawing there
-  would keep its block in scope, at a lookup a day, for ever. On the counting side: a runtime ask the
-  allowance had no room for and a block the row budget cut to nothing both add to `plan.deferred`,
-  which is what arms the retry that brings a poll with room. **A dated row the budget holds back is
+  would keep its block in scope, at a lookup a day, for ever. On the counting side: a block the row
+  budget cut to nothing adds to `plan.deferred`, which is what arms the retry that brings a poll with
+  room, and a lookup the fetch loop had no room for is that loop's `unfetched`, which arms the same
+  retry. **A dated row the budget holds back is
   forgotten, not withdrawn** — `forget` in `values.ts`, carried out of the planner as
   `PlanResult.forgetting` and dropped from the file by `saveBaseline` before it folds the run's
   observations in. A withdrawal leaves the stored value standing, which is right for every hold
@@ -226,8 +230,8 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   BUILD, the budget or VERIFY wants one, so a span cannot claim a height its rows do not have. A show
   row with no season row under it is a block whose roll-ups count the *next* block's rows as their
   own, so a fifteen-season back catalogue arriving a row a poll would spend fifteen polls in that
-  state. The span is cut at the first season whose runtime has not come back — one attempt's
-  `MAX_LOOKUPS_PER_PASS` is eight for the whole attempt and a block held for every season would never
+  state. The span is cut at the first season whose runtime has not come back — one attempt fetches
+  `MAX_LOOKUPS_PER_ATTEMPT` = 8 season runtimes, and a block held for every season would never
   land — and again at
   what the poll's remaining row budget leaves, since a guard refusal is whole-plan. **Cut rather
   than landed open**: a season row inside a block is revisited only while its title is in scope, and
@@ -337,34 +341,32 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   new is demanded. There are no separate what-to-fetch passes to keep in agreement — a row the
   planner waits on is by construction a row the same pass demanded. Do not reintroduce a second
   planning path.
-- **Every lookup is asked for through one choke point, and every asker is charged.** `demand` in
-  `4-plan.ts` is the only writer of `PlanDemands`, and it charges `LookupBudget`. One choke point
-  because the block walk is not the only asker: the grid walk asks for a catalogue per in-scope block
-  and a runtime per closing row, and once a record's disagreement can put every block of a
-  marked-whole library in scope at once — and keep them there across polls — that walk is the larger
-  of the two. Charged on one side and not the other, the uncharged side is the burst the cap exists
-  to prevent: a cold store with 120 blocks in scope issuing 240 requests at once.
+- **The planner asks for every lookup it wants, once per key, and rations nothing.** `demand` in
+  `4-plan.ts` is the only writer of `PlanDemands`; it folds a block's two asks about one id — its
+  episode list, then the entry that decides its `Status` — into one entry, the way `fetchCatalogue`
+  folds them into one call, so a slice of the list is a slice of titles. How much of it one pass
+  fetches is `rationLookups` in `sync.ts`, and it lives there because only the fetch loop knows
+  what this attempt has already asked for, what the store has answered since, and how many passes
+  remain; carried in the planner that knowledge was a mutable allowance threaded through a pure
+  module, copied per admitted candidate, and wrong twice about which asks to count.
   **Two allowances, two periods.** The three upstreams a block's show row waits on — TVDB's genres,
-  TMDB's certificate, TVDB's season runtimes — share `MAX_LOOKUPS_PER_PASS` = 8 for the whole
+  TMDB's certificate, TVDB's season runtimes — get `MAX_LOOKUPS_PER_ATTEMPT` = 8 each for the whole
   **attempt**, because the planner runs to a fixpoint and a cap reset per pass is the cap multiplied
   by the pass ceiling. SIMKL's details are `CATALOGUE_ASKS_PER_PASS` = 32 **titles per pass**, and
   both halves of that are load-bearing: these asks are what a pass *reads the grid with*, so a block
   in scope is edited from the answer to its own ask in the same run — rationed to eight, a cold store
   with 18 recent blocks read 4 of them and left the other 14 reported as "no episode list came back",
   measured on the live tab. 32 is a normal day with room to spare, and per pass is what makes a
-  backfill past it drain across the passes of one run rather than stall. `nextPass` in `sync.ts` is
-  where the pass allowance is renewed; bounded either way, at 32 times `MAX_PASSES` per attempt.
-  Counted in **titles**, not requests: a live-action block asks twice about the same id — episode
-  list, then the entry that decides its `Status` — and `fetchCatalogue` merges the two, so counted
-  per request the figure would mean half what it says. An ask the store has already answered is
-  pushed **uncharged, on both walks**: `sync.ts` drops it inside `CATALOGUE_MAX_AGE` anyway, and
-  counting it would let the first `CATALOGUE_ASKS_PER_PASS` blocks in grid order spend the whole
-  allowance on every pass and every poll while writing nothing, and read every block behind them as
-  "no episode list came back" for as long as it stayed in scope — for a block in scope on the record
+  backfill past it drain across the passes of one run rather than stall; bounded either way, at 32
+  times `MAX_PASSES` per attempt. **An answered ask is dropped before the slice**: the loop filters
+  what this run has made and what the store answered inside `CATALOGUE_MAX_AGE` first, and only then
+  takes the allowance. Sliced first, the first 32 blocks in grid order would fill the allowance on
+  every pass and every poll while writing nothing, and every block behind them would be read as "no
+  episode list came back" for as long as it stayed in scope — for a block in scope on the record
   alone, for ever. `detailAnswered` in `3-catalogue.ts` is the one spelling of "has the detail
-  landed", read off the field the fold stamps the moment it does. An ask the allowance refuses
-  **counts as deferred**, once per title, because a block this pass could not read is work only a
-  pass with a fresh allowance does, and that count is what arms the retry bringing one.
+  landed", read off the field the fold stamps the moment it does. What the slice leaves standing is
+  `unfetched`, which arms the retry: a block this run could not read is work only a poll with a
+  fresh allowance does.
 - **A season's runtime is only ever written into a blank cell**, and the bounds the guard checks are
   the same constants the planner converts with (`values.ts`) — a bound that exists twice is a
   whole-plan refusal waiting to fire on good data. The films tab's `Runtime` is a different column
@@ -472,9 +474,9 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   nothing, and settling the waiting shows would file them as ones the upstream has nothing for. The
   note names all of them, because named one at a time an operator fixes a key, restarts, and is told
   about the other. The lookups a block earns from those two are capped per **attempt** rather than
-  per pass, in `LookupBudget`: the planner runs to a fixpoint, so a cap reset on every pass is the cap
-  multiplied by the pass ceiling. SIMKL's details are the exception and are the pass's — see the
-  lookup bullet above.
+  per pass, by `rationLookups` in `sync.ts`: the planner runs to a fixpoint, so a cap reset on every
+  pass is the cap multiplied by the pass ceiling. SIMKL's details are the exception and are the
+  pass's — see the lookup bullet above.
   A block also needs `BLOCK_SCAN_ROWS` of declared grid beneath it: the block-height helper every
   roll-up reads is an `OFFSET` window that far down, and Sheets answers `#REF!` for one running past
   the last row, so those five cells would error and VERIFY would roll the write back every poll. The
@@ -742,8 +744,9 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   or it could only fire on a row placement had already accepted.
 - **One deferred count, on either tab.** `plan.deferred` is "work this run could have done and
   rationed" — a row past the one-per-run rule, a season behind the block that landed, a row or an
-  insert the poll's budgets had no room for on either tab, a lookup the allowance was too spent to
-  make. One number because
+  insert the poll's budgets had no room for on either tab. A lookup the fetch loop had no room for
+  is not in it: that is the loop's own `unfetched`, and `sync.ts` arms the retry off either. One
+  number because
   every consumer asks it one question, *is there work only another poll will drain*, and answers it
   the same way whatever the shape of the work; `sync.ts` logs the count and arms the retry off it,
   and the report is where the shapes are told apart, each kind writing its own note.
@@ -776,11 +779,15 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   read at start-up. Settling the pending films would file them as ones TMDB has nothing for, eight
   more every poll, and tell the operator to add by hand rows TMDB could build once the token is
   fixed.
-- **The films fixpoint stops at the pass that plans the insert.** One row lands per run, so the
+- **The films fixpoint stops at the pass that plans the insert.** Both tabs run the one `toFixpoint`
+  loop in `sync.ts`, which differs per tab only in how a pass plans and what of its demands it
+  fetches; the films ration step fetches nothing once the insert is planned. One row lands per run, so the
   lookups the films behind it need are the next poll's to make; fetched now, every pass to the
-  ceiling spends another `MAX_LOOKUPS_PER_PASS`. The lookups a run chose not to make count as work
-  and arm `retry` the way deferred inserts do — without that, the poll that inserts the last film
-  the store knows has nothing deferred, and the rest of the backlog waits on unrelated activity.
+  ceiling spends another burst. The planner asks for every film with no row, oldest watch first,
+  and the loop takes `MAX_LOOKUPS_PER_ATTEMPT` of them a pass from the front. The lookups a run
+  chose not to make are its `unfetched` and arm `retry` the way deferred inserts do — without that,
+  the poll that inserts the last film the store knows has nothing deferred, and the rest of the
+  backlog waits on unrelated activity.
 - **`Format` and `Type` are strings, always present, and `id` only ever as text.** `Format` is
   `Cinema` or `Home`, `Type` is `film` or `anime`, and both are written on every insert rather than
   left to default — neither follows SIMKL after that. All 348 id cells hold `{ stringValue }`, so a
@@ -896,7 +903,7 @@ the process, and the rest carries its pipeline position in the filename, so `ls`
 | VERIFY | `7-verify.ts` — did the write do exactly what was planned, for either tab: `verifyAgainst` holds the rules and `VerifiedTab` what a tab answers for itself |
 | — | `values.ts` — the sheet's value conventions (serials, runtime bounds, the watch note's shape, the show row's formula templates, the genre and network maps, where a block sorts), one copy for planner and guard |
 | io | `io/spreadsheet.ts` (read/apply/list), four that fetch only — `io/catalogue.ts`, `io/runtimes.ts`, `io/tvdb-series.ts` (a series' genres) and `io/tmdb-tv.ts` (a series' content ratings) — `io/apply.ts` (the write-and-recover protocol, over an `ApplySpec` either tab supplies), `io/backups.ts` (the snapshot tab's whole life), `io/journal.ts` (the run history), `io/baseline.ts` (what SIMKL last said — the one file here that *decides* something) |
-| — | `sync.ts` — the driver for **both** tabs: one loop (`runTab`) over a per-tab `TabSpec`, the two plan-fetch fixpoints, per-poll state in a `Poll`, the journal choke point |
+| — | `sync.ts` — the driver for **both** tabs: one loop (`runTab`) over a per-tab `TabSpec`, one plan-fetch fixpoint (`toFixpoint`, over a per-tab plan step and ration step), per-poll state in a `Poll`, the journal choke point |
 
 `src/sheet/movies/` — the films tab. INDEX → PARSE → (PLAN ⇄ FETCH) → GUARD → BUILD → VERIFY
 

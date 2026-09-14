@@ -35,14 +35,16 @@ import {
   recordedSerial,
   watchedNote,
   watchSerial,
+  foldInto,
+  recorded as recordedEntry,
   type Baseline,
-  type Forgetting,
+  type FilmRecord,
   type Recording,
 } from '../values.ts';
 import { movieAddress, movieCellAt, MOVIE_LABELS, nextFilmRow, type MovieGrid, type MovieHeaderName } from './2-grid.ts';
 import { filmIsWatched, type FilmProgress } from './1-index.ts';
 import type { FilmFacts } from './3-catalogue.ts';
-import { compareWatched, MAX_LOOKUPS_PER_PASS, type PlanRecord } from '../4-plan.ts';
+import { compareWatched, type PlanRecord } from '../4-plan.ts';
 // The budget arithmetic, not a guard rule: this half stops short of exactly the
 // bound the guard refuses at, and a second copy of the counting is a plan
 // refused whole over rows the planner thought it had room for.
@@ -104,8 +106,9 @@ export interface FilmPlan {
   notes: string[];
   /**
    * Work this run could have done and rationed — films ready for a row beyond
-   * the one this run adds, the lookups it had no allowance left for, and the
-   * rows the poll's budgets had no room for.
+   * the one this run adds, and the rows the poll's budgets had no room for. A
+   * lookup the fetch loop had no room for is its `unfetched`, which arms the
+   * same retry.
    *
    * Held-back edits included, because the budgets are the **poll's**: the show
    * half runs first and what it sent is taken out of what this half may plan, so
@@ -124,26 +127,13 @@ export const emptyFilmPlan = (): FilmPlan => ({ edits: [], insert: null, skips: 
  * Where one candidate's decisions land: the plan it adds to and the two maps
  * it banks and withdraws in. A target of its own, because the admission step
  * builds a candidate into one and keeps it only if the whole run still fits
- * the poll's budgets — the show half's `WriteTarget`, less the demands this
+ * the poll's budgets — the show half's `PlanRun`, less the inputs and the demands this
  * half asks for elsewhere.
  */
-export interface FilmTarget {
+interface FilmTarget {
   plan: FilmPlan;
   keep: Recording;
 }
-
-/**
- * The parent's cap, re-exported so this half reads it under its own name. One
- * constant for both tabs: the argument for it is about a run's snapshot budget
- * and a cold start, neither of which is a fact about films.
- *
- * Charged per **pass** here, against the `demands` array this planner builds
- * fresh each time, where the show half's three show-facts upstreams carry theirs
- * across the passes of one attempt in `LookupBudget`. The periods differ because
- * the fixpoints do: this one stops at the pass that plans the insert, so a pass
- * is very nearly a run.
- */
-export { MAX_LOOKUPS_PER_PASS };
 
 /** One film to look up, and the title its answer is filed under. */
 export interface FilmDemand {
@@ -164,8 +154,6 @@ export interface FilmPlanResult {
   observed: Baseline;
   /** Values an edit was planned for. Recordable only once that edit lands. */
   writing: Baseline;
-  /** Fields to drop from the record — empty on this tab, whose rows are all in scope on the record and never on a window. */
-  forgetting: Forgetting;
 }
 
 export interface PlanFilmsOptions {
@@ -231,7 +219,7 @@ export interface PlanFilmsOptions {
  * disagree carry hand titles, and following it would overwrite each one the
  * day SIMKL renamed anything.
  */
-export const FOLLOWED_FIELDS = ['Watch Date', 'Score', 'Runtime'] as const satisfies readonly MovieHeaderName[];
+export const FOLLOWED_FIELDS = ['Watch Date', 'Score', 'Runtime'] as const satisfies readonly (MovieHeaderName & keyof FilmRecord)[];
 
 export type FollowedField = (typeof FOLLOWED_FIELDS)[number];
 
@@ -326,7 +314,7 @@ const recordedDate = (recorded: string | undefined, timezone: string): number | 
   return recordedSerial(recorded, timezone) ?? undefined;
 };
 
-const compare = (field: FollowedField, film: FilmProgress, entry: Partial<Record<string, string>>, timezone: string): Comparison => {
+const compare = (field: FollowedField, film: FilmProgress, entry: FilmRecord, timezone: string): Comparison => {
   if (field === 'Watch Date') {
     return { wanted: watchSerial(film.watchedAt, timezone), recorded: recordedDate(entry['Watch Date'], timezone) };
   }
@@ -361,7 +349,6 @@ export const planFilms = (
   // Copied, so a discarded pass leaves no withdrawals in the caller's seed.
   const observed: Baseline = new Map(seed ?? observeFilms(index));
   const writing: Baseline = new Map();
-  const forgetting: Forgetting = new Map();
   const ceiling = maxSerial(now, timezone);
   // `spent` is zero because what this planner was handed is already the ceiling
   // minus what the show half sent — see `PlanFilmsOptions.maxEdits`.
@@ -381,10 +368,10 @@ export const planFilms = (
    * batch lands.
    */
   const admit = (build: (out: FilmTarget) => void): boolean => {
-    const scratch: FilmTarget = { plan: emptyFilmPlan(), keep: { observed, writing: new Map(), forgetting } };
+    const scratch: FilmTarget = { plan: emptyFilmPlan(), keep: { observed, writing: new Map() } };
     build(scratch);
     if (!admitPlan(plan, scratch.plan, budgets, (insert) => insert)) return false;
-    for (const [key, entry] of scratch.keep.writing) writing.set(key, { ...writing.get(key), ...entry });
+    foldInto(writing, scratch.keep.writing);
     return true;
   };
 
@@ -415,7 +402,7 @@ export const planFilms = (
     }
 
     const key = movieKey(film.id);
-    const entry = baseline.get(key) ?? {};
+    const entry = recordedEntry(baseline, key) ?? {};
 
     rows.push({
       write: ({ plan: into, keep: banking }) => {
@@ -483,7 +470,7 @@ export const planFilms = (
     room,
   });
 
-  return { plan, demands, unidentifiable, observed, writing, forgetting };
+  return { plan, demands, unidentifiable, observed, writing };
 };
 
 /**
@@ -601,10 +588,11 @@ const planInsert = (
         awaitingCredential += 1;
         continue;
       }
-      if (demands.length < MAX_LOOKUPS_PER_PASS) {
-        demands.push({ id: film.id, tmdbId: film.tmdbId, title: film.title });
-        plan.skips.push({ code: 'awaiting-lookup', row: null, reason: `${film.title}: waiting on TMDB before its row can be built` });
-      }
+      // Every one, uncapped: how many of them one pass fetches is the fetch
+      // loop's question, and a film asked for and not fetched is what arms the
+      // retry there.
+      demands.push({ id: film.id, tmdbId: film.tmdbId, title: film.title });
+      plan.skips.push({ code: 'awaiting-lookup', row: null, reason: `${film.title}: waiting on TMDB before its row can be built` });
       continue;
     }
 

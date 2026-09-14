@@ -457,10 +457,10 @@ test('a recorded value keeps never-recorded, recorded-as-none and a number apart
  * and the change is lost for good.
  */
 test('banking a value takes it out of what the run records', () => {
-  const keep = { observed: new Map([['900:1', { Watched: '3', Start: 'x' }]]), writing: new Map(), forgetting: new Map() };
-  bank(keep, '900:1', 'Watched', '8');
-  assert.deepEqual(keep.writing.get('900:1'), { Watched: '8' });
-  assert.deepEqual(keep.observed.get('900:1'), { Start: 'x' }, 'and the fields beside it are untouched');
+  const keep = { observed: new Map([[seasonKey(900, 1), { Watched: '3', Start: 'x' }]]), writing: new Map(), forgetting: new Map() };
+  bank(keep, seasonKey(900, 1), 'Watched', '8');
+  assert.deepEqual(keep.writing.get(seasonKey(900, 1)), { Watched: '8' });
+  assert.deepEqual(keep.observed.get(seasonKey(900, 1)), { Start: 'x' }, 'and the fields beside it are untouched');
 });
 
 /**
@@ -473,24 +473,47 @@ test('banking a value takes it out of what the run records', () => {
  * run's observations in rather than replacing them. A forgotten field is the
  * one thing a run can say that the fold cannot: read this as never observed.
  */
+/**
+ * A key of one shape cannot be written with another's fields, and a bare
+ * string is no key at all. Pinned at compile time: a `withdraw` of a field the
+ * entry never carries would record nothing and read as nothing, silently, for
+ * the life of the file.
+ */
+test('the record helpers refuse a field the key’s shape does not carry', () => {
+  const observed: Baseline = new Map([[seasonKey(900, 1), { Watched: '3' }], [titleRecordKey(900), { Status: 'watching' }], [movieKey(900), { Score: '8' }]]);
+  withdraw(observed, seasonKey(900, 1), 'Watched');
+  withdraw(observed, titleRecordKey(900), 'Status');
+  withdraw(observed, movieKey(900), 'Score');
+  // @ts-expect-error a title entry has no count
+  withdraw(observed, titleRecordKey(900), 'Watched');
+  // @ts-expect-error a season entry has no membership
+  withdraw(observed, seasonKey(900, 1), 'Status');
+  // @ts-expect-error a film entry has no end date
+  withdraw(observed, movieKey(900), 'End');
+  const bare: string = 'abc';
+  // @ts-expect-error a bare string names no shape
+  withdraw(observed, bare, 'Watched');
+  assert.deepEqual([...observed.values()], [{}, {}, {}]);
+});
+
 test('forgetting a field takes it out of both maps and names it for the record', () => {
   const keep = {
-    observed: new Map([['900:1', { Watched: '3', Start: 'x' }]]),
-    writing: new Map([['900:1', { Watched: '3', End: 'y' }]]),
+    observed: new Map([[seasonKey(900, 1), { Watched: '3', Start: 'x' }]]),
+    writing: new Map([[seasonKey(900, 1), { Watched: '3', End: 'y' }]]),
     forgetting: new Map<string, Set<string>>(),
   };
-  forget(keep, '900:1', 'Watched');
-  assert.deepEqual(keep.observed.get('900:1'), { Start: 'x' }, 'out of what the run records');
-  assert.deepEqual(keep.writing.get('900:1'), { End: 'y' }, 'and out of what an edit beside it banked');
-  assert.deepEqual([...keep.forgetting.get('900:1')!], ['Watched'], 'and named for the file to drop');
-  forget(keep, '900:1', 'Start');
-  assert.deepEqual([...keep.forgetting.get('900:1')!], ['Watched', 'Start'], 'one entry per key, however many fields');
+  forget(keep, seasonKey(900, 1), 'Watched');
+  assert.deepEqual(keep.observed.get(seasonKey(900, 1)), { Start: 'x' }, 'out of what the run records');
+  assert.deepEqual(keep.writing.get(seasonKey(900, 1)), { End: 'y' }, 'and out of what an edit beside it banked');
+  assert.deepEqual([...keep.forgetting.get(seasonKey(900, 1))!], ['Watched'], 'and named for the file to drop');
+  forget(keep, seasonKey(900, 1), 'Start');
+  assert.deepEqual([...keep.forgetting.get(seasonKey(900, 1))!], ['Watched', 'Start'], 'one entry per key, however many fields');
 });
 
 test('withdrawing from a key nothing was observed for leaves no entry behind', () => {
   const observed: Baseline = new Map();
-  withdraw(observed, '900:1', 'Watched');
-  assert.equal(observed.has('900:1'), false);
+  withdraw(observed, seasonKey(900, 1), 'Watched');
+  assert.equal(observed.has(seasonKey(900, 1)), false);
 });
 
 /**
@@ -509,9 +532,9 @@ test('a title key carrying no field still counts as a title recorded', () => {
 // across a FRESH re-read, so deleting in place would strip the field from the
 // seed itself and the pass after it would see nothing to withdraw.
 test('a withdrawal replaces the entry rather than emptying the shared one', () => {
-  const seed: Baseline = new Map([['900:1', { Watched: '3' }]]);
+  const seed: Baseline = new Map([[seasonKey(900, 1), { Watched: '3' }]]);
   const observed = new Map(seed);
-  withdraw(observed, '900:1', 'Watched');
-  assert.equal(observed.get('900:1')?.Watched, undefined);
-  assert.equal(seed.get('900:1')?.Watched, '3', 'the seed still holds it for the next pass');
+  withdraw(observed, seasonKey(900, 1), 'Watched');
+  assert.equal(observed.get(seasonKey(900, 1))?.Watched, undefined);
+  assert.equal(seed.get(seasonKey(900, 1))?.Watched, '3', 'the seed still holds it for the next pass');
 });
