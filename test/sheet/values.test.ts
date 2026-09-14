@@ -33,7 +33,7 @@ import {
   seasonKey,
   titleRecordKey,
   withdraw,
-  forget,
+  forgetCount,
 } from '../../src/sheet/values.ts';
 import { HEADERS, SHOW_LABELS } from '../../src/sheet/2-grid.ts';
 import { SHEET_COLUMNS, SHEET_HEADERS, col } from '../helpers.ts';
@@ -464,16 +464,6 @@ test('banking a value takes it out of what the run records', () => {
 });
 
 /**
- * An entry emptied by a withdrawal records that the row was *seen*, which is
- * what `titleKnown` reads. A key that was never there records nothing, and
- * inventing one would claim a sighting this run did not make.
- */
-/**
- * A withdrawal leaves the stored value standing, because the file folds a
- * run's observations in rather than replacing them. A forgotten field is the
- * one thing a run can say that the fold cannot: read this as never observed.
- */
-/**
  * A key of one shape cannot be written with another's fields, and a bare
  * string is no key at all. Pinned at compile time: a `withdraw` of a field the
  * entry never carries would record nothing and read as nothing, silently, for
@@ -496,20 +486,32 @@ test('the record helpers refuse a field the key’s shape does not carry', () =>
   assert.deepEqual([...observed.values()], [{}, {}, {}]);
 });
 
-test('forgetting a field takes it out of both maps and names it for the record', () => {
+/**
+ * A withdrawal leaves the stored value standing, because the file folds a
+ * run's observations in rather than replacing them. A forgotten count is the
+ * one thing a run can say that the fold cannot: read this as never observed.
+ */
+test('forgetting a count takes it out of both maps and names it for the record', () => {
   const keep = {
     observed: new Map([[seasonKey(900, 1), { Watched: '3', Start: 'x' }]]),
     writing: new Map([[seasonKey(900, 1), { Watched: '3', End: 'y' }]]),
     forgetting: new Map<string, Set<string>>(),
   };
-  forget(keep, seasonKey(900, 1), 'Watched');
+  forgetCount(keep, seasonKey(900, 1));
   assert.deepEqual(keep.observed.get(seasonKey(900, 1)), { Start: 'x' }, 'out of what the run records');
   assert.deepEqual(keep.writing.get(seasonKey(900, 1)), { End: 'y' }, 'and out of what an edit beside it banked');
   assert.deepEqual([...keep.forgetting.get(seasonKey(900, 1))!], ['Watched'], 'and named for the file to drop');
-  forget(keep, seasonKey(900, 1), 'Start');
-  assert.deepEqual([...keep.forgetting.get(seasonKey(900, 1))!], ['Watched', 'Start'], 'one entry per key, however many fields');
+  forgetCount(keep, seasonKey(900, 1));
+  assert.deepEqual([...keep.forgetting.get(seasonKey(900, 1))!], ['Watched'], 'once, however often it is forgotten');
+  // @ts-expect-error only a season's count is ever forgotten: every other field reads absence as a first sighting
+  forgetCount(keep, titleRecordKey(900));
 });
 
+/**
+ * An entry emptied by a withdrawal records that the row was *seen*, which is
+ * what `titleKnown` reads. A key that was never there records nothing, and
+ * inventing one would claim a sighting this run did not make.
+ */
 test('withdrawing from a key nothing was observed for leaves no entry behind', () => {
   const observed: Baseline = new Map();
   withdraw(observed, seasonKey(900, 1), 'Watched');

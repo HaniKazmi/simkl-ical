@@ -60,6 +60,19 @@ const fetchDetail = (id: number, anime: boolean, signal?: AbortSignal): Promise<
   apiGet<ShowDetail>(`/${anime ? 'anime' : 'tv'}/${id}`, { component: 'catalogue', signal });
 
 /**
+ * Two asks about one id as the one call they cost: a flag set on either is set
+ * on the merge. The planner folds its asks with this too, so the fetch loop's
+ * slice of the planner's list counts the same titles this fetches.
+ */
+export const mergeCatalogueRequest = (existing: CatalogueRequest | undefined, request: CatalogueRequest): CatalogueRequest => ({
+  id: request.id,
+  // Only a set flag is carried, so a merge of one ask is that ask.
+  ...(existing?.anime || request.anime ? { anime: true } : {}),
+  ...(existing?.episodes || request.episodes ? { episodes: true } : {}),
+  ...(existing?.detail || request.detail ? { detail: true } : {}),
+});
+
+/**
  * Resolve a batch. Requests for the same id are merged, so the episode list
  * and detail of one show cost the two calls they should.
  */
@@ -68,15 +81,7 @@ export const fetchCatalogue = async (
   { signal, concurrency = 4 }: { signal?: AbortSignal; concurrency?: number } = {},
 ): Promise<Catalogue> => {
   const merged = new Map<number, CatalogueRequest>();
-  for (const request of requests) {
-    const existing = merged.get(request.id);
-    merged.set(request.id, {
-      id: request.id,
-      anime: Boolean(existing?.anime || request.anime),
-      episodes: Boolean(existing?.episodes || request.episodes),
-      detail: Boolean(existing?.detail || request.detail),
-    });
-  }
+  for (const request of requests) merged.set(request.id, mergeCatalogueRequest(merged.get(request.id), request));
 
   const episodes = new Map<number, EpisodeDetail[]>();
   const details = new Map<number, ShowDetail>();

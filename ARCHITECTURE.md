@@ -100,10 +100,10 @@ record leaves scope only when that count is recorded — which happens when, and
 carrying it lands. So a run that cannot finish a row **records nothing about it**: a close waiting on
 a runtime or on a timestamp it cannot use, a row a budget held back, a season a placement refused, a
 block waiting on a credential, a title whose status nothing has answered for yet. Recorded early, the
-next poll finds nothing moved and the row is never written at all. One hold goes further and
-**forgets**: a row the activity window put in scope and the budget held back may already be recorded
-at SIMKL's own count, so recording nothing leaves nothing to differ, and the row would leave scope
-with the window; its count is dropped from the record instead, and the record brings it back. The
+next poll finds nothing moved and the row is never written at all. A row left open goes further
+and **forgets**: a row the activity window put in scope may already be recorded at SIMKL's own
+count, so recording nothing leaves nothing to differ and the row would leave scope with the window;
+its count is dropped from the record instead, and the record brings it back. The
 mirror of that rule is that work held back is **counted**, in `plan.deferred`, which is what asks for
 the next poll rather than waiting on the library's next unrelated move.
 

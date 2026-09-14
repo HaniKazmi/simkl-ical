@@ -215,7 +215,7 @@ test('a film waits a poll rather than landing with blank TMDB cells', () => {
   const { plan: p, demands } = plan([film('a', { id: 1 })], [movie({ id: 1 }), movie({ id: 2, tmdb: '550', lastWatchedAt: watchedOn(TODAY - 1) })]);
   assert.equal(p.insert, null);
   assert.deepEqual(demands.map((d) => [d.id, d.tmdbId]), [[2, 550]]);
-  assert.equal(p.skips.find((s) => s.code === 'awaiting-lookup')?.code, 'awaiting-lookup');
+  assert.match(p.notes.join(' '), /1 film\(s\) wait on TMDB before a row can be built/);
 });
 
 test('a film whose row can never be built is not looked up', () => {
@@ -424,7 +424,7 @@ test('a cold start asks about every film, oldest watch first', () => {
   assert.equal(demands.length, 40);
   assert.equal(p.insert, null, 'and nothing is inserted until one of them answers');
   assert.deepEqual(demands.slice(0, 8).map((d) => d.id), [139, 138, 137, 136, 135, 134, 133, 132]);
-  assert.equal(p.skips.filter((s) => s.code === 'awaiting-lookup').length, 40, 'every one of them is reported waiting');
+  assert.match(p.notes.join(' '), /40 film\(s\) wait on TMDB before a row can be built, .* \(139\) first/, 'reported once, not once per film');
 });
 
 // --- Placing an anime film ---------------------------------------------------

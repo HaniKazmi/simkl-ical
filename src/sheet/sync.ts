@@ -97,7 +97,7 @@ const MAX_ATTEMPTS = 3;
  * means a demand is escaping the `made` bookkeeping: worth a degraded run and
  * a log line rather than a poll that never returns.
  */
-const MAX_PASSES = 4;
+export const MAX_PASSES = 4;
 
 /**
  * How many lookups one **attempt** may make of each upstream a block's show row
@@ -118,9 +118,11 @@ const MAX_PASSES = 4;
  *
  * Per **attempt**, not per pass: the planner runs to a fixpoint, and a cap
  * reset on every pass multiplies by the pass ceiling — four times this many
- * requests in one run, which is the burst the number exists to prevent. The
- * films tab's TMDB lookups take the same figure, per pass, because that loop
- * stops at the pass that plans the insert.
+ * requests in one run, which is the burst the number exists to prevent. What
+ * carries the period is the run's `made`, measured against on every pass, and
+ * the rule that only the first attempt fetches these at all. The films tab's
+ * TMDB lookups take the same figure, per pass, because that loop stops at the
+ * pass that plans the insert.
  */
 export const MAX_LOOKUPS_PER_ATTEMPT = 8;
 
@@ -147,15 +149,6 @@ export const MAX_LOOKUPS_PER_ATTEMPT = 8;
  */
 export const CATALOGUE_ASKS_PER_PASS = 32;
 
-/** What one attempt has fetched so far of each per-attempt upstream. */
-export interface AttemptLookups {
-  runtimes: number;
-  genres: number;
-  certificates: number;
-}
-
-export const emptyAttemptLookups = (): AttemptLookups => ({ runtimes: 0, genres: 0, certificates: 0 });
-
 /** What one pass will fetch of what the planner asked for, and whether anything was left. */
 export interface RationedLookups {
   catalogue: CatalogueRequest[];
@@ -163,9 +156,10 @@ export interface RationedLookups {
   genres: SeriesRequest[];
   certificates: CertificateRequest[];
   /**
-   * Whether the planner wanted lookups this run is not making — over the
+   * Whether the planner wanted lookups this pass is not making — over the
    * allowance, or gated off. Work exists for the next poll and nothing else
-   * will ask for it, so the loop turns this into another poll.
+   * will ask for it, so the loop turns this into another poll; the loop adds
+   * the third reason, fetches it built and then abandoned at the pass ceiling.
    */
   unfetched: boolean;
 }
@@ -184,10 +178,12 @@ export interface RationedLookups {
  * behind them would be read as "no episode list came back" for as long as it
  * stayed in scope — for a block in scope on the record alone, for ever.
  *
- * The three the block waits on are taken against `spent`, the attempt's tally,
- * and only on the first attempt — a FRESH re-read plans against a grid that
- * changed underneath it, and a throttled TVDB season can spend a minute
- * obeying `Retry-After` against the snapshot budget. Genres and certificates
+ * The three the block waits on are taken against what the run has already
+ * made of each — `made` is one key per request, so its size is the tally — and
+ * only on the first attempt, which is what makes that tally the attempt's: a
+ * FRESH re-read plans against a grid that changed underneath it, and a
+ * throttled TVDB season can spend a minute obeying `Retry-After` against the
+ * snapshot budget. Genres and certificates
  * additionally stop once the run has chosen its insert: one block lands per
  * run, so the lookups the blocks behind it need are the next poll's, and
  * paying for them now buys a row nothing can add until then.
@@ -200,16 +196,15 @@ export const rationLookups = (
     index,
     now,
     attempt,
-    askFacts,
-    spent,
+    insertChosen,
   }: {
     made: Pick<RunLookups, 'catalogue' | 'runtimes' | 'genres' | 'certificates'>;
     stamps: ReadonlyMap<number, CatalogueStamp>;
     index: ReadonlyMap<number, TitleProgress>;
     now: Temporal.Instant;
     attempt: number;
-    askFacts: boolean;
-    spent: AttemptLookups;
+    /** Whether this run has chosen its one insert — after which a block's two facts are the next poll's to fetch. */
+    insertChosen: boolean;
   },
 ): RationedLookups => {
   // What the planner asked for, less what this run has made: the list an
@@ -226,11 +221,12 @@ export const rationLookups = (
     certificates: demands.certificates.filter((request) => !made.certificates.has(request.id)),
   };
   const allowance = (used: number): number => Math.max(0, MAX_LOOKUPS_PER_ATTEMPT - used);
+  const askFacts = attempt === 1 && !insertChosen;
   const taken = {
     catalogue: pending.catalogue.slice(0, CATALOGUE_ASKS_PER_PASS),
-    runtimes: attempt === 1 ? pending.runtimes.slice(0, allowance(spent.runtimes)) : [],
-    genres: askFacts ? pending.genres.slice(0, allowance(spent.genres)) : [],
-    certificates: askFacts ? pending.certificates.slice(0, allowance(spent.certificates)) : [],
+    runtimes: attempt === 1 ? pending.runtimes.slice(0, allowance(made.runtimes.size)) : [],
+    genres: askFacts ? pending.genres.slice(0, allowance(made.genres.size)) : [],
+    certificates: askFacts ? pending.certificates.slice(0, allowance(made.certificates.size)) : [],
   };
   const unfetched = (Object.keys(taken) as Array<keyof typeof taken>).some((kind) => taken[kind].length < pending[kind].length);
   return { ...taken, unfetched };
@@ -614,6 +610,7 @@ export class SheetSync {
       // kind of deferral writes its own note naming the row, the season or the
       // budget that held it.
       if (plan.deferred) this.log.info(`${spec.label}: ${plan.deferred} piece(s) of work deferred to the next poll`);
+      if (unfetched) this.log.info(`${spec.label}: lookups left for the next poll`);
       if (failures) this.log.warn(`${failures} lookup(s) failed; the ${spec.label} will retry on the next poll`);
 
       if (!plan.edits.length && !plan.insert) {
@@ -761,7 +758,10 @@ export class SheetSync {
       if (!fetches.length) return { result, unfetched };
       if (pass > MAX_PASSES) {
         this.log.warn(`${label}: still demanding lookups after ${MAX_PASSES} planning passes; continuing with what is in hand`);
-        return { result, unfetched };
+        // The fetches this pass built are abandoned, so the work exists
+        // whatever the ration said of what it left: a slice that took every
+        // pending ask reports nothing left, and these are the asks not made.
+        return { result, unfetched: true };
       }
       // Different upstreams with no data dependency, so their latencies
       // overlap rather than stack against the snapshot budget.
@@ -783,10 +783,6 @@ export class SheetSync {
     // sit inside the activity cut-off would fetch a block and then plan it as
     // out of scope, or the reverse.
     const now = Temporal.Now.instant();
-    // What this attempt has fetched of the three per-attempt upstreams. A
-    // FRESH re-read is a new attempt and starts afresh, because it plans
-    // against a grid that changed underneath it.
-    const fetched = emptyAttemptLookups();
 
     return this.toFixpoint(
       'sheet sync',
@@ -807,33 +803,20 @@ export class SheetSync {
           maxRows: Math.max(0, config.sheetMaxRows - spent.rows),
         }),
       (result) => {
-        // The two a block's show row waits on are fetched on the first
-        // planning attempt only, and only while this run has not yet chosen
-        // its insert — `rationLookups` says why.
-        const askFacts = attempt === 1 && result.plan.insert === null;
         const { catalogue, runtimes, genres, certificates, unfetched } = rationLookups(result.demands, {
           made,
           stamps: this.store.stamps,
           index,
           now,
           attempt,
-          askFacts,
-          spent: fetched,
+          insertChosen: result.plan.insert !== null,
         });
-        // The tally moves inside the fetch, so a pass the loop never runs
-        // spends nothing.
         const fetches: Array<() => Promise<void>> = [];
         if (catalogue.length) fetches.push(() => this.readCatalogue(catalogue, index, made, signal));
-        if (runtimes.length) {
-          fetches.push(() => {
-            fetched.runtimes += runtimes.length;
-            return this.readRuntimes(runtimes, made, signal);
-          });
-        }
+        if (runtimes.length) fetches.push(() => this.readRuntimes(runtimes, made, signal));
         if (genres.length) {
-          fetches.push(() => {
-            fetched.genres += genres.length;
-            return this.readFacts(genres, made, {
+          fetches.push(() =>
+            this.readFacts(genres, made, {
               credential: 'tvdb',
               key: 'TVDB_API_KEY',
               kind: 'genres',
@@ -841,13 +824,12 @@ export class SheetSync {
               classify,
               fetch: fetchSeriesGenres,
               fold: (requests, answered) => this.store.foldGenres(requests, answered),
-            }, signal);
-          });
+            }, signal),
+          );
         }
         if (certificates.length) {
-          fetches.push(() => {
-            fetched.certificates += certificates.length;
-            return this.readFacts(certificates, made, {
+          fetches.push(() =>
+            this.readFacts(certificates, made, {
               credential: 'tmdb',
               key: 'TMDB_API_KEY',
               kind: 'certificates',
@@ -860,8 +842,8 @@ export class SheetSync {
               classify: tmdbClassify,
               fetch: fetchShowCertificates,
               fold: (requests, answered) => this.store.foldCertificates(requests, answered),
-            }, signal);
-          });
+            }, signal),
+          );
         }
         return { fetches, unfetched };
       },
@@ -1092,11 +1074,13 @@ export class SheetSync {
       (result) => {
         // One burst a pass, oldest watch first — the order the planner offers
         // them in, so the queue drains in the order the tab reads. Nothing
-        // once the insert is planned or the credential is rejected: the first
-        // is the pass this loop stops at, the second no poll can drain.
+        // once the insert is planned or held for room, or the credential is
+        // rejected: the first two are the pass this loop stops at — with no
+        // room for a row, a pass fetching for one is a burst every pass to
+        // the ceiling — and the last no poll can drain.
         const pending = result.demands.filter((demand) => !made.films.has(demand.id));
         const unfetched = pending.length > 0 && !this.films.rejected;
-        if (result.plan.insert || this.films.rejected) return { fetches: [], unfetched };
+        if (result.plan.insert || result.plan.insertHeld || this.films.rejected) return { fetches: [], unfetched };
         const wanted = pending.slice(0, MAX_LOOKUPS_PER_ATTEMPT);
         return { fetches: wanted.length ? [() => this.readFilms(wanted, made, poll.signal)] : [], unfetched };
       },

@@ -50,7 +50,8 @@ import {
   bank,
   blockEnd,
   foldInto,
-  forget,
+  forgetCount,
+  scratchRecording,
   BLOCK_SCAN_ROWS,
   franchiseKeyFor,
   genresCell,
@@ -79,9 +80,9 @@ import {
 } from './values.ts';
 import type { Baseline, FieldOf, Forgetting, RecordKey, RecordOf, Recording, SeasonKey, SeasonRecord, TitleKey, TrackedField } from './values.ts';
 import { instantFrom, isoOf, later } from '../shared/dates.ts';
-import { detailAnswered, seasonAired, seasonComplete, type FactsCredential, type SeasonShape, type TitleCatalogue } from './3-catalogue.ts';
-import type { RuntimeRequest } from './io/runtimes.ts';
-import type { CatalogueRequest } from './io/catalogue.ts';
+import { detailAnswered, episodesAnswered, seasonAired, seasonComplete, type FactsCredential, type SeasonShape, type TitleCatalogue } from './3-catalogue.ts';
+import { runtimeKeyOf, type RuntimeRequest } from './io/runtimes.ts';
+import { mergeCatalogueRequest, type CatalogueRequest } from './io/catalogue.ts';
 import type { SeriesRequest } from './io/tvdb-series.ts';
 import type { CertificateRequest } from './io/tmdb-tv.ts';
 // The budget arithmetic, not a guard rule: the planner stops short of exactly
@@ -131,11 +132,11 @@ export interface RowInsert {
    * a complete season the fill could not date.
    *
    * Read where the count is banked, and nowhere else. A row that lands finished
-   * banks its count; a row that lands waiting withdraws it, because a
+   * banks its count; a row that lands open withdraws it, because a
    * record-scoped row leaves scope the moment its count is recorded and the poll
    * that could close it would never look at the row again.
    */
-  waiting: boolean;
+  open: boolean;
   /** Cells written into the new row. It has no `previous` — it did not exist. */
   fill: CellEdit[];
   note: string;
@@ -190,7 +191,7 @@ export interface BlockInsert {
    * rows do not all answer the same: one season's runtime can be in hand while
    * the next is still out. Only these have their counts withdrawn.
    */
-  waiting: number[];
+  open: number[];
   /** Cells on every row of the span. It has no `previous` — none of the rows existed. */
   fill: BlockCell[];
   note: string;
@@ -771,12 +772,12 @@ const resolveRow = ({ index, titles, duplicates }: PlanRun, block: ShowBlock, se
   const progress = resolved[0] as TitleProgress;
   const watched = progress.seasons.get(season.season);
   if (!watched || watched.watched === 0) return nothing;
-  const shapes = titles.get(progress.id)?.shapes;
+  const entry = titles.get(progress.id);
 
   return {
     kind: 'resolved',
     watched: watched.watched,
-    complete: shapes?.size ? seasonComplete(shapes.get(season.season), watched.watched) : null,
+    complete: episodesAnswered(entry) ? seasonComplete(entry.shapes.get(season.season), watched.watched) : null,
     lastWatchedAt: watched.lastWatchedAt,
     firstWatchedAt: watched.firstWatchedAt,
     counts: [{ key: seasonKey(progress.id, season.season), id: progress.id, season: season.season, watched: watched.watched }],
@@ -912,7 +913,7 @@ const insertableSeasons = (
 
 /** The two catalogue facts a chosen season's row turns on, read off the shape the store holds. */
 const candidateOf = (source: TitleProgress, season: SeasonProgress, titles: Map<number, TitleCatalogue>): InsertCandidate => {
-  const shape = titles.get(source.id)?.shapes.get(season.number);
+  const shape = titles.get(source.id)?.shapes?.get(season.number);
   return { source, season, aired: seasonAired(shape), complete: seasonComplete(shape, season.watched) };
 };
 
@@ -1048,7 +1049,7 @@ const scratchOf = (run: PlanRun): PlanRun => ({
   ...run,
   plan: emptyPlan(),
   demands: emptyDemands(),
-  keep: { observed: run.keep.observed, writing: new Map(), forgetting: run.keep.forgetting },
+  keep: scratchRecording(run.keep),
 });
 
 /** How many more distinct rows this poll may touch, counted the way the guard counts them. */
@@ -1071,9 +1072,10 @@ type Demand =
  * The planner asks for everything it wants and rations nothing. What a pass may
  * fetch is the fetch loop's question — `rationLookups` in `sync.ts` — because
  * only the loop knows what this attempt has already asked for, what the store
- * has answered since, and how many passes remain; carried in here that
- * knowledge was a mutable allowance threaded through a pure module, copied per
- * candidate, and wrong twice about which asks to count.
+ * has answered since, and how many passes remain. Carried in here, that
+ * knowledge is a mutable allowance threaded through a pure module and copied
+ * per candidate, and this module cannot tell an answered ask from an
+ * outstanding one without a copy of the store's stamps.
  *
  * Once per key, so the loop's slice counts titles: a live-action block asks
  * twice about one id — its episode list, then the entry that decides its
@@ -1083,18 +1085,14 @@ type Demand =
 const demand = ({ demands }: PlanRun, ask: Demand): void => {
   switch (ask.kind) {
     case 'detail': {
-      const held = demands.catalogue.find((request) => request.id === ask.request.id);
-      if (held === undefined) demands.catalogue.push({ ...ask.request });
-      else {
-        // Only ever widened: a flag set false on one ask says nothing about the other.
-        if (ask.request.anime) held.anime = true;
-        if (ask.request.episodes) held.episodes = true;
-        if (ask.request.detail) held.detail = true;
-      }
+      const at = demands.catalogue.findIndex((request) => request.id === ask.request.id);
+      if (at === -1) demands.catalogue.push(mergeCatalogueRequest(undefined, ask.request));
+      else demands.catalogue[at] = mergeCatalogueRequest(demands.catalogue[at], ask.request);
       return;
     }
     case 'runtimes':
-      if (!demands.runtimes.some((r) => r.tvdbId === ask.request.tvdbId && r.season === ask.request.season)) demands.runtimes.push(ask.request);
+      const key = runtimeKeyOf(ask.request.tvdbId, ask.request.season);
+      if (!demands.runtimes.some((r) => runtimeKeyOf(r.tvdbId, r.season) === key)) demands.runtimes.push(ask.request);
       return;
     case 'genres':
       if (!demands.genres.some((r) => r.id === ask.request.id)) demands.genres.push(ask.request);
@@ -1487,20 +1485,22 @@ const closeSeason = (out: PlanRun, block: ShowBlock, season: SeasonRow, resolved
   if (resolved.complete === false) return false;
 
   // The row stays open for another poll, so nothing about it may be recorded as
-  // settled. Out of `writing` as well as `observed`: the `Episode` edit above
-  // may have banked this very count, and a banked value is recorded the moment
-  // the batch lands — after which the next poll finds the count unmoved, and a
-  // row in scope on the record alone has no window to bring it back. The close
-  // would then never happen.
+  // settled — and what the record already holds of it is forgotten, not merely
+  // left unrecorded. Out of `writing` as well as `observed`, because the
+  // `Episode` edit above may have banked this very count, and a banked value
+  // is recorded the moment the batch lands. Forgotten, because the stored
+  // count may already agree with SIMKL's: a season whose count landed while it
+  // was still airing and that became complete when its last episode did, with
+  // nothing watched since. Such a row is in scope on the window alone, and a
+  // hold that outlives the window — a stamp SIMKL has yet to correct, an
+  // episode list it has yet to serve — would otherwise leave it complete and
+  // undated with nothing to bring it back. Forgotten, `countMoved` does.
   //
   // Above every exit that leaves the row open, because every one of them owes
-  // it: an unusable timestamp is SIMKL's to correct, and a count recorded
-  // against a row this run could not close is a close no poll ever makes.
+  // it: a count recorded against a row this run could not close is a close no
+  // poll ever makes.
   const holdOpen = (): false => {
-    for (const { key } of resolved.counts) {
-      withdraw(keep.observed, key, 'Watched');
-      withdraw(keep.writing, key, 'Watched');
-    }
+    for (const { key } of resolved.counts) forgetCount(keep, key);
     return false;
   };
 
@@ -1909,7 +1909,7 @@ export const planSync = (
           // scope only until its watch date leaves the window, and then
           // nothing brings it back; forgotten, `countMoved` does.
           defer: () => {
-            for (const { key } of resolved.counts) forget(keep, key, 'Watched');
+            for (const { key } of resolved.counts) forgetCount(keep, key);
           },
         });
       } else {
@@ -1986,7 +1986,7 @@ export const planSync = (
       // cour — read as one it would answer with a count spanning the whole
       // show rather than the latest season. So it declines to write; the
       // lookup failure already asks for another poll.
-      if (!anime && !entry?.shapes.size) {
+      if (!anime && !entry?.shapes?.size) {
         plan.skips.push({ code: 'no-episode-list', message: `${block.title}: no episode list came back, so ${SHOW_LABELS.Status} is left alone` });
         // A failed lookup, whatever `tvdbId` says: the block cannot be read
         // without an episode list, so nothing here is settled and the retry the
@@ -2053,7 +2053,7 @@ export const planSync = (
               // blank runtime cell something can still fill is one a later poll
               // has to close, and a record-scoped row leaves scope the moment its
               // count is recorded — so recording it here is the close never made.
-              if (insert.waiting) withdraw(out.keep.observed, chosen, 'Watched');
+              if (insert.open) withdraw(out.keep.observed, chosen, 'Watched');
               else bank(out.keep, chosen, 'Watched', String(candidate.season.watched));
               deferBehind(out, source.id, block.title, candidate.season.number, behind);
             },
@@ -2272,7 +2272,7 @@ const planInsert = (run: PlanRun, block: ShowBlock, candidate: InsertCandidate, 
     rows: 1,
     title: block.title,
     season: season.number,
-    waiting: filled.open,
+    open: filled.open,
     fill: filled.cells.flatMap(({ field, value }) => fillCell(grid, row, field, value, `${label}: new row`) ?? []),
     note: `${label}: new season row at ${row + 1}, ${season.watched} episodes${filled.end === null ? '' : ', ended'}${blankRuntimeNoteOf(filled, complete)}`,
   };
@@ -2306,7 +2306,6 @@ const missingRowNote = (progress: TitleProgress): string =>
  */
 const labelOf = (title: string, id: number): string => `${title} (simkl ${id})`;
 
-/** Everything the block walk reads that does not vary between candidates. */
 /**
  * Leave this title for a later run: nothing of what a block would write is
  * recorded, so the run that can build it still sees a title that has never been
@@ -2370,7 +2369,7 @@ const byFirstWatch = (a: TitleProgress, b: TitleProgress): number => compareWatc
 interface BlockReady {
   progress: TitleProgress;
   /** Answered on both cells only an upstream can fill — null there is settled-with-nothing, which lands the block blank. */
-  entry: TitleCatalogue & { genres: string[] | null; certificate: number | null };
+  entry: TitleCatalogue & { shapes: Map<number, SeasonShape>; genres: string[] | null; certificate: number | null };
   /** What the `Show` cell is written with, and the key the collision test was decided on. */
   title: string;
   /**
@@ -2494,7 +2493,7 @@ const buildBlock = (ctx: PlanRun, seasonRows: ReadonlySet<number>, { progress, e
     title,
     franchise,
     seasons: rows.map(({ candidate }) => candidate.season.number),
-    waiting: rows.flatMap(({ candidate }, offset) => ((filled[offset] as SeasonFill).open ? [candidate.season.number] : [])),
+    open: rows.flatMap(({ candidate }, offset) => ((filled[offset] as SeasonFill).open ? [candidate.season.number] : [])),
     fill: [
       // Every column here resolved before the walk reached this candidate, or
       // is one of the required ten, so nothing is dropped. `fillCell` answering
@@ -2731,7 +2730,7 @@ const planBlocks = (ctx: PlanRun, seen: Set<number>, filed: Set<number> | undefi
     // A live-action title with no episode list is a failed lookup, not a show
     // with no episodes: read as one, its season row would be inserted with a
     // count and a status derived from nothing.
-    if (!entry.shapes.size) {
+    if (!episodesAnswered(entry) || !entry.shapes.size) {
       plan.skips.push({ code: 'no-episode-list', message: `${label}: no episode list came back, so no block is added` });
       continue;
     }
@@ -2790,12 +2789,15 @@ const planBlocks = (ctx: PlanRun, seen: Set<number>, filed: Set<number> | undefi
     //    never recorded. Cut at the first, not filtered: the rows are
     //    contiguous and a gap in the middle is one only a hand edit could fill.
     //
-    //    Cut rather than landed open, too. A season row inside a block is
-    //    revisited only while its title is in scope, and a record-scoped title
-    //    leaves scope the moment its counts are recorded — so a row landing open
-    //    inside a block that recorded the rest would be a row no later poll
-    //    closes. What is cut off keeps its count unrecorded and comes back as an
-    //    ordinary season insert.
+    //    Cut rather than landed open on an unanswered runtime. A season row
+    //    inside a block is revisited only while its title is in scope, and a
+    //    record-scoped title leaves scope the moment its counts are recorded —
+    //    so a row landing open inside a block that recorded the rest would be
+    //    a row no later poll closes. The rows that do land open — a season
+    //    still airing, a last-watch stamp out of range — are safe for a
+    //    different reason: `BlockInsert.open` withdraws their counts, so the
+    //    title stays in scope for the close. What is cut off keeps its count
+    //    unrecorded and comes back as an ordinary season insert.
     const answered: Array<{ candidate: InsertCandidate; runtime: InsertRuntime }> = [];
     for (const season of wanted) {
       const candidate = candidateOf(progress, season, titles);
@@ -2872,10 +2874,10 @@ const planBlocks = (ctx: PlanRun, seen: Set<number>, filed: Set<number> | undefi
     // Per row, and only the ones landing finished: a row created with a blank
     // runtime cell a later poll can still fill has to stay in scope until it is
     // closed, and recording its count is what would take it out.
-    const waiting = new Set(built.waiting);
+    const open = new Set(built.open);
     for (const { candidate } of rows) {
       const key = seasonKey(progress.id, candidate.season.number);
-      if (waiting.has(candidate.season.number)) withdraw(keep.observed, key, 'Watched');
+      if (open.has(candidate.season.number)) withdraw(keep.observed, key, 'Watched');
       else bank(keep, key, 'Watched', String(candidate.season.watched));
     }
     // What the block left: the seasons the row budget cut off, and everything
