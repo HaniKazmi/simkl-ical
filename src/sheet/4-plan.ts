@@ -49,6 +49,7 @@ import {
   artworkFormula,
   bank,
   blockEnd,
+  foldInto,
   forget,
   BLOCK_SCAN_ROWS,
   franchiseKeyFor,
@@ -59,6 +60,7 @@ import {
   ownsNote,
   placeBlock,
   plausibleSerial,
+  recorded,
   recordedCount,
   recordedSerial,
   ROLLUP_FIELDS,
@@ -75,7 +77,7 @@ import {
   watchSerial,
   withdraw,
 } from './values.ts';
-import type { Baseline, Forgetting, Recording, TrackedField } from './values.ts';
+import type { Baseline, FieldOf, Forgetting, RecordKey, RecordOf, Recording, SeasonKey, SeasonRecord, TitleKey, TrackedField } from './values.ts';
 import { instantFrom, isoOf, later } from '../shared/dates.ts';
 import { detailAnswered, seasonAired, seasonComplete, type FactsCredential, type SeasonShape, type TitleCatalogue } from './3-catalogue.ts';
 import type { RuntimeRequest } from './io/runtimes.ts';
@@ -85,7 +87,7 @@ import type { CertificateRequest } from './io/tmdb-tv.ts';
 // The budget arithmetic, not a guard rule: the planner stops short of exactly
 // the bound the guard refuses at, and a second copy of the counting is a plan
 // refused whole over rows the planner thought it had room for.
-import { admitPlan, admitTier, rowsRemaining, type Rationed } from './guard-core.ts';
+import { admitPlan, admitTier, rowsRemaining, type Budgets, type Rationed } from './guard-core.ts';
 import type { CellData, ExtendedValue } from '../api/google/types.ts';
 
 // --- The plan's shapes ------------------------------------------------------
@@ -236,100 +238,6 @@ export const planWrites = (plan: SheetPlan): { edits: readonly CellEdit[]; inser
 });
 
 /**
- * How many lookups one **attempt** may make of each upstream a block's show row
- * waits on: TVDB's genres, TMDB's certificate, and TVDB's season runtimes.
- *
- * Only one row is inserted per run, so a larger burst buys nothing: what it
- * buys is a cold start on a full library issuing one request per unlisted
- * title — several hundred — inside a run whose snapshot goes stale at 120s,
- * and doing it again after every restart, since the store is process-local. A
- * handful covers the settled and unanswerable titles queued ahead of the next
- * insertable one; the rest arrive on later polls, which is the rate rows land
- * at anyway.
- *
- * It also bounds what a standing failure costs. A 403 that fails every request
- * — a suspended token, a WAF, a throttle — records nothing, so the same titles
- * are demanded next poll; capped, that is a handful of requests every half
- * hour rather than one per unlisted title.
- *
- * Per **attempt**, not per pass: the sync runs the planner to a fixpoint, and a
- * cap reset on every pass multiplies by the pass ceiling — four times this many
- * requests in one run, which is the burst the number exists to prevent.
- * `LookupBudget` is what carries the count across the passes of one attempt.
- */
-export const MAX_LOOKUPS_PER_PASS = 8;
-
-/**
- * How many **titles** one planning pass may ask SIMKL for details of.
- *
- * A different figure and a different period from the three above, because it
- * answers a different question. These asks are what a pass *reads the grid
- * with*: a block in scope is edited from the answer to its own ask in the same
- * run, so a pass that rationed them to a handful would skip rows it was in scope
- * to write. Measured on the live tab, a cold store with 18 recent blocks read 4
- * of them under an allowance of 8 and left the other 14 with "no episode list
- * came back". 32 is sized for a normal day with room to spare, so a pass reads
- * every block it means to write.
- *
- * Per **pass** rather than per attempt, which is what makes a backfill drain
- * rather than stall: a cold store with three hundred blocks in scope asks about
- * 32 a pass, up to the sync's pass ceiling, and the rest arrive on later polls.
- * Bounded either way — the ceiling on one attempt is 32 times that pass limit,
- * not one request per block on the tab.
- *
- * Counted in **titles**, not requests: a live-action block asks twice about the
- * same id, once for its episode list and once for the entry that decides its
- * `Status`, and `fetchCatalogue` merges the two. Counted per request, 18 blocks
- * would spend 36 of the allowance and the figure would mean half what it says.
- */
-export const CATALOGUE_ASKS_PER_PASS = 32;
-
-/**
- * What this attempt has already asked for, per upstream — mutable, and the one
- * thing a planning pass carries out of itself.
- *
- * A deliberate exception to this module being pure, and the narrowest one that
- * answers the question: what a pass may ask for depends on what its
- * predecessors asked for, and nothing else the planner returns can say that,
- * because a demand an earlier pass made has since been answered and is no
- * longer in any demand list. Defaulted per call, so a caller that does not
- * thread one gets a fresh budget and this pass's own behaviour.
- *
- * Four allowances rather than one: the four are four upstreams with four
- * credentials, and a single total would let a cold start's details starve the
- * genres of the one block the run can actually insert.
- *
- * `detail` is a set of title ids rather than a count, because its allowance is
- * counted in titles — see `CATALOGUE_ASKS_PER_PASS` — and it is the one the
- * caller clears between passes.
- */
-export interface LookupBudget {
-  detail: Set<number>;
-  genres: number;
-  certificates: number;
-  runtimes: number;
-}
-
-export const emptyLookupBudget = (): LookupBudget => ({ detail: new Set(), genres: 0, certificates: 0, runtimes: 0 });
-
-/**
- * A copy nothing written into reaches the original, for a candidate whose whole
- * plan may be dropped: an allowance charged for an ask nobody made is an ask the
- * next candidate cannot make. The set is rebuilt rather than spread, which a
- * shallow copy would share by reference.
- */
-const copyLookupBudget = (budget: LookupBudget): LookupBudget => ({ ...budget, detail: new Set(budget.detail) });
-
-/**
- * Start a pass with a fresh catalogue allowance, keeping what the attempt has
- * already spent on the three per-attempt upstreams. See
- * `CATALOGUE_ASKS_PER_PASS` for why the two periods differ.
- */
-export const nextPass = (budget: LookupBudget): void => {
-  budget.detail = new Set();
-};
-
-/**
  * Why a row was deliberately left alone. `code` is what a test or a grouping
  * asserts on; `message` names the row for a human.
  */
@@ -371,7 +279,9 @@ export interface SheetPlan {
   /**
    * Work this run could have done and rationed: a row ready to add that did not
    * fit under the one-per-run rule, a season waiting behind the one inserted, a
-   * row whose count moved that the poll's budget had no room for.
+   * row whose count moved that the poll's budget had no room for. A lookup the
+   * fetch loop had no room for is not here — it is the loop's `unfetched`,
+   * which arms the same retry.
    *
    * One number, because every consumer asks it one question — *is there work
    * only another poll will drain* — and answers it the same way whatever the
@@ -382,6 +292,8 @@ export interface SheetPlan {
 }
 
 export const emptyPlan = (): SheetPlan => ({ edits: [], insert: null, skips: [], notes: [], deferred: 0 });
+
+const emptyDemands = (): PlanDemands => ({ catalogue: [], runtimes: [], genres: [], certificates: [] });
 
 /**
  * Oldest first, a title with no watch date last, and `tie` to settle two
@@ -408,14 +320,10 @@ export interface PlanDemands {
    * upstreams with two credentials and two join keys; a block needs both, so a
    * single list could not say which half came back.
    *
-   * Every one of the four lists is written only by `demand` and capped through
-   * `LookupBudget` — these two and `runtimes` at `MAX_LOOKUPS_PER_PASS` for the
-   * attempt, `catalogue` at `CATALOGUE_ASKS_PER_PASS` titles for the pass. These
-   * two empty once every block candidate is answered, settled-with-nothing
-   * included. What is *not* charged is an ask the store has already answered —
-   * `sync.ts` drops those inside `CATALOGUE_MAX_AGE` anyway, and counting them
-   * would let a handful of settled titles spend the whole allowance on every
-   * pass.
+   * Every one of the four lists is written only by `demand`, once per key, and
+   * none is capped here: the planner asks for everything it wants, and how much
+   * of it one pass fetches is `rationLookups` in `sync.ts`. These two empty
+   * once every block candidate is answered, settled-with-nothing included.
    */
   genres: SeriesRequest[];
   certificates: CertificateRequest[];
@@ -519,12 +427,6 @@ export interface PlanOptions {
    * one of them, because the note has to name every key a restart needs fixed.
    */
   factsRejected?: ReadonlySet<FactsCredential>;
-  /**
-   * The block walk's lookup allowance for this attempt, shared across the
-   * passes of the plan-fetch fixpoint. A fresh one per call by default, which
-   * is the behaviour of a caller planning once.
-   */
-  lookupBudget?: LookupBudget;
   /**
    * What the **poll** has left of each budget, not what the config allows: the
    * ceiling minus whatever an earlier half already sent. `SHEET_MAX_EDITS` and
@@ -691,11 +593,11 @@ const titleIsNew = (id: number, known: Known): boolean => known.anyTitle && !tit
  * Unknown title is not a move, for the reason `titleKnown` gives.
  */
 const countMoved = (id: number, season: number, watched: number, known: Known): boolean =>
-  titleKnown(id, known) && recordedCount(known.baseline.get(seasonKey(id, season))?.Watched) !== watched;
+  titleKnown(id, known) && recordedCount(recorded(known.baseline, seasonKey(id, season))?.Watched) !== watched;
 
 /** Whether SIMKL's membership for a title differs from what was recorded. A recorded absence is `NOT_HELD`, so `hold` → none is a move. */
 const statusMoved = (progress: TitleProgress, { baseline }: Known): boolean => {
-  const was = baseline.get(titleRecordKey(progress.id))?.Status;
+  const was = recorded(baseline, titleRecordKey(progress.id))?.Status;
   return was !== undefined && was !== (progress.status ?? NOT_HELD);
 };
 
@@ -713,7 +615,7 @@ const watchedSeasons = (progress: TitleProgress): SeasonProgress[] => [...progre
  * behind SIMKL; read off the rows alone it would never be walked and the new
  * season would never land.
  */
-const blockRecent = (ids: number[], index: Map<number, TitleProgress>, cutoff: Temporal.Instant, known: Known): boolean => {
+const blockRecent = ({ index, cutoff, known }: PlanRun, ids: number[]): boolean => {
   if (watchedRecently(ids, index, cutoff)) return true;
   return ids.some((id) => {
     const progress = index.get(id);
@@ -738,16 +640,15 @@ type RowResolution =
   | {
       kind: 'resolved';
       watched: number;
-      complete: boolean;
       /**
-       * Whether `complete` is an answer at all. A cour row answers from its own
-       * counters; a row resolved by number answers from the episode list, and
-       * with none in the store `complete` is false the same way it is for a
-       * season half watched — which is the one reading a close must not make,
-       * since a row recorded as unfinished on a failed lookup leaves scope the
-       * moment its count lands.
+       * Whether the season is finished and finished being watched — or `null`
+       * for not yet known. A cour row answers from its own counters; a row
+       * resolved by number answers from the episode list, and with none in the
+       * store there is no answer. Null rather than false because a close must
+       * not read "unknown" as "unfinished": a row recorded as unfinished on a
+       * failed lookup leaves scope the moment its count lands.
        */
-      settled: boolean;
+      complete: boolean | null;
       lastWatchedAt: Temporal.Instant | null;
       firstWatchedAt: Temporal.Instant | null;
       /**
@@ -770,7 +671,7 @@ type RowResolution =
        * branch a row took, and a second derivation elsewhere is how a record
        * comes to describe a different season than the row it was read for.
        */
-      key: string | null;
+      key: SeasonKey | null;
     };
 
 /**
@@ -781,7 +682,7 @@ type RowResolution =
  * stood before this run's own withdrawals.
  */
 interface SeasonCount {
-  key: string;
+  key: SeasonKey;
   id: number;
   season: number;
   watched: number;
@@ -795,13 +696,7 @@ const numberedSeasons = (progress: TitleProgress): number[] => [...progress.seas
 const watchedIn = (progress: TitleProgress): number =>
   [...progress.seasons.values()].reduce((total, season) => total + season.watched, 0);
 
-const resolveRow = (
-  block: ShowBlock,
-  season: SeasonRow,
-  index: Map<number, TitleProgress>,
-  titles: Map<number, TitleCatalogue>,
-  duplicates: Set<number>,
-): RowResolution => {
+const resolveRow = ({ index, titles, duplicates }: PlanRun, block: ShowBlock, season: SeasonRow): RowResolution => {
   const ids = idsFor(block, season);
   if (!ids.length) return nothing;
 
@@ -857,7 +752,6 @@ const resolveRow = (
       watched: resolved.reduce((total, p) => total + watchedIn(p), 0),
       // Only once *every* id is complete.
       complete: resolved.every((p) => courComplete(p)),
-      settled: true,
       // The first cour starts the row, as the last one ends it below.
       firstWatchedAt: number === undefined ? null : (first.seasons.get(number)?.firstWatchedAt ?? null),
       key: number === undefined ? null : seasonKey(first.id, number),
@@ -877,12 +771,12 @@ const resolveRow = (
   const progress = resolved[0] as TitleProgress;
   const watched = progress.seasons.get(season.season);
   if (!watched || watched.watched === 0) return nothing;
+  const shapes = titles.get(progress.id)?.shapes;
 
   return {
     kind: 'resolved',
     watched: watched.watched,
-    complete: seasonComplete(titles.get(progress.id)?.shapes.get(season.season), watched.watched),
-    settled: (titles.get(progress.id)?.shapes.size ?? 0) > 0,
+    complete: shapes?.size ? seasonComplete(shapes.get(season.season), watched.watched) : null,
     lastWatchedAt: watched.lastWatchedAt,
     firstWatchedAt: watched.firstWatchedAt,
     counts: [{ key: seasonKey(progress.id, season.season), id: progress.id, season: season.season, watched: watched.watched }],
@@ -1041,13 +935,7 @@ const candidateOf = (source: TitleProgress, season: SeasonProgress, titles: Map<
  * broadcast season). A block being created has neither: it holds no rows yet,
  * and the type it will carry is `SHOW_TYPE` by construction.
  */
-const insertTarget = (
-  source: TitleProgress,
-  titles: Map<number, TitleCatalogue>,
-  cutoff: Temporal.Instant,
-  covered: Set<number>,
-  known: Known,
-): InsertTarget | null => {
+const insertTarget = ({ titles, cutoff, known }: PlanRun, source: TitleProgress, covered: Set<number>): InsertTarget | null => {
   // False, never `titleIsNew`: this block exists, so its height is the reader's
   // judgement and a title first seen today has nothing to back-fill from. See
   // `insertableSeasons`.
@@ -1087,7 +975,7 @@ interface InsertTarget {
  * a report is compared against the poll before it and a difference in wording
  * reads as a difference in state.
  */
-const deferBehind = (plan: SheetPlan, keep: Recording, id: number, label: string, season: number, behind: readonly SeasonProgress[]): void => {
+const deferBehind = ({ plan, keep }: PlanRun, id: number, label: string, season: number, behind: readonly SeasonProgress[]): void => {
   if (!behind.length) return;
   plan.deferred += behind.length;
   holdSeasons(keep, id, behind);
@@ -1109,34 +997,67 @@ const holdSeasons = (keep: Recording, id: number, seasons: readonly SeasonProgre
   for (const season of seasons) withdraw(keep.observed, seasonKey(id, season.number), 'Watched');
 };
 
-// --- Where a row's decisions land --------------------------------------------
+// --- One planning pass -------------------------------------------------------
 
 /**
- * Where one row's decisions land: the plan it adds to, the lookups it asks for
- * and the allowance they are charged against, and the two maps it banks and
- * withdraws in.
+ * One planning pass: what it reads, and where its decisions land.
  *
- * A parameter rather than the run's own, because the admission step below builds
- * a candidate row into a target of its own and keeps it only if the whole run
- * still fits the poll's budgets. Everything a rejected row planned has to be
- * droppable together — the edits, the demands and what it banked — and a writer
- * reaching past this for any of them is a piece of a rejected row surviving it.
+ * Every walk, close, insert and block builder takes this and nothing else, so a
+ * rule that needs one more fact about the pass reads it off the run rather than
+ * growing a parameter list or a closure. The first group is read-only for the
+ * life of the pass. The second is where writes go — and it is a parameter
+ * rather than the run's own because the admission step builds a candidate into
+ * a **scratch** run, `scratchOf`, and keeps it only if the whole run still fits
+ * the poll's budgets: everything a rejected candidate planned has to be
+ * droppable together, and a writer reaching past its run for any of it is a
+ * piece of a rejected candidate surviving it.
  */
-interface WriteTarget extends Asker {
-  plan: SheetPlan;
-  keep: Recording;
-}
+interface PlanRun {
+  grid: Grid;
+  index: Map<number, TitleProgress>;
+  titles: Map<number, TitleCatalogue>;
+  /** What SIMKL last said, read as the two questions the window cannot answer. */
+  known: Known;
+  /** The activity window's near edge. */
+  cutoff: Temporal.Instant;
+  timezone: string;
+  /** Tomorrow in the viewer's zone — the bound every serial this pass writes is checked against, `maxSerial`. */
+  ceiling: number;
+  showBucket: string | null;
+  facts: { tvdb: boolean; tmdb: boolean };
+  factsRejected: ReadonlySet<FactsCredential>;
+  /** What is left of the poll's budgets, in the shape the guard counts them. */
+  budgets: Budgets;
+  /** Ids more than one row of the grid claims. */
+  duplicates: ReadonlySet<number>;
 
-/** What asking for a lookup needs: the lists it lands on, and the allowance it is charged against. */
-interface Asker {
+  plan: SheetPlan;
   demands: PlanDemands;
-  budget: LookupBudget;
+  /** Where this pass banks what it writes, and withdraws what it leaves for a later run. */
+  keep: Required<Recording>;
 }
 
 /**
- * One lookup, named by the allowance it is charged against. The four kinds are
- * the four fields of `LookupBudget`, so a kind that is not in it is a compile
- * error rather than an uncharged ask.
+ * A run to build one candidate into: the pass's own inputs, a plan and demand
+ * lists of its own, and a fresh `writing` — while `observed` and `forgetting`
+ * stay the run's, so a rejected candidate's withdrawals and forgets stick.
+ * What it banked is gone from the record either way, which is exactly the
+ * state that makes the next poll see the row as moved.
+ */
+const scratchOf = (run: PlanRun): PlanRun => ({
+  ...run,
+  plan: emptyPlan(),
+  demands: emptyDemands(),
+  keep: { observed: run.keep.observed, writing: new Map(), forgetting: run.keep.forgetting },
+});
+
+/** How many more distinct rows this poll may touch, counted the way the guard counts them. */
+const rowsLeft = (run: PlanRun): number => rowsRemaining(planWrites(run.plan), run.budgets);
+
+/**
+ * One lookup, named by the list it lands on. The four kinds are the four lists
+ * of `PlanDemands`, so a kind that is not there is a compile error rather than
+ * an ask nobody fetches.
  */
 type Demand =
   | { kind: 'detail'; request: CatalogueRequest }
@@ -1145,51 +1066,51 @@ type Demand =
   | { kind: 'certificates'; request: CertificateRequest };
 
 /**
- * Ask for a lookup, and charge the attempt's allowance for it.
+ * Ask for a lookup: the one writer of `PlanDemands`, and it asks once per key.
  *
- * **One choke point, and every asker goes through it.** The block walk is not
- * the only place that asks: the grid walk asks for a catalogue per in-scope
- * block and a runtime per closing row, and once a record's disagreement can put
- * every block of a marked-whole library in scope at once — and keep them there
- * across polls, since nothing ages out of that — the grid walk is the larger of
- * the two. Charged uniformly, a pass asks for a bounded burst whatever the shape
- * of the work; charged on one side and not the other, the uncharged side is the
- * burst the cap exists to prevent — a cold store with 120 blocks in scope
- * issuing 240 requests at once.
+ * The planner asks for everything it wants and rations nothing. What a pass may
+ * fetch is the fetch loop's question — `rationLookups` in `sync.ts` — because
+ * only the loop knows what this attempt has already asked for, what the store
+ * has answered since, and how many passes remain; carried in here that
+ * knowledge was a mutable allowance threaded through a pure module, copied per
+ * candidate, and wrong twice about which asks to count.
  *
- * Dropping an ask costs nothing that is not re-earned: the demand set is a
- * function of the grid, the library and the store, so the next pass of the same
- * fixpoint — and failing that the next poll — asks again.
- *
- * `charge` is false for an ask the store has already answered. Such an ask is
- * one `sync.ts` drops inside `CATALOGUE_MAX_AGE` anyway, and counting it would
- * let a handful of settled titles sorted ahead spend the whole allowance on
- * every pass and starve everything behind them for good.
- *
- * Answers whether the ask went out, which is what a caller reads to tell "asked
- * and waiting" — work this run's own fixpoint drains — from "not asked", which
- * is work only another poll will do.
+ * Once per key, so the loop's slice counts titles: a live-action block asks
+ * twice about one id — its episode list, then the entry that decides its
+ * `Status` — and two entries for it would spend two of an allowance that means
+ * titles. The flags merge, the way `fetchCatalogue` merges them into one call.
  */
-const demand = ({ demands, budget }: Asker, ask: Demand, { charge = true }: { charge?: boolean } = {}): boolean => {
-  if (ask.kind === 'detail') {
-    // Charged per title, and free for a title this pass has already asked
-    // about: a live-action block asks twice about the same id and
-    // `fetchCatalogue` merges the two into one call.
-    if (charge && !budget.detail.has(ask.request.id)) {
-      if (budget.detail.size >= CATALOGUE_ASKS_PER_PASS) return false;
-      budget.detail.add(ask.request.id);
+const demand = ({ demands }: PlanRun, ask: Demand): void => {
+  switch (ask.kind) {
+    case 'detail': {
+      const held = demands.catalogue.find((request) => request.id === ask.request.id);
+      if (held === undefined) demands.catalogue.push({ ...ask.request });
+      else {
+        // Only ever widened: a flag set false on one ask says nothing about the other.
+        if (ask.request.anime) held.anime = true;
+        if (ask.request.episodes) held.episodes = true;
+        if (ask.request.detail) held.detail = true;
+      }
+      return;
     }
-    demands.catalogue.push(ask.request);
-    return true;
+    case 'runtimes':
+      if (!demands.runtimes.some((r) => r.tvdbId === ask.request.tvdbId && r.season === ask.request.season)) demands.runtimes.push(ask.request);
+      return;
+    case 'genres':
+      if (!demands.genres.some((r) => r.id === ask.request.id)) demands.genres.push(ask.request);
+      return;
+    case 'certificates':
+      if (!demands.certificates.some((r) => r.id === ask.request.id)) demands.certificates.push(ask.request);
+      return;
   }
-  if (charge) {
-    if (budget[ask.kind] >= MAX_LOOKUPS_PER_PASS) return false;
-    budget[ask.kind] += 1;
-  }
-  if (ask.kind === 'runtimes') demands.runtimes.push(ask.request);
-  else if (ask.kind === 'genres') demands.genres.push(ask.request);
-  else demands.certificates.push(ask.request);
-  return true;
+};
+
+/** Every ask of one demand set, through `demand`, so an ask both sets hold stays one entry. */
+const mergeDemands = (run: PlanRun, from: PlanDemands): void => {
+  for (const request of from.catalogue) demand(run, { kind: 'detail', request });
+  for (const request of from.runtimes) demand(run, { kind: 'runtimes', request });
+  for (const request of from.genres) demand(run, { kind: 'genres', request });
+  for (const request of from.certificates) demand(run, { kind: 'certificates', request });
 };
 
 /** Everything the insert's runtime decision reads, computed once per candidate. */
@@ -1261,13 +1182,7 @@ type RuntimeAnswer =
   | { state: 'settled'; id: number }
   | { state: 'target'; id: number; request: RuntimeRequest };
 
-const runtimeAnswer = (
-  grid: Grid,
-  block: ShowBlock,
-  season: SeasonRow,
-  index: Map<number, TitleProgress>,
-  titles: Map<number, TitleCatalogue>,
-): RuntimeAnswer => {
+const runtimeAnswer = ({ grid, index, titles }: PlanRun, block: ShowBlock, season: SeasonRow): RuntimeAnswer => {
   if (!runtimeScopeOk(block)) return { state: 'ineligible' };
   if (season.ids.length) return { state: 'ineligible' };
   if (season.season === null || !Number.isInteger(season.season)) return { state: 'ineligible' };
@@ -1340,9 +1255,9 @@ export const observeWatches = (index: Map<number, TitleProgress>): Baseline => {
 };
 
 /** One entry of the seed: the key it lands under and the fields it holds. */
-interface Observation {
-  key: string;
-  entry: Record<string, string>;
+interface Observation<K extends RecordKey> {
+  key: K;
+  entry: RecordOf<K>;
 }
 
 /**
@@ -1356,11 +1271,11 @@ interface Observation {
  * season with a count and no first-watch date is one `observeWatches` skips —
  * and the two would disagree about which keys exist at all.
  */
-const titleObservations = (progress: TitleProgress): { title: Observation; seasons: Observation[] } => {
-  const seasons: Observation[] = [];
+const titleObservations = (progress: TitleProgress): { title: Observation<TitleKey>; seasons: Observation<SeasonKey>[] } => {
+  const seasons: Observation<SeasonKey>[] = [];
   for (const season of progress.seasons.values()) {
     if (season.firstWatchedAt === null) continue;
-    const entry: Record<string, string> = { Start: isoOf(season.firstWatchedAt), Watched: String(season.watched) };
+    const entry: SeasonRecord = { Start: isoOf(season.firstWatchedAt), Watched: String(season.watched) };
     if (season.lastWatchedAt !== null) entry.End = isoOf(season.lastWatchedAt);
     seasons.push({ key: seasonKey(progress.id, season.number), entry });
   }
@@ -1380,7 +1295,7 @@ const titleObservations = (progress: TitleProgress): { title: Observation; seaso
  */
 const TRACKED_SOURCE: Record<TrackedField, { of: (resolved: ResolvedRow) => Temporal.Instant | null; on: (season: SeasonRow, resolved: ResolvedRow) => boolean }> = {
   Start: { of: (resolved) => resolved.firstWatchedAt, on: () => true },
-  End: { of: (resolved) => resolved.lastWatchedAt, on: (season, resolved) => season.closed && resolved.complete },
+  End: { of: (resolved) => resolved.lastWatchedAt, on: (season, resolved) => season.closed && resolved.complete === true },
 };
 
 /**
@@ -1446,23 +1361,18 @@ const resulting = (candidates: Candidate[], field: TrackedField, grid: Grid, row
  * empty list, which is an answer. Keyed on the episode count those never
  * settle either.
  */
-const endMoved = (season: SeasonRow, resolved: ResolvedRow, { baseline, timezone, ceiling }: FollowContext): boolean => {
+const endMoved = ({ known: { baseline }, timezone, ceiling }: PlanRun, season: SeasonRow, resolved: ResolvedRow): boolean => {
   if (season.ids.length || !season.closed || resolved.key === null) return false;
   const serial = watchSerial(resolved.lastWatchedAt, timezone);
   // The same range `followUpstream` declines on. Asked here too so a timestamp
   // it is going to refuse does not first earn a lookup to refuse it with.
   if (serial === null || !plausibleSerial(serial, ceiling)) return false;
-  const was = recordedSerial(baseline.get(resolved.key)?.End, timezone);
+  const was = recordedSerial(recorded(baseline, resolved.key)?.End, timezone);
   return was !== null && was !== serial;
 };
 
-const followUpstream = (
-  { plan, keep }: WriteTarget,
-  { grid, timezone, ceiling, baseline }: FollowContext,
-  season: SeasonRow,
-  resolved: ResolvedRow,
-  label: string,
-): void => {
+const followUpstream = (out: PlanRun, season: SeasonRow, resolved: ResolvedRow, label: string): void => {
+  const { plan, keep, grid, timezone, ceiling, known: { baseline } } = out;
   const key = resolved.key;
   if (key === null) return;
 
@@ -1478,7 +1388,7 @@ const followUpstream = (
     const at = source.of(resolved);
     const serial = watchSerial(at, timezone);
     if (at === null || serial === null) continue;
-    const was = recordedSerial(baseline.get(key)?.[field], timezone);
+    const was = recordedSerial(recorded(baseline, key)?.[field], timezone);
     candidates.push({ field, at, serial, moved: was !== null && was !== serial });
   }
 
@@ -1549,7 +1459,7 @@ const followUpstream = (
       continue;
     }
 
-    const before = watchedNote(instantFrom(baseline.get(key)?.[field]), timezone);
+    const before = watchedNote(instantFrom(recorded(baseline, key)?.[field]), timezone);
     plan.edits.push(edit(grid, season.row, field, num(serial), `${label}: ${SHOW_LABELS[field]} moved from ${before} to ${watchedNote(at, timezone)}`));
     // Into `writing`, and out of `observed`, which `observeWatches` has already
     // seeded with this very value: recorded before its write lands, the next
@@ -1557,22 +1467,6 @@ const followUpstream = (
     bank(keep, key, field, isoOf(at));
   }
 };
-
-/**
- * Everything `followUpstream` *reads* and that does not vary between rows, built
- * once per run.
- *
- * Read-only, and the plan and the record are not in it: a follow-up is a
- * candidate the admission step may hold back, so where it writes is the
- * `WriteTarget` it is handed and not a map it reaches for. Kept here, a rejected
- * row's edits would land in the run's own plan.
- */
-interface FollowContext {
-  grid: Grid;
-  timezone: string;
-  ceiling: number;
-  baseline: Baseline;
-}
 
 /**
  * The `End` date and the runtime that rides with it, for a row that resolved
@@ -1588,18 +1482,9 @@ interface FollowContext {
  * one thing the caller branches on: whether this batch dates the row, which is
  * what decides the fate of the watch note beside it.
  */
-const closeSeason = (
-  out: WriteTarget,
-  grid: Grid,
-  block: ShowBlock,
-  season: SeasonRow,
-  resolved: ResolvedRow,
-  index: Map<number, TitleProgress>,
-  titles: Map<number, TitleCatalogue>,
-  { label, timezone, ceiling }: { label: string; timezone: string; ceiling: number },
-): boolean => {
-  const { plan, keep } = out;
-  if (!resolved.complete && resolved.settled) return false;
+const closeSeason = (out: PlanRun, block: ShowBlock, season: SeasonRow, resolved: ResolvedRow, label: string): boolean => {
+  const { plan, keep, grid, titles, timezone, ceiling } = out;
+  if (resolved.complete === false) return false;
 
   // The row stays open for another poll, so nothing about it may be recorded as
   // settled. Out of `writing` as well as `observed`: the `Episode` edit above
@@ -1624,7 +1509,7 @@ const closeSeason = (
   // the count would land and be recorded, and a season that was in fact
   // complete would leave scope undated; a poll whose lookup fails is exactly
   // the poll a forgotten or withdrawn count must survive.
-  if (!resolved.settled) {
+  if (resolved.complete === null) {
     plan.skips.push({ code: 'no-episode-list', message: `${label}: no episode list came back, so whether it is complete is unknown — left open for the next poll` });
     return holdOpen();
   }
@@ -1639,7 +1524,7 @@ const closeSeason = (
     return holdOpen();
   }
 
-  const runtime = runtimeAnswer(grid, block, season, index, titles);
+  const runtime = runtimeAnswer(out, block, season);
   if (runtime.state === 'pending') {
     // Nothing to demand: without the detail there is no key to ask TVDB with,
     // and the block's catalogue demand already asks for it.
@@ -1650,13 +1535,10 @@ const closeSeason = (
   // `null` settled with nothing usable, a number the answer.
   const minutes = runtime.state === 'target' ? titles.get(runtime.id)?.seasonRuntimes.get(runtime.request.season) : null;
   if (runtime.state === 'target' && minutes === undefined) {
-    // Whether the ask actually went out. Unasked is work this run chose not to
-    // do — the allowance was spent — and that is what a deferral claims and what
-    // arms the retry bringing a poll with a fresh allowance; asked and
-    // unanswered drains inside this run's own fixpoint, and a lookup that failed
-    // arms the retry through `made.failures` instead. The block walk counts an
-    // unmade ask the same way.
-    if (!demand(out, { kind: 'runtimes', request: runtime.request })) plan.deferred += 1;
+    // Asked and unanswered drains inside this run's own fixpoint; an ask the
+    // fetch loop had no room for is `unfetched` there, which arms the retry,
+    // and a lookup that failed arms it through `made.failures`.
+    demand(out, { kind: 'runtimes', request: runtime.request });
     plan.skips.push({ code: 'awaiting-runtimes', message: `${label}: complete, but its episode runtimes have not come back — left open for the next poll` });
     return holdOpen();
   }
@@ -1731,11 +1613,10 @@ const closeSeason = (
  * unlike the runtime beside it.
  */
 const watchNote = (
-  { plan }: WriteTarget,
-  grid: Grid,
+  { plan, grid, timezone, ceiling }: PlanRun,
   season: SeasonRow,
   lastWatchedAt: Temporal.Instant | null,
-  { advanced, closing, label, timezone, ceiling }: { advanced: boolean; closing: boolean; label: string; timezone: string; ceiling: number },
+  { advanced, closing, label }: { advanced: boolean; closing: boolean; label: string },
 ): void => {
   const cell = cellAt(grid, season.row, grid.columns.Note);
   if (!ownsNote(cell, season.note)) return;
@@ -1791,24 +1672,43 @@ export const planSync = (
     showBucket = showArtworkBucket(config),
     facts = { tvdb: tvdbConfigured(config), tmdb: tmdbConfigured(config) },
     factsRejected = new Set<FactsCredential>(),
-    lookupBudget = emptyLookupBudget(),
     maxEdits = config.sheetMaxEdits,
     maxRows = config.sheetMaxRows,
   }: PlanOptions = {},
 ): PlanResult => {
-  const plan = emptyPlan();
-  const demands: PlanDemands = { catalogue: [], runtimes: [], genres: [], certificates: [] };
-  const cutoff = cutoffFrom(now, sinceDays);
-  const known: Known = { baseline, anyTitle: anyTitleRecorded };
-  const duplicates = duplicateIds(grid.blocks);
+  const run: PlanRun = {
+    grid,
+    index,
+    titles,
+    known: { baseline, anyTitle: anyTitleRecorded },
+    cutoff: cutoffFrom(now, sinceDays),
+    timezone,
+    ceiling: maxSerial(now, timezone),
+    showBucket,
+    facts,
+    factsRejected,
+    // `spent` is zero because what the planner was handed is already the
+    // ceiling minus what an earlier half sent — see `PlanOptions.maxEdits`.
+    // The arithmetic itself is `guard-core.ts`'s, so a run this stops short of
+    // is one the guard would have taken and vice versa: two copies of the
+    // counting is a poll refused whole over rows the planner thought it had
+    // room for.
+    budgets: { maxEdits, maxRows, spent: { edits: 0, rows: 0 } },
+    duplicates: duplicateIds(grid.blocks),
+    plan: emptyPlan(),
+    demands: emptyDemands(),
+    keep: {
+      // Copied, never used directly: a pass whose plan is discarded must not
+      // leave its withdrawals in the caller's seed. The entries themselves are
+      // never mutated in place — only replaced — so a shallow copy is enough.
+      observed: new Map(starts ?? observeWatches(index)),
+      writing: new Map(),
+      forgetting: new Map(),
+    },
+  };
+  const { plan, demands, keep, cutoff, known, duplicates } = run;
+  const { observed, writing } = keep;
   const onGrid = new Set<number>();
-  // Copied, never used directly: a pass whose plan is discarded must not leave
-  // its withdrawals in the caller's seed. The entries themselves are never
-  // mutated in place — only replaced — so a shallow copy is enough.
-  const observed = new Map(starts ?? observeWatches(index));
-  const writing: Baseline = new Map();
-  const forgetting: Forgetting = new Map();
-  const keep: Recording = { observed, writing, forgetting };
   // Every write the walk finds, by the tier that decides which goes first. The
   // walk plans nothing directly: it builds candidates and the admission step
   // below takes them in tier order, while the poll's budgets have room.
@@ -1829,84 +1729,25 @@ export const planSync = (
   // planned past the ceiling would write nothing at all — and a record-scoped
   // row has no window to age out of, so that refusal stands on every poll for
   // ever. Rationed, the same rows land a budget at a time.
-  const follows: Rationed<WriteTarget>[] = [];
-  const watched: Rationed<WriteTarget>[] = [];
-  const inserts: Array<Rationed<WriteTarget> & { label: string }> = [];
-  const backlog: Array<Rationed<WriteTarget> & { row: number }> = [];
-  const run: WriteTarget = { plan, demands, budget: lookupBudget, keep };
-  const follow: FollowContext = { grid, timezone, ceiling: maxSerial(now, timezone), baseline };
-
-  /** How many more distinct rows this poll may touch, counted the way the guard counts them. */
-  const rowsLeft = (): number => rowsRemaining(planWrites(plan), budgets);
+  const follows: Rationed<PlanRun>[] = [];
+  const watched: Rationed<PlanRun>[] = [];
+  const inserts: Array<Rationed<PlanRun> & { label: string }> = [];
+  const backlog: Array<Rationed<PlanRun> & { row: number }> = [];
 
   /**
-   * The grid walk's catalogue ask: charged only while the store has not
-   * answered, and counted as deferred where the allowance had no room.
-   *
-   * Uncharged once answered because these asks are what a pass reads the grid
-   * with, and an answered title's ask is one `sync.ts` drops inside
-   * `CATALOGUE_MAX_AGE` anyway: charged, the first `CATALOGUE_ASKS_PER_PASS`
-   * blocks in grid order would spend the whole allowance on every pass and
-   * every poll while writing nothing, and every block behind them would be
-   * read as "no episode list came back" for as long as they stayed in scope —
-   * which, for a block in scope on the record alone, is for ever. A refused
-   * ask is a block this pass could not read, and `deferred` is what arms the
-   * retry that brings a pass with a fresh allowance — counted once per title,
-   * the unit the allowance names, since a live-action block asks twice about
-   * one id.
+   * The show half's admission step: a candidate built into a scratch run and
+   * taken through `admitPlan` only if the whole run still fits the poll's
+   * budgets. What the show half merges beyond the plan: the candidate's
+   * demands and what it banked. A rejected candidate's demands are dropped with
+   * it — they were asks for a row this poll is not writing.
    */
-  const unasked = new Set<number>();
-  const askDetail = (out: WriteTarget, request: CatalogueRequest): void => {
-    if (demand(out, { kind: 'detail', request }, { charge: !detailAnswered(titles.get(request.id)) })) return;
-    if (!unasked.has(request.id)) out.plan.deferred += 1;
-    unasked.add(request.id);
-  };
-
-  /**
-   * What is left of the poll's budgets, in the shape the guard counts them.
-   *
-   * `spent` is zero because what the planner was handed is already the ceiling
-   * minus what an earlier half sent — see `PlanOptions.maxEdits`. The
-   * arithmetic itself is `guard-core.ts`'s, so a run this stops short of is one
-   * the guard would have taken and vice versa: two copies of the counting is a
-   * poll refused whole over rows the planner thought it had room for.
-   */
-  const budgets = { maxEdits, maxRows, spent: { edits: 0, rows: 0 } };
-
-  /**
-   * The show half's admission step: a candidate built into a target of its own
-   * and taken through `admitPlan` only if the whole run still fits the poll's
-   * budgets.
-   *
-   * What the show half merges beyond the plan: the candidate's demands and the
-   * allowance they were charged against, and what it banked. The demands ride
-   * a copy of the budget, written back only on commit — a rejected row's
-   * demands are dropped, and an allowance charged for an ask nobody made is an
-   * ask the next candidate cannot make.
-   *
-   * `observed` is shared with the run rather than scratched, so a rejected row's
-   * withdrawals stick: what it banked is gone from both maps, which is exactly
-   * the state that makes the next poll see the row as moved. `writing` is fresh,
-   * so nothing a rejected row banked is recorded when the batch lands.
-   */
-  const admit = (build: (out: WriteTarget) => void): boolean => {
-    const scratch: WriteTarget = {
-      plan: emptyPlan(),
-      demands: { catalogue: [], runtimes: [], genres: [], certificates: [] },
-      budget: copyLookupBudget(lookupBudget),
-      // `forgetting` shared like `observed`: what a rejected build forgets has
-      // to stick, or the record keeps the count the hold was about.
-      keep: { observed, writing: new Map(), forgetting },
-    };
+  const admit = (build: (out: PlanRun) => void): boolean => {
+    const scratch = scratchOf(run);
     build(scratch);
-    if (!admitPlan(plan, scratch.plan, budgets, insertSpan)) return false;
+    if (!admitPlan(plan, scratch.plan, run.budgets, insertSpan)) return false;
 
-    demands.catalogue.push(...scratch.demands.catalogue);
-    demands.runtimes.push(...scratch.demands.runtimes);
-    demands.genres.push(...scratch.demands.genres);
-    demands.certificates.push(...scratch.demands.certificates);
-    for (const [key, entry] of scratch.keep.writing) writing.set(key, { ...writing.get(key), ...entry });
-    Object.assign(lookupBudget, scratch.budget);
+    mergeDemands(run, scratch.demands);
+    foldInto(writing, scratch.keep.writing);
     return true;
   };
 
@@ -1928,7 +1769,7 @@ export const planSync = (
     // them safe on a dormant sheet is the same record, read for a different
     // field — a corrected date moves no watch timestamp and no count, so no
     // gate here can see it.
-    const recent = blockRecent(ids, index, cutoff, known);
+    const recent = blockRecent(run, ids);
     const anime = usesCourModel(block);
 
     // The block's catalogue lookups. The episode list cannot be gated on "a
@@ -1940,19 +1781,14 @@ export const planSync = (
     // catalogue needs a completeness answer only the catalogue holds. Asking
     // here would fetch the whole sheet every poll, so the demand waits until a
     // row has been resolved and shown to want one.
-    //
-    // Charged only where the store has not answered, and a refused ask is
-    // counted as deferred: what the allowance rations is *this pass's* reading
-    // of the grid, so a block it had no room for is work the next pass — or
-    // the retry the count arms — reads instead of "no episode list came back".
     if (recent && !anime) {
-      for (const id of block.ids) askDetail(run, { id, episodes: true, detail: true });
+      for (const id of block.ids) demand(run, { kind: 'detail', request: { id, episodes: true, detail: true } });
     }
     const sourceId = statusSource(block);
     if (recent && sourceId !== null) {
       // On a live-action block this is a title the loop above already asked
-      // about, and the allowance counts titles — so the second ask is free.
-      askDetail(run, { id: sourceId, anime, detail: true });
+      // about, and `demand` folds the two into one entry.
+      demand(run, { kind: 'detail', request: { id: sourceId, anime, detail: true } });
     }
 
     // Two rows describing the same season of the same title: both would be
@@ -1971,7 +1807,7 @@ export const planSync = (
     }
 
     for (const season of block.seasons) {
-      const resolution = resolveRow(block, season, index, titles, duplicates);
+      const resolution = resolveRow(run, block, season);
       if (resolution.kind === 'nothing') continue;
       if (resolution.kind === 'skip') {
         // Reported only for a block in scope. Every row now reaches
@@ -2003,11 +1839,11 @@ export const planSync = (
       // never eligible means never recorded, and a value never recorded can
       // never be seen to move. A cour row settles completeness from its own
       // counters and asks for nothing.
-      follows.push({ write: (out) => followUpstream(out, follow, season, resolved, label) });
+      follows.push({ write: (out) => followUpstream(out, season, resolved, label) });
       // A move with nothing to write it from. `complete` already true means the
       // answer is in hand and `End` was eligible above; false out here means
       // the lookup nobody made for this dormant block, so ask for it.
-      if (!recent && !wantsCompleteness && !resolved.complete && endMoved(season, resolved, follow)) {
+      if (!recent && !wantsCompleteness && resolved.complete !== true && endMoved(run, season, resolved)) {
         wantsCompleteness = true;
       }
 
@@ -2025,7 +1861,7 @@ export const planSync = (
       // admission step has to reject is built first and dropped whole, so what
       // it planned — its edits, its demands and what it banked — must be
       // separable from what the run is keeping.
-      const write = (out: WriteTarget): void => {
+      const write = (out: PlanRun): void => {
         // A hand-typed count — "12 (rewatch)", "~8" — parses to null, so the
         // comparison below would read it as 0 and plan an edit the guard
         // refuses unconditionally. Refusal is whole-plan, so one such cell
@@ -2047,12 +1883,12 @@ export const planSync = (
           for (const { key, watched } of resolved.counts) bank(out.keep, key, 'Watched', String(watched));
         }
 
-        const closing = closeSeason(out, grid, block, season, resolved, index, titles, { label, timezone, ceiling: follow.ceiling });
+        const closing = closeSeason(out, block, season, resolved, label);
 
         // Last, because what the note should say depends on whether this batch
         // dates the row — a row left open for another poll keeps carrying its
         // date, a row being closed hands the fact over to `End`.
-        watchNote(out, grid, season, resolved.lastWatchedAt, { advanced, closing, label, timezone, ceiling: follow.ceiling });
+        watchNote(out, season, resolved.lastWatchedAt, { advanced, closing, label });
       };
 
       // A row dated inside the window goes ahead of one in scope on the record
@@ -2109,7 +1945,7 @@ export const planSync = (
     // so a season that stays unsettled — dated here, incomplete upstream —
     // costs one call a day rather than one a poll.
     if (wantsCompleteness) {
-      for (const id of block.ids) askDetail(run, { id, episodes: true, detail: true });
+      for (const id of block.ids) demand(run, { kind: 'detail', request: { id, episodes: true, detail: true } });
     }
 
     if (!recent) continue;
@@ -2182,7 +2018,7 @@ export const planSync = (
 
       // Anime is never inserted into, the same test the runtime write makes:
       // both put something into a row they cannot take back.
-      const target = runtimeScopeOk(block) ? insertTarget(source, titles, cutoff, coveredSeasons(block), known) : null;
+      const target = runtimeScopeOk(block) ? insertTarget(run, source, coveredSeasons(block)) : null;
       if (target) {
         const { candidate, behind } = target;
         const chosen = seasonKey(source.id, candidate.season.number);
@@ -2199,7 +2035,7 @@ export const planSync = (
         // forfeiting the cell before the season has even ended.
         if (candidate.aired && runtime.target && runtime.minutes === undefined) demand(run, { kind: 'runtimes', request: runtime.target });
 
-        const insert = planInsert(grid, block, candidate, runtime, titles, { timezone, ceiling: follow.ceiling });
+        const insert = planInsert(run, block, candidate, runtime);
         if (insert && 'code' in insert) {
           plan.skips.push(insert);
           // The chosen season **and** the ones behind it: `insertableSeasons`
@@ -2219,7 +2055,7 @@ export const planSync = (
               // count is recorded — so recording it here is the close never made.
               if (insert.waiting) withdraw(out.keep.observed, chosen, 'Watched');
               else bank(out.keep, chosen, 'Watched', String(candidate.season.watched));
-              deferBehind(out.plan, out.keep, source.id, block.title, candidate.season.number, behind);
+              deferBehind(out, source.id, block.title, candidate.season.number, behind);
             },
             // The chosen season **and** the ones behind it, exactly as a
             // placement refusal holds them: a season this run does not add is
@@ -2228,7 +2064,7 @@ export const planSync = (
             // poll finds unmoved and never adds.
             defer: () => {
               withdraw(observed, chosen, 'Watched');
-              deferBehind(plan, keep, source.id, block.title, candidate.season.number, behind);
+              deferBehind(run, source.id, block.title, candidate.season.number, behind);
             },
           });
         }
@@ -2276,12 +2112,7 @@ export const planSync = (
   // Titles SIMKL knows with no row at all, which is the other shape tier 3
   // takes. It takes the slot only where no season row wanted it, and the room it
   // measures itself against is what tiers 1 and 2 have left.
-  planBlocks(
-    { grid, plan, demands, titles, cutoff, timezone, ceiling: follow.ceiling, showBucket, facts, factsRejected, budget: lookupBudget, rowsLeft, known, keep, maxRows },
-    index,
-    onGrid,
-    filed,
-  );
+  planBlocks(run, onGrid, filed);
 
   // 4. The rows in scope on the record alone, in grid order so the same ones
   //    are taken every run until they land rather than a different arbitrary
@@ -2291,7 +2122,7 @@ export const planSync = (
   backlog.sort((a, b) => a.row - b.row);
   admitTier(plan, backlog, admit, (count) => `${count} row(s) whose counts moved wait for a later poll — ${room}`);
 
-  return { plan, demands, observed, writing, forgetting };
+  return { plan, demands, observed, writing, forgetting: keep.forgetting };
 };
 
 /**
@@ -2326,12 +2157,11 @@ interface SeasonFill {
  * worse than no row, and there is nothing to fall back to.
  */
 const seasonCells = (
-  { season: candidate, aired, complete }: InsertCandidate,
+  { titles, timezone, ceiling }: PlanRun,
+  { source, season: candidate, aired, complete }: InsertCandidate,
   { target, minutes, detailed }: InsertRuntime,
-  entry: TitleCatalogue | undefined,
-  timezone: string,
-  ceiling: number,
 ): SeasonFill | null => {
+  const entry = titles.get(source.id);
   const start = watchSerial(candidate.firstWatchedAt, timezone);
   // Bounded here, not only in the guard, for the reason `followUpstream` gives:
   // refusal is whole-plan, so one season SIMKL stamps in 1994 would hold up
@@ -2413,18 +2243,12 @@ const seasonCells = (
  * `13.5`, Attack On Titan's `1.5` — encodes a judgement no rule here could
  * reproduce, and SIMKL's season 0 is specials.
  */
-const planInsert = (
-  grid: Grid,
-  block: ShowBlock,
-  candidate: InsertCandidate,
-  runtime: InsertRuntime,
-  titles: Map<number, TitleCatalogue>,
-  { timezone, ceiling }: { timezone: string; ceiling: number },
-): RowInsert | Skip | null => {
+const planInsert = (run: PlanRun, block: ShowBlock, candidate: InsertCandidate, runtime: InsertRuntime): RowInsert | Skip | null => {
+  const { grid } = run;
   const { season, complete } = candidate;
   const label = `${block.title} S${season.number}`;
 
-  const filled = seasonCells(candidate, runtime, titles.get(candidate.source.id), timezone, ceiling);
+  const filled = seasonCells(run, candidate, runtime);
   if (filled === null) return { code: 'unusable-timestamp', message: `${label}: would be added, but its first watch timestamp is unusable` };
 
   // Keep Season ascending: before the first existing row with a higher
@@ -2483,39 +2307,6 @@ const missingRowNote = (progress: TitleProgress): string =>
 const labelOf = (title: string, id: number): string => `${title} (simkl ${id})`;
 
 /** Everything the block walk reads that does not vary between candidates. */
-interface BlockContext {
-  grid: Grid;
-  plan: SheetPlan;
-  demands: PlanDemands;
-  titles: Map<number, TitleCatalogue>;
-  cutoff: Temporal.Instant;
-  timezone: string;
-  /** Tomorrow in the viewer's zone — the bound every serial a block writes is checked against, `maxSerial`. */
-  ceiling: number;
-  showBucket: string | null;
-  facts: { tvdb: boolean; tmdb: boolean };
-  factsRejected: ReadonlySet<FactsCredential>;
-  budget: LookupBudget;
-  /**
-   * How many more distinct rows the poll may touch, counted the way the guard
-   * counts them — `rowsRemaining`, the one derivation, so a block cut to it is
-   * a block the guard admits. A function rather than a number: the block walk
-   * runs once the tiers ahead of it have been admitted, and what a block has
-   * room for is what the plan looks like by then.
-   */
-  rowsLeft: () => number;
-  /** What SIMKL last said, read as the two questions the window cannot answer. */
-  known: Known;
-  /** Where this walk banks what a block writes, and withdraws what it leaves for a later run. */
-  keep: Recording;
-  /**
-   * `SHEET_MAX_ROWS`, which bounds how tall a block may be. A block lands whole
-   * or not at all, so a taller one is not trimmed at the guard, it is refused —
-   * and refusal is whole-plan.
-   */
-  maxRows: number;
-}
-
 /**
  * Leave this title for a later run: nothing of what a block would write is
  * recorded, so the run that can build it still sees a title that has never been
@@ -2527,7 +2318,7 @@ interface BlockContext {
  * exit added without a withdrawal beside it silently records a title the run
  * could not build, and the run that finally can walks past it.
  */
-const withdrawBlock = ({ keep }: BlockContext, progress: TitleProgress): void => {
+const withdrawBlock = ({ keep }: PlanRun, progress: TitleProgress): void => {
   const { title, seasons } = titleObservations(progress);
   withdraw(keep.observed, title.key, 'Status');
   for (const season of seasons) withdraw(keep.observed, season.key, 'Watched');
@@ -2545,9 +2336,10 @@ const withdrawBlock = ({ keep }: BlockContext, progress: TitleProgress): void =>
  * `followUpstream`'s and are still in the seed exactly as `observeWatches` put
  * them there.
  */
-const recordBlock = ({ keep }: BlockContext, progress: TitleProgress): void => {
+const recordBlock = ({ keep }: PlanRun, progress: TitleProgress): void => {
   const { title, seasons } = titleObservations(progress);
-  const put = (key: string, field: string, value: string): void => void keep.observed.set(key, { ...keep.observed.get(key), [field]: value });
+  const put = <K extends RecordKey>(key: K, field: FieldOf<K>, value: string): void =>
+    void keep.observed.set(key, { ...keep.observed.get(key), [field]: value });
   put(title.key, 'Status', title.entry.Status as string);
   for (const season of seasons) put(season.key, 'Watched', season.entry.Watched as string);
 };
@@ -2598,7 +2390,7 @@ interface BlockReady {
  * the unusable timestamp come back as a `Skip` rather than being pushed from
  * in here, so the walk above keeps its one rule that every exit reports once.
  */
-const buildBlock = (ctx: BlockContext, seasonRows: ReadonlySet<number>, { progress, entry, title, rows }: BlockReady): BlockInsert | Skip => {
+const buildBlock = (ctx: PlanRun, seasonRows: ReadonlySet<number>, { progress, entry, title, rows }: BlockReady): BlockInsert | Skip => {
   const { grid } = ctx;
   const first = rows[0] as { candidate: InsertCandidate; runtime: InsertRuntime };
   const label = labelOf(title, progress.id);
@@ -2656,7 +2448,7 @@ const buildBlock = (ctx: BlockContext, seasonRows: ReadonlySet<number>, { progre
   // middle is one no later run would fill, since nothing revisits a show row.
   const filled: SeasonFill[] = [];
   for (const { candidate, runtime } of rows) {
-    const cells = seasonCells(candidate, runtime, entry, ctx.timezone, ctx.ceiling);
+    const cells = seasonCells(ctx, candidate, runtime);
     if (cells === null) {
       return {
         code: 'unusable-timestamp',
@@ -2750,8 +2542,8 @@ const buildBlock = (ctx: BlockContext, seasonRows: ReadonlySet<number>, { progre
  * `writing` gains the title's `Status` and each inserted season's count only
  * where the block is actually planned, and only for a row that lands finished.
  */
-const planBlocks = (ctx: BlockContext, index: Map<number, TitleProgress>, seen: Set<number>, filed: Set<number> | undefined): void => {
-  const { plan, grid, titles, cutoff, known, keep } = ctx;
+const planBlocks = (ctx: PlanRun, seen: Set<number>, filed: Set<number> | undefined): void => {
+  const { plan, grid, index, titles, cutoff, known, keep } = ctx;
 
   const candidates: TitleProgress[] = [];
   for (const progress of index.values()) {
@@ -2930,17 +2722,8 @@ const planBlocks = (ctx: BlockContext, index: Map<number, TitleProgress>, seen: 
     //    as "no id", which would tell the operator to add by hand a block a
     //    poll would build.
     //
-    //    Capped at `CATALOGUE_ASKS_PER_PASS`, the pass's own allowance, which
-    //    the grid walk above shares: this list is the unbounded direction — one
-    //    unlisted title per request, several hundred of them, inside a run whose
-    //    snapshot goes stale at 120s. Only the *unanswered* asks count against
-    //    it. An answered title's demand is one `sync.ts` drops inside
-    //    `CATALOGUE_MAX_AGE`, and counting those would let a handful of
-    //    settled-but-unbuildable titles sorted ahead — no TVDB id, no episode
-    //    list — spend the whole allowance on every pass and starve every title
-    //    behind them for good.
     const detailed = detailAnswered(entry);
-    demand(ctx, { kind: 'detail', request: { id: progress.id, episodes: true, detail: true } }, { charge: !detailed });
+    demand(ctx, { kind: 'detail', request: { id: progress.id, episodes: true, detail: true } });
     if (!detailed) {
       plan.skips.push({ code: 'awaiting-lookup', message: `${label}: waiting on SIMKL's detail before a block can be added` });
       continue;
@@ -2990,15 +2773,13 @@ const planBlocks = (ctx: BlockContext, index: Map<number, TitleProgress>, seen: 
     //    built in one batch or not at all, and waiting a poll costs nothing
     //    but the poll.
     //
-    //    Each of the three goes through `demand` and is charged against the
-    //    attempt's allowance, which `runtimes` shares with the season path. The
-    //    two are counted together because the season path is the volume side
-    //    once a record's disagreement can put every row of a marked-whole
-    //    library in scope at once and keep it there; what sharing costs is a
-    //    burst of closing rows delaying one block's runtime by a poll, and one
-    //    block lands per run anyway. The skip below is unconditional on the
-    //    push: a block waits for its runtime whether or not this pass had an
-    //    ask left to spend on it.
+    //    Each of the three goes through `demand`, into a list the fetch loop
+    //    rations per attempt — `runtimes` shared with the season path, which is
+    //    the volume side once a record's disagreement can put every row of a
+    //    marked-whole library in scope at once. What sharing costs is a burst
+    //    of closing rows delaying one block's runtime by a poll, and one block
+    //    lands per run anyway. The skip below is unconditional on the ask: a
+    //    block waits for its runtime whether or not this pass fetches it.
     //
     //    Per season, and the block is **cut** at the first one still waiting
     //    rather than held whole for all of them. A back catalogue of fifteen
@@ -3016,17 +2797,11 @@ const planBlocks = (ctx: BlockContext, index: Map<number, TitleProgress>, seen: 
     //    closes. What is cut off keeps its count unrecorded and comes back as an
     //    ordinary season insert.
     const answered: Array<{ candidate: InsertCandidate; runtime: InsertRuntime }> = [];
-    // Whether this run *asked* for the answer it is waiting on. Unasked is work
-    // the run chose not to do, which is the claim a deferral makes and what arms
-    // the retry that brings the poll with a fresh allowance; asked and
-    // unanswered drains inside this run's own fixpoint, and a lookup that failed
-    // arms the retry through `made.failures` instead.
-    let unasked = false;
     for (const season of wanted) {
       const candidate = candidateOf(progress, season, titles);
       const runtime = insertRuntimeOf(candidate, titles);
       if (candidate.aired && runtime.target !== null && runtime.minutes === undefined) {
-        unasked = !demand(ctx, { kind: 'runtimes', request: runtime.target });
+        demand(ctx, { kind: 'runtimes', request: runtime.target });
         break;
       }
       answered.push({ candidate, runtime });
@@ -3050,7 +2825,6 @@ const planBlocks = (ctx: BlockContext, index: Map<number, TitleProgress>, seen: 
         code: 'awaiting-runtimes',
         message: `${seasonLabel}: waiting on its episode runtimes before a block can be added`,
       });
-      if (unasked) plan.deferred += 1;
       continue;
     }
 
@@ -3066,12 +2840,12 @@ const planBlocks = (ctx: BlockContext, index: Map<number, TitleProgress>, seen: 
     //    refused every poll until the seasons age out — where a block cut to
     //    the room available lands, and the seasons cut off it are inserted a
     //    row a run after that.
-    const room = ctx.rowsLeft() - 1;
+    const room = rowsLeft(ctx) - 1;
     const rows = answered.slice(0, Math.max(0, room));
     if (rows.length === 0) {
       plan.skips.push({
         code: 'no-room',
-        message: `${seasonLabel}: would be added, but this poll's edits already fill SHEET_MAX_ROWS=${ctx.maxRows}`,
+        message: `${seasonLabel}: would be added, but this poll's edits already fill SHEET_MAX_ROWS=${ctx.budgets.maxRows}`,
       });
       // Every season that had an answer and no room, counted as the work it is:
       // the budget is the poll's, so what drains this is the next poll rather
@@ -3108,7 +2882,7 @@ const planBlocks = (ctx: BlockContext, index: Map<number, TitleProgress>, seen: 
     // past the one the runtime loop stopped at. Unconditional on that loop
     // having stopped — it answers every season or breaks, so a run that answered
     // them all slices an empty tail.
-    deferBehind(plan, keep, progress.id, label, chosen.number, [
+    deferBehind(ctx, progress.id, label, chosen.number, [
       ...answered.slice(rows.length).map(({ candidate }) => candidate.season),
       ...wanted.slice(answered.length),
     ]);

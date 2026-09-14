@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { indexFilms } from '../../../src/sheet/movies/1-index.ts';
 import { filmFacts } from '../../../src/sheet/movies/3-catalogue.ts';
-import { MAX_LOOKUPS_PER_PASS, observeFilms, planFilms } from '../../../src/sheet/movies/4-plan.ts';
+import { observeFilms, planFilms } from '../../../src/sheet/movies/4-plan.ts';
 import { movieKey, NOT_HELD, type Baseline } from '../../../src/sheet/values.ts';
 import { isoOf } from '../../../src/shared/dates.ts';
 import type { FilmFacts } from '../../../src/sheet/movies/3-catalogue.ts';
@@ -415,17 +415,16 @@ test('a film with no row left on the tab is named, not planned', () => {
   assert.match(p.notes.join(' '), /no row left for 1 film\(s\), No Room/);
 });
 
-test('a cold start asks about a bounded number of films, not all of them', () => {
-  // Only one row lands per run, so a larger burst buys nothing — and costs a
-  // request per unlisted film on every restart, inside a run whose snapshot
-  // goes stale at 120s. It also bounds what a standing TMDB failure costs,
-  // since a failed lookup records nothing and is asked again next poll.
+test('a cold start asks about every film, oldest watch first', () => {
+  // How many of them one pass fetches is the fetch loop's question, and the
+  // loop takes them from the front — so the order here is what decides which
+  // films a burst covers, and it is the order the tab reads in.
   const many = Array.from({ length: 40 }, (_, i) => movie({ id: 100 + i, lastWatchedAt: watchedOn(TODAY - i - 1) }));
   const { plan: p, demands } = plan([film('a', { id: 1 })], [movie({ id: 1 }), ...many]);
-  assert.equal(demands.length, MAX_LOOKUPS_PER_PASS);
+  assert.equal(demands.length, 40);
   assert.equal(p.insert, null, 'and nothing is inserted until one of them answers');
-  // Oldest-first still, so the queue drains in the order the tab reads.
-  assert.deepEqual(demands.map((d) => d.id), [139, 138, 137, 136, 135, 134, 133, 132]);
+  assert.deepEqual(demands.slice(0, 8).map((d) => d.id), [139, 138, 137, 136, 135, 134, 133, 132]);
+  assert.equal(p.skips.filter((s) => s.code === 'awaiting-lookup').length, 40, 'every one of them is reported waiting');
 });
 
 // --- Placing an anime film ---------------------------------------------------

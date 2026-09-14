@@ -4,13 +4,9 @@ import { assertPlanSafe } from '../../src/sheet/5-guard.ts';
 import { parseGrid } from '../../src/sheet/2-grid.ts';
 import {
   deriveStatus,
-  CATALOGUE_ASKS_PER_PASS,
-  emptyLookupBudget,
   insertSeason,
-  nextPass,
   insertSpan,
   planWrites,
-  MAX_LOOKUPS_PER_PASS,
   observeWatches,
   planRecord,
   planSync,
@@ -611,15 +607,6 @@ test('a row held back on budget keeps its skips in the report', () => {
 });
 
 /**
- * A dated row the budget holds back is in scope only until its watch date
- * leaves the window, and its stored count may already agree with SIMKL's — a
- * first sighting recorded it, or the count landed on a poll whose close was
- * still waiting. A withdrawal leaves that stored count standing, so once the
- * window closes nothing would bring the row back and a complete row would stay
- * undated for good. Forgetting the count makes it absent on a known title,
- * which reads as moved: the record brings the row back where the window cannot.
- */
-/**
  * A row resolved by number with no episode list in the store reads as
  * incomplete the same way a half-watched season does, and the one reading a
  * close must not make is "unfinished, so nothing to do": the count would land
@@ -640,6 +627,15 @@ test('a row whose episode list has not come back is held open, not recorded as u
   assert.equal(observed.get(seasonKey(706, 1))?.Watched, undefined, 'and the count stays unrecorded, so the next poll still finds the row');
 });
 
+/**
+ * A dated row the budget holds back is in scope only until its watch date
+ * leaves the window, and its stored count may already agree with SIMKL's — a
+ * first sighting recorded it, or the count landed on a poll whose close was
+ * still waiting. A withdrawal leaves that stored count standing, so once the
+ * window closes nothing would bring the row back and a complete row would stay
+ * undated for good. Forgetting the count makes it absent on a known title,
+ * which reads as moved: the record brings the row back where the window cannot.
+ */
 test('a dated row held back on budget is forgotten, so the record brings it back once the window cannot', () => {
   // Complete, count already recorded at SIMKL's figure, and dated inside the
   // window: the close is all the row has to write.
@@ -1673,7 +1669,8 @@ test('only eligible blocks demand catalogue lookups', () => {
 });
 
 // The planner demands with no memory — filtering already-fetched is the
-// store's job. The demand set only has to name the titles the plan runs on.
+// store's job. The demand set only has to name the titles the plan runs on,
+// once each: the block's two asks about one id fold into one entry.
 test('an eligible block demands its episode list and detail every pass', () => {
   const { demands } = scenario({
     rows: [show('Fargo', 'Watching', 1), season(1, 1, null)],
@@ -1682,10 +1679,7 @@ test('an eligible block demands its episode list and detail every pass', () => {
     details: { 1: { status: 'airing' } },
   });
   // Already answered, and still demanded — the store filters, not the planner.
-  assert.deepEqual(demands().catalogue, [
-    { id: 1, episodes: true, detail: true },
-    { id: 1, anime: false, detail: true },
-  ]);
+  assert.deepEqual(demands().catalogue, [{ id: 1, episodes: true, detail: true }]);
 });
 
 // An unresolved row is still a row. A second insert for the same season is the
@@ -2195,34 +2189,6 @@ test('a fractional season is never demanded', () => {
   // about.
   const half = closing({ rows: [show('Silo', 'Watching', 800), seasonRow(1, 9, 44000), seasonRow(1.5, 9, null, { runtime: null })] });
   assert.deepEqual(half.runtimeDemands(), []);
-});
-
-/**
- * An ask the allowance had no room for is work this run chose not to do, and
- * only another poll will do it — which is what `deferred` claims and what arms
- * the retry that brings a poll with a fresh allowance. Counted as nothing, the
- * rows it holds open would wait on the library's next unrelated move.
- */
-test('a close whose runtime ask the allowance had no room for is counted as deferred', () => {
-  const seasons = MAX_LOOKUPS_PER_PASS + 1;
-  const { grid, index, titles } = scenario({
-    rows: [show('Many', 'Watching', 801), ...Array.from({ length: seasons }, (_, i) => seasonRow(i + 1, 3, null, { runtime: null }))],
-    items: [
-      {
-        id: 801,
-        status: 'watching',
-        seasons: Object.fromEntries(Array.from({ length: seasons }, (_, i) => [i + 1, watched(3)])),
-        watched: seasons * 3,
-        total: seasons * 3,
-      },
-    ],
-    episodes: { 801: Array.from({ length: seasons }, (_, i) => eps(i + 1, 3)).flat() },
-    details: { 801: { status: 'airing', runtime: 40 } },
-    tvdbIds: { 801: 111 },
-  });
-  const { plan, demands } = planSync(grid, index, titles, { timezone: TZ });
-  assert.equal(demands.runtimes.length, MAX_LOOKUPS_PER_PASS, 'the allowance is spent');
-  assert.ok(plan.deferred > 0, 'and the season it had nothing left for says so');
 });
 
 // A row treated as waiting whose lookup is never requested defers for ever.
@@ -2939,20 +2905,6 @@ test('a block waits on the season runtime an aired season can still be given', (
   assert.equal(plan.deferred, 0, 'the ask is out, so this run drains it inside its own fixpoint');
 });
 
-/**
- * A block waiting on a runtime this run never asked for is work the run chose
- * not to do, which is the claim `deferred` makes: without it the next
- * poll — the one with a fresh allowance — is waited for rather than asked for,
- * and the block sits until unrelated library activity wakes one.
- */
-test('a block whose runtime the allowance was too spent to ask for asks for another poll', () => {
-  const spent = { ...emptyLookupBudget(), runtimes: MAX_LOOKUPS_PER_PASS };
-  const { plan, demands } = blocks({ seasonRuntimes: new Map() }, { lookupBudget: spent });
-  assert.equal(plan.insert, null);
-  assert.deepEqual(demands.runtimes, [], 'nothing was asked');
-  assert.equal(plan.deferred, 1);
-});
-
 // --- what a block is refused for --------------------------------------------
 
 // A new cour is a separate SIMKL title under a romaji name that mostly does
@@ -3417,100 +3369,26 @@ test('a block for a show on hold carries no Status cell', () => {
   assert.equal(valueOf(plan.insert, blockGrid.end, 'Status'), undefined);
 });
 
-// One request per upstream per title, and no more than eight of each a pass:
-// a cold start on a full library would otherwise issue one per unlisted title
-// inside a run whose snapshot goes stale at 120s.
-test('the lookups a pass asks for are capped per upstream', () => {
+// One request per upstream per title, and every title the walk reaches: how
+// many of them one pass fetches is the fetch loop's question, so the planner
+// asks for all of them and the loop's slice means what it says.
+test('the planner asks for every lookup it wants, once per key', () => {
   const ids = Array.from({ length: 12 }, (_, i) => 900 + i);
   const index = indexLibrary(libraryOf(...ids.map((id) => ({ id, title: `Show ${id}`, status: 'watching', seasons: { 1: [daysAgo(9), daysAgo(2)] }, watched: 2, total: 9 }))));
   const titles = new Map<number, TitleCatalogue>(
     ids.map((id) => [
       id,
-      { ...blockLibrary({ genres: undefined, certificate: undefined, seasonRuntimes: new Map() }).titles.get(900)!, title: `Show ${id}` },
+      // A TVDB id of its own each: a runtime ask is keyed by TVDB season, so
+      // two titles sharing one would rightly fold into one ask.
+      { ...blockLibrary({ genres: undefined, certificate: undefined, seasonRuntimes: new Map() }).titles.get(900)!, title: `Show ${id}`, tvdbId: id },
     ]),
   );
   const { demands } = planSync(blockGrid.grid, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } });
-  assert.equal(demands.genres.length, MAX_LOOKUPS_PER_PASS);
-  assert.equal(demands.certificates.length, MAX_LOOKUPS_PER_PASS);
-  // TVDB's season runtimes are the third upstream the walk asks, and the list
-  // they go into also carries the season path's asks, charged against the same
-  // allowance through the one `demand` choke point.
-  assert.equal(demands.runtimes.length, MAX_LOOKUPS_PER_PASS);
-  assert.equal(demands.catalogue.length, 12, 'a title whose detail is already in hand does not count against the cap');
-});
-
-/** A library of `count` titles the grid has no block for, each watched this week. */
-const unlisted = (count: number, from = 900) =>
-  indexLibrary(
-    libraryOf(
-      ...Array.from({ length: count }, (_, i) => ({
-        id: from + i,
-        title: `Show ${from + i}`,
-        status: 'watching',
-        seasons: { 1: [daysAgo(9), daysAgo(2)] },
-        watched: 2,
-        total: 9,
-      })),
-    ),
-  );
-
-/** The fixture of `the lookups a pass asks for are capped per upstream`: every detail in hand, so the show-facts upstreams are what is asked. */
-const answered = (count: number) => {
-  const ids = Array.from({ length: count }, (_, i) => 900 + i);
-  return new Map<number, TitleCatalogue>(
-    ids.map((id) => [
-      id,
-      { ...blockLibrary({ genres: undefined, certificate: undefined, seasonRuntimes: new Map() }).titles.get(900)!, title: `Show ${id}` },
-    ]),
-  );
-};
-
-// The planner runs to a fixpoint, so an allowance reset on every pass is an
-// allowance multiplied by the pass ceiling: the pass after a fetch finds the
-// *next* unanswered titles and asks for as many again, inside a run whose
-// snapshot goes stale at 120s. The three upstreams a block's show row waits on
-// are held to one allowance for the whole attempt.
-test('one attempt’s show-facts lookups are capped across its passes, not per pass', () => {
-  const lookupBudget = emptyLookupBudget();
-  const options = { timezone: TZ, facts: { tvdb: true, tmdb: true }, lookupBudget };
-  const first = planSync(blockGrid.grid, unlisted(12), answered(12), options);
-  const second = planSync(blockGrid.grid, unlisted(12), answered(12), options);
-  assert.equal(first.demands.genres.length, MAX_LOOKUPS_PER_PASS);
-  assert.equal(second.demands.genres.length, 0, 'the second pass of one attempt spends what the first left');
-});
-
-// A caller planning once gets this pass's own allowance, so the budget is a
-// thing the fixpoint threads rather than a thing every caller has to know
-// about.
-test('a pass given no budget starts with a full one', () => {
-  const options = { timezone: TZ, facts: { tvdb: true, tmdb: true } };
-  assert.equal(planSync(blockGrid.grid, unlisted(12), answered(12), options).demands.genres.length, MAX_LOOKUPS_PER_PASS);
-  assert.equal(planSync(blockGrid.grid, unlisted(12), answered(12), options).demands.genres.length, MAX_LOOKUPS_PER_PASS);
-});
-
-/**
- * The catalogue allowance is the **pass's**, and it is sized for a normal day
- * rather than for one insert: these asks are what a pass reads the grid and the
- * library with, so a pass that rationed them to a handful would leave the rows
- * it was in scope to write reported as "no episode list came back".
- *
- * A backfill past it drains rather than stalls — `nextPass` renews it, so the
- * next pass of the same fixpoint takes the next batch.
- */
-test('a cold library is asked about a pass’s worth of titles, and the next pass takes the rest', () => {
-  const count = CATALOGUE_ASKS_PER_PASS + 8;
-  const index = unlisted(count);
-  const lookupBudget = emptyLookupBudget();
-  const options = { timezone: TZ, facts: { tvdb: true, tmdb: true }, lookupBudget };
-
-  const first = planSync(blockGrid.grid, index, new Map(), options);
-  assert.equal(first.demands.catalogue.length, CATALOGUE_ASKS_PER_PASS);
-  // Not dropped, only unasked: every one of them is reported waiting, and a
-  // later pass — with `nextPass`'s fresh allowance — asks about the rest.
-  assert.equal(first.plan.skips.filter((skip) => skip.code === 'awaiting-lookup').length, count);
-  assert.equal(lookupBudget.detail.size, CATALOGUE_ASKS_PER_PASS, 'counted in titles, which is what the allowance names');
-  nextPass(lookupBudget);
-  assert.equal(lookupBudget.detail.size, 0);
+  assert.equal(demands.genres.length, 12);
+  assert.equal(demands.certificates.length, 12);
+  assert.equal(demands.runtimes.length, 12);
+  assert.equal(demands.catalogue.length, 12, 'a title whose detail is already in hand is still asked for; the loop is what drops it');
+  assert.equal(new Set(demands.catalogue.map((r) => r.id)).size, 12, 'and once each');
 });
 
 // `rows N-M`, because a block is a show row and a season row and "row 610"
@@ -3524,76 +3402,19 @@ test('a block is recorded as the span it occupies', () => {
 
 /**
  * A block on the grid is edited from the answer to its own catalogue asks in
- * the run that reads it, so the allowance has to be big enough for a normal
- * day's worth of them: rationed to a handful, a cold store with 18 recent
- * blocks read 4 of them and skipped the rest with "no episode list came back".
- * 18 is the live tab's measured figure, and `CATALOGUE_ASKS_PER_PASS` has room
- * to spare over it.
- *
- * Charged like every other ask, because charging one side and not the other is
- * the burst the cap exists to prevent — and counted in **titles**, so the two
- * asks a live-action block makes about one id spend one of the allowance
- * between them.
+ * the run that reads it, so every in-scope block is asked for — and counted in
+ * **titles**: a live-action block asks twice about one id, for its episode list
+ * and for the entry that decides its `Status`, and `demand` folds the two into
+ * one entry so the fetch loop's slice of this list is a slice of titles.
  */
-test('the grid walk asks about every in-scope block, inside one pass’s allowance', () => {
+test('the grid walk asks about every in-scope block, once per title', () => {
   const ids = Array.from({ length: 18 }, (_, i) => 700 + i);
   const rows = ids.flatMap((id) => [show(`Show ${id}`, 'Watching', id), season(1, 1, null)]);
   const items = ids.map((id) => ({ id, title: `Show ${id}`, status: 'watching', seasons: { 1: watched(3) }, watched: 3, total: 3 }));
   const { grid, index, titles } = scenario({ rows, items });
 
   const cold = planSync(grid, index, titles, { timezone: TZ });
-  const asked = new Set(cold.demands.catalogue.map((request) => request.id));
-  assert.equal(asked.size, ids.length, 'a cold store asks about every recent block in one pass');
-  assert.ok(ids.length > MAX_LOOKUPS_PER_PASS, 'the fixture holds more blocks than the show-facts allowance, or it proves nothing');
-  assert.ok(ids.length <= CATALOGUE_ASKS_PER_PASS, 'and no more than a pass may ask about');
+  assert.deepEqual(cold.demands.catalogue.map((request) => request.id), ids, 'every recent block, once each, in grid order');
+  assert.ok(cold.demands.catalogue.every((request) => request.episodes && request.detail), 'with both asks folded into the one entry');
 });
 
-/**
- * An answered title's ask spends none of the allowance. These asks are what a
- * pass reads the grid with, and `sync.ts` drops an answered one inside
- * `CATALOGUE_MAX_AGE` anyway — charged, the first `CATALOGUE_ASKS_PER_PASS`
- * blocks in grid order would spend the whole allowance on every pass and every
- * poll while writing nothing, and every block behind them would be read as "no
- * episode list came back" for as long as it stayed in scope, which for a block
- * in scope on the record alone is for ever.
- */
-test('answered blocks ahead of a cold one leave the allowance for it', () => {
-  const ids = Array.from({ length: CATALOGUE_ASKS_PER_PASS + 8 }, (_, i) => 700 + i);
-  const cold = ids[ids.length - 1]!;
-  const rows = ids.flatMap((id) => [show(`Show ${id}`, 'Watching', id), season(1, 1, null)]);
-  const items = ids.map((id) => ({ id, title: `Show ${id}`, status: 'watching', seasons: { 1: watched(3) }, watched: 3, total: 3 }));
-  const warm = ids.filter((id) => id !== cold);
-  const { grid, index, titles } = scenario({
-    rows,
-    items,
-    episodes: Object.fromEntries(warm.map((id) => [id, eps(1, 3)])),
-    details: Object.fromEntries(warm.map((id) => [id, { status: 'airing' }])),
-  });
-  const lookupBudget = emptyLookupBudget();
-
-  const pass = planSync(grid, index, titles, { timezone: TZ, lookupBudget });
-  const asked = new Set(pass.demands.catalogue.map((request) => request.id));
-  assert.ok(asked.has(cold), 'the one block the store has not answered is asked about, however many answered ones sort ahead of it');
-  assert.deepEqual([...lookupBudget.detail], [cold], 'and it is the only ask charged');
-});
-
-/**
- * A block the allowance had no room to ask about is work only another pass
- * reads, so it counts as deferred: that count is what arms the retry, and
- * without it a cold store past the allowance would report the tail as "no
- * episode list came back" and wait on the library's next unrelated move.
- */
-test('a block the catalogue allowance cannot ask about counts as deferred', () => {
-  const ids = Array.from({ length: CATALOGUE_ASKS_PER_PASS + 1 }, (_, i) => 700 + i);
-  // Every row already holds its count and no season is complete, so the only
-  // work a cold pass can ration is the ask itself.
-  const rows = ids.flatMap((id) => [show(`Show ${id}`, 'Watching', id), season(1, 3, null)]);
-  const items = ids.map((id) => ({ id, title: `Show ${id}`, status: 'watching', seasons: { 1: watched(3) }, watched: 3, total: 9 }));
-  const { grid, index, titles } = scenario({ rows, items });
-
-  const pass = planSync(grid, index, titles, { timezone: TZ });
-  const asked = new Set(pass.demands.catalogue.map((request) => request.id));
-  assert.equal(asked.size, CATALOGUE_ASKS_PER_PASS, 'a pass asks about its allowance');
-  assert.equal(pass.plan.edits.length, 0, 'nothing else was rationed, or the count below proves nothing');
-  assert.equal(pass.plan.deferred, 1, 'the block it could not ask about is counted as work for a later pass');
-});

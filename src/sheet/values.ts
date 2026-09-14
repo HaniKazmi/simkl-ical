@@ -188,8 +188,9 @@ export const isTracked = (field: HeaderName): field is TrackedField => (TRACKED 
  * Keys are text rather than either tab's header union: one file holds both
  * tabs' history — a second file would cost a second load, a second save and a
  * second chance to record a value the sheet never received — and the key
- * namespaces say which tab an entry belongs to. Each planner reads its own
- * columns off an entry and never the other's.
+ * namespaces say which tab an entry belongs to. This is the file's view; a
+ * planner reads an entry as its key's own shape through `recorded`, and writes
+ * it through helpers that take that shape's fields.
  */
 export type BaselineEntry = Partial<Record<string, string>>;
 
@@ -200,8 +201,44 @@ export type BaselineEntry = Partial<Record<string, string>>;
  */
 export type Baseline = Map<string, BaselineEntry>;
 
+/**
+ * The three key shapes, as the strings they are. Spelled as types so a key of
+ * one shape cannot be read or written with another's fields:
+ * `withdraw(observed, seasonKey(id, n), 'Status')` fails to compile, where a
+ * bare string would have recorded a field nothing ever reads. Template types
+ * rather than a phantom brand because a `Map` literal over mixed brands does
+ * not infer, and every test seeds one.
+ */
+export type SeasonKey = `${number}:${number}`;
+export type TitleKey = `${number}`;
+export type MovieKey = `${typeof MOVIE_PREFIX}${number}`;
+export type RecordKey = SeasonKey | TitleKey | MovieKey;
+
+/** What a season's entry holds: the two dates that follow SIMKL, and the count. */
+export type SeasonRecord = {
+  Start?: string;
+  End?: string;
+  Watched?: string;
+};
+/** What a title's entry holds: its membership, `NOT_HELD` for none. The key alone says the title was seen. */
+export type TitleRecord = {
+  Status?: string;
+};
+/** What a film's entry holds: the three columns that follow SIMKL. */
+export type FilmRecord = {
+  'Watch Date'?: string;
+  Score?: string;
+  Runtime?: string;
+};
+export type RecordOf<K extends RecordKey> = K extends MovieKey ? FilmRecord : K extends SeasonKey ? SeasonRecord : TitleRecord;
+export type FieldOf<K extends RecordKey> = keyof RecordOf<K> & string;
+
+/** One entry, read as its shape's record. The one place a stored entry is narrowed. */
+export const recorded = <K extends RecordKey>(baseline: Baseline, key: K): RecordOf<K> | undefined =>
+  baseline.get(key) as RecordOf<K> | undefined;
+
 /** The key both the planner and the store use. */
-export const seasonKey = (id: number, season: number): string => `${id}:${season}`;
+export const seasonKey = (id: number, season: number): SeasonKey => `${id}:${season}`;
 
 /**
  * The films tab's key. Prefixed rather than bare, because a film's id and a
@@ -211,7 +248,7 @@ export const seasonKey = (id: number, season: number): string => `${id}:${season
  */
 export const MOVIE_PREFIX = 'movie:';
 
-export const movieKey = (id: number): string => `${MOVIE_PREFIX}${id}`;
+export const movieKey = (id: number): MovieKey => `${MOVIE_PREFIX}${id}`;
 
 /**
  * The show half's title-level key: the bare id.
@@ -225,7 +262,7 @@ export const movieKey = (id: number): string => `${MOVIE_PREFIX}${id}`;
  * seasons: `Status`, which is `item.status` and the record of the title having
  * been seen at all.
  */
-export const titleRecordKey = (id: number): string => String(id);
+export const titleRecordKey = (id: number): TitleKey => `${id}`;
 
 /** What a baseline key names, as the three shapes above make it. */
 export type BaselineKind =
@@ -378,9 +415,23 @@ export const recordedSerial = (recorded: string | null | undefined, timezone: st
 export interface Recording {
   observed: Baseline;
   writing: Baseline;
-  /** The fields this run is taking out of the record itself — see `forget`. */
-  forgetting: Forgetting;
+  /**
+   * The fields this run is taking out of the record itself — see `forget`.
+   * Absent on a tab that never forgets: the films tab's rows are in scope on
+   * the record alone and never on a window, so nothing there is held back
+   * past the one thing that would bring it back.
+   */
+  forgetting?: Forgetting;
 }
+
+/**
+ * Fold one map of entries into another, field by field. The one way a run's
+ * `writing` reaches `observed`, and a scratch build's reaches the run's:
+ * entry-wise assignment would drop the fields the target already holds.
+ */
+export const foldInto = (into: Baseline, from: Baseline): void => {
+  for (const [key, entry] of from) into.set(key, { ...into.get(key), ...entry });
+};
 
 /** Key → the fields of that entry to drop from the record. `forget` is the only writer. */
 export type Forgetting = Map<string, Set<string>>;
@@ -401,7 +452,7 @@ export type Forgetting = Map<string, Set<string>>;
  * claimed. `saveBaseline` stores an emptied entry without moving `at`, since a
  * key carrying no field moved no value.
  */
-export const withdraw = (into: Baseline, key: string, field: string): void => {
+export const withdraw = <K extends RecordKey>(into: Baseline, key: K, field: FieldOf<K>): void => {
   const entry = into.get(key);
   if (entry === undefined) return;
   const next = { ...entry };
@@ -410,7 +461,7 @@ export const withdraw = (into: Baseline, key: string, field: string): void => {
 };
 
 /** Bank a value against the edit that carries it, and take it out of what this run records regardless. */
-export const bank = ({ observed, writing }: Recording, key: string, field: string, value: string): void => {
+export const bank = <K extends RecordKey>({ observed, writing }: Recording, key: K, field: FieldOf<K>, value: string): void => {
   writing.set(key, { ...writing.get(key), [field]: value });
   withdraw(observed, key, field);
 };
@@ -432,7 +483,7 @@ export const bank = ({ observed, writing }: Recording, key: string, field: strin
  * well, for the reason `holdOpen` gives: an edit built beside the hold may have
  * banked it.
  */
-export const forget = (keep: Recording, key: string, field: string): void => {
+export const forget = <K extends RecordKey>(keep: Required<Recording>, key: K, field: FieldOf<K>): void => {
   withdraw(keep.observed, key, field);
   withdraw(keep.writing, key, field);
   const fields = keep.forgetting.get(key) ?? new Set<string>();
