@@ -476,7 +476,7 @@ test('a season whose dates fall outside the range this sync writes is skipped, a
   assert.ok(insert !== null && insert.kind === 'season', 'the row is added');
   assert.ok(!insert.fill.some((c) => c.field === 'End'), 'undated');
   assert.ok(!insert.fill.some((c) => c.field === 'Note'), 'and with no note either, since it reads the same stamp');
-  assert.equal(insert.waiting, true);
+  assert.equal(insert.open, true);
   assert.match(insert.note, /last watch timestamp is unusable/);
   assert.equal(ahead.observed.get(seasonKey(702, 2))?.Watched, undefined, 'its count stays unrecorded, so the close is still owed');
 });
@@ -582,13 +582,13 @@ test('an insert the poll has no room for is deferred, and asks for another poll'
 });
 
 /**
- * A row the poll has no room for still has its diagnosis reported. Skips are
- * observations about the row, not writes, and a hand-typed cell or an
- * out-of-range stamp is no less true for the budget being full — dropped with
- * the rejected candidate, the report would carry only the tier's aggregate
- * line until a poll with room re-planned the row.
+ * A row the poll has no room for reports nothing of its own: the rows a full
+ * budget rejects are the unbounded set, and one line per rejected season would
+ * put a library marked whole into a report read beside the sheet, against the
+ * one aggregate line its tier writes. The diagnosis is not lost, only late —
+ * the poll that admits the row reports it.
  */
-test('a row held back on budget keeps its skips in the report', () => {
+test('a row held back on budget leaves its skips to the poll that admits it', () => {
   // The count advances, so the row costs an edit and a full budget rejects it;
   // the close behind that edit meets a stamp the sync cannot write.
   const { grid, index, titles } = scenario({
@@ -603,7 +603,8 @@ test('a row held back on budget keeps its skips in the report', () => {
   assert.ok(roomy.plan.edits.some((e) => e.field === 'Episode'), 'with room the count lands');
   assert.deepEqual(full.plan.edits, [], 'with none it is held back');
   assert.equal(full.plan.deferred, 1);
-  assert.match(full.plan.skips.find((s) => s.code === 'unusable-timestamp')?.message ?? '', /Old Show S1/, 'and the stamp is still reported');
+  assert.equal(full.plan.skips.some((s) => s.code === 'unusable-timestamp'), false, 'and its stamp waits for the poll that takes the row');
+  assert.match(roomy.plan.skips.find((s) => s.code === 'unusable-timestamp')?.message ?? '', /Old Show S1/, 'which reports it');
 });
 
 /**
@@ -625,6 +626,47 @@ test('a row whose episode list has not come back is held open, not recorded as u
   assert.deepEqual(plan.edits, [], 'nothing to write yet');
   assert.match(plan.skips.find((s) => s.code === 'no-episode-list' && /S1/.test(s.message))?.message ?? '', /whether it is complete is unknown/);
   assert.equal(observed.get(seasonKey(706, 1))?.Watched, undefined, 'and the count stays unrecorded, so the next poll still finds the row');
+});
+
+/**
+ * A hold outlives the window as easily as a full budget does, and the row it
+ * leaves open may already be recorded at SIMKL's count — one that landed while
+ * the season was airing, on a season that has since become complete with
+ * nothing watched since. Withdrawn, that stored count stands and the row
+ * leaves scope with its watch date; forgotten, the record brings it back.
+ */
+test('a row held open by a hold has its count forgotten, not withdrawn', () => {
+  const { grid, index, titles } = scenario({
+    rows: [show('Old Show', 'Ended', 708), season(1, 2, null)],
+    // Watched inside the window, count already recorded, and a cold store: the
+    // close cannot tell whether the season is complete, so it holds.
+    items: [{ id: 708, status: 'completed', seasons: { 1: [daysAgo(20), daysAgo(10)] }, watched: 2, total: 2 }],
+  });
+  const agreed = new Map([[titleRecordKey(708), { Status: 'completed' }], [seasonKey(708, 1), { Watched: '2' }]]);
+  const { plan, forgetting } = planSync(grid, index, titles, { timezone: TZ, baseline: agreed });
+  assert.deepEqual(plan.edits, []);
+  assert.deepEqual([...(forgetting.get(seasonKey(708, 1)) ?? [])], ['Watched'], 'the held row is forgotten');
+});
+
+/**
+ * Answered with nothing is an answer. A title SIMKL says is gone, or one whose
+ * list holds only specials, folds to a present, empty map, and a row of it
+ * reads as unfinished the way a half-watched season does: its count lands and
+ * is recorded, and the row leaves scope. Read as outstanding instead, the row
+ * would be held open and the block re-asked about once a day for the life of
+ * the sheet.
+ */
+test('a row whose episode list answered empty is recorded as unfinished, not held open', () => {
+  const { grid, index, titles } = scenario({
+    rows: [show('Gone Show', 'Ended', 707), season(1, 2, null)],
+    items: [{ id: 707, status: 'completed', seasons: { 1: ['2024-01-01T20:00:00Z', '2024-01-08T20:00:00Z'] }, watched: 2, total: 2 }],
+    episodes: { 707: [] },
+    details: { 707: { status: 'ended' } },
+  });
+  const forgotten = new Map([[titleRecordKey(707), { Status: 'completed' }], [seasonKey(707, 1), {}]]);
+  const { plan, observed } = planSync(grid, index, titles, { timezone: TZ, baseline: forgotten });
+  assert.equal(plan.skips.some((s) => s.code === 'no-episode-list' && /S1/.test(s.message)), false, 'the row is not held');
+  assert.equal(observed.get(seasonKey(707, 1))?.Watched, '2', 'and its count is recorded, so the row leaves scope');
 });
 
 /**
@@ -1548,13 +1590,13 @@ const sawOnlySeasonOne: Baseline = new Map([[titleRecordKey(810), { Status: 'com
 test('a season row inserted in a state a later poll must finish keeps its count unrecorded', () => {
   const open = scenario(joiningSeason(false)).result(sawOnlySeasonOne);
   assert.equal(seasonOf(open.plan.insert), 2);
-  assert.equal((open.plan.insert as { waiting: boolean }).waiting, true, 'its runtime cell is blank and something can still fill it');
+  assert.equal((open.plan.insert as { open: boolean }).open, true, 'its runtime cell is blank and something can still fill it');
   assert.equal(open.observed.get(seasonKey(810, 2))?.Watched, undefined, 'so the row comes back next poll to be closed');
   assert.equal(open.writing.get(seasonKey(810, 2))?.Watched, undefined, 'banked, it would be recorded the moment the batch landed');
 
   // The same row with every answer in hand lands finished, and banks.
   const done = scenario(joiningSeason(true)).result(sawOnlySeasonOne);
-  assert.equal((done.plan.insert as { waiting: boolean }).waiting, false);
+  assert.equal((done.plan.insert as { open: boolean }).open, false);
   assert.equal(done.writing.get(seasonKey(810, 2))?.Watched, '6', 'a row that needs nothing more banks against its own write');
 });
 
@@ -1908,7 +1950,7 @@ test('planRecord keeps where and what changed, and drops the diagnostics', () =>
     edits: [
       { row: 8, column: 3, field: 'Episode', previous: { numberValue: 3 }, value: { numberValue: 5 }, address: 'K9', note: 'Fargo S2: 3 -> 5 episodes' },
     ],
-    insert: { kind: 'season', row: 609, rows: 1, waiting: false, title: 'Fargo', season: 3, fill: [], note: 'Fargo: new season row at 610, 4 episodes' },
+    insert: { kind: 'season', row: 609, rows: 1, open: false, title: 'Fargo', season: 3, fill: [], note: 'Fargo: new season row at 610, 4 episodes' },
     skips: [{ code: 'duplicate-season', message: 'Severance S1: two rows claim season 1' }],
     notes: ['Andor: not on the sheet'],
     deferred: 2,
@@ -3057,7 +3099,7 @@ test('a block taller than the row budget is cut to fit, and says what it left', 
 test('a block row whose runtime nothing has answered keeps its count unrecorded', () => {
   const { plan, observed, writing } = blocks({ shapes: seasonShapes(eps(1, 9, 4)), seasonRuntimes: new Map() });
   assert.equal(plan.insert?.kind, 'block');
-  assert.deepEqual((plan.insert as { waiting: number[] }).waiting, [1], 'its runtime cell is blank and the close can still fill it');
+  assert.deepEqual((plan.insert as { open: number[] }).open, [1], 'its runtime cell is blank and the close can still fill it');
   assert.equal(observed.get(seasonKey(BLOCK_SHOW.id, 1))?.Watched, undefined, 'so the row comes back to be closed');
   assert.equal(writing.get(seasonKey(BLOCK_SHOW.id, 1))?.Watched, undefined);
   assert.equal(writing.get(titleRecordKey(BLOCK_SHOW.id))?.Status !== undefined, true, 'the title itself is still banked against the block');

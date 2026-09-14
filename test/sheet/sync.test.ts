@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { CATALOGUE_ASKS_PER_PASS, emptyAttemptLookups, MAX_LOOKUPS_PER_ATTEMPT, rationLookups, SheetSync } from '../../src/sheet/sync.ts';
+import { indexLibrary } from '../../src/sheet/1-index.ts';
+import { CATALOGUE_ASKS_PER_PASS, MAX_LOOKUPS_PER_ATTEMPT, MAX_PASSES, rationLookups, SheetSync } from '../../src/sheet/sync.ts';
 import { clearTokenCache } from '../../src/api/google/auth.ts';
 import { clearTokenCache as clearTvdbTokenCache } from '../../src/api/tvdb/auth.ts';
 import { cellOf, col, daysAgo, jsonResponse, libraryOf, quiet, recorder, SHEET_COLUMNS, SHEET_HEADERS, todaySerial, withConfig, withFetch, withFreshJournal, type CellSpec, seasonRow, showRow } from '../helpers.ts';
@@ -1456,16 +1457,17 @@ test('a cold start drains its SIMKL details across the passes of one run', async
 });
 
 /**
- * The rationing, on its own. Two properties bit twice while the allowance
- * lived in the planner, and both are the loop's to hold: an answered title is
- * dropped **before** the slice, so it spends none of the allowance and the
- * blocks behind it are read; and the three upstreams a block waits on are
- * capped for the whole attempt, not per pass, or the pass ceiling multiplies
- * the burst.
+ * The rationing, on its own. Two properties are the loop's to hold and are
+ * pinned here directly: an answered title is dropped **before** the slice, so
+ * it spends none of the allowance and the blocks behind it are read; and the
+ * three upstreams a block waits on are capped for the whole attempt, not per
+ * pass, or the pass ceiling multiplies the burst.
  */
 const rationing = () => {
   const now = Temporal.Now.instant();
-  const index = new Map(Array.from({ length: 40 }, (_, i) => [900 + i, { lastWatchedAt: null }] as const)) as unknown as ReadonlyMap<number, never>;
+  const index = indexLibrary(
+    libraryOf(...Array.from({ length: 40 }, (_, i) => ({ id: 900 + i, title: `Show ${i}`, status: 'watching', seasons: { 1: [FIRST_WATCH] }, watched: 1, total: 9 }))),
+  );
   return { now, index, made: { catalogue: new Set<number>(), runtimes: new Set<string>(), genres: new Set<number>(), certificates: new Set<number>() } };
 };
 
@@ -1473,10 +1475,10 @@ test('answered titles are dropped before the catalogue slice, so a cold one behi
   const { now, index, made } = rationing();
   const ids = Array.from({ length: 40 }, (_, i) => 900 + i);
   const cold = 939;
-  // Every title but the last answered a moment ago.
-  const stamps = new Map(ids.filter((id) => id !== cold).map((id) => [id, { watchedAt: null, at: now }]));
+  // Every title but the last answered a moment ago, at its current watch.
+  const stamps = new Map(ids.filter((id) => id !== cold).map((id) => [id, { watchedAt: index.get(id)?.lastWatchedAt ?? null, at: now }]));
   const demands = { catalogue: ids.map((id) => ({ id, episodes: true, detail: true })), runtimes: [], genres: [], certificates: [] };
-  const taken = rationLookups(demands, { made, stamps, index, now, attempt: 1, askFacts: true, spent: emptyAttemptLookups() });
+  const taken = rationLookups(demands, { made, stamps, index, now, attempt: 1, insertChosen: false });
   assert.deepEqual(taken.catalogue.map((r) => r.id), [cold], 'the one unanswered title, however many answered ones sort ahead of it');
   assert.equal(taken.unfetched, false);
 });
@@ -1485,12 +1487,12 @@ test('a pass takes its allowance of titles and says the rest are unfetched', () 
   const { now, index, made } = rationing();
   const ids = Array.from({ length: CATALOGUE_ASKS_PER_PASS + 8 }, (_, i) => 900 + i);
   const demands = { catalogue: ids.map((id) => ({ id, episodes: true, detail: true })), runtimes: [], genres: [], certificates: [] };
-  const taken = rationLookups(demands, { made, stamps: new Map(), index, now, attempt: 1, askFacts: true, spent: emptyAttemptLookups() });
+  const taken = rationLookups(demands, { made, stamps: new Map(), index, now, attempt: 1, insertChosen: false });
   assert.equal(taken.catalogue.length, CATALOGUE_ASKS_PER_PASS);
   assert.equal(taken.unfetched, true, 'which is what arms the retry if the passes run out first');
   // Fetched, the next pass takes the rest.
   for (const request of taken.catalogue) made.catalogue.add(request.id);
-  const next = rationLookups(demands, { made, stamps: new Map(), index, now, attempt: 1, askFacts: true, spent: emptyAttemptLookups() });
+  const next = rationLookups(demands, { made, stamps: new Map(), index, now, attempt: 1, insertChosen: false });
   assert.equal(next.catalogue.length, 8);
   assert.equal(next.unfetched, false);
 });
@@ -1504,26 +1506,55 @@ test('the three upstreams a block waits on are capped for the attempt, not per p
     genres: ids.map((id) => ({ id, tvdbId: id })),
     certificates: ids.map((id) => ({ id, tmdbId: id })),
   };
-  const spent = emptyAttemptLookups();
-  const first = rationLookups(demands, { made, stamps: new Map(), index, now, attempt: 1, askFacts: true, spent });
+  const first = rationLookups(demands, { made, stamps: new Map(), index, now, attempt: 1, insertChosen: false });
   assert.equal(first.runtimes.length, MAX_LOOKUPS_PER_ATTEMPT);
   assert.equal(first.genres.length, MAX_LOOKUPS_PER_ATTEMPT);
   assert.equal(first.certificates.length, MAX_LOOKUPS_PER_ATTEMPT);
   assert.equal(first.unfetched, true);
-  // What the loop does after fetching: the tally moves and the fetched keys enter `made`.
-  spent.runtimes += first.runtimes.length;
-  spent.genres += first.genres.length;
-  spent.certificates += first.certificates.length;
+  // What the loop does after fetching: the fetched keys enter `made`, which is the tally.
   for (const r of first.runtimes) made.runtimes.add(`${r.tvdbId}:${r.season}`);
   for (const r of first.genres) made.genres.add(r.id);
   for (const r of first.certificates) made.certificates.add(r.id);
-  const second = rationLookups(demands, { made, stamps: new Map(), index, now, attempt: 1, askFacts: true, spent });
+  const second = rationLookups(demands, { made, stamps: new Map(), index, now, attempt: 1, insertChosen: false });
   assert.deepEqual([second.runtimes.length, second.genres.length, second.certificates.length], [0, 0, 0], 'the second pass of one attempt spends what the first left');
   assert.equal(second.unfetched, true, 'and the four left standing are the next poll’s');
 
-  const fresh = rationLookups(demands, { made, stamps: new Map(), index, now, attempt: 2, askFacts: false, spent: emptyAttemptLookups() });
-  assert.deepEqual([fresh.runtimes.length, fresh.genres.length, fresh.certificates.length], [0, 0, 0], 'a later attempt asks none of them, whatever its tally');
+  const fresh = rationLookups(demands, { made, stamps: new Map(), index, now, attempt: 2, insertChosen: false });
+  assert.deepEqual([fresh.runtimes.length, fresh.genres.length, fresh.certificates.length], [0, 0, 0], 'a later attempt asks none of them');
   assert.equal(fresh.unfetched, true, 'but still says they are waiting');
+});
+
+/**
+ * The pass ceiling abandons the fetches it stops at, and that is work only
+ * another poll does: a backfill past `MAX_PASSES` bursts of the allowance
+ * leaves its tail unasked, and with the ration reporting nothing left — the
+ * tail fitted its slice — nothing else would arm the retry that drains it.
+ */
+test('a backfill past the pass ceiling still asks for another poll', async () => {
+  clearTokenCache();
+  clearTvdbTokenCache();
+  // Blocks on the grid rather than titles with none: a block insert stops the
+  // walk asking, where a grid of recent blocks asks for every one. Each row
+  // already holds its count, so nothing is planned and only the abandoned
+  // asks can arm the retry.
+  const count = MAX_PASSES * CATALOGUE_ASKS_PER_PASS + 2;
+  const ids = Array.from({ length: count }, (_, i) => 900 + i);
+  const grid: CellSpec[][] = [H, ...ids.flatMap((id) => [show(`Show ${id}`, 'Watching', id), season(1, 2, null)])];
+  const library = libraryOf(...ids.map((id) => ({ id, title: `Show ${id}`, status: 'watching', seasons: { 1: [FIRST_WATCH, LAST_WATCH] }, watched: 2, total: 9 })));
+  const sheet = blockServer({ grid });
+  await withFreshJournal(async () => {
+    await withBlockKeys({}, () =>
+      withFetch(sheet.handler, async (calls) => {
+        const log = recorder();
+        const result = await new SheetSync({ logger: log }).run(library);
+        assert.equal(result.record.edits.length, 0, 'nothing to write, so nothing but the asks can arm a retry');
+        const asked = new Set(calls.filter((c) => c.startsWith('https://api.simkl.com/tv/') && !c.includes('/episodes/')));
+        assert.equal(asked.size, MAX_PASSES * CATALOGUE_ASKS_PER_PASS, 'the ceiling stops the run two titles short');
+        assert.match(log.lines.join('\n'), /still demanding lookups after/);
+        assert.equal(result.retry, true, 'and the two it abandoned are the next poll’s');
+      }),
+    );
+  });
 });
 
 // Gating rather than degrading: those cells are written once, and a blank one

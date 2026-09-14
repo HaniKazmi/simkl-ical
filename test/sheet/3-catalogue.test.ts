@@ -8,6 +8,7 @@ import {
   seasonShapes,
   tmdbIdOf,
   tvdbIdOf,
+  episodesAnswered,
 } from '../../src/sheet/3-catalogue.ts';
 import { certificateFor, runtimeMinutes } from '../../src/sheet/values.ts';
 import { indexLibrary } from '../../src/sheet/1-index.ts';
@@ -145,7 +146,7 @@ test('a fold reduces the payloads and stamps the title, so a quiet poll asks not
   );
 
   const held = store.titles.get(1);
-  assert.equal(held?.shapes.get(1)?.total, 2);
+  assert.equal(held?.shapes?.get(1)?.total, 2);
   assert.equal(held?.status, 'ended');
   assert.equal(held?.tvdbId, 99);
   assert.equal(needsLookup(store.stamps.get(1), index().get(1), NOW, null), false, 'stamped, so not due again');
@@ -162,6 +163,26 @@ test('a failed lookup is left unstamped so the next poll retries it', () => {
     { at: NOW },
   );
   assert.equal(needsLookup(store.stamps.get(1), index().get(1), NOW, null), true);
+});
+
+/**
+ * Gone is a settled answer: a title SIMKL no longer serves folds to a present,
+ * empty episode map, so its rows close on that rather than wait on a list that
+ * is never coming. Only where nothing landed — `unavailable` is per title, and
+ * an id whose episodes answered while its detail 404'd keeps its real map.
+ */
+test('a title SIMKL says is gone folds to an answered, empty episode list', () => {
+  const store = new CatalogueStore();
+  store.foldCatalogue(
+    [{ id: 1, episodes: true, detail: true }, { id: 2, episodes: true, detail: true }, { id: 3, detail: true }],
+    { episodes: new Map([[2, episodes]]), details: new Map(), failed: [], unavailable: [1, 2, 3] },
+    index(),
+    { at: NOW },
+  );
+  assert.equal(episodesAnswered(store.titles.get(1)), true, 'asked for episodes and gone: answered with nothing');
+  assert.equal(store.titles.get(1)?.shapes?.size, 0);
+  assert.equal(store.titles.get(2)?.shapes?.get(1)?.total, 2, 'a real list is not clobbered by the detail being gone');
+  assert.equal(episodesAnswered(store.titles.get(3)), false, 'a title that asked for no episodes gets no episode answer');
 });
 
 // The join key turns the runtime feature on, so without a credential it is

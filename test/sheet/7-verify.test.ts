@@ -197,7 +197,7 @@ const insertFixture = () => {
     address: a1(fx.end, before.columns[field]),
     note: 'new',
   }));
-  return { after, newRow, plan: planOf([], { kind: 'season', row: fx.end, rows: 1, waiting: false, title: 'Fargo', season: 3, fill, note: 'new row' }) };
+  return { after, newRow, plan: planOf([], { kind: 'season', row: fx.end, rows: 1, open: false, title: 'Fargo', season: 3, fill, note: 'new row' }) };
 };
 
 test('an insert with exactly its planned fill verifies', () => {
@@ -293,7 +293,7 @@ const insertPlan = (before: ReturnType<typeof parseGrid>): SheetPlan => ({
     kind: 'season',
     row: 3,
     rows: 1,
-    waiting: false,
+    open: false,
     title: 'Fargo',
     season: 2,
     fill: (['Season', 'Episode', 'Start'] as HeaderName[]).map((field) => ({

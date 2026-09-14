@@ -147,12 +147,13 @@ export interface Rationed<T> {
  * the run alone, or a span would pass a rows check that never measured it and
  * then be dropped when the candidate committed.
  *
- * The candidate's skips are merged whatever the verdict: they are observations
- * about the row — a hand-typed count, a stamp out of range — and a poll with no
- * room for the row still owes the report its diagnosis, where dropping them
- * leaves only the tier's aggregate line until a poll with room re-plans it.
- * Its notes are not: a note may describe a write, and a rejected candidate is
- * making none.
+ * A rejected candidate's skips and notes go with it. A note may describe a
+ * write the run is not making; a skip is one line per row, and the rows a
+ * full budget rejects are the unbounded set — a library marked whole would put
+ * a line per season into a report read beside the sheet, against the one
+ * aggregate line its tier writes. What that costs is small: a candidate that
+ * writes nothing is admitted at no cost and reports as usual, and a state the
+ * budget held back is re-reported by the poll that admits the row.
  */
 export const admitPlan = <E extends PlannedCell, I extends { row: number }, S>(
   run: Admissible<E, I, S>,
@@ -160,13 +161,13 @@ export const admitPlan = <E extends PlannedCell, I extends { row: number }, S>(
   budgets: Budgets,
   span: (insert: I) => NonNullable<PlannedWrites['insert']>,
 ): boolean => {
-  run.skips.push(...candidate.skips);
   const edits = [...run.edits, ...candidate.edits];
   const insert = run.insert ?? candidate.insert;
   if (budgetProblem({ edits, insert: insert === null ? null : span(insert) }, budgets) !== null) return false;
 
   run.edits = edits;
   run.insert = insert;
+  run.skips.push(...candidate.skips);
   run.notes.push(...candidate.notes);
   run.deferred += candidate.deferred;
   return true;

@@ -127,6 +127,14 @@ export const tmdbIdOf = (detail: { ids?: { tmdb?: string } } | undefined): numbe
  */
 export const detailAnswered = (entry: TitleCatalogue | undefined): entry is AnsweredCatalogue => entry?.tvdbId !== undefined;
 
+/**
+ * Whether `/tv/episodes/{id}` has answered for a title, the same question as
+ * `detailAnswered` for the other call: present is an answer, empty included,
+ * and absent is the call still outstanding.
+ */
+export const episodesAnswered = (entry: TitleCatalogue | undefined): entry is TitleCatalogue & { shapes: Map<number, SeasonShape> } =>
+  entry?.shapes !== undefined;
+
 /** A title whose detail has landed: both join keys present, as a number or a settled null. */
 export type AnsweredCatalogue = TitleCatalogue & { tvdbId: number | null; tmdbId: number | null };
 
@@ -197,7 +205,14 @@ export const averageRuntime = (episodes: TvdbEpisode[] | null | undefined, expec
  * and images out of a map that lives for the life of the process.
  */
 export interface TitleCatalogue {
-  shapes: Map<number, SeasonShape>;
+  /**
+   * The seasons the episode list describes. **Absent** means the episodes call
+   * has not answered; present and empty means it answered with nothing to
+   * describe — a list of specials, or a title SIMKL says is gone. Only the
+   * second settles a row: read as the first, a gone title's row is held open
+   * and re-asked about once a day for the life of the sheet.
+   */
+  shapes?: Map<number, SeasonShape>;
   status?: string;
   runtime?: number | null;
   /**
@@ -330,7 +345,7 @@ export class CatalogueStore {
   readonly stamps = new Map<number, CatalogueStamp>();
 
   private entry(id: number): TitleCatalogue {
-    const existing = this.titles.get(id) ?? { shapes: new Map(), seasonRuntimes: new Map() };
+    const existing = this.titles.get(id) ?? { seasonRuntimes: new Map() };
     this.titles.set(id, existing);
     return existing;
   }
@@ -346,6 +361,15 @@ export class CatalogueStore {
     { at = Temporal.Now.instant(), tvdbEnabled = tvdbConfigured(config) }: { at?: Temporal.Instant; tvdbEnabled?: boolean } = {},
   ): void {
     for (const [id, episodes] of fetched.episodes) this.entry(id).shapes = seasonShapes(episodes);
+    // Gone is a settled answer: a title SIMKL no longer serves has no episodes
+    // to describe, and its rows have to close on that rather than wait on a
+    // list that is never coming. After the fold and only where nothing landed,
+    // because `unavailable` is per title — an id whose episodes answered and
+    // whose detail 404'd is in both, and its map is real.
+    const askedEpisodes = new Set(requests.filter((request) => request.episodes).map((request) => request.id));
+    for (const id of fetched.unavailable) {
+      if (askedEpisodes.has(id)) this.entry(id).shapes ??= new Map();
+    }
     for (const [id, detail] of fetched.details) {
       Object.assign(this.entry(id), {
         status: detail.status,
@@ -379,7 +403,7 @@ export class CatalogueStore {
       const key = runtimeKeyOf(request.tvdbId, request.season);
       if (stalled.has(key)) continue;
       const entry = this.titles.get(request.id);
-      const expected = entry?.shapes.get(request.season)?.total ?? 0;
+      const expected = entry?.shapes?.get(request.season)?.total ?? 0;
       entry?.seasonRuntimes.set(request.season, averageRuntime(fetched.episodes.get(key), expected));
     }
   }

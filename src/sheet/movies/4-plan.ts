@@ -37,6 +37,7 @@ import {
   watchSerial,
   foldInto,
   recorded as recordedEntry,
+  scratchRecording,
   type Baseline,
   type FilmRecord,
   type Recording,
@@ -105,6 +106,13 @@ export interface FilmPlan {
   skips: FilmSkip[];
   notes: string[];
   /**
+   * Whether a film was ready to add and the poll's row budget had no room for
+   * it. What the fetch loop stops on: with no room for a row, no pass can plan
+   * the insert this loop otherwise stops at, and it would burst TMDB on every
+   * pass to the ceiling for rows nothing can add.
+   */
+  insertHeld: boolean;
+  /**
    * Work this run could have done and rationed — films ready for a row beyond
    * the one this run adds, and the rows the poll's budgets had no room for. A
    * lookup the fetch loop had no room for is its `unfetched`, which arms the
@@ -121,7 +129,7 @@ export interface FilmPlan {
   deferred: number;
 }
 
-export const emptyFilmPlan = (): FilmPlan => ({ edits: [], insert: null, skips: [], notes: [], deferred: 0 });
+export const emptyFilmPlan = (): FilmPlan => ({ edits: [], insert: null, insertHeld: false, skips: [], notes: [], deferred: 0 });
 
 /**
  * Where one candidate's decisions land: the plan it adds to and the two maps
@@ -368,7 +376,7 @@ export const planFilms = (
    * batch lands.
    */
   const admit = (build: (out: FilmTarget) => void): boolean => {
-    const scratch: FilmTarget = { plan: emptyFilmPlan(), keep: { observed, writing: new Map() } };
+    const scratch: FilmTarget = { plan: emptyFilmPlan(), keep: scratchRecording({ observed, writing }) };
     build(scratch);
     if (!admitPlan(plan, scratch.plan, budgets, (insert) => insert)) return false;
     foldInto(writing, scratch.keep.writing);
@@ -545,6 +553,8 @@ const planInsert = (
   // one-per-run rule.
   let behind = 0;
   let noRoom = 0;
+  let awaiting = 0;
+  let awaitingFirst: FilmProgress | undefined;
   for (const film of missing) {
     const heldBy = namedOnTab.get(film.title.trim().toLowerCase());
     if (heldBy !== undefined) {
@@ -590,9 +600,12 @@ const planInsert = (
       }
       // Every one, uncapped: how many of them one pass fetches is the fetch
       // loop's question, and a film asked for and not fetched is what arms the
-      // retry there.
+      // retry there. Counted rather than skipped one by one, because a cold
+      // store holds every film on the tab and a line per film is a report
+      // nobody reads.
       demands.push({ id: film.id, tmdbId: film.tmdbId, title: film.title });
-      plan.skips.push({ code: 'awaiting-lookup', row: null, reason: `${film.title}: waiting on TMDB before its row can be built` });
+      awaiting += 1;
+      awaitingFirst ??= film;
       continue;
     }
 
@@ -628,6 +641,10 @@ const planInsert = (
   if (noRoom > 1) {
     plan.notes.push(`${noRoom - 1} more film(s) need a row and wait with it`);
   }
+  if (awaiting) {
+    plan.notes.push(`${awaiting} film(s) wait on TMDB before a row can be built, ${awaitingFirst?.title} (${awaitingFirst?.id}) first`);
+  }
+  plan.insertHeld = noRoom > 0;
   if (awaitingCredential) {
     plan.notes.push(`${awaitingCredential} film(s) need a TMDB lookup and TMDB rejected the credential; fix TMDB_API_KEY and restart`);
   }

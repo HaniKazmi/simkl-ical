@@ -155,7 +155,7 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   scans for it once a poll, in `sync.ts` beside `starts`, and `titleIsNew` reads it.
   `parseBaselineKey` is the single classifier of which of the three key shapes a stored key has, for
   the file's readers; in the planners the shapes are the types `SeasonKey`, `TitleKey` and `MovieKey`,
-  and `withdraw`, `bank`, `forget` and `recorded` take a key's own fields (`RecordOf`), so writing a
+  and `withdraw`, `bank`, `forgetCount` and `recorded` take a key's own fields (`RecordOf`), so writing a
   season's entry with `Status` fails to compile rather than recording a field nothing reads.
   Delta membership held in memory is the
   design not to reach for: an ordinary weekly episode names the whole title, which back-fills every
@@ -210,15 +210,19 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   would keep its block in scope, at a lookup a day, for ever. On the counting side: a block the row
   budget cut to nothing adds to `plan.deferred`, which is what arms the retry that brings a poll with
   room, and a lookup the fetch loop had no room for is that loop's `unfetched`, which arms the same
-  retry. **A dated row the budget holds back is
-  forgotten, not withdrawn** — `forget` in `values.ts`, carried out of the planner as
+  retry. **A row left open — by a hold in `closeSeason`, or by a full budget — has its count
+  forgotten, not withdrawn** — `forgetCount` in `values.ts`, carried out of the planner as
   `PlanResult.forgetting` and dropped from the file by `saveBaseline` before it folds the run's
-  observations in. A withdrawal leaves the stored value standing, which is right for every hold
-  whose stored value differs from SIMKL's and wrong for this one: a dated row's stored count may
-  already agree — a first sighting recorded it, or the count landed on a poll whose close was still
-  waiting — so held back, it is in scope only until its watch date leaves the window, and then
-  nothing brings it back. Forgotten, the count is absent on a known title, which `countMoved` reads
-  as moved, and the record brings the row back where the window cannot. An inserted row banks its
+  observations in. A withdrawal leaves the stored value standing, which is right for a row whose
+  stored value differs from SIMKL's and wrong for one whose stored count already agrees: a count
+  that landed while the season was still airing, or that a first sighting recorded, on a season
+  that became complete with nothing watched since. Such a row is in scope only until its watch
+  date leaves the window, and a hold that outlives the window — a stamp SIMKL has yet to correct,
+  a list it has yet to serve — would leave it complete and undated with nothing to bring it back.
+  Forgotten, the count is absent on a known title, which `countMoved` reads as moved, and the record
+  brings the row back where the window cannot. Only the count is ever forgotten, by type: a title's
+  `Status` and a season's dates read absence as a first sighting, so forgetting one would turn a
+  pending move into a lost one. An inserted row banks its
   count only where it lands finished — `seasonCells`' `open`, carried on `RowInsert` and per row on
   `BlockInsert` — because a row created with a blank runtime cell something can still fill is a row a
   later poll has to close. A complete season whose **last**-watch stamp is out of range lands the
@@ -330,7 +334,13 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
 - **Absent is not null, for `tvdbId` and for a season runtime alike.** Absent means the lookup has
   not answered; null means it answered that nothing is obtainable. Only null may date a row.
   Reading absent as null closes rows on a transient 503 and forfeits their cells for good, so
-  `runtimeAnswer` in `4-plan.ts` returns a `pending` state rather than a nullable target.
+  `runtimeAnswer` in `4-plan.ts` returns a `pending` state rather than a nullable target. The same
+  in reverse for the episode list: `TitleCatalogue.shapes` is absent until `/tv/episodes/{id}`
+  answers and present-and-empty once it has — a list of specials, or a title SIMKL says is gone,
+  which `foldCatalogue` files as answered. `episodesAnswered` beside `detailAnswered` is the one
+  reading, and a resolved row's `complete` is `null` only while the list is outstanding. Read the
+  other way, a gone title's row is held open and its block re-asked about once a day for the life
+  of the sheet.
 - **The runtime write's scope is `runtimeScopeOk`, and it is stricter than `usesCourModel`** — both
   in `2-grid.ts`, with the Attack on Titan measurement in the doc comment. A SIMKL anime record
   numbers every cour `season: 1` and all cours share one TVDB id, so an anime row's number
@@ -343,12 +353,14 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   planning path.
 - **The planner asks for every lookup it wants, once per key, and rations nothing.** `demand` in
   `4-plan.ts` is the only writer of `PlanDemands`; it folds a block's two asks about one id — its
-  episode list, then the entry that decides its `Status` — into one entry, the way `fetchCatalogue`
-  folds them into one call, so a slice of the list is a slice of titles. How much of it one pass
+  episode list, then the entry that decides its `Status` — into one entry through the same
+  `mergeCatalogueRequest` that `fetchCatalogue` folds them into one call with, so a slice of the
+  list is a slice of the titles fetched. How much of it one pass
   fetches is `rationLookups` in `sync.ts`, and it lives there because only the fetch loop knows
   what this attempt has already asked for, what the store has answered since, and how many passes
-  remain; carried in the planner that knowledge was a mutable allowance threaded through a pure
-  module, copied per admitted candidate, and wrong twice about which asks to count.
+  remain. Carried in the planner, that knowledge is a mutable allowance threaded through a pure
+  module and copied per admitted candidate, and the planner cannot tell an answered ask from an
+  outstanding one without a copy of the store's stamps.
   **Two allowances, two periods.** The three upstreams a block's show row waits on — TVDB's genres,
   TMDB's certificate, TVDB's season runtimes — get `MAX_LOOKUPS_PER_ATTEMPT` = 8 each for the whole
   **attempt**, because the planner runs to a fixpoint and a cap reset per pass is the cap multiplied

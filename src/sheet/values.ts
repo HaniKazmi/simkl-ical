@@ -425,6 +425,15 @@ export interface Recording {
 }
 
 /**
+ * A record to build one candidate into: the run's `observed` and `forgetting`
+ * shared, so a rejected candidate's withdrawals and forgets stick, and a fresh
+ * `writing`, so nothing it banked is recorded when the batch lands. What it
+ * banked is gone from the record either way, which is exactly the state that
+ * makes the next poll see the row as moved.
+ */
+export const scratchRecording = <R extends Recording>(keep: R): R => ({ ...keep, writing: new Map() });
+
+/**
  * Fold one map of entries into another, field by field. The one way a run's
  * `writing` reaches `observed`, and a scratch build's reaches the run's:
  * entry-wise assignment would drop the fields the target already holds.
@@ -467,27 +476,32 @@ export const bank = <K extends RecordKey>({ observed, writing }: Recording, key:
 };
 
 /**
- * Take a field out of the record itself, not only out of what this run
- * records.
+ * Take a season's count out of the record itself, not only out of what this
+ * run records.
  *
  * `withdraw` leaves the stored value standing: `saveBaseline` folds a run's
  * observations into what the file holds, so a field absent from them keeps
  * whatever it had. That is the right answer for every hold whose stored value
  * differs from SIMKL's — the next poll compares and finds the same move — and
- * the wrong one for a row the activity window put in scope and the budget
- * held back while its stored count already agreed: nothing differs, so once
- * its watch date leaves the window nothing brings the row back, and a complete
- * row stays undated for as long as the sheet lives. Forgetting the count makes
- * it absent on a known title, which `countMoved` reads as moved, so it is the
- * record rather than the window that brings the row back. Out of `writing` as
- * well, for the reason `holdOpen` gives: an edit built beside the hold may have
- * banked it.
+ * the wrong one for a row the activity window put in scope and a hold or a
+ * full budget left open while its stored count already agreed: nothing
+ * differs, so once its watch date leaves the window nothing brings the row
+ * back, and a complete row stays undated for as long as the sheet lives.
+ * Forgetting the count makes it absent on a known title, which `countMoved`
+ * reads as moved, so it is the record rather than the window that brings the
+ * row back. Out of `writing` as well, for the reason `holdOpen` gives: an edit
+ * built beside the hold may have banked it.
+ *
+ * The count and nothing else, by type: `countMoved` is the one reader that
+ * takes absence as a move. A title's `Status` and a season's dates read absence
+ * as a first sighting — recorded, written nothing — so forgetting one of those
+ * would turn a pending move into a lost one.
  */
-export const forget = <K extends RecordKey>(keep: Required<Recording>, key: K, field: FieldOf<K>): void => {
-  withdraw(keep.observed, key, field);
-  withdraw(keep.writing, key, field);
+export const forgetCount = (keep: Required<Recording>, key: SeasonKey): void => {
+  withdraw(keep.observed, key, 'Watched');
+  withdraw(keep.writing, key, 'Watched');
   const fields = keep.forgetting.get(key) ?? new Set<string>();
-  fields.add(field);
+  fields.add('Watched');
   keep.forgetting.set(key, fields);
 };
 
