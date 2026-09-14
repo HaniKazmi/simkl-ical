@@ -124,6 +124,8 @@ export interface RowInsert {
   row: number;
   /** One row: a season row joins a block that already exists. */
   rows: 1;
+  /** The row itself is grouped, so it folds under its block's show row with the rest. */
+  groupFrom: 0;
   title: string;
   season: number;
   /**
@@ -169,6 +171,8 @@ export interface BlockInsert {
   title: string;
   /** What the `Franchise` cell is written with, and the key placement was decided on. */
   franchise: string;
+  /** The rows after the show row are grouped under it, the outline every block on the tab has. */
+  groupFrom: 1;
   /**
    * Every season a row is created for, ascending, one per row after the show
    * row — and the whole of what the span is. The height is `1 + seasons.length`
@@ -214,13 +218,15 @@ export type Insert = RowInsert | BlockInsert;
  * they read is made.
  */
 export const insertSpan = (insert: Insert): InsertSpan =>
-  insert.kind === 'season' ? insert : { row: insert.row, rows: 1 + insert.seasons.length, fill: insert.fill };
+  insert.kind === 'season' ? insert : { row: insert.row, rows: 1 + insert.seasons.length, fill: insert.fill, groupFrom: insert.groupFrom };
 
 /** One contiguous span of new rows and the cells that fill them. */
 export interface InsertSpan {
   row: number;
   rows: number;
   fill: readonly (CellEdit | BlockCell)[];
+  /** Which rows of the span BUILD groups under the row above them: from the second for a block, the row itself for a season. */
+  groupFrom: 0 | 1;
 }
 
 /** The season a report names an insert by: its only one, or the first of the block's. */
@@ -2270,6 +2276,7 @@ const planInsert = (run: PlanRun, block: ShowBlock, candidate: InsertCandidate, 
     kind: 'season',
     row,
     rows: 1,
+    groupFrom: 0,
     title: block.title,
     season: season.number,
     open: filled.open,
@@ -2488,6 +2495,7 @@ const buildBlock = (ctx: PlanRun, seasonRows: ReadonlySet<number>, { progress, e
 
   return {
     kind: 'block',
+    groupFrom: 1,
     row,
     id: progress.id,
     title,

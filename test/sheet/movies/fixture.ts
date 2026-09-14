@@ -118,6 +118,7 @@ export const filmGrid = (...named: NamedFilmRow[]): FilmGridFixture => {
     return {
       row,
       rows: 1,
+      groupFrom: null,
       id,
       title,
       fill: fields.map(([field, value]) => ({

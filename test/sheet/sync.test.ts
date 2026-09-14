@@ -1203,6 +1203,57 @@ const MARKED_WHOLE: Library = libraryOf({
   total: 27,
 });
 
+// The tab's outline: every block's season rows sit in a row group under its
+// show row. Sheets extends a group when rows are inserted at its end, and a
+// block goes in exactly there, so without the regroup the new show row and its
+// seasons fold under the block above — 23 of the 23 blocks the sync inserted
+// before the step landed that way. Seeded, because without a group for the
+// insert to extend a passing test proves only that `addDimensionGroup` ran.
+test('a new block gets a row group of its own, and the block above keeps the end of its group', async () => {
+  clearTokenCache();
+  clearTvdbTokenCache();
+  // Fargo's two season rows are rows 2-3; Severance lands at rows 4-5.
+  const sheet = blockServer({ rowGroups: [[2, 4]] });
+  await withFreshJournal(async () => {
+    await withBlockKeys({}, () =>
+      withFetch(sheet.handler, async () => {
+        const result = await new SheetSync({ logger: recorder() }).run(NEW_SHOW_LIBRARY);
+        assert.equal(result.status, 'applied', result.error ?? '');
+        assert.equal(cell(sheet.tab('Shows'), 4, 'Title')?.stringValue, 'Severance');
+        assert.deepEqual(sheet.rowGroups(), [[2, 4], [5, 6]]);
+      }),
+    );
+  });
+});
+
+// A season row added at the end of its block lands where the group already grew
+// over it; the regroup over its own row must leave one group, not split it.
+test('a season row joins its block’s row group', async () => {
+  clearTokenCache();
+  const grid: CellSpec[][] = [H, show('Fargo', 'Watching', 3381), season(1, 6, 44000)];
+  const library = libraryOf({
+    id: 3381,
+    title: 'Fargo',
+    status: 'watching',
+    seasons: { 1: [daysAgo(400)], 2: [daysAgo(2)] },
+    watched: 2,
+    total: 2,
+  });
+  const episodes = [
+    { season: 1, episode: 1, type: 'episode', aired: true },
+    { season: 2, episode: 1, type: 'episode', aired: true },
+  ];
+  const sheet = server({ grid, episodes, rowGroups: [[2, 3]] });
+  await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL }, () =>
+    withFetch(sheet.handler, async () => {
+      const result = await new SheetSync({ logger: recorder() }).run(library);
+      assert.equal(result.status, 'applied', result.error ?? '');
+      assert.equal(sheet.tabs.get(1)?.length, grid.length + 1, 'the row was added');
+      assert.deepEqual(sheet.rowGroups(), [[2, 4]]);
+    }),
+  );
+});
+
 test('a show marked whole today gets its whole block, though every episode is stamped years back', async () => {
   clearTokenCache();
   clearTvdbTokenCache();

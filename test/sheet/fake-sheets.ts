@@ -77,6 +77,14 @@ export interface FakeSheetsOptions {
   hardcover?: (url: string, init?: RequestInit) => Response;
   /** `meddle`, for the films tab: mutate it on the write so verify must fail. */
   meddleMovies?: (films: CellData[][]) => void;
+  /**
+   * Row groups on the Shows tab, 0-based and half-open: the outline every
+   * block's season rows sit under. Opt-in, so a suite that never asks about
+   * the outline sees none — and a test of the regroup step has to seed one,
+   * because without a group for an insert to extend, a passing test proves
+   * only that `addDimensionGroup` ran.
+   */
+  rowGroups?: Array<[start: number, end: number]>;
 }
 
 export const fakeSheets = ({
@@ -95,8 +103,33 @@ export const fakeSheets = ({
   tmdb,
   hardcover,
   meddleMovies,
+  rowGroups = [],
 }: FakeSheetsOptions = {}) => {
   const tabs = new Map<number, CellData[][]>([[1, grid.map((row) => row.map(cellOf))]]);
+  /**
+   * Row groups per tab, as Sheets keeps them: one depth, and a group's edges
+   * move with the rows. Insert at the end of a group and the group grows
+   * over the new rows; insert at its start and it shifts; delete a group over
+   * part of one and the remainder survives; add one that touches another and
+   * they merge. Each rule is what the live API does, measured on the scratch
+   * copy, and the first is the one that puts an inserted block inside the
+   * block above's group unless the write regroups it.
+   */
+  const groups = new Map<number, Array<{ start: number; end: number }>>([[1, rowGroups.map(([start, end]) => ({ start, end }))]]);
+  const groupsOf = (sheetId: number): Array<{ start: number; end: number }> => {
+    if (!groups.has(sheetId)) groups.set(sheetId, []);
+    return groups.get(sheetId)!;
+  };
+  const normalise = (sheetId: number): void => {
+    const sorted = groupsOf(sheetId).filter((g) => g.end > g.start).sort((a, b) => a.start - b.start);
+    const merged: Array<{ start: number; end: number }> = [];
+    for (const g of sorted) {
+      const last = merged.at(-1);
+      if (last && g.start <= last.end) last.end = Math.max(last.end, g.end);
+      else merged.push({ ...g });
+    }
+    groups.set(sheetId, merged);
+  };
   const titles = new Map<number, string>([[1, 'Shows']]);
   const state = tabs.get(1)!;
   let nextSheetId = 2;
@@ -135,10 +168,40 @@ export const fakeSheets = ({
       // blank rows here — spliced in one, the second row's fill would land on
       // the row the span pushed down.
       tabs.get(sheetId)?.splice(startIndex, 0, ...Array.from({ length: endIndex - startIndex }, () => []));
+      const height = endIndex - startIndex;
+      for (const g of groupsOf(sheetId)) {
+        if (g.start >= startIndex) { g.start += height; g.end += height; }
+        else if (g.end >= startIndex) g.end += height;
+      }
       return {};
     }
     if ('deleteDimension' in request) {
-      tabs.get(request.deleteDimension.range.sheetId)?.splice(request.deleteDimension.range.startIndex, 1);
+      const { sheetId, startIndex } = request.deleteDimension.range;
+      tabs.get(sheetId)?.splice(startIndex, 1);
+      for (const g of groupsOf(sheetId)) {
+        if (g.start > startIndex) { g.start -= 1; g.end -= 1; }
+        else if (g.end > startIndex) g.end -= 1;
+      }
+      normalise(sheetId);
+      return {};
+    }
+    if ('deleteDimensionGroup' in request) {
+      const { sheetId, startIndex, endIndex } = request.deleteDimensionGroup.range;
+      groups.set(
+        sheetId,
+        groupsOf(sheetId).flatMap((g) =>
+          g.end <= startIndex || g.start >= endIndex
+            ? [g]
+            : [{ start: g.start, end: Math.min(g.end, startIndex) }, { start: Math.max(g.start, endIndex), end: g.end }],
+        ),
+      );
+      normalise(sheetId);
+      return {};
+    }
+    if ('addDimensionGroup' in request) {
+      const { sheetId, startIndex, endIndex } = request.addDimensionGroup.range;
+      groupsOf(sheetId).push({ start: startIndex, end: endIndex });
+      normalise(sheetId);
       return {};
     }
     if ('duplicateSheet' in request) {
@@ -272,7 +335,9 @@ export const fakeSheets = ({
     throw new Error(`fake sheets: no tab called ${title}`);
   };
 
-  return { handler, state, films, tab, tabs, titles, batches, writes: () => writes, stopServing: (name: string) => unreadable.add(name) };
+  /** The Shows tab's row groups, 0-based half-open, in row order. */
+  const rowGroupsOf = (sheetId = 1): Array<[start: number, end: number]> => groupsOf(sheetId).map((g) => [g.start, g.end]);
+  return { handler, state, films, tab, tabs, titles, batches, writes: () => writes, stopServing: (name: string) => unreadable.add(name), rowGroups: rowGroupsOf };
 };
 
 export type FakeSheets = ReturnType<typeof fakeSheets>;

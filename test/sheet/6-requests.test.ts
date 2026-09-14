@@ -32,7 +32,9 @@ test('an edit below an insert is still emitted before it', () => {
 test('an insert precedes its own fill, which shares the same row index', () => {
   const requests = toRequests(writesFor(planWrites(planOf([], fx.insertAt(fx.end, 3))), fx.grid));
   assert.equal(kinds(requests)[0], 'insert');
-  assert.ok(kinds(requests).slice(1).every((k) => k === `write@${fx.end}`));
+  // Everything between the insert and the regroup is the fill, at the inserted row.
+  assert.ok(kinds(requests).slice(1, -2).every((k) => k === `write@${fx.end}`));
+  assert.ok(kinds(requests).slice(1, -2).length > 0);
 });
 
 // deleteDimension shifts every row beneath it, so the deletes go bottom-up and
@@ -56,7 +58,7 @@ test('an inserted row inherits the formats of the row above it', () => {
  */
 const spanPlan = (): PlannedWrites => {
   const insert = fx.insertAt(fx.end, 3);
-  return { edits: [], insert: { ...insert, rows: 2, fill: insert.fill.map((cell, i) => (i === 0 ? cell : { ...cell, row: cell.row + 1 })) } };
+  return { edits: [], insert: { ...insert, rows: 2, groupFrom: 1, fill: insert.fill.map((cell, i) => (i === 0 ? cell : { ...cell, row: cell.row + 1 })) } };
 };
 
 // One request for the whole span. Two requests of one row each would put the
@@ -71,6 +73,42 @@ test('a span is inserted as one request covering every row of it', () => {
 test('the fill of a span is written at the row each cell names', () => {
   const written = toRequests(writesFor(spanPlan(), fx.grid)).flatMap((r) => ('updateCells' in r ? [r.updateCells.range.startRowIndex] : []));
   assert.deepEqual([...new Set(written)].sort(), [fx.end, fx.end + 1]);
+});
+
+// Sheets extends a row group when rows are inserted at its end, and a block is
+// inserted exactly there — so without this step the whole span, show row
+// included, folds under the block above. The delete covers the whole span and
+// the add starts at `groupFrom`, so the show row is left out of the group and
+// its season rows are put in one; both come after the fill, which shares the
+// span's row indices with them.
+test('a span is regrouped after its fill: ungrouped whole, then grouped from groupFrom', () => {
+  const requests = toRequests(writesFor(spanPlan(), fx.grid));
+  const sheetId = fx.grid.snapshot.sheetId;
+  assert.deepEqual(kinds(requests).slice(-2), ['deleteDimensionGroup', 'addDimensionGroup']);
+  const [del, add] = requests.slice(-2);
+  assert.ok(del && 'deleteDimensionGroup' in del && add && 'addDimensionGroup' in add);
+  assert.deepEqual(del.deleteDimensionGroup.range, { sheetId, dimension: 'ROWS', startIndex: fx.end, endIndex: fx.end + 2 });
+  assert.deepEqual(add.addDimensionGroup.range, { sheetId, dimension: 'ROWS', startIndex: fx.end + 1, endIndex: fx.end + 2 });
+});
+
+// A season row belongs in its block's group wherever it lands — at the end,
+// where the group already grew over it, or under a hand block with no group.
+// Regrouping its own row is one recipe for both: adjacent groups merge.
+test('a season row is regrouped over itself', () => {
+  const requests = toRequests(writesFor(planWrites(planOf([], fx.insertAt(fx.end, 3))), fx.grid));
+  const [del, add] = requests.slice(-2);
+  assert.ok(del && 'deleteDimensionGroup' in del && add && 'addDimensionGroup' in add);
+  assert.deepEqual([del.deleteDimensionGroup.range.startIndex, del.deleteDimensionGroup.range.endIndex], [fx.end, fx.end + 1]);
+  assert.deepEqual([add.addDimensionGroup.range.startIndex, add.addDimensionGroup.range.endIndex], [fx.end, fx.end + 1]);
+});
+
+// The films tab is flat and carries no outline; a group there would be one
+// the tab never had. `groupFrom: null` is how that half says so.
+test('an insert with nothing to group sends no group request', () => {
+  const plan = spanPlan();
+  const requests = toRequests(writesFor({ ...plan, insert: { ...plan.insert!, groupFrom: null } }, fx.grid));
+  assert.ok(requests.every((r) => !('deleteDimensionGroup' in r) && !('addDimensionGroup' in r)));
+  assert.equal(kinds(requests)[0], 'insert');
 });
 
 // `SHEET_MAX_ROWS` is a blast radius, and a two-row block that counts as one

@@ -1950,7 +1950,7 @@ test('planRecord keeps where and what changed, and drops the diagnostics', () =>
     edits: [
       { row: 8, column: 3, field: 'Episode', previous: { numberValue: 3 }, value: { numberValue: 5 }, address: 'K9', note: 'Fargo S2: 3 -> 5 episodes' },
     ],
-    insert: { kind: 'season', row: 609, rows: 1, open: false, title: 'Fargo', season: 3, fill: [], note: 'Fargo: new season row at 610, 4 episodes' },
+    insert: { kind: 'season', row: 609, rows: 1, groupFrom: 0, open: false, title: 'Fargo', season: 3, fill: [], note: 'Fargo: new season row at 610, 4 episodes' },
     skips: [{ code: 'duplicate-season', message: 'Severance S1: two rows claim season 1' }],
     notes: ['Andor: not on the sheet'],
     deferred: 2,

@@ -32,8 +32,15 @@ export interface PlannedWrites {
    * rather than a row because a block is a show row and every season row under
    * it, which have to arrive together — a show row alone merges the block below
    * it into the one above, and a season row alone belongs to the wrong block.
+   *
+   * `groupFrom` is the offset of the first row of the span that belongs in a
+   * row group under the row above it — `1` for a block, whose season rows fold
+   * under its show row; `0` for a season row, which joins its block's group;
+   * `null` for a tab with no outline, which the films tab is. Required rather
+   * than defaulted, like `rows`: a films insert that inherited a group would
+   * put an outline on a flat tab.
    */
-  insert: { row: number; rows: number; fill: readonly PlannedCell[] } | null;
+  insert: { row: number; rows: number; fill: readonly PlannedCell[]; groupFrom: number | null } | null;
 }
 
 /**
@@ -97,16 +104,34 @@ export const writeCell = (sheetId: number, row: number, column: number, value: E
 });
 
 /**
- * The plan as one ordered batch, in three groups:
+ * The plan as one ordered batch, in four groups:
  *
  *   a. edits to pre-existing rows, descending by row
  *   b. the insertDimension, one request for the whole span
  *   c. the fill, at the row each cell names
+ *   d. the regroup: a row group deleted over the whole span, then added over
+ *      the rows from `groupFrom`
  *
  * The fill shares its row indices with the insert, so a rule of "edits before
  * inserts" would apply the fill to whatever sits at those indices and *then*
  * insert blank rows below them — overwriting real rows, the exact failure
  * this design exists to prevent.
+ *
+ * The regroup exists because Sheets extends a row group when rows are inserted
+ * at its end, and a block goes in exactly there: before the next block's show
+ * row, which is the row after the previous block's last season row. Without it
+ * the whole span — the new show row included — sits inside the block above's
+ * group, and the tab folds two blocks under one show row: 23 of the 23 blocks
+ * the sync inserted before this step were absorbed that way. The delete needs
+ * no read of the outline first: over rows no group covers it is a no-op, and
+ * the span never straddles a group, because a group ends at a block boundary
+ * and the span is inserted at one — so after the insert it is wholly inside
+ * the extended group or wholly outside every group. Adjacent groups merge, so
+ * a season row regrouped over its own row lands inside its block's group
+ * wherever in the block it was inserted; under a hand block carrying no group
+ * it gets a one-row group of its own, which is the outline that block would
+ * have. VERIFY does not inspect groups: they are outline, not data, and a
+ * verify failure there would roll back a correct write.
  */
 export const toRequests = (plan: BoundWrites): SheetRequest[] => {
   const sheetId = plan[planned];
@@ -123,6 +148,11 @@ export const toRequests = (plan: BoundWrites): SheetRequest[] => {
       },
     });
     for (const cell of plan.insert.fill) requests.push(writeCell(sheetId, cell.row, cell.column, cell.value));
+    if (plan.insert.groupFrom !== null) {
+      const { row, rows, groupFrom } = plan.insert;
+      requests.push({ deleteDimensionGroup: { range: { sheetId, dimension: 'ROWS', startIndex: row, endIndex: row + rows } } });
+      requests.push({ addDimensionGroup: { range: { sheetId, dimension: 'ROWS', startIndex: row + groupFrom, endIndex: row + rows } } });
+    }
   }
   return requests;
 };

@@ -80,6 +80,8 @@ export interface FilmRowInsert {
   row: number;
   /** One row: the films tab is flat, so a film is a row and never a block. */
   rows: 1;
+  /** A flat tab has no outline, so nothing is grouped. Stated, so BUILD cannot group a film row by default. */
+  groupFrom: null;
   id: number;
   title: string;
   /** No `previous`: the row did not exist. */
@@ -694,7 +696,7 @@ const buildInsert = (
   if (facts.director) fill.push(fillCell(grid, row, film.id, 'Director', str(facts.director), note));
   if (facts.banner) fill.push(fillCell(grid, row, film.id, 'Banner', str(facts.banner), note));
 
-  return { row, rows: 1, id: film.id, title: film.title, fill, note: `add ${note}` };
+  return { row, rows: 1, groupFrom: null, id: film.id, title: film.title, fill, note: `add ${note}` };
 };
 
 // --- What survives ---------------------------------------------------------
