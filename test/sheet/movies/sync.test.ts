@@ -233,6 +233,9 @@ test('the insert goes out as insertDimension, so the row inherits its number for
     await run('apply', {}, library, (result, _calls, sheet) => {
       assert.equal(result.status, 'applied', result.error ?? '');
       assert.ok(sheet.batches[0]?.includes('insertDimension'));
+      // A flat tab has no outline: the regroup the show grid's inserts carry
+      // would put a row group on a tab that never had one.
+      assert.ok(!sheet.batches[0]?.includes('addDimensionGroup'), 'no row group on the films tab');
     });
   });
 });

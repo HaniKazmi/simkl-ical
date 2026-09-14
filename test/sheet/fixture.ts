@@ -151,6 +151,7 @@ export const gridFixture = (...named: NamedRow[]): GridFixture => {
       kind: 'season',
       row: index,
       rows: 1,
+      groupFrom: 0,
       open: false,
       title,
       season,
@@ -229,6 +230,7 @@ export const gridFixture = (...named: NamedRow[]): GridFixture => {
 
     return {
       kind: 'block',
+      groupFrom: 1,
       open: [],
       row: index,
       id,

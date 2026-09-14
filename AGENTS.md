@@ -444,7 +444,17 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   would land a row high. Do not widen it back to an array. That one insert is a contiguous **span**
   rather than a row: a block is a show row and its first season row, which cannot arrive apart — a
   show row alone merges the block below it into the one above, and a season row alone belongs to
-  the wrong block. `rows` is required on the shared structural types in `6-requests.ts` and
+  the wrong block. **The batch that inserts a span also regroups it**: a row group deleted over
+  the whole span, then added over its rows from `groupFrom` — the second row for a block, so its
+  season rows fold under the show row the way every block's do; the row itself for a season row,
+  which merges into its block's group. Sheets extends a row group when rows are inserted at its
+  end, and a block is inserted exactly there, so without the step the new show row and its seasons
+  sit inside the block above's group: 23 of the 23 blocks inserted before it landed that way. The
+  delete needs no read of the outline first — over rows no group covers it is a no-op — and the
+  span never straddles a group, because a group ends at a block boundary and the span is inserted
+  at one. VERIFY does not inspect groups: they are outline, not data, and a failure there would
+  roll back a correct write. `groupFrom` is `null` on the films tab, which is flat and has no
+  outline. `rows` is required on the shared structural types in `6-requests.ts` and
   `7-verify.ts`, so the films insert states `1` rather than inheriting it from a default, and
   `spanRows` is the one answer the budget counts, VERIFY inspects and a rollback deletes — three
   spellings of it would let a two-row block be budgeted, verified or deleted as one row.

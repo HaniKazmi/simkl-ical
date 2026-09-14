@@ -109,6 +109,25 @@ export interface DeleteDimensionRequest {
 }
 
 /**
+ * A row group: the outline Sheets draws beside a block's season rows, which
+ * folds them under the show row. Both take the range a dimension delete takes.
+ * Adding over rows that touch or overlap a group merges into it; deleting over
+ * rows no group covers is a no-op that still answers 200 — which is what lets a
+ * write regroup an inserted span without reading the outline first.
+ */
+export interface AddDimensionGroupRequest {
+  addDimensionGroup: {
+    range: { sheetId: number; dimension: 'ROWS' | 'COLUMNS'; startIndex: number; endIndex: number };
+  };
+}
+
+export interface DeleteDimensionGroupRequest {
+  deleteDimensionGroup: {
+    range: { sheetId: number; dimension: 'ROWS' | 'COLUMNS'; startIndex: number; endIndex: number };
+  };
+}
+
+/**
  * A server-side copy of a whole tab — the nearest thing the API offers to the
  * UI's named versions: Sheets v4 has no revision surface at all, and Drive v3
  * revisions can only be listed, fetched, deleted or pinned, never named,
@@ -143,6 +162,8 @@ export type SheetRequest =
   | UpdateCellsRequest
   | InsertDimensionRequest
   | DeleteDimensionRequest
+  | AddDimensionGroupRequest
+  | DeleteDimensionGroupRequest
   | DuplicateSheetRequest
   | DeleteSheetRequest
   | UpdateSheetPropertiesRequest
