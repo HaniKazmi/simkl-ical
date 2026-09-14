@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { indexFilms } from '../../../src/sheet/movies/1-index.ts';
 import { filmFacts } from '../../../src/sheet/movies/3-catalogue.ts';
-import { MAX_LOOKUPS_PER_PASS, NOT_HELD, observeFilms, planFilms } from '../../../src/sheet/movies/4-plan.ts';
-import { movieKey, type Baseline } from '../../../src/sheet/values.ts';
+import { MAX_LOOKUPS_PER_PASS, observeFilms, planFilms } from '../../../src/sheet/movies/4-plan.ts';
+import { movieKey, NOT_HELD, type Baseline } from '../../../src/sheet/values.ts';
 import { isoOf } from '../../../src/shared/dates.ts';
 import type { FilmFacts } from '../../../src/sheet/movies/3-catalogue.ts';
 import { cellOf, libraryOf, rowByLabel, type ItemSpec } from '../../helpers.ts';
@@ -30,11 +30,25 @@ const plan = (
     held,
     onShowGrid = new Set<number>(),
     lookupsRejected = false,
-  }: { baseline?: Baseline; known?: Map<number, FilmFacts | null>; held?: Set<number>; onShowGrid?: Set<number> | null; lookupsRejected?: boolean } = {},
+    maxEdits,
+    maxRows,
+  }: {
+    baseline?: Baseline;
+    known?: Map<number, FilmFacts | null>;
+    held?: Set<number>;
+    onShowGrid?: Set<number> | null;
+    lookupsRejected?: boolean;
+    /** What the poll has left — the ceiling minus what the show half sent. */
+    maxEdits?: number;
+    maxRows?: number;
+  } = {},
 ) => {
   const grid = filmGrid(...rows);
   const index = indexFilms(libraryOf(...items));
-  return { grid, ...planFilms(grid.grid, index, known, { ...OPTS, baseline, held, onShowGrid, lookupsRejected, seed: observeFilms(index) }) };
+  return {
+    grid,
+    ...planFilms(grid.grid, index, known, { ...OPTS, baseline, held, onShowGrid, lookupsRejected, maxEdits, maxRows, seed: observeFilms(index) }),
+  };
 };
 
 const movie = (over: Partial<ItemSpec> & { id: number }): ItemSpec => ({ type: 'movies', status: 'completed', ...over });
@@ -271,8 +285,61 @@ test('one row per run, oldest first, and the rest are deferred', () => {
     { known },
   );
   assert.equal(p.insert?.title, 'Earlier');
-  assert.equal(p.deferredInserts, 1);
+  assert.equal(p.deferred, 1);
   assert.match(p.notes.join(' '), /1 more film/);
+});
+
+/**
+ * The budgets are the **poll's**, and the show half usually runs first. A plan
+ * over either is refused whole and arms no retry, so a films half that met a
+ * full budget by planning into it would write nothing and then wait on the
+ * library's next unrelated move.
+ */
+test('a row the poll has no budget for is held back, not planned into a refusal', () => {
+  const baseline: Baseline = new Map([[movieKey(1), { 'Watch Date': watchedOn(40000), Score: '5', Runtime: '90' }]]);
+  const { plan: p } = plan(
+    [film('a', { id: 1, watched: 40000, score: 5, runtime: 90 })],
+    [movie({ id: 1, lastWatchedAt: watchedOn(41000), rating: 9, runtime: 120 })],
+    { baseline, maxEdits: 0, maxRows: 0 },
+  );
+  assert.deepEqual(p.edits, [], 'nothing is planned');
+  assert.equal(p.deferred, 1, 'and the row is work another poll drains, which is what arms the retry');
+  assert.match(p.notes.join(' '), /film row\(s\) whose values moved wait for a later poll/);
+});
+
+test('an insert the poll has no room for is deferred rather than planned', () => {
+  const known = new Map<number, FilmFacts | null>([[2, facts()]]);
+  const { plan: p } = plan([film('a', { id: 1 })], [movie({ id: 1 }), movie({ id: 2, title: 'Wants A Row', lastWatchedAt: watchedOn(TODAY - 1) })], { known, maxRows: 0 });
+  assert.equal(p.insert, null);
+  assert.equal(p.deferred, 1);
+  assert.match(p.notes.join(' '), /Wants A Row \(2\) is ready to add — deferred, this poll has room for/);
+});
+
+/**
+ * A full row budget holds the insert back; it does not silence the films behind
+ * it. Their lookups are the next poll's to have ready and their warnings — no
+ * TMDB record, a hand row with no id — are true whether or not this poll had
+ * room, so the walk counts them rather than stopping at the first held film.
+ */
+test('films behind an insert held for room are still looked up and reported', () => {
+  const known = new Map<number, FilmFacts | null>([[2, facts()], [4, null], [5, facts()]]);
+  const { plan: p, demands } = plan(
+    [film('a', { id: 1 })],
+    [
+      movie({ id: 1 }),
+      movie({ id: 2, title: 'Wants A Row', lastWatchedAt: watchedOn(TODAY - 1) }),
+      movie({ id: 3, title: 'Needs A Lookup', lastWatchedAt: watchedOn(TODAY - 2), tmdb: '333' }),
+      movie({ id: 4, title: 'Has No Record', lastWatchedAt: watchedOn(TODAY - 3) }),
+      movie({ id: 5, title: 'Also Wants A Row', lastWatchedAt: watchedOn(TODAY - 4) }),
+    ],
+    { known, maxRows: 0 },
+  );
+  assert.equal(p.insert, null);
+  assert.deepEqual(demands.map((d) => d.id), [3], 'the film behind the held one is still asked about');
+  assert.match(p.notes.join(' '), /Has No Record \(4\) has no TMDB record/, 'and the one TMDB has nothing for is still named');
+  assert.match(p.notes.join(' '), /Also Wants A Row \(5\) is ready to add — deferred/, 'the first held film, oldest watch first, is named');
+  assert.match(p.notes.join(' '), /1 more film\(s\) need a row and wait with it/, 'and the rest are counted');
+  assert.equal(p.deferred, 2, 'both films with a row to add are work for a later poll');
 });
 
 test('a film watched but never dated gets no row — a 1970 date is worse than none', () => {

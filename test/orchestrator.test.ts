@@ -617,17 +617,29 @@ test('with the sheet unconfigured a quiet poll still costs exactly one request',
   });
 });
 
+/**
+ * A stand-in for `SheetSync`, recording what the orchestrator told it. `runs`
+ * holds one entry per `run` call.
+ */
+const recordingSync = (result: { status?: 'idle' | 'failed'; error?: string | null; retry?: boolean } = {}) => {
+  const runs: number[] = [];
+  const sheetSync = {
+    lastRunAt: null,
+    lastStatus: 'idle',
+    frozen: null,
+    run: async () => {
+      runs.push(runs.length);
+      return { status: 'idle' as const, edits: 0, inserts: 0, lines: [], error: null, retry: false, ...result };
+    },
+  } as unknown as Orchestrator['sheetSync'];
+  return { sheetSync, runs };
+};
+
 test('a sheet failure is never filed as a library error, and the feed still renders', async () => {
   await withToken(async (state) => {
     state.feed.calendars = emptyCalendars();
     state.feed.calendarsFreshAt = nowIso();
-    // Stands in for the real SheetSync: the wiring is under test.
-    state.sheetSync = {
-      lastRunAt: null,
-      lastStatus: 'idle',
-      frozen: null,
-      run: async () => ({ status: 'failed' as const, edits: 0, inserts: 0, lines: [], error: 'sheets exploded', retry: true }),
-    } as unknown as Orchestrator['sheetSync'];
+    state.sheetSync = recordingSync({ status: 'failed', error: 'sheets exploded', retry: true }).sheetSync;
 
     await withFetch(api(activities()), async () => {
       await state.refreshLibraryIfChanged();
@@ -650,37 +662,24 @@ test('a sheet failure is never filed as a library error, and the feed still rend
 test('a failed library refresh skips the sheet sync entirely', async () => {
   await withToken(async (state) => {
     state.feed.calendars = emptyCalendars();
-    let runs = 0;
-    state.sheetSync = {
-      lastRunAt: null,
-      lastStatus: 'idle',
-      frozen: null,
-      run: async () => {
-        runs += 1;
-        return { status: 'idle' as const, edits: 0, inserts: 0, lines: [], error: null, retry: false };
-      },
-    } as unknown as Orchestrator['sheetSync'];
+    const { sheetSync, runs } = recordingSync();
+    state.sheetSync = sheetSync;
 
     await prime(state);
-    assert.equal(runs, 1, 'a healthy poll does sync the sheet');
+    assert.equal(runs.length, 1, 'a healthy poll does sync the sheet');
 
     await withFetch(() => new Response('upstream down', { status: 503 }), async () => {
       await state.refreshLibraryIfChanged();
     });
     assert.ok(state.errors.library, 'the poll really did fail');
-    assert.equal(runs, 1, 'and the sheet was left alone');
+    assert.equal(runs.length, 1, 'and the sheet was left alone');
   });
 });
 
 test('a poll that fell through only to retry the sheet does not advance librarySyncedAt', async () => {
   await withToken(async (state) => {
     state.feed.calendars = emptyCalendars();
-    state.sheetSync = {
-      lastRunAt: null,
-      lastStatus: 'idle',
-      frozen: null,
-      run: async () => ({ status: 'idle' as const, edits: 0, inserts: 0, lines: [], error: null, retry: true }),
-    } as unknown as Orchestrator['sheetSync'];
+    state.sheetSync = recordingSync({ retry: true }).sheetSync;
 
     await prime(state);
     const synced = state.libraryAt;

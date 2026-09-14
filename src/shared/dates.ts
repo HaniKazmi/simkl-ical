@@ -95,6 +95,19 @@ export const isoOf = (at: Temporal.Instant): string => at.toString({ smallestUni
 export const nowIso = (): string => isoOf(Temporal.Now.instant());
 
 /**
+ * The later of two instants, either of which may be absent.
+ *
+ * Absent is not a moment, so it loses to any real one and answers null only
+ * when both sides are absent. Every caller folds a signal that is often missing
+ * into one it already has — the sheet planner's reduction across a block's ids,
+ * the artwork page's sort over a watch date and a sync insert — and a `??`
+ * chain reads the same and picks the wrong one whenever the first is set and
+ * the second is later.
+ */
+export const later = (a: Temporal.Instant | null, b: Temporal.Instant | null): Temporal.Instant | null =>
+  a === null ? b : b === null ? a : Temporal.Instant.compare(a, b) >= 0 ? a : b;
+
+/**
  * Age of an ISO timestamp in ms; never-set reads as infinitely old.
  *
  * Shared because both halves ask it of their own clocks, and `null` meaning

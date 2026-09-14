@@ -2,7 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ARTWORK_HOST,
+  NOT_HELD,
   SHOW_TYPE,
+  anyTitleRecorded,
   artworkFormula,
   artworkKeyFor,
   artworkKeyOf,
@@ -24,12 +26,20 @@ import {
   titleCell,
   titleKey,
   watchSerial,
+  bank,
+  movieKey,
+  parseBaselineKey,
+  recordedCount,
+  seasonKey,
+  titleRecordKey,
+  withdraw,
+  forget,
 } from '../../src/sheet/values.ts';
 import { HEADERS, SHOW_LABELS } from '../../src/sheet/2-grid.ts';
 import { SHEET_COLUMNS, SHEET_HEADERS, col } from '../helpers.ts';
 import { instantFrom, plainDateFrom } from '../../src/shared/dates.ts';
 import type { ColumnMap, ShowBlock } from '../../src/sheet/2-grid.ts';
-import type { PlaceableBlock } from '../../src/sheet/values.ts';
+import type { Baseline, PlaceableBlock } from '../../src/sheet/values.ts';
 
 test('a date serial counts days from the sheet epoch', () => {
   assert.equal(dateSerial(plainDateFrom('1899-12-30')), 0);
@@ -411,4 +421,97 @@ test('no name is no cell, rather than an empty one', () => {
   assert.equal(networkCell(null), null);
   assert.equal(networkCell(undefined), null);
   assert.equal(networkCell('   '), null);
+});
+
+// --- the record's keys and the two maps a run moves values between -----------
+
+test('a key says which of the three things it names, and the numbers in it', () => {
+  assert.deepEqual(parseBaselineKey(titleRecordKey(900)), { kind: 'title', id: 900 });
+  assert.deepEqual(parseBaselineKey(seasonKey(900, 2)), { kind: 'season', id: 900, season: 2 });
+  assert.deepEqual(parseBaselineKey(movieKey(900)), { kind: 'movie', id: 900 });
+  // Specials are season 0, so the season half floors at zero where the id half
+  // floors at one.
+  assert.deepEqual(parseBaselineKey(seasonKey(900, 0)), { kind: 'season', id: 900, season: 0 });
+});
+
+// A film's id and a show's come from one SIMKL numbering, so the prefix is the
+// only thing keeping `movie:53078` out of the season count.
+test('a key of no shape this writes is named as none', () => {
+  for (const key of ['', ':', '900:', ':2', 'x:2', '900:x', '-1', '9.5', ' 900', 'movie:x']) {
+    assert.equal(parseBaselineKey(key).kind, 'unknown', key);
+  }
+});
+
+test('a recorded value keeps never-recorded, recorded-as-none and a number apart', () => {
+  assert.equal(recordedCount(undefined), undefined, 'never recorded writes nothing');
+  assert.equal(recordedCount(''), undefined);
+  assert.equal(recordedCount('not a number'), undefined);
+  assert.equal(recordedCount(NOT_HELD), null, 'so none -> a value is a move');
+  assert.equal(recordedCount('8'), 8);
+  assert.equal(recordedCount('0'), 0, 'zero is a count, not an absence');
+});
+
+/**
+ * A banked value must be gone from `observed`, or the run records a value the
+ * sheet never received: the next poll compares against it, finds nothing moved,
+ * and the change is lost for good.
+ */
+test('banking a value takes it out of what the run records', () => {
+  const keep = { observed: new Map([['900:1', { Watched: '3', Start: 'x' }]]), writing: new Map(), forgetting: new Map() };
+  bank(keep, '900:1', 'Watched', '8');
+  assert.deepEqual(keep.writing.get('900:1'), { Watched: '8' });
+  assert.deepEqual(keep.observed.get('900:1'), { Start: 'x' }, 'and the fields beside it are untouched');
+});
+
+/**
+ * An entry emptied by a withdrawal records that the row was *seen*, which is
+ * what `titleKnown` reads. A key that was never there records nothing, and
+ * inventing one would claim a sighting this run did not make.
+ */
+/**
+ * A withdrawal leaves the stored value standing, because the file folds a
+ * run's observations in rather than replacing them. A forgotten field is the
+ * one thing a run can say that the fold cannot: read this as never observed.
+ */
+test('forgetting a field takes it out of both maps and names it for the record', () => {
+  const keep = {
+    observed: new Map([['900:1', { Watched: '3', Start: 'x' }]]),
+    writing: new Map([['900:1', { Watched: '3', End: 'y' }]]),
+    forgetting: new Map<string, Set<string>>(),
+  };
+  forget(keep, '900:1', 'Watched');
+  assert.deepEqual(keep.observed.get('900:1'), { Start: 'x' }, 'out of what the run records');
+  assert.deepEqual(keep.writing.get('900:1'), { End: 'y' }, 'and out of what an edit beside it banked');
+  assert.deepEqual([...keep.forgetting.get('900:1')!], ['Watched'], 'and named for the file to drop');
+  forget(keep, '900:1', 'Start');
+  assert.deepEqual([...keep.forgetting.get('900:1')!], ['Watched', 'Start'], 'one entry per key, however many fields');
+});
+
+test('withdrawing from a key nothing was observed for leaves no entry behind', () => {
+  const observed: Baseline = new Map();
+  withdraw(observed, '900:1', 'Watched');
+  assert.equal(observed.has('900:1'), false);
+});
+
+/**
+ * `Status` is the only field a title entry carries, so a record whose every
+ * title entry was emptied by a banked `Status` edit would answer "no title has
+ * ever been seen" — and a fresh install's silence would be handed to a library
+ * this sync has been recording for months.
+ */
+test('a title key carrying no field still counts as a title recorded', () => {
+  assert.equal(anyTitleRecorded(new Map([['1234', {}]])), true);
+  assert.equal(anyTitleRecorded(new Map([['1234:2', {}], ['movie:1234', {}]])), false, 'a season and a film are not titles');
+  assert.equal(anyTitleRecorded(new Map()), false);
+});
+
+// The entries of the seed are shared across every planning pass of a run and
+// across a FRESH re-read, so deleting in place would strip the field from the
+// seed itself and the pass after it would see nothing to withdraw.
+test('a withdrawal replaces the entry rather than emptying the shared one', () => {
+  const seed: Baseline = new Map([['900:1', { Watched: '3' }]]);
+  const observed = new Map(seed);
+  withdraw(observed, '900:1', 'Watched');
+  assert.equal(observed.get('900:1')?.Watched, undefined);
+  assert.equal(seed.get('900:1')?.Watched, '3', 'the seed still holds it for the next pass');
 });

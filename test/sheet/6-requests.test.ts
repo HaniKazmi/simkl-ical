@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { deleteRowRequests, rowsTouched, toRequests, writesFor, type PlannedWrites } from '../../src/sheet/6-requests.ts';
+import { planWrites } from '../../src/sheet/4-plan.ts';
 import { fx, planOf, TODAY } from './fixture.ts';
 
 /** The batch as a readable shape: what each request is, and which row it hits. */
@@ -10,7 +11,7 @@ const kinds = (requests: ReturnType<typeof toRequests>) =>
   );
 
 test('every write is a single cell, with userEnteredValue fields only', () => {
-  for (const request of toRequests(writesFor(planOf([fx.cell('fargoS2', 'Episode', { numberValue: 8 })], fx.insertAt(fx.end, 3)), fx.grid))) {
+  for (const request of toRequests(writesFor(planWrites(planOf([fx.cell('fargoS2', 'Episode', { numberValue: 8 })], fx.insertAt(fx.end, 3))), fx.grid))) {
     if (!('updateCells' in request)) continue;
     const { range, fields, rows } = request.updateCells;
     assert.equal((range.endRowIndex ?? 0) - (range.startRowIndex ?? 0), 1);
@@ -21,7 +22,7 @@ test('every write is a single cell, with userEnteredValue fields only', () => {
 });
 
 test('an edit below an insert is still emitted before it', () => {
-  const requests = toRequests(writesFor(planOf([fx.cell('fargoS2', 'Episode', { numberValue: 8 })], fx.insertAt(fx.end, 3)), fx.grid));
+  const requests = toRequests(writesFor(planWrites(planOf([fx.cell('fargoS2', 'Episode', { numberValue: 8 })], fx.insertAt(fx.end, 3))), fx.grid));
   assert.deepEqual(kinds(requests).slice(0, 2), [`write@${fx.at.fargoS2}`, 'insert']);
 });
 
@@ -29,7 +30,7 @@ test('an edit below an insert is still emitted before it', () => {
 // the insert, so "edits before inserts" would write the fill over whatever
 // currently sits there and *then* insert a blank row below it.
 test('an insert precedes its own fill, which shares the same row index', () => {
-  const requests = toRequests(writesFor(planOf([], fx.insertAt(fx.end, 3)), fx.grid));
+  const requests = toRequests(writesFor(planWrites(planOf([], fx.insertAt(fx.end, 3))), fx.grid));
   assert.equal(kinds(requests)[0], 'insert');
   assert.ok(kinds(requests).slice(1).every((k) => k === `write@${fx.end}`));
 });
@@ -42,7 +43,7 @@ test('an insert precedes its own fill, which shares the same row index', () => {
 // `inheritFromBefore` is what carries the formats down, and it is the only
 // reason an append goes through `insertDimension` at all.
 test('an inserted row inherits the formats of the row above it', () => {
-  const requests = toRequests(writesFor(planOf([], fx.insertAt(fx.end, 3)), fx.grid));
+  const requests = toRequests(writesFor(planWrites(planOf([], fx.insertAt(fx.end, 3))), fx.grid));
   const insert = requests.find((r) => 'insertDimension' in r);
   assert.ok(insert && 'insertDimension' in insert);
   assert.equal(insert.insertDimension.inheritFromBefore, true);
@@ -76,7 +77,7 @@ test('the fill of a span is written at the row each cell names', () => {
 // row spends half of what it takes.
 test('the rows a plan touches counts every row of a span', () => {
   assert.equal(rowsTouched(spanPlan()), 2);
-  assert.equal(rowsTouched(planOf([], fx.insertAt(fx.end, 3))), 1);
+  assert.equal(rowsTouched(planWrites(planOf([], fx.insertAt(fx.end, 3)))), 1);
 });
 
 test('row deletions are emitted descending', () => {
@@ -95,7 +96,7 @@ test('a season closing with its runtime emits three cell writes on one row', () 
     fx.cell('fargoS2', 'End', { numberValue: TODAY }),
     fx.cell('fargoS2', 'Runtime', { numberValue: 49 }),
   ]);
-  const requests = toRequests(writesFor(plan, fx.grid));
+  const requests = toRequests(writesFor(planWrites(plan), fx.grid));
   assert.equal(requests.length, 3);
   const columns = requests.map((r) => ('updateCells' in r ? r.updateCells.range.startColumnIndex : -1));
   assert.deepEqual(

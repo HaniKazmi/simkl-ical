@@ -23,11 +23,30 @@ import { config } from '../../shared/config.ts';
 import { instantFrom, isoOf, plainDateIn } from '../../shared/dates.ts';
 import type { ExtendedValue } from '../../api/google/types.ts';
 import { isFormula } from '../2-grid.ts';
-import { dateSerial, maxSerial, movieKey, plausibleRuntime, plausibleSerial, recordedSerial, watchedNote, watchSerial, type Baseline } from '../values.ts';
+import {
+  bank,
+  dateSerial,
+  maxSerial,
+  movieKey,
+  NOT_HELD,
+  plausibleRuntime,
+  plausibleSerial,
+  recordedCount,
+  recordedSerial,
+  watchedNote,
+  watchSerial,
+  type Baseline,
+  type Forgetting,
+  type Recording,
+} from '../values.ts';
 import { movieAddress, movieCellAt, MOVIE_LABELS, nextFilmRow, type MovieGrid, type MovieHeaderName } from './2-grid.ts';
 import { filmIsWatched, type FilmProgress } from './1-index.ts';
 import type { FilmFacts } from './3-catalogue.ts';
 import { compareWatched, MAX_LOOKUPS_PER_PASS, type PlanRecord } from '../4-plan.ts';
+// The budget arithmetic, not a guard rule: this half stops short of exactly the
+// bound the guard refuses at, and a second copy of the counting is a plan
+// refused whole over rows the planner thought it had room for.
+import { admitPlan, admitTier, type Rationed } from '../guard-core.ts';
 import { formatCell, plausibleReleaseSerial, plausibleScore, releaseCeiling, typeCell, watchedInCinema } from './values.ts';
 
 // --- The plan --------------------------------------------------------------
@@ -83,15 +102,46 @@ export interface FilmPlan {
   insert: FilmRowInsert | null;
   skips: FilmSkip[];
   notes: string[];
-  deferredInserts: number;
+  /**
+   * Work this run could have done and rationed — films ready for a row beyond
+   * the one this run adds, the lookups it had no allowance left for, and the
+   * rows the poll's budgets had no room for.
+   *
+   * Held-back edits included, because the budgets are the **poll's**: the show
+   * half runs first and what it sent is taken out of what this half may plan, so
+   * a quiet films tab can still meet a full budget. Deferring them is safe for
+   * the reason the show half's is — the record keeps a value unrecorded until
+   * the write carrying it lands, so the next poll sees the same move — and the
+   * alternative is a guard refusal, which is whole-plan and arms no retry. One
+   * number either way, because the driver asks both halves the same question.
+   */
+  deferred: number;
 }
 
-export const emptyFilmPlan = (): FilmPlan => ({ edits: [], insert: null, skips: [], notes: [], deferredInserts: 0 });
+export const emptyFilmPlan = (): FilmPlan => ({ edits: [], insert: null, skips: [], notes: [], deferred: 0 });
+
+/**
+ * Where one candidate's decisions land: the plan it adds to and the two maps
+ * it banks and withdraws in. A target of its own, because the admission step
+ * builds a candidate into one and keeps it only if the whole run still fits
+ * the poll's budgets — the show half's `WriteTarget`, less the demands this
+ * half asks for elsewhere.
+ */
+export interface FilmTarget {
+  plan: FilmPlan;
+  keep: Recording;
+}
 
 /**
  * The parent's cap, re-exported so this half reads it under its own name. One
  * constant for both tabs: the argument for it is about a run's snapshot budget
  * and a cold start, neither of which is a fact about films.
+ *
+ * Charged per **pass** here, against the `demands` array this planner builds
+ * fresh each time, where the show half's three show-facts upstreams carry theirs
+ * across the passes of one attempt in `LookupBudget`. The periods differ because
+ * the fixpoints do: this one stops at the pass that plans the insert, so a pass
+ * is very nearly a run.
  */
 export { MAX_LOOKUPS_PER_PASS };
 
@@ -114,6 +164,8 @@ export interface FilmPlanResult {
   observed: Baseline;
   /** Values an edit was planned for. Recordable only once that edit lands. */
   writing: Baseline;
+  /** Fields to drop from the record — empty on this tab, whose rows are all in scope on the record and never on a window. */
+  forgetting: Forgetting;
 }
 
 export interface PlanFilmsOptions {
@@ -148,6 +200,20 @@ export interface PlanFilmsOptions {
    * reported as waiting — and none is filed as a film TMDB has nothing for.
    */
   lookupsRejected?: boolean;
+  /**
+   * What the **poll** has left of each budget, not what the config allows: the
+   * ceiling minus whatever the show half already sent. `SHEET_MAX_EDITS` and
+   * `SHEET_MAX_ROWS` are a blast radius for one poll, so a planner reading the
+   * config figure would let the two halves write twice it while each reported
+   * itself inside budget.
+   *
+   * Read here so this half can stop short of them rather than be refused at
+   * them. A refusal is whole-plan and arms no retry, so a films tab meeting a
+   * budget the show half filled would write nothing and wait on the library's
+   * next unrelated move; rationed, the same rows land a poll later.
+   */
+  maxEdits?: number;
+  maxRows?: number;
 }
 
 // --- Recording -------------------------------------------------------------
@@ -168,19 +234,6 @@ export interface PlanFilmsOptions {
 export const FOLLOWED_FIELDS = ['Watch Date', 'Score', 'Runtime'] as const satisfies readonly MovieHeaderName[];
 
 export type FollowedField = (typeof FOLLOWED_FIELDS)[number];
-
-/**
- * What a baseline entry records for a field SIMKL holds no value for.
- *
- * A recorded absence, not an absent record. SIMKL holds no score for 102 of
- * the films already on the tab, and leaving those unrecorded would make rating
- * one later a *first sighting* — recorded, written nothing, and silent from
- * then on. Recording the absence makes none → 8 a move, which is what
- * following SIMKL means.
- *
- * A character no score or runtime can be, so it can never be read back as one.
- */
-export const NOT_HELD = '-';
 
 /**
  * What SIMKL currently says, per film and per followed field, for the whole
@@ -257,13 +310,6 @@ interface Comparison {
   recorded: number | null | undefined;
 }
 
-const recordedNumber = (recorded: string | undefined): number | null | undefined => {
-  if (recorded === undefined) return undefined;
-  if (recorded === NOT_HELD) return null;
-  const n = Number(recorded);
-  return Number.isFinite(n) ? n : undefined;
-};
-
 /**
  * The recorded watch date, keeping the three states apart.
  *
@@ -284,7 +330,7 @@ const compare = (field: FollowedField, film: FilmProgress, entry: Partial<Record
   if (field === 'Watch Date') {
     return { wanted: watchSerial(film.watchedAt, timezone), recorded: recordedDate(entry['Watch Date'], timezone) };
   }
-  return { wanted: field === 'Score' ? film.rating : film.runtime, recorded: recordedNumber(entry[field]) };
+  return { wanted: field === 'Score' ? film.rating : film.runtime, recorded: recordedCount(entry[field]) };
 };
 
 const withinBounds = (field: FollowedField, value: number, ceiling: number): boolean => {
@@ -306,6 +352,8 @@ export const planFilms = (
     held,
     onShowGrid = null,
     lookupsRejected = false,
+    maxEdits = config.sheetMaxEdits,
+    maxRows = config.sheetMaxRows,
   }: PlanFilmsOptions = {},
 ): FilmPlanResult => {
   const plan = emptyFilmPlan();
@@ -313,21 +361,41 @@ export const planFilms = (
   // Copied, so a discarded pass leaves no withdrawals in the caller's seed.
   const observed: Baseline = new Map(seed ?? observeFilms(index));
   const writing: Baseline = new Map();
+  const forgetting: Forgetting = new Map();
   const ceiling = maxSerial(now, timezone);
+  // `spent` is zero because what this planner was handed is already the ceiling
+  // minus what the show half sent — see `PlanFilmsOptions.maxEdits`.
+  const budgets = { maxEdits, maxRows, spent: { edits: 0, rows: 0 } };
+  const room = `this poll has room for ${maxEdits} edit(s) across ${maxRows} row(s)`;
+
+  /**
+   * The films half's admission step: a candidate built into a target of its
+   * own and taken through `admitPlan` only if the whole run still fits the
+   * poll's remaining budgets. What this half merges beyond the plan is what the
+   * candidate banked.
+   *
+   * `observed` is shared with the run rather than scratched, so a rejected
+   * row's withdrawals stick: what its build banked is gone from the record,
+   * which is exactly the state that makes the next poll see the value as moved.
+   * `writing` is fresh, so nothing a rejected row banked is recorded when the
+   * batch lands.
+   */
+  const admit = (build: (out: FilmTarget) => void): boolean => {
+    const scratch: FilmTarget = { plan: emptyFilmPlan(), keep: { observed, writing: new Map(), forgetting } };
+    build(scratch);
+    if (!admitPlan(plan, scratch.plan, budgets, (insert) => insert)) return false;
+    for (const [key, entry] of scratch.keep.writing) writing.set(key, { ...writing.get(key), ...entry });
+    return true;
+  };
 
   const skip = (code: FilmSkipCode, row: number | null, reason: string): void => {
     plan.skips.push({ code, row, reason });
   };
 
-  /** Move a field out of "seen" and into "planned to write". */
-  const willWrite = (key: string, field: MovieHeaderName, recorded: string): void => {
-    writing.set(key, { ...writing.get(key), [field]: recorded });
-    const seen = observed.get(key);
-    if (seen) {
-      const { [field]: _dropped, ...rest } = seen;
-      observed.set(key, rest);
-    }
-  };
+  // One candidate per row, so the up-to-three cells a film's row gains are
+  // admitted or held back together: a row half written is a row whose remaining
+  // fields are recorded as moved and never written.
+  const rows: Rationed<FilmTarget>[] = [];
 
   for (const row of grid.rows) {
     if (row.id === null) continue;
@@ -349,40 +417,61 @@ export const planFilms = (
     const key = movieKey(film.id);
     const entry = baseline.get(key) ?? {};
 
-    for (const field of FOLLOWED_FIELDS) {
-      const { wanted, recorded } = compare(field, film, entry, timezone);
+    rows.push({
+      write: ({ plan: into, keep: banking }) => {
+        for (const field of FOLLOWED_FIELDS) {
+          const { wanted, recorded } = compare(field, film, entry, timezone);
 
-      // A first sighting: recorded by the seed, written nothing. This is what
-      // keeps the sync to changes from here on rather than a reconciliation of
-      // every standing mismatch.
-      if (recorded === undefined) continue;
-      if (recorded === wanted) continue;
+          // A first sighting: recorded by the seed, written nothing. This is what
+          // keeps the sync to changes from here on rather than a reconciliation of
+          // every standing mismatch.
+          if (recorded === undefined) continue;
+          if (recorded === wanted) continue;
 
-      // SIMKL dropped a value it used to hold. Nothing on this tab is ever
-      // emptied, so this is recorded and left: the cell keeps what it has.
-      if (wanted === null) {
-        skip('unusable-value', row.row, `${film.title}: SIMKL no longer holds a ${MOVIE_LABELS[field]}, and this tab empties no cell`);
-        continue;
-      }
-      if (!withinBounds(field, wanted, ceiling)) {
-        skip('unusable-value', row.row, `${film.title}: ${MOVIE_LABELS[field]} of ${wanted} is outside the range this column accepts`);
-        continue;
-      }
-      const cell = movieCellAt(grid, row.row, grid.columns[field]);
-      if (isFormula(cell)) {
-        skip('formula-cell', row.row, `${movieAddress(grid, row.row, field)} is a formula, so the sync leaves it alone`);
-        continue;
-      }
+          // SIMKL dropped a value it used to hold. Nothing on this tab is ever
+          // emptied, so this is recorded and left: the cell keeps what it has.
+          if (wanted === null) {
+            into.skips.push({
+              code: 'unusable-value',
+              row: row.row,
+              reason: `${film.title}: SIMKL no longer holds a ${MOVIE_LABELS[field]}, and this tab empties no cell`,
+            });
+            continue;
+          }
+          if (!withinBounds(field, wanted, ceiling)) {
+            into.skips.push({
+              code: 'unusable-value',
+              row: row.row,
+              reason: `${film.title}: ${MOVIE_LABELS[field]} of ${wanted} is outside the range this column accepts`,
+            });
+            continue;
+          }
+          const cell = movieCellAt(grid, row.row, grid.columns[field]);
+          if (isFormula(cell)) {
+            into.skips.push({
+              code: 'formula-cell',
+              row: row.row,
+              reason: `${movieAddress(grid, row.row, field)} is a formula, so the sync leaves it alone`,
+            });
+            continue;
+          }
 
-      // Both sides as a reader would write them — a date in the viewer's zone,
-      // not the serial the cell holds — the way the show grid's note reads.
-      const before =
-        field === 'Watch Date' ? watchedNote(instantFrom(entry[field]), timezone) : recorded === null ? null : String(recorded);
-      const after = field === 'Watch Date' ? watchedNote(film.watchedAt, timezone) : String(wanted);
-      plan.edits.push(edit(grid, row.row, film.id, field, num(wanted), `${film.title}: ${MOVIE_LABELS[field]} moved from ${before ?? 'none'} to ${after}`));
-      willWrite(key, field, field === 'Watch Date' ? isoOf(film.watchedAt as Temporal.Instant) : String(wanted));
-    }
+          // Both sides as a reader would write them — a date in the viewer's zone,
+          // not the serial the cell holds — the way the show grid's note reads.
+          const before =
+            field === 'Watch Date' ? watchedNote(instantFrom(entry[field]), timezone) : recorded === null ? null : String(recorded);
+          const after = field === 'Watch Date' ? watchedNote(film.watchedAt, timezone) : String(wanted);
+          into.edits.push(edit(grid, row.row, film.id, field, num(wanted), `${film.title}: ${MOVIE_LABELS[field]} moved from ${before ?? 'none'} to ${after}`));
+          bank(banking, key, field, field === 'Watch Date' ? isoOf(film.watchedAt as Temporal.Instant) : String(wanted));
+        }
+      },
+    });
   }
+
+  // The followed cells first, then the run's one insert: a row already on the
+  // tab carries a value that moved upstream today, where a film with no row
+  // waits on nothing but another poll.
+  admitTier(plan, rows, admit, (count) => `${count} film row(s) whose values moved wait for a later poll — ${room}`);
 
   const unidentifiable: FilmProgress[] = [];
   planInsert(grid, index, facts, onShowGrid, plan, demands, unidentifiable, {
@@ -390,9 +479,11 @@ export const planFilms = (
     ceiling,
     releaseTo: releaseCeiling(now, timezone),
     lookupsRejected,
+    admit,
+    room,
   });
 
-  return { plan, demands, unidentifiable, observed, writing };
+  return { plan, demands, unidentifiable, observed, writing, forgetting };
 };
 
 /**
@@ -410,7 +501,23 @@ const planInsert = (
   plan: FilmPlan,
   demands: FilmDemand[],
   unidentifiable: FilmProgress[],
-  { timezone, ceiling, releaseTo, lookupsRejected }: { timezone: string; ceiling: number; releaseTo: number; lookupsRejected: boolean },
+  {
+    timezone,
+    ceiling,
+    releaseTo,
+    lookupsRejected,
+    admit,
+    room,
+  }: {
+    timezone: string;
+    ceiling: number;
+    releaseTo: number;
+    lookupsRejected: boolean;
+    /** The caller's admission step: the row lands only if the poll still has budget for it. */
+    admit: (build: (out: FilmTarget) => void) => boolean;
+    /** What a budget deferral says about the room this poll had. */
+    room: string;
+  },
 ): void => {
   const onTab = new Set(grid.rows.flatMap((row) => (row.id === null ? [] : [row.id])));
   // Rows the sync cannot match by id, by name. A row someone typed by hand
@@ -445,6 +552,12 @@ const planInsert = (
   }
 
   let awaitingCredential = 0;
+  // Films ready for a row past the one this run takes, counted apart from the
+  // plan's own total: that total also carries the rows the budget held back and
+  // the lookups the run did not make, and the note below names only the
+  // one-per-run rule.
+  let behind = 0;
+  let noRoom = 0;
   for (const film of missing) {
     const heldBy = namedOnTab.get(film.title.trim().toLowerCase());
     if (heldBy !== undefined) {
@@ -498,14 +611,34 @@ const planInsert = (
     // One per run. A second would land a row high, because plan indices are
     // pre-write and `insertDimension` applies cumulatively.
     if (plan.insert) {
-      plan.deferredInserts += 1;
+      plan.deferred += 1;
+      behind += 1;
       continue;
     }
-    plan.insert = buildInsert(grid, film, known, watched, timezone, releaseTo);
+    // Through admission like every edit above: the row is the poll's, not this
+    // tab's, and a plan over the budget is refused *whole* — losing the followed
+    // cells beside it and arming no retry. Held back, the same film lands on the
+    // poll that has room.
+    //
+    // Every film behind a held one meets the same full budget, so those are
+    // counted rather than built — and counted rather than walked away from,
+    // because everything above this point still runs for them: the lookup a
+    // film needs is the next poll's to have ready, and a film with no TMDB
+    // record or an unlinked row is reported whether or not this poll had room.
+    if (noRoom === 0) {
+      const built = buildInsert(grid, film, known, watched, timezone, releaseTo);
+      if (admit(({ plan: into }) => void (into.insert = built))) continue;
+      plan.notes.push(`${film.title} (${film.id}) is ready to add — deferred, ${room}`);
+    }
+    plan.deferred += 1;
+    noRoom += 1;
   }
 
-  if (plan.deferredInserts) {
-    plan.notes.push(`${plan.deferredInserts} more film(s) need a row; one is inserted per run`);
+  if (behind) {
+    plan.notes.push(`${behind} more film(s) need a row; one is inserted per run`);
+  }
+  if (noRoom > 1) {
+    plan.notes.push(`${noRoom - 1} more film(s) need a row and wait with it`);
   }
   if (awaitingCredential) {
     plan.notes.push(`${awaitingCredential} film(s) need a TMDB lookup and TMDB rejected the credential; fix TMDB_API_KEY and restart`);

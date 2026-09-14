@@ -550,13 +550,21 @@ test('the two halves cannot together exceed one poll budget', async () => {
   await withFreshJournal(async () => {
     // Two show edits plus one films edit, against a budget of two.
     await withConfig({ sheetMaxEdits: 2 }, () =>
-      harness('apply', {}, async ({ poll }) => {
+      harness('apply', {}, async ({ poll, sheet }) => {
         assert.equal((await poll(libraryOf(showWatching(5), ...ON_TAB))).status, 'applied');
-        const result = await poll(libraryOf(showWatching(6), { ...ON_TAB[0]!, rating: 10 }, ON_TAB[1]!));
-        // The show half spends the budget; the films half is refused whole
-        // rather than trimmed, and asks for another poll.
-        assert.equal(result.status, 'refused', result.error ?? '');
-        assert.match(result.error ?? '', /exceeds SHEET_MAX_EDITS=2/);
+        const library = libraryOf(showWatching(6), { ...ON_TAB[0]!, rating: 10 }, ON_TAB[1]!);
+        const result = await poll(library);
+        // The show half spends the budget, so the films half holds its row back
+        // rather than planning a batch the guard refuses whole — which would
+        // write nothing and arm no retry.
+        assert.equal(result.status, 'applied', result.error ?? '');
+        assert.notEqual(sheet.films?.[1]?.[col(MH, 'Score')]?.userEnteredValue?.numberValue, 10, 'the films edit did not land');
+        assert.equal(result.retry, true, 'and the poll asks for another');
+
+        // The next poll has the whole budget again — which is the point of
+        // deferring rather than refusing: the value is still recorded as moved.
+        assert.equal((await poll(library)).status, 'applied');
+        assert.equal(sheet.films?.[1]?.[col(MH, 'Score')]?.userEnteredValue?.numberValue, 10, 'and the held-back edit lands');
       }),
     );
   });
@@ -619,15 +627,14 @@ test('a show write that went out charges the films half, whatever became of it',
   // budget twice while each half reports itself inside it.
   await withFreshJournal(async () => {
     await withConfig({ sheetMaxEdits: 2 }, () =>
-      harness('apply', { failWrite: 3 }, async ({ poll }) => {
+      harness('apply', { failWrite: 3 }, async ({ poll, sheet }) => {
         assert.equal((await poll(libraryOf(showWatching(5), ...ON_TAB))).status, 'applied');
         // The show half plans two edits and its batch fails; the films half's
         // one edit would be inside the budget on its own.
         const result = await poll(libraryOf(showWatching(6), { ...ON_TAB[0]!, rating: 10 }, ON_TAB[1]!));
         assert.equal(result.status, 'failed', 'the show half failed');
-        assert.equal(sheetRuns().at(-1)?.tab, 'films');
-        assert.equal(sheetRuns().at(-1)?.status, 'refused', 'and the films half is refused on the budget the show half spent');
-        assert.match(sheetRuns().at(-1)?.error ?? '', /3 edits this poll exceeds SHEET_MAX_EDITS=2/);
+        assert.notEqual(sheet.films?.[1]?.[col(MH, 'Score')]?.userEnteredValue?.numberValue, 10, 'and the films half wrote nothing');
+        assert.equal(result.retry, true, 'having held its row back for a poll with room');
       }),
     );
   });

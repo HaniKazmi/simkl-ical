@@ -500,8 +500,16 @@ test('a well-formed block below the last season row is allowed', () => {
 
 // A show row alone is a block whose roll-ups count the next block's rows as
 // its own; a season row alone joins whichever block sits above it.
-test('a block is exactly two rows', () => {
-  refuses(planOf([], { ...fx.blockAt(fx.end), rows: 3 as 2 }), /a block is a show row and one season row/);
+test('a block is a show row plus one row per season it names', () => {
+  refuses(planOf([], { ...fx.blockAt(fx.end), seasons: [] }), /must carry at least one season row/);
+});
+
+// A block reads top to bottom, and two rows for one season is the insert
+// mistake nothing downstream could detect.
+test('a block’s season rows are strictly ascending', () => {
+  const block = fx.blockAt(fx.end);
+  refuses(planOf([], { ...block, seasons: [1, 1] }), /are not strictly ascending/);
+  refuses(planOf([], { ...block, seasons: [2, 1] }), /are not strictly ascending/);
 });
 
 test('a block is never inserted at or above the header row', () => {
@@ -546,10 +554,10 @@ test('a block for a title the tab already holds is refused', () => {
   refuses(planOf([], fx.blockAt(fx.end, { title: 'Fargo', franchise: 'Fargo' })), /row 2 already holds Fargo/);
 });
 
-test('a block may only fill the two rows it creates, and neither has a previous value', () => {
+test('a block may only fill the rows it creates, and none has a previous value', () => {
   const block = fx.blockAt(fx.end);
   const stray = { ...block, fill: [...block.fill, fx.blockCell(fx.end + 4, 'Network', { stringValue: 'BBC' })] };
-  refuses(planOf([], stray), /may only fill the two rows it creates/);
+  refuses(planOf([], stray), /may only fill the rows it creates/);
 
   const previous = { ...block, fill: block.fill.map((c, i) => (i === 0 ? { ...c, previous: { stringValue: 'x' } } : c)) };
   refuses(planOf([], previous), /cannot have a previous value/);
@@ -683,12 +691,53 @@ test('the season row’s number is a whole season, and the one the block was bui
   refuses(planOf([], fx.blockAt(fx.end, { season: 1.5 })), /only whole numbered seasons/);
   const block = fx.blockAt(fx.end);
   const wrong = { ...block, fill: block.fill.map((c) => (c.field === 'Season' && c.row === fx.end + 1 ? { ...c, value: { numberValue: 4 } } : c)) };
-  refuses(planOf([], wrong), /the season cell says 4 but the block is for S1/);
+  refuses(planOf([], wrong), /the season cell says 4 but this row of the block is for S1/);
+});
+
+/**
+ * Every row of the span runs the same checklist, not just the first. A block
+ * lands with one row per season, so a rule applied to the first row alone would
+ * leave every row after it unchecked — the runtime bounds, the column
+ * whitelist, and the dated-and-noted refusal all with nothing behind them.
+ */
+test('every season row of a block runs the same checklist, not only the first', () => {
+  const block = fx.blockAt(fx.end);
+  const second = fx.end + 2;
+  // A second season row, built the way `buildBlock` builds one.
+  const twoSeasons = {
+    ...block,
+    rows: 3,
+    seasons: [1, 2],
+    fill: [
+      ...block.fill,
+      fx.blockCell(second, 'Season', { numberValue: 2 }),
+      fx.blockCell(second, 'Episode', { numberValue: 4 }),
+      fx.blockCell(second, 'Start', { numberValue: TODAY - 4 }),
+    ],
+  };
+  // The shape the planner would actually produce passes, so the refusals below
+  // are about the mutation and not about the fixture.
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], twoSeasons), fx.grid));
+
+  const badRuntime = { ...twoSeasons, fill: [...twoSeasons.fill, fx.blockCell(second, 'Runtime', { numberValue: 5000 })] };
+  refuses(planOf([], badRuntime), /not a per-episode runtime in whole minutes/);
+
+  const notAField = { ...twoSeasons, fill: [...twoSeasons.fill, fx.blockCell(second, 'id', { stringValue: '900' })] };
+  refuses(planOf([], notAField), /not a field a new season row may carry/);
+
+  const noSeason = { ...twoSeasons, fill: twoSeasons.fill.filter((cell) => !(cell.row === second && cell.field === 'Season')) };
+  refuses(planOf([], noSeason), /carries no Season cell/);
+
+  const datedAndNoted = {
+    ...twoSeasons,
+    fill: [...twoSeasons.fill, fx.blockCell(second, 'End', { numberValue: TODAY - 1 }), fx.blockCell(second, 'Note', { stringValue: TODAY_NOTE })],
+  };
+  refuses(planOf([], datedAndNoted), /may not also carry a watch note/);
 });
 
 test('a block with no season row cell at all is refused', () => {
   const block = fx.blockAt(fx.end);
-  refuses(planOf([], { ...block, fill: block.fill.filter((c) => !(c.row === fx.end + 1 && c.field === 'Season')) }), /must carry the season row it was built for/);
+  refuses(planOf([], { ...block, fill: block.fill.filter((c) => !(c.row === fx.end + 1 && c.field === 'Season')) }), /carries no Season cell/);
 });
 
 // A dated row is never revisited, so a note created beside an End is one

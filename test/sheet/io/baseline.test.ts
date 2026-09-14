@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { baseline, baselineSummary, clearBaseline, loadBaseline, saveBaseline } from '../../../src/sheet/io/baseline.ts';
-import { movieKey, seasonKey, type Baseline } from '../../../src/sheet/values.ts';
+import { movieKey, seasonKey, titleRecordKey, type Baseline } from '../../../src/sheet/values.ts';
 import { quiet, withFreshBaseline } from '../../helpers.ts';
 
 const FILE = 'sheet-baseline.json';
@@ -33,6 +33,46 @@ test('saving folds into what is already recorded rather than replacing it', asyn
     await saveBaseline(one({ Start: '2024-01-15T20:14:00.000Z', End: '2024-03-20T22:03:00.000Z' }));
     await saveBaseline(one({ Start: '2025-01-15T20:14:00.000Z' }));
     assert.deepEqual(baseline().get('300:1'), { Start: '2025-01-15T20:14:00.000Z', End: '2024-03-20T22:03:00.000Z' });
+  });
+});
+
+/**
+ * The fold can only add, so a field a run wants read as never observed has to
+ * be dropped before it. `at` stands: nothing moved to a value.
+ */
+test('a forgotten field leaves the record, and the clock stands', async () => {
+  await withFreshBaseline(async () => {
+    await saveBaseline(one({ Start: '2024-01-15T20:14:00.000Z', Watched: '3' }));
+    const at = baselineSummary().at;
+    await saveBaseline(new Map(), { forgetting: new Map([['300:1', new Set(['Watched'])]]) });
+    assert.deepEqual(baseline().get('300:1'), { Start: '2024-01-15T20:14:00.000Z' });
+    assert.equal(baselineSummary().at, at, 'dropping a field is not a move');
+
+    clearBaseline();
+    await loadBaseline({ log: quiet });
+    assert.deepEqual(baseline().get('300:1'), { Start: '2024-01-15T20:14:00.000Z' }, 'and the drop reached the file');
+
+    await saveBaseline(new Map(), { forgetting: new Map([['300:1', new Set(['End'])], ['300:9', new Set(['Watched'])]]) });
+    assert.deepEqual(baseline().get('300:1'), { Start: '2024-01-15T20:14:00.000Z' }, 'a field or a key the record does not hold is nothing to drop');
+    assert.equal(baseline().has('300:9'), false);
+  });
+});
+
+/**
+ * A key appearing with no field at all is a row every value of which this run
+ * withdrew. The key has to reach the file — it is the whole of what says the row
+ * was seen, and `titleKnown` reads nothing else — but it moved no value, and
+ * `at` is what the status page renders as when the record last changed.
+ */
+test('a first-sighting key with no fields is stored without moving the clock', async () => {
+  await withFreshBaseline(async (dir) => {
+    await saveBaseline(new Map([[titleRecordKey(300), {}]]));
+    assert.equal(baselineSummary().at, null, 'nothing moved, so the record has not moved');
+
+    clearBaseline();
+    await loadBaseline({ log: quiet });
+    assert.deepEqual(baseline().get(titleRecordKey(300)), {}, 'and the key survives the round trip');
+    assert.match(await readFile(join(dir, FILE), 'utf8'), /"300": \{\}/);
   });
 });
 
@@ -102,8 +142,28 @@ test('films are counted apart from seasons — one record holds both tabs', asyn
   await withFreshBaseline(async () => {
     await saveBaseline(new Map([[seasonKey(1, 2), { Start: '2024-01-15T20:14:00.000Z' }]]));
     await saveBaseline(new Map([[movieKey(9), { 'Watch Date': '2024-02-01T20:14:00.000Z' }]]));
+    await saveBaseline(new Map([[titleRecordKey(1), { Status: 'watching' }]]));
     const summary = baselineSummary();
     assert.equal(summary.seasons, 1);
     assert.equal(summary.films, 1);
+  });
+});
+
+/**
+ * The file also holds one entry per title, keyed by the bare id. Counted as
+ * seasons — or subtracted from the total the way the films are — the show tab's
+ * season count would be reported as roughly twice what it is, on the number
+ * whose job is telling a recording-only first run from a sync that never armed.
+ */
+test('a title entry is counted as neither a season nor a film', async () => {
+  await withFreshBaseline(async () => {
+    await saveBaseline(
+      new Map([
+        [titleRecordKey(7), { Status: 'watching' }],
+        [seasonKey(7, 1), { Watched: '4' }],
+      ]),
+    );
+    assert.deepEqual(baselineSummary().seasons, 1);
+    assert.deepEqual(baselineSummary().films, 0);
   });
 });

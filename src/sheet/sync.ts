@@ -51,10 +51,12 @@ import {
   describePlan,
   emptyLookupBudget,
   emptyPlan,
+  nextPass,
   gridIds,
   observeWatches,
   planRecord,
   planSync,
+  planWrites,
   type PlanRecord,
   type PlanResult,
   type SheetPlan,
@@ -74,6 +76,7 @@ import { PlanRefusal, type SpentBudget } from './guard-core.ts';
 import { applyPlan } from './io/apply.ts';
 import { appendSheetRun, loadSheetRuns } from './io/journal.ts';
 import { baseline, loadBaseline, saveBaseline } from './io/baseline.ts';
+import { anyTitleRecorded, type Forgetting } from './values.ts';
 import type { Baseline } from './values.ts';
 import { nowIso } from '../shared/dates.ts';
 
@@ -173,6 +176,10 @@ interface ShowPass {
   grid: Grid;
   index: Map<number, TitleProgress>;
   starts: Baseline;
+  /** Whether the record has ever seen a title — scanned once a poll, not once a pass. */
+  anyTitle: boolean;
+  /** What earlier halves of this poll already sent, so the planner plans against what is left. */
+  spent: SpentBudget;
   filed: Set<number>;
   made: RunLookups;
   /** Which attempt this is. A FRESH re-read is the second, and asks for less. */
@@ -219,6 +226,7 @@ interface Planned<P> {
   plan: P;
   observed: Baseline;
   writing: Baseline;
+  forgetting: Forgetting;
   /** Retryable lookups that failed this run. */
   failures: number;
   /**
@@ -230,8 +238,16 @@ interface Planned<P> {
 }
 
 /** What the loop reads off a plan, whichever tab built it. */
-interface TabPlan extends PlannedWrites {
-  deferredInserts: number;
+interface TabPlan {
+  edits: readonly unknown[];
+  insert: unknown;
+  /**
+   * Work this half could have done and rationed — a row past the one-per-run
+   * rule, a season behind the block that landed, a row the poll's budgets had
+   * no room for. One number, because the loop asks it one question: is there
+   * work only another poll will drain?
+   */
+  deferred: number;
 }
 
 /**
@@ -249,13 +265,22 @@ interface TabSpec<G extends { snapshot: SheetSnapshot }, P extends TabPlan> {
   sheetName: string;
   /** Prefix for log lines. */
   label: string;
-  /** What an insert adds, for the deferral log line. */
-  rowKind: string;
   parse: (snapshot: SheetSnapshot) => G;
   /** Called as soon as a grid parses, before planning can fail. */
   onParsed?: (grid: G) => void;
   /** Plan to a fixpoint, fetching what the plan is missing. */
   plan: (grid: G, attempt: number) => Promise<Planned<P>>;
+  /**
+   * The plan as the cells and the span it writes — what BUILD, the budget and
+   * VERIFY all read.
+   *
+   * Supplied per tab rather than required of `TabPlan` structurally, because a
+   * block's span has no height of its own to require: `SheetPlan` carries the
+   * seasons a block is for and `planWrites` derives `1 + seasons.length` from
+   * them, so a span cannot claim a height its rows do not have. The films half
+   * writes one row and answers with itself.
+   */
+  writes: (plan: P) => PlannedWrites;
   /** Throws a `PlanRefusal`; anything else is a bug and propagates. */
   guard: (plan: P, grid: G, spent: SpentBudget) => void;
   describe: (plan: P, grid: G) => string[];
@@ -291,7 +316,7 @@ export class SheetSync {
    * has landed. One slot, because the halves run in sequence and each is
    * recorded before the next begins.
    */
-  private pending: Pick<PlanResult, 'observed' | 'writing'> | null = null;
+  private pending: Pick<PlanResult, 'observed' | 'writing' | 'forgetting'> | null = null;
 
   constructor({ logger = console as Logger }: { logger?: Logger } = {}) {
     this.log = logger;
@@ -403,11 +428,11 @@ export class SheetSync {
     // Merged into `observed` in place: `this.pending` is already detached and
     // the map is unaliased, so a copy would buy no isolation and cost one pass
     // over every season the library holds.
-    const { observed, writing } = pending;
+    const { observed, writing, forgetting } = pending;
     if (status === 'applied') {
       for (const [key, entry] of writing) observed.set(key, { ...observed.get(key), ...entry });
     }
-    await saveBaseline(observed, { log: this.log });
+    await saveBaseline(observed, { forgetting, log: this.log });
   }
 
   /**
@@ -434,11 +459,11 @@ export class SheetSync {
       const snapshot = await readSnapshot(spec.sheetName, { signal: poll.signal });
       const grid = spec.parse(snapshot);
       spec.onParsed?.(grid);
-      const { plan, observed, writing, failures, unfetched } = await spec.plan(grid, attempt);
+      const { plan, observed, writing, forgetting, failures, unfetched } = await spec.plan(grid, attempt);
       // Replaced per attempt, never merged: a FRESH re-read plans against a
       // different grid, and the observations of a pass whose plan was thrown
       // away describe rows this run is no longer acting on.
-      this.pending = { observed, writing };
+      this.pending = { observed, writing, forgetting };
       record = spec.record(plan);
 
       // A failed lookup means some row's shape is unknown — exactly what leaves
@@ -449,8 +474,11 @@ export class SheetSync {
       // Report mode never takes the first row, so asking there would re-read
       // and re-plan the whole grid forever.
       const lookupRetry = failures > 0;
-      const retry = lookupRetry || (config.sheetSyncMode === 'apply' && (plan.deferredInserts > 0 || unfetched));
-      if (plan.deferredInserts) this.log.info(`${plan.deferredInserts} more ${spec.rowKind} to add; the next poll will take the next one`);
+      const retry = lookupRetry || (config.sheetSyncMode === 'apply' && (plan.deferred > 0 || unfetched));
+      // The count alone, because the report already carries the detail: each
+      // kind of deferral writes its own note naming the row, the season or the
+      // budget that held it.
+      if (plan.deferred) this.log.info(`${spec.label}: ${plan.deferred} piece(s) of work deferred to the next poll`);
       if (failures) this.log.warn(`${failures} lookup(s) failed; the ${spec.label} will retry on the next poll`);
 
       if (!plan.edits.length && !plan.insert) {
@@ -483,7 +511,7 @@ export class SheetSync {
       const applied = await applyPlan(
         {
           snapshot: grid.snapshot,
-          requests: toRequests(writesFor(plan, grid)),
+          requests: toRequests(writesFor(spec.writes(plan), grid)),
           describe: () => spec.describe(plan, grid),
           summary: `${plan.edits.length} edits and ${plan.insert ? 1 : 0} inserts`,
           verify: (after) => spec.verify(grid, after, plan),
@@ -494,7 +522,7 @@ export class SheetSync {
       // The batch went out, whatever became of it. Charged here rather than at
       // the guard, a plan the FRESH loop then discarded — or one report mode
       // never wrote — would still dock the next half's allowance.
-      poll.spent = { edits: poll.spent.edits + plan.edits.length, rows: poll.spent.rows + rowsTouched(plan) };
+      poll.spent = { edits: poll.spent.edits + plan.edits.length, rows: poll.spent.rows + rowsTouched(spec.writes(plan)) };
 
       // A freeze is the one outcome with state: the message is latched so
       // every later run repeats it instead of writing.
@@ -527,6 +555,10 @@ export class SheetSync {
     // cannot change while a run is in flight, so every planning pass after the
     // first would rebuild a byte-identical map.
     const starts = observeWatches(index);
+    // A scan of the whole record, so it is counted beside `starts` and for the
+    // same reason: neither can change while a run is in flight, and every pass
+    // of the plan-fetch fixpoint would otherwise rescan the file.
+    const anyTitle = anyTitleRecorded(baseline());
     // The films tab's, so this half does not report each as a title with no
     // row — but only where that tab is being synced. Unconfigured, nothing
     // places them, and the note is the only thing that says so.
@@ -542,13 +574,12 @@ export class SheetSync {
       tab: 'shows',
       sheetName: config.sheetName,
       label: 'sheet sync',
-      rowKind: 'row(s)',
       parse: parseGrid,
       onParsed: (grid) => {
         poll.showGridIds = gridIds(grid);
       },
       plan: async (grid, attempt) => {
-        const { result, unfetched } = await this.planToFixpoint({ grid, index, starts, filed, made, attempt }, poll.signal);
+        const { result, unfetched } = await this.planToFixpoint({ grid, index, starts, anyTitle, spent: poll.spent, filed, made, attempt }, poll.signal);
         return { ...result, failures: made.failures, unfetched };
       },
       // The bucket a new block's `Artwork` cell may link into is neither
@@ -556,6 +587,7 @@ export class SheetSync {
       // default to, so the two cannot disagree about whether that cell may be
       // written at all.
       guard: (plan, grid, spent) => assertPlanSafe(plan, grid, { spent }),
+      writes: planWrites,
       describe: (plan) => describePlan(plan),
       record: planRecord,
       verify,
@@ -586,30 +618,47 @@ export class SheetSync {
    * only a write can drain them.
    */
   private async planToFixpoint(
-    { grid, index, starts, filed, made, attempt }: ShowPass,
+    { grid, index, starts, anyTitle, spent, filed, made, attempt }: ShowPass,
     signal: AbortSignal | undefined,
   ): Promise<{ result: PlanResult; unfetched: boolean }> {
     // One instant for every pass: two passes disagreeing about which blocks
     // sit inside the activity cut-off would fetch a block and then plan it as
     // out of scope, or the reverse.
     const now = Temporal.Now.instant();
-    // One allowance for every pass of this attempt. Per pass it would multiply
-    // by the pass ceiling: a cold start's block walk asks for
-    // `MAX_LOOKUPS_PER_PASS` details, the fetch answers them, and the next pass
-    // finds the *next* unanswered titles and asks for as many again — four
-    // times the burst the cap names, inside a run whose snapshot goes stale at
-    // 120s. A FRESH re-read is a new attempt and gets a new allowance, because
-    // it plans against a grid that changed underneath it.
+    // One allowance for every pass of this attempt, except the catalogue's.
+    //
+    // The three a block's show row waits on are per attempt: reset per pass they
+    // would multiply by the pass ceiling — a cold start asks for
+    // `MAX_LOOKUPS_PER_PASS` of each, the fetch answers them, and the next pass
+    // asks for as many again, four times the burst the cap names inside a run
+    // whose snapshot goes stale at 120s.
+    //
+    // The catalogue's is per pass, because it is what a pass *reads the grid
+    // with* rather than what one insert waits on: held across passes, a cold
+    // store's backfill would stall at `CATALOGUE_ASKS_PER_PASS` titles a run
+    // instead of draining across the passes of one. Bounded either way, at that
+    // figure times `MAX_PASSES`.
+    //
+    // A FRESH re-read is a new attempt and gets a new allowance throughout,
+    // because it plans against a grid that changed underneath it.
     const lookupBudget = emptyLookupBudget();
 
     for (let pass = 1; ; pass += 1) {
+      nextPass(lookupBudget);
       const result = planSync(grid, index, this.store.titles, {
         now,
         baseline: baseline(),
+        anyTitleRecorded: anyTitle,
         starts,
         filed,
         factsRejected: this.store.factsRejected,
         lookupBudget,
+        // What this poll has left, never the config ceiling: the budgets are a
+        // blast radius for the poll, and a half planning against the whole
+        // ceiling would let the two of them write twice it. Floored at zero,
+        // because a half that has already spent the poll's allowance has none.
+        maxEdits: Math.max(0, config.sheetMaxEdits - spent.edits),
+        maxRows: Math.max(0, config.sheetMaxRows - spent.rows),
       });
       const { demands } = result;
 
@@ -837,13 +886,15 @@ export class SheetSync {
       tab: 'films',
       sheetName: config.moviesSheetName,
       label: 'films sync',
-      rowKind: 'film row(s)',
       parse: parseMovieGrid,
       plan: async (grid) => {
         const { result, unfetched } = await this.filmsToFixpoint(grid, index, seed, held, made, poll);
         return { ...result, failures: made.failures, unfetched };
       },
       guard: (plan, grid, spent) => assertFilmPlanSafe(plan, grid, { spent }),
+      // One row, and the plan already says so: a films insert is a `rows: 1`
+      // span, so there is nothing for this half to derive.
+      writes: (plan) => plan,
       describe: (plan) => describeFilmPlan(plan),
       record: filmPlanRecord,
       verify: verifyFilms,
@@ -885,6 +936,11 @@ export class SheetSync {
         held,
         onShowGrid: poll.showGridIds,
         lookupsRejected: this.films.rejected,
+        // What this poll has left, never the config ceiling — the show half
+        // usually ran first and its writes come out of the same blast radius.
+        // Floored at zero, because a half whose poll is already spent has none.
+        maxEdits: Math.max(0, config.sheetMaxEdits - poll.spent.edits),
+        maxRows: Math.max(0, config.sheetMaxRows - poll.spent.rows),
       });
       // Reported once. Not settled: what is missing is SIMKL's id, not TMDB's
       // knowledge, so the film stays askable the moment SIMKL fills it in.

@@ -51,7 +51,7 @@ import {
   watchedNoteSerial,
   type RollupField,
 } from './values.ts';
-import { gridIds, type BlockCell, type BlockInsert, type CellEdit, type Insert, type RowInsert, type SheetPlan } from './4-plan.ts';
+import { gridIds, insertSpan, planWrites, type BlockCell, type BlockInsert, type CellEdit, type Insert, type RowInsert, type SheetPlan } from './4-plan.ts';
 import type { ExtendedValue } from '../api/google/types.ts';
 import {
   checkBudgets,
@@ -578,7 +578,7 @@ const checkShowRowCell = (cell: BlockCell, where: string, insert: BlockInsert, c
  * row, written by the same planner code, and a block that could fill columns a
  * season insert cannot would be a second write surface with no reason to exist.
  */
-const checkBlockSeasonCell = (cell: BlockCell, where: string, insert: BlockInsert): void => {
+const checkBlockSeasonCell = (cell: BlockCell, where: string, expected: number): void => {
   // `id` is not in `INSERT_FIELDS`, which is what stops the season row carrying
   // one: it inherits the show row's, and an id of its own would make its season
   // number the entry's rather than the block's.
@@ -587,12 +587,16 @@ const checkBlockSeasonCell = (cell: BlockCell, where: string, insert: BlockInser
   if (cell.field === 'Season') {
     const season = cell.value?.numberValue;
     if (season === undefined || !Number.isInteger(season) || season < 1) refuse(`${where}: only whole numbered seasons may be inserted.`);
-    if (season !== insert.season) refuse(`${where}: the season cell says ${season} but the block is for S${insert.season}.`);
+    // Against the number the plan gave *this row*, not the block's first: the
+    // rows of a span are only in the order they claim if each one says so, and
+    // two rows carrying one number is a duplicate season nothing downstream
+    // would detect.
+    if (season !== expected) refuse(`${where}: the season cell says ${season} but this row of the block is for S${expected}.`);
   }
 };
 
 /**
- * A whole block: a show row and the first season row under it.
+ * A whole block: a show row and every season row created under it.
  *
  * The checklist is longer than the season insert's because there is more that
  * cannot be taken back. Every cell on a show row is written once and revisited
@@ -602,22 +606,33 @@ const checkBlockSeasonCell = (cell: BlockCell, where: string, insert: BlockInser
  */
 const checkBlockInsert = (insert: BlockInsert, ctx: GuardContext): void => {
   const { grid } = ctx;
-  const where = `rows ${insert.row + 1}-${insert.row + insert.rows} (${insert.title} S${insert.season})`;
-  // Which row a cell landed on decides every rule that applies to it, so the
-  // split is made once. A cell on neither row is in neither list and is
-  // refused by the bounds check in the routing loop below.
-  const showFill = insert.fill.filter((cell) => cell.row === insert.row);
-  const seasonFill = insert.fill.filter((cell) => cell.row === insert.row + 1);
+  // The whole span, off the one field that says how tall it is. BUILD, the
+  // budget and VERIFY read the same derivation through `insertSpan`, so there is
+  // no height here to disagree with theirs.
+  const height = insertSpan(insert).rows;
+  const where = `rows ${insert.row + 1}-${insert.row + height} (${insert.title} S${insert.seasons[0]})`;
 
   // A show row with no season under it is a block whose roll-ups count the
   // *next* block's rows as their own, and a season row with no show row above
   // it joins whichever block it landed under.
-  if (insert.rows !== 2) refuse(`${where}: a block is a show row and one season row, never ${insert.rows}.`);
+  if (insert.seasons.length === 0) refuse(`${where}: a block must carry at least one season row.`);
+  // Ascending and distinct: the tab reads a block top to bottom, and two rows
+  // for one season is the insert mistake nothing downstream could detect.
+  if (insert.seasons.some((season, i) => i > 0 && season <= (insert.seasons[i - 1] as number))) {
+    refuse(`${where}: the season rows ${insert.seasons.join(', ')} are not strictly ascending.`);
+  }
+
+  // Which row a cell landed on decides every rule that applies to it, so the
+  // split is made once. A cell on no row of the span is in no list and is
+  // refused by the bounds check in the routing loop below.
+  const showFill = insert.fill.filter((cell) => cell.row === insert.row);
+  const seasonFills = insert.seasons.map((_, offset) => insert.fill.filter((cell) => cell.row === insert.row + 1 + offset));
+
   // Above the header there is no block at all, and the header row is not one
   // the sync may push down.
   if (insert.row < 1) refuse(`${where}: a block cannot be inserted at or above the header row.`);
   // `rowCount` is a count, so the last usable 0-based index is one below it.
-  if (insert.row + insert.rows > grid.snapshot.rowCount) {
+  if (insert.row + height > grid.snapshot.rowCount) {
     refuse(`${where}: the tab declares only ${grid.snapshot.rowCount} rows, so there is no room for a block.`);
   }
 
@@ -643,19 +658,20 @@ const checkBlockInsert = (insert: BlockInsert, ctx: GuardContext): void => {
 
   for (const cell of insert.fill) {
     const cellWhere = `${cell.address} (${SHOW_FIELD_LABELS[cell.field]})`;
-    if (cell.row !== insert.row && cell.row !== insert.row + 1) refuse(`${cellWhere}: a block may only fill the two rows it creates.`);
+    const offset = cell.row - insert.row;
+    if (offset < 0 || offset >= height) refuse(`${cellWhere}: a block may only fill the rows it creates.`);
     if (cell.previous !== undefined) refuse(`${cellWhere}: a new row cannot have a previous value.`);
-    if (cell.row === insert.row) checkShowRowCell(cell, cellWhere, insert, ctx);
-    else checkBlockSeasonCell(cell, cellWhere, insert);
+    if (offset === 0) checkShowRowCell(cell, cellWhere, insert, ctx);
+    else checkBlockSeasonCell(cell, cellWhere, insert.seasons[offset - 1] as number);
   }
 
-  // Per row, not per block: `Season` on the season row and `Start` on the show
+  // Per row, not per block: `Season` on a season row and `Start` on the show
   // row are the same field id at two different columns, and counted together
   // the second would read as a repeat of the first.
-  for (const [row, fill] of [[insert.row, showFill], [insert.row + 1, seasonFill]] as const) {
+  for (const [offset, fill] of [showFill, ...seasonFills].entries()) {
     const fields = fill.map((cell) => cell.field);
     const duplicated = fields.find((field, i) => fields.indexOf(field) !== i);
-    if (duplicated) refuse(`${where}: ${SHOW_FIELD_LABELS[duplicated]} is filled twice on row ${row + 1}.`);
+    if (duplicated) refuse(`${where}: ${SHOW_FIELD_LABELS[duplicated]} is filled twice on row ${insert.row + offset + 1}.`);
   }
 
   const filled = new Set(showFill.map((cell) => cell.field));
@@ -663,7 +679,13 @@ const checkBlockInsert = (insert: BlockInsert, ctx: GuardContext): void => {
     if (!filled.has(field)) refuse(`${where}: a show row must carry ${SHOW_FIELD_LABELS[field]}.`);
   }
 
-  if (!seasonFill.some((cell) => cell.field === 'Season')) refuse(`${where}: a block must carry the season row it was built for.`);
+  // Every row of the span, because a row with no `Season` cell is a blank row
+  // inside a block and the roll-ups above it count it all the same.
+  for (const [offset, fill] of seasonFills.entries()) {
+    if (!fill.some((cell) => cell.field === 'Season')) {
+      refuse(`${where}: row ${insert.row + offset + 2} carries no ${SHOW_FIELD_LABELS.Season} cell.`);
+    }
+  }
 
   // The runtime's scope, re-derived from the **planned show row**: the block is
   // not in the grid yet, so `runtimeScopeOk` has nothing to read. The two facts
@@ -674,7 +696,7 @@ const checkBlockInsert = (insert: BlockInsert, ctx: GuardContext): void => {
     type: showFill.find((cell) => cell.field === 'Type')?.value?.stringValue?.toLowerCase() ?? null,
     ids: parseIds({ userEnteredValue: showFill.find((cell) => cell.field === 'id')?.value }),
   };
-  checkSeasonRowFill(seasonFill, planned, ctx);
+  for (const fill of seasonFills) checkSeasonRowFill(fill, planned, ctx);
 };
 
 const checkInsert = (insert: Insert, ctx: GuardContext): void => {
@@ -702,7 +724,7 @@ export const assertPlanSafe = (
     seasonRows: new Map(grid.blocks.flatMap((b) => b.seasons.map((s) => [s.row, { season: s, block: b }] as const))),
   };
 
-  checkBudgets(plan, { maxEdits, maxRows, spent }, refuse);
+  checkBudgets(planWrites(plan), { maxEdits, maxRows, spent }, refuse);
   for (const cell of plan.edits) checkEdit(cell, plan, ctx);
   if (plan.insert) checkInsert(plan.insert, ctx);
 };

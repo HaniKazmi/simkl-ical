@@ -253,9 +253,9 @@ for the library: the watch detail rides along on the fetch the feed already make
 | `GOOGLE_SA_KEY_B64`              | —          | **Secret.** Base64 of the service-account JSON: `base64 -w0 sa.json` |
 | `GOOGLE_APPLICATION_CREDENTIALS` | —          | Path to that JSON instead, for local dev                        |
 | `SHEET_SYNC_MODE`                | `report`   | `off` / `report` / `apply`. Anything unrecognised clamps to `report` |
-| `SHEET_SINCE_DAYS`               | `90`       | Counts and statuses need watch activity this recent; dates do not |
-| `SHEET_MAX_EDITS`                | `30`       | Over budget refuses the whole plan rather than trimming it      |
-| `SHEET_MAX_ROWS`                 | `20`       | Distinct rows in one run                                        |
+| `SHEET_SINCE_DAYS`               | `90`       | Counts and statuses need a title watched this recently, or changed since the last poll; dates need neither |
+| `SHEET_MAX_EDITS`                | `30`       | Per poll, both tabs together; a backlog is held back to fit, and anything past that refuses the whole plan |
+| `SHEET_MAX_ROWS`                 | `20`       | Distinct rows in one poll, the same way                         |
 | `TVDB_API_KEY`                   | —          | **Secret.** Gets each season's *own* average runtime, and a new show block's genres. Unset, the runtime cell falls back to SIMKL's show-wide figure and no block is added |
 | `TMDB_API_KEY`                   | —          | **Secret.** The v4 read access token. Fills eight of the films tab's columns, and a new show block's certificate. Unset, no film row and no block is added |
 | `TVDB_PIN`                       | —          | **Secret.** Only for a user-supported TVDB key; a licensed one logs in without it |
@@ -288,9 +288,14 @@ new cour of one you already have. The new block goes where the `Franchise` colum
 genre comes from TVDB, its network from SIMKL and its certificate from TMDB — each from whichever
 of the three lists that column the way your tab does. If any of that has not answered yet, the
 block waits for the next poll rather than arriving with blank cells, because nothing revisits a
-show row once it exists. Its first season row is the earliest season watched inside the activity
-window, so a show whose earlier seasons predate the window gets a block starting at the recent
-one, and you add the earlier rows by hand.
+show row once it exists. The block lands whole — a show row and one season row for every season the
+title needs, in one go — because a show row with no season rows under it would have its totals
+counting the *next* block's rows until the missing ones arrived. Which seasons those are: the ones
+you have no row for that were either watched inside the activity window or have moved since this
+service last looked. So a show you have been watching week by week gets a block starting at the
+recent season and you add the earlier rows by hand, while a back catalogue you mark watched in one
+go arrives with every season at once. A very tall block is cut to what one run may write and the
+rest follow on later polls.
 
 The start and end dates are the two that **keep following SIMKL** after the row is finished: if a
 date changes upstream — you correct a watch date, or rewatch the last episode — the cell is
@@ -301,7 +306,30 @@ They also ignore `SHEET_SINCE_DAYS`. Correcting the date you started a season in
 made *today*, but it moves no watch timestamp, so a recency window would never see it. What keeps
 this safe on a sheet nobody touches is the record described below, not the window: a value never
 seen to move is never written. Everything else — counts, statuses, runtimes, new rows — still needs
-recent watch activity.
+the title to have been watched or changed inside the window.
+
+"Changed" there is the second half of what `SHEET_SINCE_DAYS` means, and it is what makes a back
+catalogue work. Marking a 2005 show's 87 episodes watched stamps every one of them at the day it
+aired, so nothing about it looks recent — what is recent is the change itself, and SIMKL offers no
+"last modified" to read it off. So this service compares against its own record instead: the same
+file that holds the start and end dates also holds each season's watched count and each title's
+status, and a count or a status that differs from what was last written down is a change, whatever
+day the watching is stamped. A show you mark whole today comes onto the tab on the next poll, and a
+title in scope on that signal alone is still only written where a cell actually disagrees with
+SIMKL.
+
+A season the record has never seen, on a title it has, is a season that has just appeared — which is
+how a block someone started by hand at season 5 gains season 6 without being offered seasons 1 to 4
+for ever. A title with no record at all, while other titles have one, is a new title and earns a
+block.
+
+A backlog is drained rather than refused: if marking a whole library watched puts more rows in scope
+than `SHEET_MAX_EDITS` and `SHEET_MAX_ROWS` allow between them, the run writes what fits, says how
+many it left, and asks for the next poll. Rows watched inside the window are never the ones held
+back. A row in scope on the "changed" signal alone has no date to age past, so it simply waits its
+turn and comes back every poll until it is written — which is also why a row the run *starts* and
+cannot finish, one whose end date is waiting on a runtime lookup, is left looking unfinished rather
+than written down as done.
 
 This only ever acts on changes made *from the point you switch it on*. It records what SIMKL says
 the first time it sees each season and writes nothing that run, so dates your sheet and SIMKL have
@@ -333,9 +361,16 @@ stopped-writing state and a later clean run would otherwise sweep away the very 
 to repair from. So a `_sync-REPAIR-…` tab in your spreadsheet means something went wrong and is
 waiting for you; delete it once you have copied it back.
 
-Exactly one insert is made per run — one season row, or the two rows of a new show's block — so
-starting two seasons between polls adds them over two runs; the report names the one it deferred,
-and the sync asks for the next poll rather than waiting.
+Exactly one insert is made per run — one season row, or a whole new show's block — so starting two
+seasons between polls adds them over two runs; the report names the one it deferred, and the sync
+asks for the next poll rather than waiting.
+
+`SHEET_MAX_EDITS` and `SHEET_MAX_ROWS` bound what one **poll** may change, across both tabs
+together. A poll with more to do than that fits holds the rest back rather than refusing the lot:
+dates that moved upstream go first, then the rows you watched recently and the show statuses beside
+them, then the one insert, then the rows that are only in scope because the sync's own record of
+them has gone stale. Each report says how many it held and why, and a poll that held anything asks
+for the next one — so a backlog drains a budget at a time instead of sitting there.
 
 The sheet has to hold up its end: each show row's derived cells are self-sizing formulas over the
 season rows beneath it, and that is what makes an existing show row read-only to the sync. See

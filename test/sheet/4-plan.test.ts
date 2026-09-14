@@ -4,7 +4,12 @@ import { assertPlanSafe } from '../../src/sheet/5-guard.ts';
 import { parseGrid } from '../../src/sheet/2-grid.ts';
 import {
   deriveStatus,
+  CATALOGUE_ASKS_PER_PASS,
   emptyLookupBudget,
+  insertSeason,
+  nextPass,
+  insertSpan,
+  planWrites,
   MAX_LOOKUPS_PER_PASS,
   observeWatches,
   planRecord,
@@ -13,11 +18,12 @@ import {
   type PlanOptions,
   type SheetPlan,
 } from '../../src/sheet/4-plan.ts';
-import { artworkFormula, BLOCK_SCAN_ROWS, ROLLUP_FIELDS, showRowFormulas } from '../../src/sheet/values.ts';
+import { rowsTouched } from '../../src/sheet/6-requests.ts';
+import { anyTitleRecorded, artworkFormula, BLOCK_SCAN_ROWS, ROLLUP_FIELDS, showRowFormulas } from '../../src/sheet/values.ts';
 import { BLOCK_SHOW, blockLibrary, gridFixture, season as namedSeason, raw as namedRaw, show as namedShow } from './fixture.ts';
 import { seasonShapes, type TitleCatalogue } from '../../src/sheet/3-catalogue.ts';
 import { indexLibrary } from '../../src/sheet/1-index.ts';
-import { dateSerial, seasonKey, type Baseline } from '../../src/sheet/values.ts';
+import { dateSerial, seasonKey, titleRecordKey, type Baseline, type BaselineEntry } from '../../src/sheet/values.ts';
 import { isoOf, plainDateIn } from '../../src/shared/dates.ts';
 import type { EpisodeDetail, ShowDetail } from '../../src/api/simkl/types.ts';
 import type { Insert } from '../../src/sheet/4-plan.ts';
@@ -25,6 +31,12 @@ import { col, daysAgo, libraryOf, rowByLabel, sheetSnapshot, SHEET_HEADERS, toda
 
 const H = SHEET_HEADERS;
 const TZ = 'Europe/London';
+
+// What an insert says about itself through the derivations every consumer uses,
+// so a test reads a block's height the way BUILD and VERIFY do rather than off a
+// field beside the season list.
+const seasonOf = (insert: Insert | null) => (insert === null ? undefined : insertSeason(insert));
+const spanOf = (insert: Insert | null) => (insert === null ? undefined : insertSpan(insert).rows);
 
 const show = showRow;
 const season = (n: number, episode: number | null, end: number | null, id: number | string | null = null, seasonNote: string | null = null): CellSpec[] =>
@@ -69,7 +81,10 @@ const scenario = ({ rows, items, episodes = {}, details = {}, tvdbIds = {}, runt
   for (const [id, seasons] of Object.entries(runtimes)) {
     for (const [n, minutes] of Object.entries(seasons)) entry(Number(id)).seasonRuntimes.set(Number(n), minutes);
   }
-  const result = (baseline?: Baseline) => planSync(grid, index, titles, { timezone: TZ, baseline, filed });
+  // `anyTitleRecorded` off the baseline the test seeded, the way `sync.ts`
+  // counts it off the record it loaded.
+  const result = (baseline?: Baseline) =>
+    planSync(grid, index, titles, { timezone: TZ, baseline, anyTitleRecorded: anyTitleRecorded(baseline ?? new Map()), filed });
   return {
     grid,
     index,
@@ -145,6 +160,642 @@ test('within an eligible show, a dormant season is still left alone', () => {
   });
   // S14 is recent and advances; S13 was last watched 600 days ago and does not.
   assert.deepEqual(plan().edits.filter((e) => e.field === 'Episode').map((e) => e.address), ['K5']);
+});
+
+/**
+ * The window asks whether something happened here lately, and a watch date
+ * cannot answer it: marking a 2005 show's episodes watched today stamps each at
+ * its air date, so every one of them is years outside the window while the
+ * change itself is today's. What is recent is the *change*, and the only record
+ * of it is what this sync itself last observed.
+ */
+const marked = (): Scenario => ({
+  rows: [show('The Sandman', 'Ended', 200), season(2, 1, null)],
+  items: [{ id: 200, status: 'completed', seasons: { 2: watched(11, 400) }, watched: 11, total: 11 }],
+  episodes: { 200: eps(2, 11) },
+  details: { 200: { status: 'ended' } },
+});
+
+/** A baseline as it stands after a run that saw the title with `count` episodes of season 2 watched. */
+const recorded = (count: number, extra: BaselineEntry = {}): Baseline =>
+  new Map([
+    [titleRecordKey(200), { Status: 'completed' }],
+    [seasonKey(200, 2), { Watched: String(count), ...extra }],
+  ]);
+
+test('a season whose count differs from what was recorded is in scope, whatever its watch dates say', () => {
+  const counts = scenario(marked())
+    .result(recorded(1))
+    .plan.edits.filter((e) => e.field === 'Episode');
+  assert.deepEqual(
+    counts.map((e) => [e.address, e.value?.numberValue]),
+    [['K3', 11]],
+  );
+});
+
+/**
+ * What keeps the wider signal idempotent: the record decides which rows are
+ * read, and each cell is still compared against what the row holds — so a title
+ * marked whole today writes only the rows that disagree.
+ */
+test('a row already agreeing with SIMKL takes no edit from its count having moved', () => {
+  // Open and still airing, so nothing but the comparisons can decline it: the
+  // count matches, the season cannot close, and the note dates a count that did
+  // not move.
+  const agreed = scenario({
+    ...marked(),
+    rows: [show('The Sandman', 'Watching', 200), season(2, 11, null)],
+    items: [{ id: 200, status: 'watching', seasons: { 2: watched(11, 400) }, watched: 11, total: 12, notAired: 1 }],
+    episodes: { 200: eps(2, 12, 11) },
+  });
+  assert.deepEqual(
+    agreed
+      .result(new Map([[titleRecordKey(200), { Status: 'watching' }], [seasonKey(200, 2), { Watched: '1' }]]))
+      .plan.edits.filter((e) => e.row === 2),
+    [],
+  );
+});
+
+/**
+ * The first sighting rule, at the level of the whole feature: an install
+ * upgrading into this code has a baseline of `Start` and `End` and not one title
+ * entry, so nothing has moved and nothing is written. Every count and status is
+ * recorded instead, and the run *after* it is the first that can see a change.
+ */
+test('a baseline with no title entry makes nothing recent, and records what it saw', () => {
+  // `Start` and `End` at exactly what SIMKL says, which is the state an install
+  // upgrading into this code is in: the two tracked fields have been followed
+  // for months and the two new ones have never been recorded at all.
+  const seen = watched(11, 400);
+  const first = scenario(marked()).result(
+    new Map([[seasonKey(200, 2), { Start: seen[0] as string, End: seen.at(-1) as string }]]),
+  );
+  assert.deepEqual(first.plan.edits, []);
+  assert.deepEqual(first.plan.notes, []);
+  assert.equal(first.observed.get(titleRecordKey(200))?.Status, 'completed');
+  assert.equal(first.observed.get(seasonKey(200, 2))?.Watched, '11');
+  assert.equal(first.writing.size, 0, 'nothing is banked, because nothing is written');
+});
+
+/** A fresh install's empty record is the same state: everything is a first sighting. */
+test('an empty baseline makes nothing recent', () => {
+  assert.deepEqual(scenario(marked()).result(new Map()).plan.edits, []);
+});
+
+/**
+ * A title is known when its key exists, and `Status` is the only field a title
+ * entry ever carries — so the run that plans a `Status` edit banks that field
+ * and leaves the entry empty. Read as a missing title, such an entry makes the
+ * title new again on the next poll, which is the one reading that back-fills
+ * rows nobody asked for.
+ */
+test('a banked Status leaves the title known', () => {
+  const banked = scenario({
+    rows: [show('The Sandman', 'Watching', 200), season(2, 11, null)],
+    items: [{ id: 200, status: 'dropped', seasons: { 2: watched(11, 400) }, watched: 11, total: 11 }],
+    episodes: { 200: eps(2, 11) },
+    details: { 200: { status: 'ended' } },
+  }).result(new Map([[titleRecordKey(200), { Status: 'watching' }], [seasonKey(200, 2), { Watched: '11' }]]));
+  assert.deepEqual(banked.observed.get(titleRecordKey(200)), {}, 'the entry is present and empty, not gone');
+
+  // That entry, and nothing else about the title: the block is dormant, so its
+  // count is the only thing that can bring it back into scope — and a count
+  // only compares against something for a title this sync has seen.
+  const known = scenario(marked()).result(new Map([[titleRecordKey(200), {}]]));
+  assert.deepEqual(
+    known.plan.edits.filter((e) => e.field === 'Episode').map((e) => [e.address, e.value?.numberValue]),
+    [['K3', 11]],
+  );
+});
+
+/**
+ * A block the tab already holds was built to the height its reader wanted, so
+ * the seasons they left out are not rows the sync may add. Newness is the block
+ * *walk*'s reason to offer every watched season of a title with no rows at all;
+ * on an existing block it would back-fill a hand-started grid from S1 the first
+ * time the title was seen, and nothing revisits an inserted row.
+ */
+test('a hand-started block is offered no season its reader left out', () => {
+  const hand = scenario({
+    rows: [show('Buffy the Vampire Slayer', 'Watching', 201), season(1, 22, 44000), season(5, 22, 44100)],
+    items: [
+      {
+        id: 201,
+        status: 'completed',
+        // S1 inside the window is what puts the block in scope at all; S2-S4
+        // are years old and have never been recorded, so only newness could
+        // offer them.
+        seasons: { 1: watched(22, 3), 2: watched(22, 400), 3: watched(22, 400), 4: watched(22, 400), 5: watched(22, 400) },
+        watched: 110,
+        total: 110,
+      },
+    ],
+    episodes: { 201: [1, 2, 3, 4, 5].flatMap((n) => eps(n, 22)) },
+    details: { 201: { status: 'ended', runtime: 42 } },
+    // Another title recorded, which is what makes an unrecorded one *new*
+    // rather than a first run where nothing is.
+  }).result(new Map([[titleRecordKey(300), { Status: 'completed' }]]));
+  assert.equal(hand.plan.insert, null, 'no row is added for S2');
+  assert.equal(hand.plan.deferred, 0, 'and none waits behind it');
+});
+
+/**
+ * Banked, never observed. Recorded on the pass that plans the edit, the next
+ * poll would find the count unmoved and a batch that never landed would leave
+ * the row one episode short for good.
+ */
+test("a planned count is banked against its write, not recorded as seen", () => {
+  const { plan, observed, writing } = scenario(marked()).result(recorded(1));
+  assert.ok(plan.edits.some((e) => e.field === 'Episode'));
+  assert.equal(writing.get(seasonKey(200, 2))?.Watched, '11');
+  assert.equal(observed.get(seasonKey(200, 2))?.Watched, undefined);
+});
+
+/**
+ * A status that moved is the block's own signal: nothing was watched, so no row
+ * is in scope, and the one cell a title-level move can reach is the show row's.
+ */
+test('a status move with no count move edits Status alone', () => {
+  const moved = scenario({
+    rows: [show('The Sandman', 'Watching', 200), season(2, 11, null)],
+    items: [{ id: 200, status: 'dropped', seasons: { 2: watched(11, 400) }, watched: 11, total: 11 }],
+    episodes: { 200: eps(2, 11) },
+    details: { 200: { status: 'ended' } },
+  }).result(new Map([[titleRecordKey(200), { Status: 'watching' }], [seasonKey(200, 2), { Watched: '11' }]]));
+  assert.deepEqual(
+    moved.plan.edits.map((e) => [e.field, e.value?.stringValue]),
+    [['Status', 'Abandoned']],
+  );
+  assert.equal(moved.writing.get(titleRecordKey(200))?.Status, 'dropped', 'and the membership is banked against that write');
+});
+
+/**
+ * A library marked whole puts every row of every block in scope at once, and a
+ * plan over `SHEET_MAX_EDITS` is refused **whole** — so without a cap nothing
+ * at all would be written, on every poll, until the rows aged out of the
+ * window. Held back instead, the same rows land a budget at a time.
+ *
+ * The rows admitted are taken in grid order, and each of them costs up to four
+ * cells, so the cap leaves that much clear rather than filling to the edge.
+ */
+const wideBacklog = (rows: number): Scenario => ({
+  rows: [show('Long Show', 'Watching', 700), ...Array.from({ length: rows }, (_, i) => season(i + 1, 0, null))],
+  items: [
+    {
+      id: 700,
+      status: 'completed',
+      seasons: Object.fromEntries(Array.from({ length: rows }, (_, i) => [i + 1, watched(3, 500 + i)])),
+      watched: rows * 3,
+      total: rows * 3,
+    },
+  ],
+  episodes: { 700: Array.from({ length: rows }, (_, i) => eps(i + 1, 3)).flat() },
+  details: { 700: { status: 'ended', runtime: 40 } },
+});
+
+/** Every season recorded at zero, so every row's count has moved and none was watched inside the window. */
+const allAtZero = (rows: number): Baseline => {
+  const seen: Baseline = new Map([[titleRecordKey(700), { Status: 'completed' }]]);
+  for (let n = 1; n <= rows; n += 1) seen.set(seasonKey(700, n), { Watched: '0' });
+  return seen;
+};
+
+test('a backlog of rows whose counts moved is drained under the edit budget, never refused', () => {
+  const rows = 15;
+  const { grid, index, titles } = scenario(wideBacklog(rows));
+  const { plan } = planSync(grid, index, titles, { timezone: TZ, baseline: allAtZero(rows), maxEdits: 12 });
+
+  assert.ok(plan.edits.length <= 12, `${plan.edits.length} edits is inside the budget`);
+  assert.ok(plan.deferred > 0, 'and the rest are known waiting work, which is what asks for another poll');
+  assert.match(plan.notes.join('\n'), /row\(s\) whose counts moved wait for a later poll/);
+  // The whole point: a plan the guard would refuse writes nothing at all, on
+  // every poll, for as long as the backlog stands.
+  assert.doesNotThrow(() => assertPlanSafe(plan, grid, { timezone: TZ, maxEdits: 12 }));
+
+  // Grid order, so the drain takes the same rows every run until they land:
+  // the show row's Status, then an unbroken run from the top of the block.
+  const touched = [...new Set(plan.edits.map((e) => e.row))].sort((a, b) => a - b);
+  assert.deepEqual(touched, Array.from({ length: touched.length }, (_, i) => i + 1));
+  assert.ok(touched.length < rows, 'and stops short of the whole backlog');
+});
+
+/**
+ * The two budgets bind on different backlogs, and one admission step covers
+ * both: a backlog of rows each gaining a single cell crosses `SHEET_MAX_ROWS`
+ * long before `SHEET_MAX_EDITS`, so a step bounding edits alone would plan a
+ * batch the guard refuses **whole** — on every poll, since a record-scoped row
+ * has no window to age out of.
+ */
+test('a backlog of one-edit rows drains under the row budget, not only the edit budget', () => {
+  const rows = 15;
+  const { grid, index, titles } = scenario(wideBacklog(rows));
+  const limits = { maxEdits: 40, maxRows: 6 };
+  const { plan } = planSync(grid, index, titles, { timezone: TZ, baseline: allAtZero(rows), ...limits });
+
+  assert.ok(plan.edits.length > 0, 'rows are written rather than the whole plan being refused');
+  assert.ok(rowsTouched(planWrites(plan)) <= limits.maxRows, `${rowsTouched(planWrites(plan))} rows is inside the row budget`);
+  assert.ok(plan.deferred > 0, 'and the rest ask for another poll');
+  assert.doesNotThrow(() => assertPlanSafe(plan, grid, { timezone: TZ, ...limits }));
+});
+
+/**
+ * The budgets are a blast radius for the **poll**, not for one tab, so what a
+ * planner is given is what is left of them. Counted per tab, one poll writes
+ * twice the ceiling while each half reports itself inside budget.
+ */
+test('what an earlier half already sent shrinks what this one admits', () => {
+  const rows = 15;
+  const { grid, index, titles } = scenario(wideBacklog(rows));
+  const whole = planSync(grid, index, titles, { timezone: TZ, baseline: allAtZero(rows), maxEdits: 40, maxRows: 12 }).plan;
+  // Six rows of the poll's twelve already sent by an earlier half.
+  const rest = planSync(grid, index, titles, { timezone: TZ, baseline: allAtZero(rows), maxEdits: 40, maxRows: 6 }).plan;
+  assert.ok(rowsTouched(planWrites(rest)) < rowsTouched(planWrites(whole)), 'the second plan is the smaller one');
+  assert.ok(rest.deferred > whole.deferred, 'and says so');
+});
+
+/**
+ * Every write the run plans goes through the same admission step, the rows the
+ * activity window reaches included. A week of heavy viewing is bounded, but not
+ * by the poll's budgets — and a plan over either is refused **whole**, which
+ * writes nothing at all and arms no retry.
+ */
+const datedRows = (rows: number): Scenario => ({
+  ...wideBacklog(rows),
+  items: [
+    {
+      id: 700,
+      status: 'completed',
+      seasons: Object.fromEntries(Array.from({ length: rows }, (_, i) => [i + 1, watched(3, 3 + i)])),
+      watched: rows * 3,
+      total: rows * 3,
+    },
+  ],
+});
+
+test('a poll of watch-dated rows is rationed rather than refused', () => {
+  const rows = 15;
+  const { grid, index, titles } = scenario(datedRows(rows));
+  const limits = { maxEdits: 40, maxRows: 6 };
+  const { plan } = planSync(grid, index, titles, { timezone: TZ, ...limits });
+
+  assert.ok(plan.edits.length > 0, 'rows are written rather than the whole plan being refused');
+  assert.ok(rowsTouched(planWrites(plan)) <= limits.maxRows, `${rowsTouched(planWrites(plan))} rows is inside the row budget`);
+  assert.ok(plan.deferred > 0, 'and the rest are work another poll drains, which is what arms the retry');
+  assert.match(plan.notes.join('\n'), /row\(s\) watched recently wait for a later poll/);
+  assert.doesNotThrow(() => assertPlanSafe(plan, grid, { timezone: TZ, ...limits }));
+});
+
+/**
+ * A guard refusal is whole-plan and the record-scoped backlog has no window to
+ * age out of, so a timestamp the guard would refuse has to be declined here
+ * instead: planned, it stops every unrelated edit on the sheet, on every poll,
+ * for as long as its title stays in scope.
+ */
+const outOfRange = (stamps: string[], { aired = 2, total = 2 } = {}) =>
+  scenario({
+    rows: [show('Old Show', 'Watching', 702), season(1, 2, 44000)],
+    items: [{ id: 702, status: 'completed', seasons: { 1: ['1994-06-01T20:00:00Z', '1994-06-08T20:00:00Z'], 2: stamps }, watched: 4, total: 2 + total }],
+    episodes: { 702: [...eps(1, 2), ...eps(2, total, aired)] },
+    details: { 702: { status: 'ended', runtime: 40 } },
+    // S2 has no row and its count has never been recorded, so `countMoved`
+    // offers it — with a timestamp outside the range the guard accepts.
+  }).result(new Map([[titleRecordKey(702), { Status: 'completed' }], [seasonKey(702, 1), { Watched: '2' }]]));
+
+test('a season whose dates fall outside the range this sync writes is skipped, and its count is left unrecorded', () => {
+  // A first watch three decades back, on a season still airing so the row would
+  // be inserted open and the start date is the only serial in the fill.
+  const before = outOfRange(['1994-06-01T20:00:00Z', '1994-06-08T20:00:00Z'], { aired: 2, total: 3 });
+  assert.equal(before.plan.insert, null, 'no row is planned from a date the guard would refuse');
+  assert.match(before.plan.skips.find((s) => s.code === 'unusable-timestamp')?.message ?? '', /Old Show S2/);
+  assert.equal(before.observed.get(seasonKey(702, 2))?.Watched, undefined, 'and its count stays unrecorded, so a corrected date is still a move');
+
+  // The other end: a hand-typed watch date years ahead, on a season complete
+  // enough for the fill to date the row it creates. The start is what the row
+  // stands on, where the end is a cell the close path writes on any later
+  // poll and already holds a row open over — so the row lands open and
+  // undated rather than not at all, with its count withdrawn so the close
+  // still finds it in scope.
+  const ahead = outOfRange([daysAgo(10), '2031-01-01T20:00:00Z']);
+  const insert = ahead.plan.insert;
+  assert.ok(insert !== null && insert.kind === 'season', 'the row is added');
+  assert.ok(!insert.fill.some((c) => c.field === 'End'), 'undated');
+  assert.ok(!insert.fill.some((c) => c.field === 'Note'), 'and with no note either, since it reads the same stamp');
+  assert.equal(insert.waiting, true);
+  assert.match(insert.note, /last watch timestamp is unusable/);
+  assert.equal(ahead.observed.get(seasonKey(702, 2))?.Watched, undefined, 'its count stays unrecorded, so the close is still owed');
+});
+
+/**
+ * The note holds the same fact `End` will, one column earlier in the row's
+ * life, and the guard bounds it the same way — so an unusable timestamp costs
+ * the note and not the count beside it.
+ */
+test('a last-watched note outside the writable range is declined while the count still lands', () => {
+  const ancient = ['1994-06-01T20:00:00Z', '1994-06-08T20:00:00Z', '1994-06-15T20:00:00Z'];
+  const { plan: p } = scenario({
+    rows: [show('Old Show', 'Watching', 703), season(1, 1, null)],
+    // Still airing, so the row stays open and the note is what would be written.
+    items: [{ id: 703, status: 'watching', seasons: { 1: ancient }, watched: 3, total: 4, notAired: 1 }],
+    episodes: { 703: eps(1, 4, 3) },
+    details: { 703: { status: 'airing', runtime: 40 } },
+  }).result(new Map([[titleRecordKey(703), { Status: 'watching' }], [seasonKey(703, 1), { Watched: '1' }]]));
+
+  assert.deepEqual(p.edits.map((e) => e.field), ['Episode'], 'the count lands, the note does not');
+  assert.match(p.skips.find((s) => s.code === 'unusable-timestamp')?.message ?? '', /last watch reads 1994-06-15/);
+});
+
+/**
+ * The tiers are the order the run would rather lose the work in. `Start` and
+ * `End` first: a move there is one no window brings back into scope, so held
+ * back it waits on nothing but another poll. Then the rows the window reaches,
+ * then the run's one insert, then the rows in scope on the record alone — the
+ * unbounded set, which a library marked whole fills at once.
+ */
+const tiered = (): Scenario => ({
+  // S1 closed and agreeing, so only its dates can move; S2 open, watched this
+  // week and still running; S3 open, watched two years ago, its count moved in
+  // the record; S4 watched this week with no row at all.
+  rows: [
+    show('Tiers', 'Watching', 700),
+    season(1, 3, todaySerial(TZ) - 800),
+    season(2, 1, null),
+    season(3, 1, null),
+  ],
+  items: [
+    {
+      id: 700,
+      status: 'completed',
+      seasons: { 1: watched(3, 800), 2: watched(3, 3), 3: watched(3, 700), 4: watched(3, 3) },
+      watched: 12,
+      total: 13,
+    },
+  ],
+  episodes: { 700: [...eps(1, 3), ...eps(2, 4), ...eps(3, 3), ...eps(4, 3)] },
+  details: { 700: { status: 'ended', runtime: 40 } },
+});
+
+/** S1's `Start` a day off what SIMKL says, S3's count two short, and the title seen. */
+const tieredBaseline = (): Baseline =>
+  new Map([
+    [titleRecordKey(700), { Status: 'completed' }],
+    [seasonKey(700, 1), { Start: daysAgo(802), Watched: '3' }],
+    [seasonKey(700, 2), { Watched: '3' }],
+    [seasonKey(700, 3), { Watched: '1' }],
+    [seasonKey(700, 4), { Watched: '3' }],
+  ]);
+
+test('the tiers are taken in order: dates, then dated rows, then the insert, then the backlog', () => {
+  const { grid, index, titles } = scenario(tiered());
+  const at = (maxRows: number) => planSync(grid, index, titles, { timezone: TZ, baseline: tieredBaseline(), maxEdits: 40, maxRows }).plan;
+
+  const dates = at(1);
+  assert.deepEqual(dates.edits.map((e) => [e.address, e.field]), [['M3', 'Start']], 'the one row that fits is the date that moved');
+  assert.equal(dates.insert, null);
+
+  const andWatched = at(2);
+  assert.deepEqual(
+    andWatched.edits.map((e) => e.field),
+    ['Start', 'Episode', 'Note'],
+    'the second row is the one watched this week',
+  );
+  assert.equal(andWatched.insert, null, 'and the insert still waits');
+
+  const andInsert = at(3);
+  assert.equal(seasonOf(andInsert.insert), 4, 'the third row is the season with no row at all');
+  assert.deepEqual(new Set(andInsert.edits.map((e) => e.row)), new Set([2, 3]), 'and the backlog row is untouched');
+
+  const all = at(4);
+  assert.ok(
+    all.edits.some((e) => e.row === 4 && e.field === 'Episode'),
+    'the record-scoped row is last, and lands once there is room for it',
+  );
+  assert.equal(all.deferred, 0);
+});
+
+/**
+ * A row the poll has no room for is held back, not planned and refused: the
+ * insert is one row, and a run that planned it past `SHEET_MAX_ROWS` would be
+ * refused whole — losing every edit beside it and arming no retry.
+ */
+test('an insert the poll has no room for is deferred, and asks for another poll', () => {
+  const { grid, index, titles } = scenario(tiered());
+  const { plan } = planSync(grid, index, titles, { timezone: TZ, baseline: tieredBaseline(), maxEdits: 40, maxRows: 2 });
+  assert.equal(plan.insert, null);
+  assert.ok(plan.deferred > 0, 'which is what arms the retry that brings the poll with room');
+  assert.match(plan.notes.join('\n'), /Tiers S4 is ready to add — deferred, this poll has room for/);
+});
+
+/**
+ * A row the poll has no room for still has its diagnosis reported. Skips are
+ * observations about the row, not writes, and a hand-typed cell or an
+ * out-of-range stamp is no less true for the budget being full — dropped with
+ * the rejected candidate, the report would carry only the tier's aggregate
+ * line until a poll with room re-planned the row.
+ */
+test('a row held back on budget keeps its skips in the report', () => {
+  // The count advances, so the row costs an edit and a full budget rejects it;
+  // the close behind that edit meets a stamp the sync cannot write.
+  const { grid, index, titles } = scenario({
+    rows: [show('Old Show', 'Ended', 704), season(1, 1, null)],
+    items: [{ id: 704, status: 'completed', seasons: { 1: [daysAgo(10), '2031-01-01T20:00:00Z'] }, watched: 2, total: 2 }],
+    episodes: { 704: eps(1, 2) },
+    details: { 704: { status: 'ended', runtime: 40 } },
+  });
+  const baseline = new Map([[titleRecordKey(704), { Status: 'completed' }], [seasonKey(704, 1), { Watched: '1' }]]);
+  const roomy = planSync(grid, index, titles, { timezone: TZ, baseline });
+  const full = planSync(grid, index, titles, { timezone: TZ, baseline, maxEdits: 0 });
+  assert.ok(roomy.plan.edits.some((e) => e.field === 'Episode'), 'with room the count lands');
+  assert.deepEqual(full.plan.edits, [], 'with none it is held back');
+  assert.equal(full.plan.deferred, 1);
+  assert.match(full.plan.skips.find((s) => s.code === 'unusable-timestamp')?.message ?? '', /Old Show S1/, 'and the stamp is still reported');
+});
+
+/**
+ * A dated row the budget holds back is in scope only until its watch date
+ * leaves the window, and its stored count may already agree with SIMKL's — a
+ * first sighting recorded it, or the count landed on a poll whose close was
+ * still waiting. A withdrawal leaves that stored count standing, so once the
+ * window closes nothing would bring the row back and a complete row would stay
+ * undated for good. Forgetting the count makes it absent on a known title,
+ * which reads as moved: the record brings the row back where the window cannot.
+ */
+/**
+ * A row resolved by number with no episode list in the store reads as
+ * incomplete the same way a half-watched season does, and the one reading a
+ * close must not make is "unfinished, so nothing to do": the count would land
+ * and be recorded, and a season that was in fact complete would leave scope
+ * undated. Held open instead, so a poll whose lookup fails is one a withdrawn
+ * or forgotten count survives.
+ */
+test('a row whose episode list has not come back is held open, not recorded as unfinished', () => {
+  const { grid, index, titles } = scenario({
+    rows: [show('Old Show', 'Ended', 706), season(1, 2, null)],
+    items: [{ id: 706, status: 'completed', seasons: { 1: ['2024-01-01T20:00:00Z', '2024-01-08T20:00:00Z'] }, watched: 2, total: 2 }],
+  });
+  // In scope on the record alone — the count was forgotten — with a cold store.
+  const forgotten = new Map([[titleRecordKey(706), { Status: 'completed' }], [seasonKey(706, 1), {}]]);
+  const { plan, observed } = planSync(grid, index, titles, { timezone: TZ, baseline: forgotten });
+  assert.deepEqual(plan.edits, [], 'nothing to write yet');
+  assert.match(plan.skips.find((s) => s.code === 'no-episode-list' && /S1/.test(s.message))?.message ?? '', /whether it is complete is unknown/);
+  assert.equal(observed.get(seasonKey(706, 1))?.Watched, undefined, 'and the count stays unrecorded, so the next poll still finds the row');
+});
+
+test('a dated row held back on budget is forgotten, so the record brings it back once the window cannot', () => {
+  // Complete, count already recorded at SIMKL's figure, and dated inside the
+  // window: the close is all the row has to write.
+  const inWindow = scenario({
+    rows: [show('Old Show', 'Ended', 705), season(1, 2, null)],
+    items: [{ id: 705, status: 'completed', seasons: { 1: [daysAgo(20), daysAgo(10)] }, watched: 2, total: 2 }],
+    episodes: { 705: eps(1, 2) },
+    details: { 705: { status: 'ended', runtime: 40 } },
+    tvdbIds: { 705: 1 },
+    runtimes: { 705: { 1: 40 } },
+  });
+  const agreed = new Map([[titleRecordKey(705), { Status: 'completed' }], [seasonKey(705, 1), { Watched: '2' }]]);
+  const held = planSync(inWindow.grid, inWindow.index, inWindow.titles, { timezone: TZ, baseline: agreed, maxEdits: 0 });
+  assert.deepEqual(held.plan.edits, [], 'held back');
+  assert.deepEqual([...(held.forgetting.get(seasonKey(705, 1)) ?? [])], ['Watched'], 'and its count is forgotten, not withdrawn');
+  assert.equal(held.observed.get(seasonKey(705, 1))?.Watched, undefined);
+
+  // The same row with its watch dates two years back — out of the window. With
+  // the count still recorded nothing puts the row in scope; with it forgotten
+  // the record does, and the close lands.
+  const aged = scenario({
+    rows: [show('Old Show', 'Ended', 705), season(1, 2, null)],
+    items: [{ id: 705, status: 'completed', seasons: { 1: ['2024-01-01T20:00:00Z', '2024-01-08T20:00:00Z'] }, watched: 2, total: 2 }],
+    episodes: { 705: eps(1, 2) },
+    details: { 705: { status: 'ended', runtime: 40 } },
+    tvdbIds: { 705: 1 },
+    runtimes: { 705: { 1: 40 } },
+  });
+  const stillRecorded = new Map([[titleRecordKey(705), { Status: 'completed' }], [seasonKey(705, 1), { Watched: '2' }]]);
+  assert.deepEqual(aged.result(stillRecorded).plan.edits, [], 'recorded at the same figure, the row is out of scope');
+  const forgotten = new Map([[titleRecordKey(705), { Status: 'completed' }], [seasonKey(705, 1), {}]]);
+  assert.deepEqual(aged.result(forgotten).plan.edits.map((e) => e.field), ['End'], 'forgotten, the close is made');
+});
+
+/**
+ * A row in scope only because its count moved has no window to bring it back:
+ * once the count is recorded it is out of scope for good. So a batch that leaves
+ * such a row **open** — waiting on a runtime the close needs — must record
+ * nothing about it, or the poll that could finally close it never looks at the
+ * row again.
+ *
+ * Two polls sharing one record, the way the service does: what the first
+ * observed and what its write banked both go in, and the second plans against
+ * that.
+ */
+const heldOpen = (episode: number, runtime?: number): Scenario => ({
+  // A blank runtime cell, which is the only state the runtime write may touch —
+  // and so the only one that can hold the close open.
+  rows: [show('Kept Open', 'Watching', 800), seasonRow(1, episode, null, { runtime: null })],
+  items: [{ id: 800, status: 'completed', seasons: { 1: watched(6, 500) }, watched: 6, total: 6 }],
+  episodes: { 800: eps(1, 6) },
+  details: { 800: { status: 'ended', runtime: 40 } },
+  tvdbIds: { 800: 111 },
+  runtimes: runtime === undefined ? {} : { 800: { 1: runtime } },
+});
+
+test('a record-scoped row held open on a pending runtime is closed by the next poll', () => {
+  const recorded: Baseline = new Map([[titleRecordKey(800), { Status: 'completed' }], [seasonKey(800, 1), { Watched: '2' }]]);
+
+  // Poll one: the count advances, the close waits on TVDB, and nothing about
+  // the count is recorded — not as observed, and not banked against the write.
+  const first = scenario(heldOpen(2)).result(recorded);
+  assert.deepEqual(
+    first.plan.edits.filter((e) => e.row > 1).map((e) => e.field),
+    ['Episode', 'Note'],
+    'the count advances and the row stays open, carrying its last-watched note',
+  );
+  assert.equal(first.plan.skips.find((skip) => skip.code === 'awaiting-runtimes')?.message.includes('left open'), true);
+  assert.equal(first.observed.get(seasonKey(800, 1))?.Watched, undefined, 'nothing recorded for a row left open');
+  assert.equal(first.writing.get(seasonKey(800, 1))?.Watched, undefined, 'and nothing banked, which would record it on apply');
+
+  // What the record holds after that poll applied: everything observed, plus
+  // everything banked.
+  const after: Baseline = new Map(recorded);
+  for (const [key, entry] of [...first.observed, ...first.writing]) after.set(key, { ...after.get(key), ...entry });
+
+  // Poll two: the sheet now holds the count, so nothing advances — and the row
+  // is still in scope, because its count was never recorded. The runtime has
+  // answered, so the row closes.
+  const second = scenario(heldOpen(6, 45)).result(after);
+  assert.deepEqual(second.plan.edits.filter((e) => e.row > 1).map((e) => e.field).sort(), ['End', 'Runtime']);
+  assert.equal(second.writing.get(seasonKey(800, 1))?.End !== undefined, true, 'and the close is banked against its own write');
+});
+
+/**
+ * A row deferred by the cap has its count withdrawn, not recorded. Recorded at
+ * the value the sheet never received, the next poll would find it unmoved and
+ * the row would never be written at all.
+ */
+test('a row the edit budget held back is in neither what the run records nor what it banks', () => {
+  const rows = 15;
+  const { grid, index, titles } = scenario(wideBacklog(rows));
+  const { plan, observed, writing } = planSync(grid, index, titles, { timezone: TZ, baseline: allAtZero(rows), maxEdits: 12 });
+
+  // Season n sits at grid row n + 1: the header, then the show row, then the
+  // season rows in order.
+  const written = new Set(plan.edits.map((e) => e.row));
+  for (let n = 1; n <= rows; n += 1) {
+    const recordedHere = observed.get(seasonKey(700, n))?.Watched;
+    if (written.has(n + 1)) {
+      assert.equal(writing.get(seasonKey(700, n))?.Watched, '3', `S${n} is banked against its write`);
+      assert.equal(recordedHere, undefined, `S${n} is not also recorded as seen`);
+    } else {
+      assert.equal(recordedHere, undefined, `S${n} waits, so its count stays unrecorded`);
+      assert.equal(writing.get(seasonKey(700, n))?.Watched, undefined, `S${n} banks nothing`);
+    }
+  }
+});
+
+/** A row watched inside the window is never held back: that set is bounded by what was watched, and holding one would put an ordinary week's viewing behind a backfill. */
+test('a row watched inside the window is written even when the backlog is over budget', () => {
+  const rows = 15;
+  const base = wideBacklog(rows);
+  const recent = scenario({
+    ...base,
+    items: [{ ...(base.items[0] as ItemSpec), seasons: { ...(base.items[0] as ItemSpec).seasons, 15: watched(3, 2) } }],
+  });
+  const { plan } = planSync(recent.grid, recent.index, recent.titles, { timezone: TZ, baseline: allAtZero(rows), maxEdits: 12 });
+  assert.ok(
+    plan.edits.some((e) => e.row === 16 && e.field === 'Episode'),
+    'the recently watched row is in, whatever the backlog ahead of it did',
+  );
+  assert.ok(plan.edits.length <= 12, 'and the plan is still inside the budget');
+});
+
+/**
+ * A recorded absence is not an absent record. SIMKL holding no status for a
+ * title is a state, so it is recorded as one — left unrecorded, a title
+ * dropping off every list and the record never having seen the title would read
+ * the same, and the move back onto a list would be a first sighting.
+ */
+test('a title SIMKL now holds no status for has moved, and is recorded as holding none', () => {
+  const none = scenario({
+    rows: [show('The Sandman', 'Watching', 200), season(2, 11, null)],
+    items: [{ id: 200, status: null, seasons: { 2: watched(11, 400) }, watched: 11, total: 11 }],
+    episodes: { 200: eps(2, 11) },
+    details: { 200: { status: 'ended' } },
+  }).result(new Map([[titleRecordKey(200), { Status: 'watching' }], [seasonKey(200, 2), { Watched: '11' }]]));
+
+  assert.deepEqual(
+    none.plan.edits.map((e) => [e.field, e.value?.stringValue]),
+    [['Status', 'Ended']],
+    'the block is in scope on the membership move alone',
+  );
+  assert.equal(none.writing.get(titleRecordKey(200))?.Status, '-', 'and the absence itself is what is banked');
+});
+
+/**
+ * A title whose status and counts both agree with the record is a title nothing
+ * has to look at — no catalogue lookup, no note, no edit — however long the
+ * sheet has been running.
+ */
+test('a block agreeing with the record earns no lookup', () => {
+  const quiet = scenario(marked()).result(recorded(11));
+  assert.deepEqual(quiet.plan.edits, []);
+  assert.deepEqual(quiet.demands.catalogue, []);
 });
 
 // --- end dates -------------------------------------------------------------
@@ -342,7 +993,7 @@ const cellIn = (insert: Insert | null, field: string) => insert?.fill.find((f) =
 test('a season still running is inserted with a blank Episodes cell, for its close to fill', () => {
   const { plan, runtimeDemands } = adding({ aired: 6 });
   const insert = plan().insert;
-  assert.equal(insert?.season, 2);
+  assert.equal(seasonOf(insert), 2);
   assert.deepEqual(fields(insert), ['Episode', 'Note', 'Season', 'Start']);
   assert.equal(cellIn(insert, 'Runtime'), undefined, 'left for the season average');
   assert.equal(cellIn(insert, 'End'), undefined, 'and not dated, because it is still running');
@@ -448,7 +1099,7 @@ test('a title whose detail has not answered is added open, not dated blank', () 
     details: {},
   });
   const insert = plan().insert;
-  assert.equal(insert?.season, 2, 'the row still goes in');
+  assert.equal(seasonOf(insert), 2, 'the row still goes in');
   assert.equal(cellIn(insert, 'End'), undefined, 'undated, because a runtime may yet be obtainable');
   assert.equal(cellIn(insert, 'Runtime'), undefined);
   assert.match(insert?.note ?? '', /have not come back/);
@@ -479,7 +1130,7 @@ test('a length the guard would refuse is never planned in the first place', () =
 test('the demand names exactly the season the plan inserts', () => {
   const { plan, runtimeDemands } = adding();
   assert.deepEqual(runtimeDemands(), [{ id: 800, tvdbId: 403245, season: 2 }]);
-  assert.equal(plan().insert?.season, 2);
+  assert.equal(seasonOf(plan().insert), 2);
 });
 
 // A null answer still counts as answered.
@@ -614,6 +1265,42 @@ test("a split cour ends on the last id's timestamp, and only once every id is co
   assert.deepEqual(splitCour({ aEnd: false }).plan().edits.filter((e) => e.field === 'End'), []);
 });
 
+/**
+ * A split cour is one row over two SIMKL entries, and each entry has a record
+ * of its own. The row's count is their sum, so comparing that sum against
+ * either entry's record reads every such row as moved on every poll — a block
+ * permanently in scope, its catalogue demanded daily, for nothing.
+ */
+test("a split cour's counts are compared and banked per id, never against the sum", () => {
+  const settled: Baseline = new Map([
+    [titleRecordKey(522882), { Status: 'completed' }],
+    [titleRecordKey(581835), { Status: 'completed' }],
+    [seasonKey(522882, 1), { Watched: '13' }],
+    [seasonKey(581835, 1), { Watched: '13' }],
+  ]);
+  // Both halves watched long ago, so the record is the only thing that can put
+  // the row in scope.
+  const dormant = () =>
+    scenario({
+      rows: [show('Ajin: Demi-Human', 'Ended', null, 'anime'), season(1, 20, null, '522882,581835')],
+      items: [
+        { id: 522882, status: 'completed', seasons: { 1: watched(13, 900) }, watched: 13, total: 13 },
+        { id: 581835, status: 'completed', seasons: { 1: watched(13, 880) }, watched: 13, total: 13 },
+      ],
+      details: { 581835: { status: 'ended' } },
+    });
+
+  // Both agree with the record: nothing moved, so the row is out of scope.
+  assert.deepEqual(dormant().result(settled).plan.edits, []);
+
+  // One half moves. The row's count is 26, which matches neither record on its
+  // own — only the per-id comparison sees the 12 → 13.
+  const moved = dormant().result(new Map([...settled, [seasonKey(581835, 1), { Watched: '12' }]]));
+  assert.equal(moved.plan.edits.find((e) => e.field === 'Episode')?.value?.numberValue, 26);
+  assert.equal(moved.writing.get(seasonKey(522882, 1))?.Watched, '13', 'and both halves are banked at their own count');
+  assert.equal(moved.writing.get(seasonKey(581835, 1))?.Watched, '13');
+});
+
 // The one multi-id failure the guards would not otherwise catch: summing over
 // the survivors yields half the true count, and monotonicity only blocks
 // decreases — so a wrong-but-larger number would be waved straight through.
@@ -694,13 +1381,199 @@ test('a newly started season is inserted after the last season row, not at the s
     details: { 3407: { status: 'airing', runtime: 22 } },
   });
   const insert = plan().insert;
-  assert.equal(insert?.season, 11);
+  assert.equal(seasonOf(insert), 11);
   // Row 5 in the UI is the row after S10 — not the show row, where
   // inheritFromBefore picks up the wrong formats.
   assert.equal(insert?.row, 4);
   assert.notEqual(insert?.row, grid.blocks[0]?.row);
   assert.deepEqual(insert?.fill.map((f) => f.field).sort(), ['Episode', 'Note', 'Runtime', 'Season', 'Start']);
   assert.equal(insert?.fill.find((f) => f.field === 'Runtime')?.value?.numberValue, 22);
+});
+
+/**
+ * A title marked whole has one timestamp per episode and none inside the
+ * window, so gating each season on its own watch date offers none of them. What
+ * the record sees is every count differing from what it holds, and a season it
+ * holds nothing for at all — which on a title it has seen is one that appeared.
+ */
+const wholeSeries = (): Scenario => ({
+  rows: [show('Silo', 'Watching', 800), season(1, 10, 44000)],
+  items: [{ id: 800, status: 'watching', seasons: { 1: watched(10, 900), 2: watched(10, 880), 3: watched(10, 860) }, watched: 30, total: 30 }],
+  episodes: { 800: [...eps(1, 10), ...eps(2, 10), ...eps(3, 10)] },
+  details: { 800: { status: 'ended', runtime: 43 } },
+  tvdbIds: { 800: 403245 },
+  runtimes: { 800: { 2: 43, 3: 43 } },
+});
+
+/** The record as it stands after a run that saw S1 alone — the state a hand-started block leaves. */
+const sawSeasonOne = (): Baseline =>
+  new Map([
+    [titleRecordKey(800), { Status: 'watching' }],
+    [seasonKey(800, 1), { Watched: '10' }],
+  ]);
+
+test('a season unrecorded among recorded siblings is insertable, watched whenever', () => {
+  assert.equal(seasonOf(scenario(wholeSeries()).result(sawSeasonOne()).plan.insert), 2, 'S3 waits for the run after, as any second insert does');
+  assert.equal(scenario(wholeSeries()).result(sawSeasonOne()).plan.insert?.row, 3, 'under S1');
+});
+
+/**
+ * The deadlock the sibling rule exists to break: a block someone started by
+ * hand at S5, whose earlier seasons were all recorded long ago, gains the
+ * season SIMKL has just added rather than being offered S1 forever and refused
+ * for having no row above it.
+ */
+test('a hand-started block gains the season that appeared, not the lowest one it lacks', () => {
+  const started = scenario({
+    rows: [show('Silo', 'Watching', 800), season(5, 10, 44000)],
+    items: [
+      {
+        id: 800,
+        status: 'watching',
+        seasons: { 1: watched(10, 900), 2: watched(10, 880), 3: watched(10, 860), 4: watched(10, 840), 5: watched(10, 820), 6: watched(10, 800) },
+        watched: 60,
+        total: 60,
+      },
+    ],
+    episodes: { 800: [1, 2, 3, 4, 5, 6].flatMap((n) => eps(n, 10)) },
+    details: { 800: { status: 'ended', runtime: 43 } },
+    tvdbIds: { 800: 403245 },
+    runtimes: { 800: { 6: 43 } },
+  });
+  const seen: Baseline = new Map([[titleRecordKey(800), { Status: 'watching' }]]);
+  for (const n of [1, 2, 3, 4, 5]) seen.set(seasonKey(800, n), { Watched: '10' });
+  const insert = started.result(seen).plan.insert;
+  assert.equal(seasonOf(insert), 6);
+  assert.equal(insert?.row, 3, 'under S5, the only season row the block has');
+});
+
+/**
+ * A row refused for having nothing above it to inherit formats from waits on a
+ * hand edit, not on this service — so it is said and left, and the count behind
+ * it is *not* recorded, or the run after that edit would find nothing moved.
+ */
+test('a season refused for having no format row is a skip, not a deferral', () => {
+  const spaced = gridFixture(
+    namedShow('fargo', 'Fargo', { status: 'Watching' }),
+    namedSeason('fargoS1', 1, 6, 44000),
+    namedRaw('spacer', new Array(H.length).fill(null)),
+    namedSeason('fargoS3', 3, 4, 44500),
+  );
+  const index = indexLibrary(
+    libraryOf({ id: 1, title: 'Fargo', status: 'watching', seasons: { 1: watched(6, 900), 2: watched(2, 880), 3: watched(4, 860) }, watched: 12, total: 12 }),
+  );
+  const titles = new Map<number, TitleCatalogue>([[1, { shapes: seasonShapes(eps(2, 2)), status: 'ended', runtime: 45, seasonRuntimes: new Map() }]]);
+  // S1 and S3 recorded, S2 not: the season that appeared is the one offered,
+  // and it would land under a spacer row that carries no formats.
+  const seen: Baseline = new Map([
+    [titleRecordKey(1), { Status: 'watching' }],
+    [seasonKey(1, 1), { Watched: '6' }],
+    [seasonKey(1, 3), { Watched: '4' }],
+  ]);
+
+  const { plan, observed } = planSync(spaced.grid, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true }, baseline: seen });
+  assert.equal(plan.insert, null);
+  assert.deepEqual(
+    plan.skips.map((skip) => skip.code),
+    ['no-format-row'],
+  );
+  assert.equal(plan.deferred, 0, 'nothing this service does will drain it, so no retry is armed');
+  assert.equal(observed.get(seasonKey(1, 2))?.Watched, undefined, 'and the count stays unrecorded, so the hand edit is enough');
+});
+
+/**
+ * `insertableSeasons` offers the lowest number first, so a season the placement
+ * refused is one every season behind it is waiting on. Recorded, the next poll
+ * would find the whole tail unmoved and none of those rows would ever be added.
+ */
+test('a season refused for having no format row leaves the seasons behind it insertable', () => {
+  const spaced = gridFixture(
+    namedShow('fargo', 'Fargo', { status: 'Watching' }),
+    namedSeason('fargoS1', 1, 6, 44000),
+    namedRaw('spacer', new Array(H.length).fill(null)),
+    namedSeason('fargoS4', 4, 4, 44500),
+  );
+  const index = indexLibrary(
+    libraryOf({
+      id: 1,
+      title: 'Fargo',
+      status: 'watching',
+      seasons: { 1: watched(6, 900), 2: watched(2, 880), 3: watched(3, 870), 4: watched(4, 860) },
+      watched: 15,
+      total: 15,
+    }),
+  );
+  const titles = new Map<number, TitleCatalogue>([[1, { shapes: seasonShapes([...eps(2, 2), ...eps(3, 3)]), status: 'ended', runtime: 45, seasonRuntimes: new Map() }]]);
+  const seen: Baseline = new Map([
+    [titleRecordKey(1), { Status: 'watching' }],
+    [seasonKey(1, 1), { Watched: '6' }],
+    [seasonKey(1, 4), { Watched: '4' }],
+  ]);
+
+  const { plan, observed } = planSync(spaced.grid, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true }, baseline: seen });
+  assert.deepEqual(
+    plan.skips.map((skip) => skip.code),
+    ['no-format-row'],
+  );
+  assert.equal(observed.get(seasonKey(1, 2))?.Watched, undefined, 'the season refused stays unrecorded');
+  assert.equal(observed.get(seasonKey(1, 3))?.Watched, undefined, 'and so does the one waiting behind it');
+});
+
+/**
+ * A season SIMKL lists and nothing has been seen of has no row to gain. Read as
+ * insertable it would put an empty row under every block whose title moved.
+ */
+test('a season with nothing watched is not insertable, whatever else moved', () => {
+  const unwatched = scenario({
+    ...wholeSeries(),
+    items: [{ id: 800, status: 'watching', seasons: { 1: watched(10, 900), 2: [null, null] }, watched: 10, total: 20 }],
+    episodes: { 800: [...eps(1, 10), ...eps(2, 10)] },
+  }).result(sawSeasonOne());
+  assert.equal(unwatched.plan.insert, null);
+  assert.equal(unwatched.plan.deferred, 0, 'and nothing is counted as waiting behind it');
+});
+
+/**
+ * A row created with a blank runtime cell something can still reach is a row a
+ * later poll has to close — and a record-scoped row leaves scope the moment its
+ * count is recorded, so banking the count here is the close never made.
+ */
+const joiningSeason = (answered: boolean): Scenario => ({
+  rows: [show('Joining', 'Watching', 810), seasonRow(1, 6, 44000)],
+  items: [{ id: 810, status: 'completed', seasons: { 1: watched(6, 900), 2: watched(6, 880) }, watched: 12, total: 12 }],
+  episodes: { 810: [...eps(1, 6), ...eps(2, 6)] },
+  // With no `details` entry the store has not written `tvdbId` at all, which is
+  // the insert's reading of "the detail has not answered".
+  ...(answered ? { details: { 810: { status: 'ended', runtime: 40 } }, tvdbIds: { 810: 111 }, runtimes: { 810: { 2: 45 } } } : {}),
+});
+
+const sawOnlySeasonOne: Baseline = new Map([[titleRecordKey(810), { Status: 'completed' }], [seasonKey(810, 1), { Watched: '6' }]]);
+
+test('a season row inserted in a state a later poll must finish keeps its count unrecorded', () => {
+  const open = scenario(joiningSeason(false)).result(sawOnlySeasonOne);
+  assert.equal(seasonOf(open.plan.insert), 2);
+  assert.equal((open.plan.insert as { waiting: boolean }).waiting, true, 'its runtime cell is blank and something can still fill it');
+  assert.equal(open.observed.get(seasonKey(810, 2))?.Watched, undefined, 'so the row comes back next poll to be closed');
+  assert.equal(open.writing.get(seasonKey(810, 2))?.Watched, undefined, 'banked, it would be recorded the moment the batch landed');
+
+  // The same row with every answer in hand lands finished, and banks.
+  const done = scenario(joiningSeason(true)).result(sawOnlySeasonOne);
+  assert.equal((done.plan.insert as { waiting: boolean }).waiting, false);
+  assert.equal(done.writing.get(seasonKey(810, 2))?.Watched, '6', 'a row that needs nothing more banks against its own write');
+});
+
+/**
+ * A season left behind has its count withdrawn, not recorded. Recorded at the
+ * value the sheet never received, the next poll would find it unmoved and the
+ * row would be lost until the season was watched again.
+ */
+test('a season deferred behind another is in neither what the run records nor what it banks', () => {
+  const { plan, observed, writing } = scenario(wholeSeries()).result(sawSeasonOne());
+  assert.equal(seasonOf(plan.insert), 2);
+  assert.equal(plan.deferred, 1, 'S3');
+  assert.equal(writing.get(seasonKey(800, 2))?.Watched, '10', 'the row this run plans is banked');
+  assert.equal(observed.get(seasonKey(800, 3))?.Watched, undefined, 'the one behind it is withdrawn');
+  assert.equal(writing.get(seasonKey(800, 3)), undefined);
 });
 
 test('an inserted row lands where it keeps Season ascending', () => {
@@ -711,7 +1584,7 @@ test('an inserted row lands where it keeps Season ascending', () => {
     details: { 3407: { status: 'ended', runtime: 22 } },
   });
   const insert = plan().insert;
-  assert.equal(insert?.season, 10);
+  assert.equal(seasonOf(insert), 10);
   assert.equal(insert?.row, 3, 'between S9 and S11');
 });
 
@@ -858,6 +1731,76 @@ test('a live-action show whose episode list did not arrive gets no Status', () =
   assert.deepEqual(withList.plan().edits.filter((e) => e.field === 'Status' && e.row === 1).map((e) => e.value?.stringValue), ['Up To Date']);
 });
 
+/**
+ * Every hold withdraws. A failure leaves the field unwritten and arms a retry,
+ * so the poll that retries has to find the move still standing — and
+ * `observeWatches` seeds `Status` library-wide, so a branch that says nothing
+ * records SIMKL's current membership as though the cell already held it.
+ */
+test('a block whose episode list did not arrive leaves its Status withdrawn', () => {
+  const { result } = scenario({
+    rows: [show('Silo', 'Ended', 300), season(1, 1, null)],
+    // No `episodes` entry: the /tv/episodes lookup failed.
+    items: [{ id: 300, status: 'watching', seasons: { 1: watched(10) }, watched: 10, total: 10 }],
+    details: { 300: { status: 'ended' } },
+  });
+  const { observed } = result(new Map([[titleRecordKey(300), { Status: 'completed' }]]));
+  assert.equal(observed.get(titleRecordKey(300))?.Status, undefined, 'so the move is still a move next poll');
+});
+
+test('a block whose id another row claims leaves its Status withdrawn', () => {
+  // The same id on two show rows: neither block may write, and the hand edit
+  // that unclaims it moves nothing SIMKL says.
+  const { result } = scenario({
+    rows: [show('Silo', 'Ended', 300), season(1, 10, 44000), show('Silo (again)', 'Ended', 300), season(1, 10, 44000)],
+    items: [{ id: 300, status: 'watching', seasons: { 1: watched(10) }, watched: 10, total: 10 }],
+    episodes: { 300: eps(1, 10) },
+    details: { 300: { status: 'ended' } },
+  });
+  const { plan, observed } = result(new Map([[titleRecordKey(300), { Status: 'completed' }]]));
+  assert.ok(plan.skips.some((skip) => skip.code === 'duplicate-id'));
+  assert.equal(observed.get(titleRecordKey(300))?.Status, undefined);
+});
+
+/**
+ * A `Status` with no opinion is two different states. The detail still out is a
+ * hold — nothing is settled, so nothing is recorded. The detail answered and
+ * the title on `hold` is a final word: recorded, because no poll changes it and
+ * a withdrawal would keep the block in scope, at a lookup a day, for ever.
+ */
+test('a Status nothing can derive withdraws while the detail is out, and records once it answers', () => {
+  const held = (details?: Record<number, ShowDetail>) =>
+    scenario({
+      rows: [show('Frieren', 'Watching', null, 'anime'), season(1, 11, 44000, 1500)],
+      items: [{ id: 1500, status: 'hold', seasons: { 1: watched(11, 3) }, watched: 11, total: 11 }],
+      ...(details ? { details } : {}),
+    }).result(new Map([[titleRecordKey(1500), { Status: 'completed' }]]));
+
+  assert.equal(held().observed.get(titleRecordKey(1500))?.Status, undefined, 'the detail is still out, so nothing is settled');
+  assert.equal(held({ 1500: { status: 'ended' } }).observed.get(titleRecordKey(1500))?.Status, 'hold', 'answered, and a hold has no status to derive');
+});
+
+/**
+ * The close is held for another poll, so the count that would have gone with it
+ * must not be recorded — from `writing` as well as `observed`, because the
+ * `Episode` edit beside it banked that very count and a banked value is
+ * recorded the moment the batch lands.
+ */
+test('a complete season with an unusable last watch leaves its count unrecorded', () => {
+  const ancient = ['1994-06-01T20:00:00Z', '1994-06-08T20:00:00Z', '1994-06-15T20:00:00Z'];
+  const { plan, observed, writing } = scenario({
+    rows: [show('Old Show', 'Ended', 704), season(1, 1, null)],
+    items: [{ id: 704, status: 'completed', seasons: { 1: ancient }, watched: 3, total: 3 }],
+    episodes: { 704: eps(1, 3) },
+    details: { 704: { status: 'ended', runtime: 40 } },
+  }).result(new Map([[titleRecordKey(704), { Status: 'completed' }], [seasonKey(704, 1), { Watched: '1' }]]));
+
+  assert.deepEqual(plan.edits.map((e) => e.field), ['Episode'], 'the count advances and the row stays open');
+  assert.match(plan.skips.find((s) => s.code === 'unusable-timestamp')?.message ?? '', /last watch timestamp is unusable/);
+  assert.equal(observed.get(seasonKey(704, 1))?.Watched, undefined, 'nothing recorded for a row left open');
+  assert.equal(writing.get(seasonKey(704, 1))?.Watched, undefined, 'and nothing banked, which would record it on apply');
+});
+
 // Anime legitimately has no episode list — one entry is one cour — so Status
 // derives from its own not-aired counter.
 test('an anime block still gets a Status without any episode list', () => {
@@ -882,6 +1825,40 @@ const twoNewSeasons = (rows: CellSpec[][]) =>
     details: { 3407: { status: 'airing', runtime: 22 }, 300: { status: 'airing', runtime: 45 } },
   });
 
+// Every season still waiting counts as deferred, because that count arms the
+// retry: a title marked whole gains its seasons one per run, and the run that
+// adds one would otherwise have nothing deferred and leave the rest to the
+// library's next unrelated move.
+test('the seasons waiting behind the one inserted are counted as deferred', () => {
+  const plan = scenario({
+    rows: [show('Futurama', 'Watching', 3407), season(10, 13, 44000)],
+    items: [{ id: 3407, title: 'Futurama', status: 'watching', seasons: { 10: watched(13, 400), 11: watched(6), 12: watched(4), 13: watched(2) }, watched: 25, total: 25 }],
+    episodes: { 3407: [...eps(10, 13), ...eps(11, 6), ...eps(12, 4), ...eps(13, 2)] },
+    details: { 3407: { status: 'airing', runtime: 22 } },
+  }).plan();
+  assert.equal(plan.insert?.kind, 'season');
+  assert.equal(plan.insert?.season, 11, 'lowest first');
+  assert.equal(plan.deferred, 2, 'S12 and S13 wait');
+  assert.match(plan.notes.join('\n'), /Futurama: 2 more season row\(s\) wait behind S11/);
+});
+
+/**
+ * A new block takes every season in one span, so there is nothing behind it to
+ * wait — unlike a season joining a block that already exists, which lands one
+ * row a run. A show row with no season row under it is a block whose roll-ups
+ * count the next block's rows, so a block arriving a row at a time would spend
+ * a poll in that state for every season it has.
+ */
+test('a new block takes every season its show has, in one span', () => {
+  const { index, titles } = blockLibrary({}, { seasons: { 1: [daysAgo(9), daysAgo(2)], 2: [daysAgo(8)], 3: [daysAgo(7)] }, watched: 4, total: 9 });
+  const { plan } = planSync(blockGrid.grid, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } });
+  assert.equal(plan.insert?.kind, 'block');
+  assert.equal(seasonOf(plan.insert), 1);
+  assert.deepEqual((plan.insert as { seasons: number[] }).seasons, [1, 2, 3]);
+  assert.equal(spanOf(plan.insert), 4);
+  assert.equal(plan.deferred, 0, 'nothing is left behind');
+});
+
 // One insert per run keeps the rollback trivially correct. The second season
 // is not lost: the job re-plans the whole sheet, so the next run picks it up.
 test('two new seasons insert one per run, and the second survives to the next', () => {
@@ -894,7 +1871,7 @@ test('two new seasons insert one per run, and the second survives to the next', 
 
   const first = twoNewSeasons(before).plan();
   assert.equal(first.insert?.title, 'Futurama', 'never more than one per run');
-  assert.equal(first.insert?.season, 11);
+  assert.equal(seasonOf(first.insert), 11);
 
   // The sheet as it stands after that insert lands.
   const after: CellSpec[][] = [
@@ -906,7 +1883,7 @@ test('two new seasons insert one per run, and the second survives to the next', 
   ];
   const second = twoNewSeasons(after).plan();
   assert.equal(second.insert?.title, 'Silo');
-  assert.equal(second.insert?.season, 2);
+  assert.equal(seasonOf(second.insert), 2);
 
   // And a third run has nothing left to insert.
   const settled: CellSpec[][] = [...after, season(2, 4, null)];
@@ -926,8 +1903,8 @@ test('a season deferred past the per-run cap is reported', () => {
   assert.match(result.notes.join('\n'), /Silo S2/, 'the deferred season is named');
   // Counted, not just mentioned: the count makes the sync ask for another
   // poll rather than wait on unrelated watch activity.
-  assert.equal(result.deferredInserts, 1);
-  assert.equal(twoNewSeasons([...before.slice(0, 2)]).plan().deferredInserts, 0, 'nothing deferred when it fits');
+  assert.equal(result.deferred, 1);
+  assert.equal(twoNewSeasons([...before.slice(0, 2)]).plan().deferred, 0, 'nothing deferred when it fits');
 });
 
 // The projection behind the status page's history; it outlives the run, so
@@ -937,10 +1914,10 @@ test('planRecord keeps where and what changed, and drops the diagnostics', () =>
     edits: [
       { row: 8, column: 3, field: 'Episode', previous: { numberValue: 3 }, value: { numberValue: 5 }, address: 'K9', note: 'Fargo S2: 3 -> 5 episodes' },
     ],
-    insert: { kind: 'season', row: 609, rows: 1, title: 'Fargo', season: 3, fill: [], note: 'Fargo: new season row at 610, 4 episodes' },
+    insert: { kind: 'season', row: 609, rows: 1, waiting: false, title: 'Fargo', season: 3, fill: [], note: 'Fargo: new season row at 610, 4 episodes' },
     skips: [{ code: 'duplicate-season', message: 'Severance S1: two rows claim season 1' }],
     notes: ['Andor: not on the sheet'],
-    deferredInserts: 2,
+    deferred: 2,
   };
 
   assert.deepEqual(planRecord(plan), {
@@ -954,7 +1931,7 @@ test('planRecord keeps where and what changed, and drops the diagnostics', () =>
 // diagnostic the status page deliberately does not carry, in a file that
 // survives restarts.
 test('planRecord carries no skip or note lines', () => {
-  const record = planRecord({ edits: [], insert: null, skips: [{ code: 'unknown-id', message: 'a skip' }], notes: ['a note'], deferredInserts: 1 });
+  const record = planRecord({ edits: [], insert: null, skips: [{ code: 'unknown-id', message: 'a skip' }], notes: ['a note'], deferred: 1 });
   assert.deepEqual(record, { edits: [], inserts: [] });
   assert.ok(!JSON.stringify(record).includes('a skip'));
   assert.ok(!JSON.stringify(record).includes('a note'));
@@ -1220,6 +2197,34 @@ test('a fractional season is never demanded', () => {
   assert.deepEqual(half.runtimeDemands(), []);
 });
 
+/**
+ * An ask the allowance had no room for is work this run chose not to do, and
+ * only another poll will do it — which is what `deferred` claims and what arms
+ * the retry that brings a poll with a fresh allowance. Counted as nothing, the
+ * rows it holds open would wait on the library's next unrelated move.
+ */
+test('a close whose runtime ask the allowance had no room for is counted as deferred', () => {
+  const seasons = MAX_LOOKUPS_PER_PASS + 1;
+  const { grid, index, titles } = scenario({
+    rows: [show('Many', 'Watching', 801), ...Array.from({ length: seasons }, (_, i) => seasonRow(i + 1, 3, null, { runtime: null }))],
+    items: [
+      {
+        id: 801,
+        status: 'watching',
+        seasons: Object.fromEntries(Array.from({ length: seasons }, (_, i) => [i + 1, watched(3)])),
+        watched: seasons * 3,
+        total: seasons * 3,
+      },
+    ],
+    episodes: { 801: Array.from({ length: seasons }, (_, i) => eps(i + 1, 3)).flat() },
+    details: { 801: { status: 'airing', runtime: 40 } },
+    tvdbIds: { 801: 111 },
+  });
+  const { plan, demands } = planSync(grid, index, titles, { timezone: TZ });
+  assert.equal(demands.runtimes.length, MAX_LOOKUPS_PER_PASS, 'the allowance is spent');
+  assert.ok(plan.deferred > 0, 'and the season it had nothing left for says so');
+});
+
 // A row treated as waiting whose lookup is never requested defers for ever.
 // Plan and demands come out of one pass; the invariant is asserted over every
 // closing shape.
@@ -1455,8 +2460,12 @@ test('every season records both its first and its last watch', () => {
   const index = indexLibrary(libraryOf({ id: 300, status: 'completed', seasons: { 1: one, 2: two }, watched: 10, total: 10 }));
   const seed = observeWatches(index);
 
-  assert.deepEqual(seed.get(seasonKey(300, 1)), { Start: one[0], End: one.at(-1) });
-  assert.deepEqual(seed.get(seasonKey(300, 2)), { Start: two[0], End: two.at(-1) });
+  assert.deepEqual(seed.get(seasonKey(300, 1)), { Start: one[0], Watched: '6', End: one.at(-1) });
+  assert.deepEqual(seed.get(seasonKey(300, 2)), { Start: two[0], Watched: '4', End: two.at(-1) });
+  // The title's own entry, which is the record that it was *seen* — what makes
+  // a title appearing later a new one, and a plantowatch title with nothing
+  // watched carries it too.
+  assert.deepEqual(seed.get(titleRecordKey(300)), { Status: 'completed' });
 });
 
 test('planning does not edit the seed it was handed', () => {
@@ -1804,6 +2813,10 @@ const blocks = (catalogue: Partial<TitleCatalogue> = {}, options: PlanOptions = 
     timezone: TZ,
     facts: { tvdb: true, tmdb: true },
     showBucket: null,
+    // Off the baseline the test seeded, exactly as `sync.ts` counts it off the
+    // record it loaded — a fixture that answered this on its own would let a
+    // test seed a record and get a different reading of it than the service.
+    anyTitleRecorded: anyTitleRecorded(options.baseline ?? new Map()),
     ...options,
   });
 
@@ -1819,13 +2832,13 @@ test('a TV show the tab has no block for becomes a show row and its first season
   const { plan } = blocks();
   const insert = plan.insert;
   assert.equal(insert?.kind, 'block');
-  assert.equal(insert?.rows, 2);
+  assert.equal(spanOf(insert), 2);
   // Under Fargo's last season row: Severance sorts after Fargo, and the row
   // above has to be a season row for the formats to inherit.
   assert.equal(insert?.row, blockGrid.end);
   assert.equal(insert?.title, 'Severance');
   assert.equal(insert?.franchise, 'Severance');
-  assert.equal(insert?.season, 1);
+  assert.equal(seasonOf(insert), 1);
 
   const show = blockGrid.end;
   assert.equal(valueOf(insert, show, 'Show')?.stringValue, 'Severance');
@@ -1923,6 +2936,21 @@ test('a block waits on the season runtime an aired season can still be given', (
   assert.equal(plan.insert, null);
   assert.match(plan.skips.find((s) => s.code === 'awaiting-runtimes')?.message ?? '', /episode runtimes/);
   assert.deepEqual(demands.runtimes, [{ id: 900, tvdbId: 111, season: 1 }]);
+  assert.equal(plan.deferred, 0, 'the ask is out, so this run drains it inside its own fixpoint');
+});
+
+/**
+ * A block waiting on a runtime this run never asked for is work the run chose
+ * not to do, which is the claim `deferred` makes: without it the next
+ * poll — the one with a fresh allowance — is waited for rather than asked for,
+ * and the block sits until unrelated library activity wakes one.
+ */
+test('a block whose runtime the allowance was too spent to ask for asks for another poll', () => {
+  const spent = { ...emptyLookupBudget(), runtimes: MAX_LOOKUPS_PER_PASS };
+  const { plan, demands } = blocks({ seasonRuntimes: new Map() }, { lookupBudget: spent });
+  assert.equal(plan.insert, null);
+  assert.deepEqual(demands.runtimes, [], 'nothing was asked');
+  assert.equal(plan.deferred, 1);
 });
 
 // --- what a block is refused for --------------------------------------------
@@ -1962,14 +2990,156 @@ test('a show whose episodes were all watched outside the window is reported, nev
   assert.deepEqual(stale.demands.catalogue, []);
 });
 
+/**
+ * The same rule one level up, and the whole point of the feature: a back
+ * catalogue marked watched today is a change made today, and the tab has no row
+ * for it at all. Its episode stamps are the air dates SIMKL gave them, so
+ * nothing about the watching is recent — what is recent is the title having
+ * appeared in a record that already names others.
+ *
+ * The block lands **whole**: one row per season, in one span. A row a run would
+ * leave the show row above counting the next block's rows for a poll, and
+ * fifteen polls of that for a fifteen-season show.
+ */
+const BACK_CATALOGUE = { seasons: { 1: [daysAgo(900), daysAgo(880)], 2: [daysAgo(870)], 3: [daysAgo(860)] }, lastWatchedAt: daysAgo(870) };
+
+test('a title with no record at all gains its whole block, whatever its episode stamps say', () => {
+  const shapes = seasonShapes([1, 2, 3].flatMap((n) => Array.from({ length: 9 }, (_, i) => ({ season: n, episode: i + 1, type: 'episode' as const, aired: true }))));
+  const runtimes = new Map<number, number | null>([
+    [1, 45],
+    [2, 45],
+    [3, 45],
+  ]);
+
+  // An empty record makes nothing new: a fresh install does not build a block
+  // for every show in the library on its first poll.
+  const fresh = blocks({ shapes, seasonRuntimes: runtimes }, { baseline: new Map() }, BACK_CATALOGUE);
+  assert.equal(fresh.plan.insert, null);
+  assert.deepEqual(fresh.plan.notes, [], 'and a dormant sheet says nothing rather than repeating itself every poll');
+
+  // A record that names some other title makes this one new.
+  const known: Baseline = new Map([[titleRecordKey(4242), { Status: 'watching' }]]);
+  const { plan, observed, writing } = blocks({ shapes, seasonRuntimes: runtimes }, { baseline: known }, BACK_CATALOGUE);
+  assert.equal(plan.insert?.kind, 'block');
+  assert.deepEqual((plan.insert as { seasons: number[] }).seasons, [1, 2, 3]);
+  assert.equal(spanOf(plan.insert), 4, 'a show row and three season rows, in one span');
+  assert.equal(plan.deferred, 0, 'nothing is left behind');
+
+  // Every season row carries its own number, ascending down the span.
+  // Below the show row, whose own `Season` cell is the roll-up formula.
+  const seasonCells = plan.insert?.fill.filter((cell) => cell.field === 'Season' && cell.row > (plan.insert?.row ?? 0)) ?? [];
+  assert.deepEqual(
+    seasonCells.map((cell) => [cell.row - (plan.insert?.row ?? 0), cell.value?.numberValue]),
+    [
+      [1, 1],
+      [2, 2],
+      [3, 3],
+    ],
+  );
+
+  // Banked against the write, not recorded as seen: a batch that never landed
+  // must leave the title unseen so the next poll builds it again.
+  assert.equal(writing.get(titleRecordKey(BLOCK_SHOW.id))?.Status, 'watching');
+  assert.equal(observed.get(titleRecordKey(BLOCK_SHOW.id))?.Status, undefined);
+  for (const n of [1, 2, 3]) assert.ok(writing.get(seasonKey(BLOCK_SHOW.id, n))?.Watched !== undefined, `S${n} is banked`);
+});
+
+/**
+ * `titleIsNew` fires on every title the record has not seen, which on the poll
+ * after this code ships is none and on every poll after that is whatever SIMKL
+ * added. A watchlist entry is one of those, and it has no season a row could be
+ * for — read as a candidate, every show on the watchlist would be reported as a
+ * missing row.
+ */
+test('a title with nothing watched at all is no candidate, however new it is', () => {
+  const known: Baseline = new Map([[titleRecordKey(4242), { Status: 'watching' }]]);
+  const planned = blocks({}, { baseline: known }, { status: 'plantowatch', seasons: { 1: [null, null] }, watched: 0, lastWatchedAt: null });
+  assert.equal(planned.plan.insert, null);
+  assert.deepEqual(planned.plan.notes, []);
+  assert.deepEqual(planned.plan.skips, []);
+});
+
+/**
+ * A block the run could not build leaves nothing recorded, or the run that
+ * *can* build it would find a title it has already seen and walk past.
+ */
+test('a block held back for a credential leaves the title unrecorded', () => {
+  const known: Baseline = new Map([[titleRecordKey(4242), { Status: 'watching' }]]);
+  const { plan, observed } = blocks({}, { baseline: known, facts: { tvdb: false, tmdb: true } }, BACK_CATALOGUE);
+  assert.equal(plan.insert, null);
+  assert.match(plan.notes.join('\n'), /set TVDB_API_KEY/);
+  assert.equal(observed.get(titleRecordKey(BLOCK_SHOW.id))?.Status, undefined);
+  assert.equal(observed.get(seasonKey(BLOCK_SHOW.id, 1))?.Watched, undefined);
+});
+
+/**
+ * `SHEET_MAX_ROWS` is a blast radius the guard refuses a plan *whole* for
+ * crossing, so a block taller than the room left is cut rather than planned and
+ * refused every poll until the seasons age out. What is cut off is deferred,
+ * which arms the retry that brings the next run.
+ */
+test('a block taller than the row budget is cut to fit, and says what it left', () => {
+  const shapes = seasonShapes([1, 2, 3].flatMap((n) => Array.from({ length: 9 }, (_, i) => ({ season: n, episode: i + 1, type: 'episode' as const, aired: true }))));
+  const runtimes = new Map<number, number | null>([
+    [1, 45],
+    [2, 45],
+    [3, 45],
+  ]);
+  const known: Baseline = new Map([[titleRecordKey(4242), { Status: 'watching' }]]);
+  const { plan, observed } = blocks({ shapes, seasonRuntimes: runtimes }, { baseline: known, maxRows: 3 }, BACK_CATALOGUE);
+  assert.deepEqual((plan.insert as { seasons: number[] }).seasons, [1, 2]);
+  assert.equal(spanOf(plan.insert), 3);
+  assert.equal(plan.deferred, 1, 'S3');
+  assert.equal(observed.get(seasonKey(BLOCK_SHOW.id, 3))?.Watched, undefined, 'so the next run still sees it as unrecorded');
+});
+
+/**
+ * The same rule the season insert follows, stated per row: a block's rows do not
+ * all answer alike, and only the ones a later poll has to finish keep their
+ * counts unrecorded.
+ *
+ * A season still airing is not held back for its runtime — the block would never
+ * land — so it goes in with that cell blank and something still able to reach
+ * it.
+ */
+test('a block row whose runtime nothing has answered keeps its count unrecorded', () => {
+  const { plan, observed, writing } = blocks({ shapes: seasonShapes(eps(1, 9, 4)), seasonRuntimes: new Map() });
+  assert.equal(plan.insert?.kind, 'block');
+  assert.deepEqual((plan.insert as { waiting: number[] }).waiting, [1], 'its runtime cell is blank and the close can still fill it');
+  assert.equal(observed.get(seasonKey(BLOCK_SHOW.id, 1))?.Watched, undefined, 'so the row comes back to be closed');
+  assert.equal(writing.get(seasonKey(BLOCK_SHOW.id, 1))?.Watched, undefined);
+  assert.equal(writing.get(titleRecordKey(BLOCK_SHOW.id))?.Status !== undefined, true, 'the title itself is still banked against the block');
+});
+
+/**
+ * What resolves a room refusal is an edit to the tab — rows added past the last
+ * block, or a budget a later poll has more of — and the record cannot see
+ * either. So nothing about the title is recorded, and the run that finally has
+ * the room still finds a title it has never seen.
+ */
+test('a block refused for want of room is still new on the next run', () => {
+  const known: Baseline = new Map([[titleRecordKey(4242), { Status: 'watching' }]]);
+  const { plan, observed } = blocks({}, { baseline: known, maxRows: 1 });
+  assert.equal(plan.insert, null);
+  assert.equal(plan.skips.find((skip) => skip.code === 'no-room')?.message.includes('SHEET_MAX_ROWS'), true);
+  // What drains a room refusal is the next poll's budget, not any move in the
+  // library, so the seasons it held back are counted as work waiting.
+  assert.ok(plan.deferred > 0, 'and the poll asks for another');
+  assert.equal(observed.get(titleRecordKey(BLOCK_SHOW.id))?.Status, undefined, 'so the title is new again next run');
+  assert.equal(observed.get(seasonKey(BLOCK_SHOW.id, 1))?.Watched, undefined);
+});
+
 // A hand block "Last Of Us" has to hold "The Last of Us" back: what a false
 // match costs is one note, where a missed one costs a duplicate block.
 test('a title the tab already holds under a different id is held back', () => {
   const held = gridFixture(namedShow('sev', 'The Severance', { id: 55 }), namedSeason('sevS1', 1, 6, 44000));
   const { index, titles } = blockLibrary();
-  const { plan } = planSync(held.grid, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } });
+  const { plan, observed } = planSync(held.grid, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } });
   assert.equal(plan.insert, null);
   assert.match(plan.notes.join('\n'), /row 2 already holds that title under id 55/);
+  // A final word, so it is recorded: the tab holds the title under an id of its
+  // own and no poll changes that.
+  assert.equal(observed.get(titleRecordKey(BLOCK_SHOW.id))?.Status, 'watching');
 });
 
 test('a title on a block carrying no id at all is skipped, naming the row to link', () => {
@@ -2032,12 +3202,18 @@ test('both credentials rejected are named in one note', () => {
 });
 
 // Null is SIMKL answering that it holds no id, which no poll changes.
+//
+// "Once" is what the recording does: withdrawal is the default in this walk, so
+// a final word has to put the title back, or the note is said on every poll for
+// the life of the sheet and the title stays in scope for a lookup a day.
 test('a show SIMKL holds no TVDB or TMDB id for is named once, not waited on', () => {
-  const { plan, demands } = blocks({ tvdbId: null, tmdbId: null, genres: undefined, certificate: undefined });
+  const { plan, demands, observed } = blocks({ tvdbId: null, tmdbId: null, genres: undefined, certificate: undefined });
   assert.equal(plan.insert, null);
   assert.match(plan.notes.join('\n'), /has no TVDB or TMDB id, so its block has to be added by hand/);
   assert.deepEqual(demands.genres, []);
   assert.deepEqual(demands.certificates, []);
+  assert.equal(observed.get(titleRecordKey(BLOCK_SHOW.id))?.Status, 'watching', 'and recorded, so the next poll is quiet about it');
+  assert.equal(observed.get(seasonKey(BLOCK_SHOW.id, 1))?.Watched, '2');
 });
 
 // --- placement --------------------------------------------------------------
@@ -2174,7 +3350,7 @@ test('a season row for an existing block takes the slot ahead of a new block', (
 
   const { plan } = planSync(tab.grid, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } });
   assert.equal(plan.insert?.kind, 'season');
-  assert.equal(plan.deferredInserts, 1);
+  assert.equal(plan.deferred, 1);
   assert.match(plan.notes.join('\n'), /Severance \(simkl \d+\): a block waits for the next run/);
 });
 
@@ -2193,7 +3369,7 @@ test('a block behind a taken slot demands nothing, not even its season runtime',
 
   const { plan, demands } = planSync(tab.grid, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } });
   assert.equal(plan.insert?.kind, 'season');
-  assert.equal(plan.deferredInserts, 1);
+  assert.equal(plan.deferred, 1);
   assert.deepEqual(demands.genres, []);
   assert.deepEqual(demands.certificates, []);
   assert.equal(demands.runtimes.some((request) => request.id === BLOCK_SHOW.id), false, 'the season runtime waits with the block');
@@ -2212,7 +3388,7 @@ test('two blocks ready at once are ordered by their first watch, and the second 
 
   const { plan } = planSync(blockGrid.grid, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } });
   assert.equal(plan.insert?.title, 'Utopia', 'started three weeks earlier');
-  assert.equal(plan.deferredInserts, 1);
+  assert.equal(plan.deferred, 1);
   assert.match(plan.notes.join('\n'), /Severance \(simkl \d+\): a block waits for the next run/);
 });
 
@@ -2257,57 +3433,84 @@ test('the lookups a pass asks for are capped per upstream', () => {
   assert.equal(demands.genres.length, MAX_LOOKUPS_PER_PASS);
   assert.equal(demands.certificates.length, MAX_LOOKUPS_PER_PASS);
   // TVDB's season runtimes are the third upstream the walk asks, and the list
-  // they go into also carries the season path's asks — which are bounded by the
-  // sheet where these are bounded by the library minus the sheet, so the cap is
-  // counted over the walk's own pushes rather than over the list.
+  // they go into also carries the season path's asks, charged against the same
+  // allowance through the one `demand` choke point.
   assert.equal(demands.runtimes.length, MAX_LOOKUPS_PER_PASS);
   assert.equal(demands.catalogue.length, 12, 'a title whose detail is already in hand does not count against the cap');
 });
 
-// The planner runs to a fixpoint, so a cap reset on every pass is a cap
-// multiplied by the pass ceiling: the pass after a fetch finds the *next*
-// unanswered titles and asks for as many again, inside a run whose snapshot
-// goes stale at 120s.
-test('one attempt’s lookups are capped across its passes, not per pass', () => {
-  const ids = Array.from({ length: 16 }, (_, i) => 900 + i);
-  const index = indexLibrary(
-    libraryOf(...ids.map((id) => ({ id, title: `Show ${id}`, status: 'watching', seasons: { 1: [daysAgo(9), daysAgo(2)] }, watched: 2, total: 9 }))),
+/** A library of `count` titles the grid has no block for, each watched this week. */
+const unlisted = (count: number, from = 900) =>
+  indexLibrary(
+    libraryOf(
+      ...Array.from({ length: count }, (_, i) => ({
+        id: from + i,
+        title: `Show ${from + i}`,
+        status: 'watching',
+        seasons: { 1: [daysAgo(9), daysAgo(2)] },
+        watched: 2,
+        total: 9,
+      })),
+    ),
   );
+
+/** The fixture of `the lookups a pass asks for are capped per upstream`: every detail in hand, so the show-facts upstreams are what is asked. */
+const answered = (count: number) => {
+  const ids = Array.from({ length: count }, (_, i) => 900 + i);
+  return new Map<number, TitleCatalogue>(
+    ids.map((id) => [
+      id,
+      { ...blockLibrary({ genres: undefined, certificate: undefined, seasonRuntimes: new Map() }).titles.get(900)!, title: `Show ${id}` },
+    ]),
+  );
+};
+
+// The planner runs to a fixpoint, so an allowance reset on every pass is an
+// allowance multiplied by the pass ceiling: the pass after a fetch finds the
+// *next* unanswered titles and asks for as many again, inside a run whose
+// snapshot goes stale at 120s. The three upstreams a block's show row waits on
+// are held to one allowance for the whole attempt.
+test('one attempt’s show-facts lookups are capped across its passes, not per pass', () => {
   const lookupBudget = emptyLookupBudget();
   const options = { timezone: TZ, facts: { tvdb: true, tmdb: true }, lookupBudget };
-  const first = planSync(blockGrid.grid, index, new Map(), options);
-  const second = planSync(blockGrid.grid, index, new Map(), options);
-  assert.equal(first.demands.catalogue.length, MAX_LOOKUPS_PER_PASS);
-  assert.equal(second.demands.catalogue.length, 0, 'the second pass of one attempt spends what the first left');
+  const first = planSync(blockGrid.grid, unlisted(12), answered(12), options);
+  const second = planSync(blockGrid.grid, unlisted(12), answered(12), options);
+  assert.equal(first.demands.genres.length, MAX_LOOKUPS_PER_PASS);
+  assert.equal(second.demands.genres.length, 0, 'the second pass of one attempt spends what the first left');
 });
 
 // A caller planning once gets this pass's own allowance, so the budget is a
 // thing the fixpoint threads rather than a thing every caller has to know
 // about.
 test('a pass given no budget starts with a full one', () => {
-  const ids = Array.from({ length: 16 }, (_, i) => 900 + i);
-  const index = indexLibrary(
-    libraryOf(...ids.map((id) => ({ id, title: `Show ${id}`, status: 'watching', seasons: { 1: [daysAgo(9), daysAgo(2)] }, watched: 2, total: 9 }))),
-  );
   const options = { timezone: TZ, facts: { tvdb: true, tmdb: true } };
-  assert.equal(planSync(blockGrid.grid, index, new Map(), options).demands.catalogue.length, MAX_LOOKUPS_PER_PASS);
-  assert.equal(planSync(blockGrid.grid, index, new Map(), options).demands.catalogue.length, MAX_LOOKUPS_PER_PASS);
+  assert.equal(planSync(blockGrid.grid, unlisted(12), answered(12), options).demands.genres.length, MAX_LOOKUPS_PER_PASS);
+  assert.equal(planSync(blockGrid.grid, unlisted(12), answered(12), options).demands.genres.length, MAX_LOOKUPS_PER_PASS);
 });
 
-// The block walk's own catalogue asks, capped for the reason
-// `MAX_LOOKUPS_PER_PASS` names: this list is library-minus-sheet, so a cold
-// start would ask for every unlisted title in one pass. Unanswered titles are
-// what count — the test above has twelve answered ones all asking.
-test('a pass asks SIMKL for no more than eight details it does not already hold', () => {
-  const ids = Array.from({ length: 9 }, (_, i) => 900 + i);
-  const index = indexLibrary(
-    libraryOf(...ids.map((id) => ({ id, title: `Show ${id}`, status: 'watching', seasons: { 1: [daysAgo(9), daysAgo(2)] }, watched: 2, total: 9 }))),
-  );
-  const { demands, plan } = planSync(blockGrid.grid, index, new Map(), { timezone: TZ, facts: { tvdb: true, tmdb: true } });
-  assert.equal(demands.catalogue.length, MAX_LOOKUPS_PER_PASS);
-  // The ninth is not dropped, only unasked: it is reported waiting like the
-  // eight, and the next pass asks for it.
-  assert.equal(plan.skips.filter((skip) => skip.code === 'awaiting-lookup').length, 9);
+/**
+ * The catalogue allowance is the **pass's**, and it is sized for a normal day
+ * rather than for one insert: these asks are what a pass reads the grid and the
+ * library with, so a pass that rationed them to a handful would leave the rows
+ * it was in scope to write reported as "no episode list came back".
+ *
+ * A backfill past it drains rather than stalls — `nextPass` renews it, so the
+ * next pass of the same fixpoint takes the next batch.
+ */
+test('a cold library is asked about a pass’s worth of titles, and the next pass takes the rest', () => {
+  const count = CATALOGUE_ASKS_PER_PASS + 8;
+  const index = unlisted(count);
+  const lookupBudget = emptyLookupBudget();
+  const options = { timezone: TZ, facts: { tvdb: true, tmdb: true }, lookupBudget };
+
+  const first = planSync(blockGrid.grid, index, new Map(), options);
+  assert.equal(first.demands.catalogue.length, CATALOGUE_ASKS_PER_PASS);
+  // Not dropped, only unasked: every one of them is reported waiting, and a
+  // later pass — with `nextPass`'s fresh allowance — asks about the rest.
+  assert.equal(first.plan.skips.filter((skip) => skip.code === 'awaiting-lookup').length, count);
+  assert.equal(lookupBudget.detail.size, CATALOGUE_ASKS_PER_PASS, 'counted in titles, which is what the allowance names');
+  nextPass(lookupBudget);
+  assert.equal(lookupBudget.detail.size, 0);
 });
 
 // `rows N-M`, because a block is a show row and a season row and "row 610"
@@ -2317,4 +3520,80 @@ test('a block is recorded as the span it occupies', () => {
   assert.deepEqual(record.inserts.map((i) => i.address), [`rows ${blockGrid.end + 1}-${blockGrid.end + 2}`]);
   assert.equal(record.inserts[0]?.title, 'Severance');
   assert.equal(record.inserts[0]?.season, 1);
+});
+
+/**
+ * A block on the grid is edited from the answer to its own catalogue asks in
+ * the run that reads it, so the allowance has to be big enough for a normal
+ * day's worth of them: rationed to a handful, a cold store with 18 recent
+ * blocks read 4 of them and skipped the rest with "no episode list came back".
+ * 18 is the live tab's measured figure, and `CATALOGUE_ASKS_PER_PASS` has room
+ * to spare over it.
+ *
+ * Charged like every other ask, because charging one side and not the other is
+ * the burst the cap exists to prevent — and counted in **titles**, so the two
+ * asks a live-action block makes about one id spend one of the allowance
+ * between them.
+ */
+test('the grid walk asks about every in-scope block, inside one pass’s allowance', () => {
+  const ids = Array.from({ length: 18 }, (_, i) => 700 + i);
+  const rows = ids.flatMap((id) => [show(`Show ${id}`, 'Watching', id), season(1, 1, null)]);
+  const items = ids.map((id) => ({ id, title: `Show ${id}`, status: 'watching', seasons: { 1: watched(3) }, watched: 3, total: 3 }));
+  const { grid, index, titles } = scenario({ rows, items });
+
+  const cold = planSync(grid, index, titles, { timezone: TZ });
+  const asked = new Set(cold.demands.catalogue.map((request) => request.id));
+  assert.equal(asked.size, ids.length, 'a cold store asks about every recent block in one pass');
+  assert.ok(ids.length > MAX_LOOKUPS_PER_PASS, 'the fixture holds more blocks than the show-facts allowance, or it proves nothing');
+  assert.ok(ids.length <= CATALOGUE_ASKS_PER_PASS, 'and no more than a pass may ask about');
+});
+
+/**
+ * An answered title's ask spends none of the allowance. These asks are what a
+ * pass reads the grid with, and `sync.ts` drops an answered one inside
+ * `CATALOGUE_MAX_AGE` anyway — charged, the first `CATALOGUE_ASKS_PER_PASS`
+ * blocks in grid order would spend the whole allowance on every pass and every
+ * poll while writing nothing, and every block behind them would be read as "no
+ * episode list came back" for as long as it stayed in scope, which for a block
+ * in scope on the record alone is for ever.
+ */
+test('answered blocks ahead of a cold one leave the allowance for it', () => {
+  const ids = Array.from({ length: CATALOGUE_ASKS_PER_PASS + 8 }, (_, i) => 700 + i);
+  const cold = ids[ids.length - 1]!;
+  const rows = ids.flatMap((id) => [show(`Show ${id}`, 'Watching', id), season(1, 1, null)]);
+  const items = ids.map((id) => ({ id, title: `Show ${id}`, status: 'watching', seasons: { 1: watched(3) }, watched: 3, total: 3 }));
+  const warm = ids.filter((id) => id !== cold);
+  const { grid, index, titles } = scenario({
+    rows,
+    items,
+    episodes: Object.fromEntries(warm.map((id) => [id, eps(1, 3)])),
+    details: Object.fromEntries(warm.map((id) => [id, { status: 'airing' }])),
+  });
+  const lookupBudget = emptyLookupBudget();
+
+  const pass = planSync(grid, index, titles, { timezone: TZ, lookupBudget });
+  const asked = new Set(pass.demands.catalogue.map((request) => request.id));
+  assert.ok(asked.has(cold), 'the one block the store has not answered is asked about, however many answered ones sort ahead of it');
+  assert.deepEqual([...lookupBudget.detail], [cold], 'and it is the only ask charged');
+});
+
+/**
+ * A block the allowance had no room to ask about is work only another pass
+ * reads, so it counts as deferred: that count is what arms the retry, and
+ * without it a cold store past the allowance would report the tail as "no
+ * episode list came back" and wait on the library's next unrelated move.
+ */
+test('a block the catalogue allowance cannot ask about counts as deferred', () => {
+  const ids = Array.from({ length: CATALOGUE_ASKS_PER_PASS + 1 }, (_, i) => 700 + i);
+  // Every row already holds its count and no season is complete, so the only
+  // work a cold pass can ration is the ask itself.
+  const rows = ids.flatMap((id) => [show(`Show ${id}`, 'Watching', id), season(1, 3, null)]);
+  const items = ids.map((id) => ({ id, title: `Show ${id}`, status: 'watching', seasons: { 1: watched(3) }, watched: 3, total: 9 }));
+  const { grid, index, titles } = scenario({ rows, items });
+
+  const pass = planSync(grid, index, titles, { timezone: TZ });
+  const asked = new Set(pass.demands.catalogue.map((request) => request.id));
+  assert.equal(asked.size, CATALOGUE_ASKS_PER_PASS, 'a pass asks about its allowance');
+  assert.equal(pass.plan.edits.length, 0, 'nothing else was rationed, or the count below proves nothing');
+  assert.equal(pass.plan.deferred, 1, 'the block it could not ask about is counted as work for a later pass');
 });

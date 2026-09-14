@@ -142,12 +142,144 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   follows *watching* — `seasonAired` versus `seasonComplete` in `3-catalogue.ts`. The two tracked
   fields are exempt because what they hold is not the row's decision but SIMKL's: freezing them
   would preserve no judgement, only a stale copy of an upstream fact.
-- **The fields that follow SIMKL ignore the activity window; everything else obeys it.** The window
-  asks "has this been watched lately", which is not the question a corrected date asks — fixing the
-  day you started a season in 2018 is a change made today, moves no watch timestamp, and may belong
-  to a season never watched again. What keeps a dormant sheet quiet is the baseline, not the window:
-  a value never seen to move is never written, which is a strictly better gate. `recent` in
-  `planSync` therefore gates the catalogue demands and every write that reads the cell, while
+- **Recent means watched inside the window or changed since the sync last observed it.** A watch
+  timestamp is a date the user set, so it cannot answer the question the window asks: marking a 2005
+  show's 87 episodes watched today stamps every one of them at its air date, which is a change made
+  today and two decades outside the window. SIMKL supplies no modification stamp, so the only
+  reading of "changed" with an answer is *different from what this service last recorded* — the
+  baseline's own principle, applied to two more fields. `io/baseline.ts` therefore holds, beside
+  `Start` and `End`, a season's `Watched` count and a title's `Status`; `4-plan.ts` looks both up per
+  question — `countMoved` and `statusMoved` — rather than projecting the file into maps of its own,
+  which would go stale the moment the run's own withdrawals moved an entry underneath it. The one
+  question no lookup answers is whether the record holds a title entry at all: `anyTitleRecorded`
+  scans for it once a poll, in `sync.ts` beside `starts`, and `titleIsNew` reads it.
+  `parseBaselineKey` is the single classifier of which of the three key shapes a stored key has.
+  Delta membership held in memory is the
+  design not to reach for: an ordinary weekly episode names the whole title, which back-fills every
+  season watched years ago, and a restart is a full pull that names nothing, so a change made while
+  the process was down is lost for good.
+- **Absent on a known title counts as moved, and that one rule is also "this season is new".**
+  `observeWatches` records every watched season of every title in the same pass that records the
+  title, so a title the record knows with a season it does not is a title that gained one —
+  `countMoved` answers both questions, where two derivations could disagree about a season a
+  deferral withdrew. `titleKnown` is what makes the first run of this code silent: an install
+  upgrading into it has a baseline full of `Start` and `End` and not one title entry, so nothing has
+  moved, the whole library is recorded, and the run after it is the first that can see a change.
+  **A title is known when its key exists, never when a field under it does.** `Status` is the only
+  field a title entry ever carries, so the run that plans a `Status` edit banks that field and leaves
+  `{}` — and `observed` is recorded on every outcome where `writing` is recorded only on `applied`.
+  Keyed on the field, the first report-mode poll that plans one would make its title unseen, and the
+  next poll would read it as brand new. `anyTitleRecorded` reads the key shape for the same reason.
+  `titleIsNew` asks the same of a title — no record of its own while other titles have one — which
+  is what puts a back catalogue on the tab and what an empty record on a fresh install answers no
+  to. It is the **block walk's** reason to offer a title's seasons and not the grid walk's:
+  `insertableSeasons` takes `fresh` from its caller, and a block the tab already holds was built to
+  the height its reader wanted, so a title of theirs first seen today is a first sighting rather than
+  a licence to back-fill from S1. `PlanOptions.anyTitleRecorded` defaults **false**, which is the
+  safe answer: a caller that forgets to count builds no block rather than one per title in the
+  library. `saveBaseline` stores a first-sighting `{}` without moving `at`: the key is what says the
+  row was seen, and a poll that observed nothing must not read as "just now" on the status page.
+- **A run records what it is not writing, banks what it is, and withdraws what it is leaving.**
+  `observed` is seeded library-wide, so *not writing* is the default. A value an edit carries goes
+  to `writing` (`bank` in `values.ts`) and is recorded only on `applied`; a value this run decided a
+  later one should carry — a season behind the one inserted, a row a budget held back, a block
+  waiting on a credential, a season whose row has no format row above it — is **withdrawn** from
+  both, so the later run still sees it as moved. A move this run *declines* stays recorded, which is
+  the rule `followUpstream` already applies to a declined date: nothing about a later poll decides it
+  differently, and re-deciding it every poll keeps a block permanently in scope. The one cost is a
+  `no-format-row` season, which keeps its block recent — one catalogue lookup a day — until the hand
+  edit lands.
+  **In the block walk withdrawal is the default**, done once at the top of the candidate loop, and
+  only an exit with a final word puts the title back with `recordBlock` — on the wrong tab, the tab
+  already holds that name, SIMKL holds no join key. The exits that come back are most of them, so an
+  exit added without a withdrawal beside it would silently record a title the run could not build,
+  and the run that finally can would walk past it.
+  **Held work is withdrawn too, and that is the rule with the sharpest edge.** A row in scope only
+  because its count moved has no time bound — it leaves scope the moment that count is recorded, and
+  nothing brings it back — so any batch that leaves such a row unfinished must record nothing about
+  it. **Every hold withdraws, and every rationing counts.** `holdOpen` sits above every exit in
+  `closeSeason` that leaves the row open, the unusable timestamp included, and withdraws the row's
+  counts from **`writing` as well as `observed`**, because the `Episode` edit a few lines above may
+  already have banked them and a banked value is recorded the moment the batch lands. The grid walk's
+  `Status` branches withdraw the same way where the answer is still outstanding — a duplicate id, no
+  episode list, or a derived status of null while `/tv/{id}` has not answered — and record where it
+  is settled, because a title on `hold` has no derived status and never will, and withdrawing there
+  would keep its block in scope, at a lookup a day, for ever. On the counting side: a runtime ask the
+  allowance had no room for and a block the row budget cut to nothing both add to `plan.deferred`,
+  which is what arms the retry that brings a poll with room. **A dated row the budget holds back is
+  forgotten, not withdrawn** — `forget` in `values.ts`, carried out of the planner as
+  `PlanResult.forgetting` and dropped from the file by `saveBaseline` before it folds the run's
+  observations in. A withdrawal leaves the stored value standing, which is right for every hold
+  whose stored value differs from SIMKL's and wrong for this one: a dated row's stored count may
+  already agree — a first sighting recorded it, or the count landed on a poll whose close was still
+  waiting — so held back, it is in scope only until its watch date leaves the window, and then
+  nothing brings it back. Forgotten, the count is absent on a known title, which `countMoved` reads
+  as moved, and the record brings the row back where the window cannot. An inserted row banks its
+  count only where it lands finished — `seasonCells`' `open`, carried on `RowInsert` and per row on
+  `BlockInsert` — because a row created with a blank runtime cell something can still fill is a row a
+  later poll has to close. A complete season whose **last**-watch stamp is out of range lands the
+  same way, open and undated, rather than not at all: the start is what a row stands on, where the
+  end is a cell the close path writes on any later poll and already holds a row open over — and a
+  fill refused for it would keep a fifteen-season block off the tab for as long as one stamp stood.
+- **A block lands whole, and its height is `seasons` and nothing else.** `BlockInsert` carries a
+  `seasons` list and no span height beside it: `insertSpan` derives `1 + seasons.length` wherever
+  BUILD, the budget or VERIFY wants one, so a span cannot claim a height its rows do not have. A show
+  row with no season row under it is a block whose roll-ups count the *next* block's rows as their
+  own, so a fifteen-season back catalogue arriving a row a poll would spend fifteen polls in that
+  state. The span is cut at the first season whose runtime has not come back — one attempt's
+  `MAX_LOOKUPS_PER_PASS` is eight for the whole attempt and a block held for every season would never
+  land — and again at
+  what the poll's remaining row budget leaves, since a guard refusal is whole-plan. **Cut rather
+  than landed open**: a season row inside a block is revisited only while its title is in scope, and
+  a record-scoped title leaves scope the moment its counts are recorded, so a row landing open inside
+  a block that recorded the rest is a row no later poll closes. What is cut off is counted as
+  deferred and withdrawn, so the next run finds those seasons unrecorded and inserts them as ordinary
+  season rows. `checkBlockInsert` derives the height from the season list, requires the numbers
+  strictly ascending, and runs `checkSeasonRowFill` over **every** row of the span.
+- **Every write goes through one admission step, in tier order, on both tabs.** A plan over either
+  budget is refused *whole* and a refusal arms no retry, so a poll that planned past the ceiling
+  writes nothing at all — and a row in scope on the record alone has no window to age out of, so that
+  refusal would stand on every poll for ever. So the show walk plans nothing directly: it collects
+  candidates and `admit` takes them while the poll's budgets have room, in the order the run would
+  rather lose the work in.
+  1. `Start` and `End` following SIMKL — a move no window brings back into scope.
+  2. The rows the activity window reaches, and the block `Status` beside them. **These defer too.**
+     The set is bounded by what was watched, which is why it goes ahead of a backfill rather than
+     behind one, but it is not bounded by the poll's budgets and a refusal costs more than a wait.
+  3. The run's one insert — a season row first, `planBlocks` only where no season row wanted the
+     slot, since both cannot land together and plan indices are pre-write.
+  4. The rows in scope on the record alone, in grid order: the unbounded set, which a library marked
+     whole fills at once.
+  Each tier writes **one** deferral note rather than one per row. **The admission step is one
+  function for both tabs** — `admitPlan` and `admitTier` in `guard-core.ts`, beside `budgetProblem`,
+  the arithmetic they measure with — so what either planner stops short of is exactly what the
+  guard refuses at, and a rule about what a taken candidate merges cannot land on one tab and not
+  the other. Each planner keeps only what it merges beyond the plan: the show half its demands and
+  the allowance they were charged against, both halves what the candidate banked. Both budgets are
+  measured, because the two bind on different backlogs: a hundred rows each gaining one `Episode`
+  cell cross the row budget first, where a handful of closing rows at four cells apiece cross the
+  edit budget first. The candidate is **built into a target of its own and measured**, never
+  estimated — a per-row figure guessed in advance is too low exactly when it matters, and admits a
+  row whose cells are then refused whole. There is no cheap exit once a budget is full, either: a
+  candidate that turns out to write nothing must be admitted rather than counted as work waiting, or
+  the run asks for another poll to do nothing on. A rejected candidate's **skips are kept**: they
+  are observations about the row, not writes, and a hand-typed count or a stamp out of range is no
+  less true for the budget being full. Its notes are not, since a note may describe a write.
+  `PlanOptions.maxEdits` and `maxRows` are what the *poll* has left, `config` minus `spent`,
+  because the budgets are a blast radius for the poll and not for one tab.
+  **The films half admits the same way**, against the same remaining budget `sync.ts` hands the show
+  half: one candidate per row, so a film's up-to-three followed cells land or wait together, then the
+  insert. Deferring is safe there for the reason it is safe here — the record keeps a value
+  unrecorded until the write carrying it lands, so the next poll sees the same move. A held insert
+  does not end the films walk: every film behind it meets the same full budget and is counted
+  rather than built, but the lookup it needs is the next poll's to have ready and its warnings — no
+  TMDB record, a hand row with no id — are true whether or not this poll had room.
+- **The fields that follow SIMKL ignore the activity window; everything else obeys it.** Even the
+  wider signal above is the wrong gate for those two: a corrected date moves no watch timestamp and
+  no count — fixing the day you started a season in 2018 is a change made today on a season never
+  watched again. What keeps a dormant sheet quiet is the same record read for a different field: a
+  value never seen to move is never written, which is a strictly better gate. `recent`
+  in `planSync` therefore gates the catalogue demands and every write that reads the cell, while
   `followUpstream` runs above it. Both fields are recorded library-wide and for free by
   `observeWatches`, off the library alone — every season's first and last watch, whether or not the
   season is finished. What needs a lookup is *writing* `End`: the row must be complete, and only the
@@ -205,6 +337,34 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   new is demanded. There are no separate what-to-fetch passes to keep in agreement — a row the
   planner waits on is by construction a row the same pass demanded. Do not reintroduce a second
   planning path.
+- **Every lookup is asked for through one choke point, and every asker is charged.** `demand` in
+  `4-plan.ts` is the only writer of `PlanDemands`, and it charges `LookupBudget`. One choke point
+  because the block walk is not the only asker: the grid walk asks for a catalogue per in-scope block
+  and a runtime per closing row, and once a record's disagreement can put every block of a
+  marked-whole library in scope at once — and keep them there across polls — that walk is the larger
+  of the two. Charged on one side and not the other, the uncharged side is the burst the cap exists
+  to prevent: a cold store with 120 blocks in scope issuing 240 requests at once.
+  **Two allowances, two periods.** The three upstreams a block's show row waits on — TVDB's genres,
+  TMDB's certificate, TVDB's season runtimes — share `MAX_LOOKUPS_PER_PASS` = 8 for the whole
+  **attempt**, because the planner runs to a fixpoint and a cap reset per pass is the cap multiplied
+  by the pass ceiling. SIMKL's details are `CATALOGUE_ASKS_PER_PASS` = 32 **titles per pass**, and
+  both halves of that are load-bearing: these asks are what a pass *reads the grid with*, so a block
+  in scope is edited from the answer to its own ask in the same run — rationed to eight, a cold store
+  with 18 recent blocks read 4 of them and left the other 14 reported as "no episode list came back",
+  measured on the live tab. 32 is a normal day with room to spare, and per pass is what makes a
+  backfill past it drain across the passes of one run rather than stall. `nextPass` in `sync.ts` is
+  where the pass allowance is renewed; bounded either way, at 32 times `MAX_PASSES` per attempt.
+  Counted in **titles**, not requests: a live-action block asks twice about the same id — episode
+  list, then the entry that decides its `Status` — and `fetchCatalogue` merges the two, so counted
+  per request the figure would mean half what it says. An ask the store has already answered is
+  pushed **uncharged, on both walks**: `sync.ts` drops it inside `CATALOGUE_MAX_AGE` anyway, and
+  counting it would let the first `CATALOGUE_ASKS_PER_PASS` blocks in grid order spend the whole
+  allowance on every pass and every poll while writing nothing, and read every block behind them as
+  "no episode list came back" for as long as it stayed in scope — for a block in scope on the record
+  alone, for ever. `detailAnswered` in `3-catalogue.ts` is the one spelling of "has the detail
+  landed", read off the field the fold stamps the moment it does. An ask the allowance refuses
+  **counts as deferred**, once per title, because a block this pass could not read is work only a
+  pass with a fresh allowance does, and that count is what arms the retry bringing one.
 - **A season's runtime is only ever written into a blank cell**, and the bounds the guard checks are
   the same constants the planner converts with (`values.ts`) — a bound that exists twice is a
   whole-plan refusal waiting to fire on good data. The films tab's `Runtime` is a different column
@@ -244,7 +404,7 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   already edits, so it costs an edit and never a distinct row, and the rows it can appear on are the
   ones that moved rather than every row watched inside the window — `checkBudgets` refuses
   *everything* over budget, and a note set that did not drain would stop the counts being written
-  until enough rows aged out. The **clear** is not conditioned on the count: a stale note on a
+  until the backlog did. The **clear** is not conditioned on the count: a stale note on a
   closing row goes whether or not that batch advanced anything.
 - **An absent `CellEdit.value` empties a cell, and only a season's `Note` is ever emptied.** It is
   the encoding `writeCell` already uses to undo an inserted value, and the only one that leaves a
@@ -311,18 +471,32 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   the life of the process, because both keys are read at start-up — asking again every poll settles
   nothing, and settling the waiting shows would file them as ones the upstream has nothing for. The
   note names all of them, because named one at a time an operator fixes a key, restarts, and is told
-  about the other. The lookups a block earns are capped per **attempt** rather than per pass, in
-  `LookupBudget`: the planner runs to a fixpoint, so a cap reset on every pass is the cap multiplied
-  by the pass ceiling.
+  about the other. The lookups a block earns from those two are capped per **attempt** rather than
+  per pass, in `LookupBudget`: the planner runs to a fixpoint, so a cap reset on every pass is the cap
+  multiplied by the pass ceiling. SIMKL's details are the exception and are the pass's — see the
+  lookup bullet above.
   A block also needs `BLOCK_SCAN_ROWS` of declared grid beneath it: the block-height helper every
   roll-up reads is an `OFFSET` window that far down, and Sheets answers `#REF!` for one running past
   the last row, so those five cells would error and VERIFY would roll the write back every poll. The
   planner declines, the way the films half declines a full tab — a guard refusal is whole-plan, and
   a tab with no room is a standing state until someone extends it.
-  The block's first season row is the earliest season watched **inside the activity window**, the
-  same window a season insert obeys: a show whose earlier seasons were watched before the window
-  gets a block starting at the recent one, and those earlier rows are added by hand — a season
-  finished in 2024 beside one begun in September 2026 gives a block of the second alone.
+  Which seasons a block is built from is `insertableSeasons`, the same rule a season insert obeys:
+  every watched season no row covers that was either watched inside the window or has moved since
+  the record last saw it, lowest number first. It answers two shapes at once — a show watched week
+  by week has its recent season inside the window and its earlier ones outside, so the block starts
+  at the recent one and the earlier rows are added by hand; a show marked whole today has one
+  timestamp per episode and none inside the window, and what carries every season is that the record
+  has never seen the title at all. A **block** takes all of them in one span; a season joining a
+  block that already exists lands one row a run, and every season still waiting counts towards
+  `plan.deferred`, because that count is what arms the retry — without it the run that adds one
+  season has nothing deferred, and the rest wait on the library's next unrelated move rather than the
+  next poll. `insertTarget` returns the chosen season and those behind it off one call, and
+  `deferBehind` counts them, withdraws their counts and writes the note both insert paths need;
+  derived twice, the list is free to name seasons the placement would not have offered. A placement
+  the planner *refuses* withdraws the chosen season **and every season behind it** through
+  `holdSeasons` and counts none of them: the tail is waiting on that one row, and nothing this
+  service does will drain a refusal, so a retry armed on it would ask for another poll every poll for
+  ever.
 - **The six block columns are optional** — `BLOCK_HEADERS` (`Franchise`, `Genre`, `Genres`,
   `Network`, `Certificate`, `Banner`), resolved by `resolveOptionalColumns` rather than joining the
   ten required `HEADERS`. The artwork page parses a Shows tab carrying no `Franchise` column at
@@ -566,12 +740,24 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   answer is the header row. `MovieGrid` carries `headerRow` for this; `rowCount` is a
   count, so the last usable index is one below it, and that check runs *before* the placement rule
   or it could only fire on a row placement had already accepted.
-- **The budget is the poll's, not the tab's.** `SHEET_MAX_EDITS` and `SHEET_MAX_ROWS` are a blast
-  radius for what one poll may change; counted per tab, one poll writes twice them while each half
-  reports itself inside budget. What one half *sent* is carried into the next half's guard as
+- **One deferred count, on either tab.** `plan.deferred` is "work this run could have done and
+  rationed" — a row past the one-per-run rule, a season behind the block that landed, a row or an
+  insert the poll's budgets had no room for on either tab, a lookup the allowance was too spent to
+  make. One number because
+  every consumer asks it one question, *is there work only another poll will drain*, and answers it
+  the same way whatever the shape of the work; `sync.ts` logs the count and arms the retry off it,
+  and the report is where the shapes are told apart, each kind writing its own note.
+- **The budget is the poll's, not the tab's, and the two count different things.** `SHEET_MAX_EDITS`
+  counts cells written into rows that already exist, and an insert's fill is not among them — a
+  fifteen-season block is a hundred cells and zero edits; `SHEET_MAX_ROWS` counts every distinct row
+  touched, an insert's whole span included, and is the one that bounds an insert. Together they are a
+  blast radius for what one poll may change; counted per tab, one poll writes twice them while each
+  half reports itself inside budget. What one half *sent* is carried into the next half's guard as
   `spent` — sent, not verified, because a batch that errored or could not be read back may well have
   landed; and sent, not planned, because a plan report mode never wrote or the freshness loop
-  discarded changed nothing.
+  discarded changed nothing. Both **planners** read `config` minus `spent` too, not only the guards:
+  a half that met a full budget by planning into it would be refused whole, write nothing and arm no
+  retry, where one that stops short defers and lands the same rows a poll later.
 - **A run's tab is part of its identity.** Two halves failing the same way — an unshared
   spreadsheet, a 500 on the read — produce byte-identical records, so `sameAs` compares `tab` first;
   without it the second collapses into the first, takes its label, and the first tab's run is gone.
