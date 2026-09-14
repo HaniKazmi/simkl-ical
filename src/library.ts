@@ -230,6 +230,13 @@ export const toLibrary = (response: AllItemsResponse | null | undefined): Librar
  * event there is — watching an episode rewrites a record without moving it —
  * which separates a consumer reading membership from one reading progress.
  * This reports both and decides neither.
+ *
+ * Neither is a measure of *when* a record changed, and none is available here:
+ * the item carries no modification stamp, and the two dates it does carry —
+ * `last_watched_at` and `added_to_watchlist_at` — are dates the user set, so
+ * marking a 2005 show watched today moves neither past 2005. A consumer that
+ * needs "changed since I last looked" answers it against a record of its own,
+ * which is what `sheet/io/baseline.ts` is.
  */
 export const mergeDelta = (
   previous: Library,

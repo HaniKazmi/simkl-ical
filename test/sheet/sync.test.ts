@@ -7,10 +7,11 @@ import { clearTokenCache } from '../../src/api/google/auth.ts';
 import { clearTokenCache as clearTvdbTokenCache } from '../../src/api/tvdb/auth.ts';
 import { cellOf, col, daysAgo, jsonResponse, libraryOf, quiet, recorder, SHEET_COLUMNS, SHEET_HEADERS, todaySerial, withConfig, withFetch, withFreshJournal, type CellSpec, seasonRow, showRow } from '../helpers.ts';
 import { CREDENTIAL, DEFAULT_GRID, fakeSheets, type FakeSheetsOptions } from './fake-sheets.ts';
-import { MAX_LOOKUPS_PER_PASS } from '../../src/sheet/4-plan.ts';
+import { CATALOGUE_ASKS_PER_PASS } from '../../src/sheet/4-plan.ts';
 import { sheetRuns } from '../../src/sheet/io/journal.ts';
+import { baseline, saveBaseline } from '../../src/sheet/io/baseline.ts';
 import { withSheetLock } from '../../src/sheet/io/lock.ts';
-import { artworkFormula, dateSerial, showRowFormulas } from '../../src/sheet/values.ts';
+import { artworkFormula, dateSerial, seasonKey, showRowFormulas, titleRecordKey, type Baseline } from '../../src/sheet/values.ts';
 import type { CellData } from '../../src/api/google/types.ts';
 import type { Library } from '../../src/library.ts';
 import { plainDateIn } from '../../src/shared/dates.ts';
@@ -549,6 +550,81 @@ test('a run that deferred a row asks for another poll', async () => {
       const result = await new SheetSync({ logger: quiet }).run(library);
       assert.equal(result.status, 'reported');
       assert.equal(result.retry, false, 'nothing a report can do would drain it');
+    }),
+  );
+});
+
+/**
+ * A backlog held back by the edit budget is the same claim a deferred row makes:
+ * the work exists and only this run's own rationing holds it. Without the retry
+ * a library marked whole would drain a budget every half hour at best, and at
+ * worst sit until something unrelated woke a poll.
+ */
+test('a run that held rows back for the edit budget asks for another poll', async () => {
+  clearTokenCache();
+  const rows = 8;
+  const grid: CellSpec[][] = [H, show('Long Show', 'Watching', 3381), ...Array.from({ length: rows }, (_, i) => season(i + 1, 0, null))];
+  const library = libraryOf({
+    id: 3381,
+    title: 'Long Show',
+    status: 'completed',
+    seasons: Object.fromEntries(Array.from({ length: rows }, (_, i) => [i + 1, [daysAgo(500 + i), daysAgo(499 + i)]])),
+    watched: rows * 2,
+    total: rows * 2,
+  });
+  const episodes = Array.from({ length: rows }, (_, i) => [
+    { season: i + 1, episode: 1, type: 'episode', aired: true },
+    { season: i + 1, episode: 2, type: 'episode', aired: true },
+  ]).flat();
+
+  const sheet = server({ grid, episodes });
+  await withConfig({ sheetId: 'SID', sheetSyncMode: 'apply', googleKeyBase64: CREDENTIAL, sheetMaxEdits: 8 }, () =>
+    withFetch(sheet.handler, async () => {
+      // Every count recorded at zero, so every row has moved and none was
+      // watched inside the window: the whole backlog is in scope at once.
+      const seen: Baseline = new Map([[titleRecordKey(3381), { Status: 'watching' }]]);
+      for (let n = 1; n <= rows; n += 1) seen.set(seasonKey(3381, n), { Watched: '0' });
+      await saveBaseline(seen);
+
+      const result = await new SheetSync({ logger: quiet }).run(library);
+      assert.equal(result.status, 'applied', result.error ?? '');
+      assert.ok(result.record.edits.length <= 8, 'inside the budget rather than refused whole');
+      assert.equal(result.retry, true, 'and the rows it left ask for another poll');
+    }),
+  );
+});
+
+/**
+ * The forget reaches the file. `PlanResult.forgetting` is pinned at the
+ * planner and `saveBaseline`'s drop at the file; this is the link between them,
+ * which nothing else exercises and which a dropped argument would sever
+ * without a type error.
+ */
+test('a dated row the budget holds back has its count dropped from the record', async () => {
+  const grid: CellSpec[][] = [H, show('Short Show', 'Ended', 3381), season(1, 2, null)];
+  const library = libraryOf({
+    id: 3381,
+    title: 'Short Show',
+    status: 'completed',
+    seasons: { 1: [daysAgo(3), daysAgo(2)] },
+    watched: 2,
+    total: 2,
+  });
+  const episodes = [
+    { season: 1, episode: 1, type: 'episode', aired: true },
+    { season: 1, episode: 2, type: 'episode', aired: true },
+  ];
+  const sheet = server({ grid, episodes });
+  await withConfig({ sheetId: 'SID', sheetSyncMode: 'report', googleKeyBase64: CREDENTIAL, sheetMaxEdits: 0 }, () =>
+    withFetch(sheet.handler, async () => {
+      // Recorded at SIMKL's own count, so only the close is left to write and
+      // only the window keeps the row in scope.
+      await saveBaseline(new Map([[titleRecordKey(3381), { Status: 'completed' }], [seasonKey(3381, 1), { Watched: '2' }]]));
+
+      const result = await new SheetSync({ logger: quiet }).run(library);
+      assert.equal(result.status, 'idle', result.error ?? '');
+      assert.equal(baseline().get(seasonKey(3381, 1))?.Watched, undefined, 'the held row is forgotten, so the record brings it back');
+      assert.equal(baseline().has(seasonKey(3381, 1)), true, 'and the key still says the season was seen');
     }),
   );
 });
@@ -1105,6 +1181,70 @@ test('a TV show with no block gets one, in one run, from three upstreams', async
   });
 });
 
+/**
+ * Marking a back catalogue watched stamps every episode at its air date, so the
+ * library says nothing has happened here for years. What is recent is the title
+ * having appeared in a record that already names others, and the block it earns
+ * lands **whole** — a show row and every season row in one span, so the grid is
+ * never left with a block whose roll-ups count the next block's rows.
+ */
+const MARKED_SEASONS = [1, 2, 3];
+
+const MARKED_EPISODES = MARKED_SEASONS.flatMap((season) =>
+  Array.from({ length: 9 }, (_, i) => ({ season, episode: i + 1, type: 'episode', aired: true })),
+);
+
+const MARKED_WHOLE: Library = libraryOf({
+  id: NEW_SHOW.id,
+  title: NEW_SHOW.title,
+  status: 'completed',
+  seasons: Object.fromEntries(MARKED_SEASONS.map((season) => [season, Array.from({ length: 9 }, (_, i) => daysAgo(900 - season * 10 - i))])),
+  watched: 27,
+  total: 27,
+});
+
+test('a show marked whole today gets its whole block, though every episode is stamped years back', async () => {
+  clearTokenCache();
+  clearTvdbTokenCache();
+  const seasonsAsked: string[] = [];
+  const sheet = blockServer({
+    episodes: MARKED_EPISODES,
+    tvdb: (url: string) => {
+      if (url.includes('/extended')) return jsonResponse({ data: { genres: [{ id: 0, name: 'Drama' }] } });
+      if (url.includes('/episodes/official')) {
+        seasonsAsked.push(new URL(url).searchParams.get('season') ?? '?');
+        return jsonResponse({ data: { episodes: Array.from({ length: 9 }, (_, i) => ({ number: i + 1, runtime: 47 })) } });
+      }
+      throw new Error(`unexpected TVDB request: ${url}`);
+    },
+  });
+  await withFreshJournal(async () => {
+    // Inside the config block: `withConfig` clears the baseline on entry, and
+    // the record of some other title is what makes this one new.
+    await withBlockKeys({}, () =>
+      withFetch(sheet.handler, async () => {
+        await saveBaseline(new Map([[titleRecordKey(4242), { Status: 'watching' }]]));
+        const sync = new SheetSync({ logger: recorder() });
+        const result = await sync.run(MARKED_WHOLE);
+        assert.equal(result.status, 'applied', result.error ?? '');
+
+        const rows = sheet.tab('Shows');
+        assert.equal(rows.length, DEFAULT_GRID.length + 4, 'a show row and three season rows');
+        assert.equal(cell(rows, 4, 'Title')?.stringValue, 'Severance');
+        assert.deepEqual(
+          [5, 6, 7].map((row) => cell(rows, row, 'Season')?.numberValue),
+          [1, 2, 3],
+        );
+        assert.deepEqual(
+          [5, 6, 7].map((row) => cell(rows, row, 'Episodes')?.numberValue),
+          [9, 9, 9],
+        );
+        assert.deepEqual(seasonsAsked.sort(), ['1', '2', '3'], 'one episode-list call per season, so every row carries its own runtime');
+      }),
+    );
+  });
+});
+
 // A cell on a show row is written once and never revisited, so a fact that did
 // not come back leaves the whole block for the next poll rather than landing a
 // row with a blank `Genre` for good.
@@ -1283,15 +1423,19 @@ test('a season insert takes the slot, and the block’s facts are left for the n
   );
 });
 
-// The planner runs to a fixpoint, so a lookup allowance reset on every pass is
-// an allowance multiplied by the pass ceiling: the pass after a fetch finds the
-// next unanswered titles and asks for as many again, inside a run whose
-// snapshot goes stale at 120s. One allowance per attempt is what the sync
-// threads.
-test('a cold start asks SIMKL for one pass’s worth of details across the whole run', async () => {
+/**
+ * SIMKL's details are the one allowance that is per **pass**, because they are
+ * what a pass reads the grid and the library with rather than what one insert
+ * waits on. A cold library past one pass's worth therefore drains across the
+ * passes of the same run rather than stalling at the first — where the three
+ * upstreams a block's show row waits on stay per attempt, which
+ * `one attempt's show-facts lookups are capped across its passes` pins.
+ */
+test('a cold start drains its SIMKL details across the passes of one run', async () => {
   clearTokenCache();
   clearTvdbTokenCache();
-  const unlisted = Array.from({ length: 10 }, (_, i) => ({
+  const count = CATALOGUE_ASKS_PER_PASS + 8;
+  const unlisted = Array.from({ length: count }, (_, i) => ({
     id: 900 + i,
     title: `Unlisted ${i}`,
     status: 'watching',
@@ -1305,7 +1449,8 @@ test('a cold start asks SIMKL for one pass’s worth of details across the whole
       withFetch(sheet.handler, async (calls) => {
         await new SheetSync({ logger: recorder() }).run(libraryOf(...unlisted));
         const asked = new Set(calls.filter((c) => c.startsWith('https://api.simkl.com/tv/') && !c.includes('/episodes/')));
-        assert.equal(asked.size, MAX_LOOKUPS_PER_PASS, 'the passes after the first spend what the first left, not a fresh allowance');
+        assert.equal(asked.size, count, 'every title is asked about, a pass’s worth at a time');
+        assert.ok(count > CATALOGUE_ASKS_PER_PASS, 'the library holds more than one pass may ask about, or it proves nothing');
       }),
     );
   });

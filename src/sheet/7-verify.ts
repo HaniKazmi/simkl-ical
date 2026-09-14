@@ -15,6 +15,7 @@
 import { errorMessage } from '../shared/errors.ts';
 import { a1, HEADERS, isFormulaValue, parseGrid, sameValue, type Grid, type HeaderName, type ShowField } from './2-grid.ts';
 import { spanRows } from './6-requests.ts';
+import { planWrites } from './4-plan.ts';
 import type { SheetPlan } from './4-plan.ts';
 import type { CellData, ExtendedValue } from '../api/google/types.ts';
 import type { SheetSnapshot } from './io/spreadsheet.ts';
@@ -341,8 +342,16 @@ export const verifyAgainst = <G, H extends string, P extends VerifiablePlan>(
   return { ok: problems.length === 0, problems, landed, deleteRows: problems.length ? created : [] };
 };
 
-/** The show grid's answers to the five questions above. */
-const SHOW_GRID: VerifiedTab<Grid, ShowField, SheetPlan> = {
+/**
+ * The show grid's answers to the five questions above.
+ *
+ * `P` is the show plan's own write shape, not the bare `VerifiablePlan`: left
+ * structural, every plan satisfies it and a films plan verifies against the show
+ * grid — one tab's column indices read off the other's, nothing found, and
+ * `applyPlan` rolls back a write that was correct. Exported so a test can put
+ * that to the compiler.
+ */
+export const SHOW_GRID: VerifiedTab<Grid, ShowField, ReturnType<typeof planWrites>> = {
   tab: 'the sheet',
   rowKind: 'show rows',
   parse: parseGrid,
@@ -353,4 +362,4 @@ const SHOW_GRID: VerifiedTab<Grid, ShowField, SheetPlan> = {
 };
 
 export const verify = (before: Grid, after: SheetSnapshot, plan: SheetPlan): Verification =>
-  verifyAgainst(SHOW_GRID, before, after, plan);
+  verifyAgainst(SHOW_GRID, before, after, planWrites(plan));

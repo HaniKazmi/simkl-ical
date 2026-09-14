@@ -214,6 +214,126 @@ export const MOVIE_PREFIX = 'movie:';
 export const movieKey = (id: number): string => `${MOVIE_PREFIX}${id}`;
 
 /**
+ * The show half's title-level key: the bare id.
+ *
+ * Bare is what distinguishes it. A season key always carries its season after a
+ * colon and a film key always carries the `movie:` prefix, so `1234` can only
+ * be a title — and the three shapes share one file and one `isEntry`, which
+ * accepts any object of strings and so polices none of this itself.
+ *
+ * What lives under it is what belongs to a title rather than to one of its
+ * seasons: `Status`, which is `item.status` and the record of the title having
+ * been seen at all.
+ */
+export const titleRecordKey = (id: number): string => String(id);
+
+/** What a baseline key names, as the three shapes above make it. */
+export type BaselineKind =
+  | { kind: 'movie'; id: number }
+  | { kind: 'season'; id: number; season: number }
+  | { kind: 'title'; id: number }
+  | { kind: 'unknown' };
+
+/**
+ * Which of the three shapes a stored key has, and the numbers in it.
+ *
+ * One classifier, because every reader of the file asks the same question of a
+ * bare string and three spellings of "is this a season" would let a count, a
+ * scan and a planner disagree about the same key. `unknown` covers anything no
+ * writer here produces — a hand-edited file, or an entry left by a shape since
+ * withdrawn — and every caller treats it as an entry it does not look up.
+ */
+export const parseBaselineKey = (key: string): BaselineKind => {
+  if (key.startsWith(MOVIE_PREFIX)) {
+    const id = bareId(key.slice(MOVIE_PREFIX.length));
+    return id === null ? { kind: 'unknown' } : { kind: 'movie', id };
+  }
+  const colon = key.indexOf(':');
+  if (colon === -1) {
+    const id = bareId(key);
+    return id === null ? { kind: 'unknown' } : { kind: 'title', id };
+  }
+  const id = bareId(key.slice(0, colon));
+  const season = bareId(key.slice(colon + 1), 0);
+  return id === null || season === null ? { kind: 'unknown' } : { kind: 'season', id, season };
+};
+
+/**
+ * Whether the record holds a title entry at all — `PlanOptions.anyTitleRecorded`.
+ *
+ * A scan rather than a lookup, and the only question about the record that is:
+ * it asks whether the title-recording code has ever run, which no single title
+ * can answer. An install upgrading into it has a record full of `Start` and
+ * `End` and not one title entry, so nothing is new, the whole library is
+ * recorded, and the poll after it is the first that can see a change.
+ *
+ * The **key's shape** is what makes an entry a title's, never a field under it.
+ * `Status` is the only field a title entry ever carries, so a run that banks a
+ * `Status` edit withdraws it and leaves `{}` — and a record whose every title
+ * entry was emptied that way would answer "no titles seen" and make the whole
+ * library new again. A key of that shape is a title this sync has seen and
+ * recorded nothing for, which is exactly what the question asks.
+ *
+ * Here rather than in `io/baseline.ts` so the answer is a function of a
+ * `Baseline` and nothing else — the sync scans the loaded record, a test scans
+ * the map it seeded, and neither has a second derivation to disagree with.
+ */
+export const anyTitleRecorded = (baseline: Baseline): boolean => {
+  for (const key of baseline.keys()) {
+    if (parseBaselineKey(key).kind === 'title') return true;
+  }
+  return false;
+};
+
+/** A key segment as the integer it spells, or null. Whole and at or above `floor`, with no whitespace or sign to be lenient about. */
+const bareId = (raw: string, floor = 1): number | null => {
+  if (!/^\d+$/.test(raw)) return null;
+  const value = Number(raw);
+  return Number.isInteger(value) && value >= floor ? value : null;
+};
+
+/**
+ * What a recorded value says when SIMKL holds nothing.
+ *
+ * A recorded absence is not an absent record. Leaving a null unrecorded makes
+ * the value arriving later a *first sighting* — recorded, written nothing, and
+ * silent from then on — where recording the absence makes none → something a
+ * move. The films tab's `Score` is the column holding most of them: SIMKL has no
+ * score for 102 of the films already on the tab. `Status` on the show half is
+ * the same question, since `hold` and `plantowatch` and absent-from-every-list
+ * all read as no membership.
+ *
+ * A character no upstream value can spell, so it can never collide with one.
+ */
+export const NOT_HELD = '-';
+
+/**
+ * The number a recorded value stands for, keeping three states apart:
+ *
+ * - `undefined` — never recorded, or recorded as something no number can be
+ *   read out of. A first sighting, which writes nothing.
+ * - `null` — recorded as `NOT_HELD`: SIMKL answered that it holds none. None →
+ *   a value is a move, which is what `NOT_HELD` exists for.
+ * - a number — what was recorded.
+ *
+ * One function for both halves, because both ask the same question of the same
+ * file: the show half of a season's `Watched` count, the films half of a
+ * `Score` or a `Runtime`. Two copies would be two readings of the absent state,
+ * which is the one that decides whether a change is written or swallowed.
+ *
+ * Finite rather than integral. Every value either half writes is whole, so the
+ * bound would never fire on one — and on a value that is not, reading it as
+ * never-recorded would swallow the next real move, where reading it as the
+ * number it spells compares unequal to the truth and writes.
+ */
+export const recordedCount = (recorded: string | null | undefined): number | null | undefined => {
+  if (typeof recorded !== 'string' || recorded.trim() === '') return undefined;
+  if (recorded === NOT_HELD) return null;
+  const count = Number(recorded);
+  return Number.isFinite(count) ? count : undefined;
+};
+
+/**
  * The serial a recorded value stands for — the stored ISO instant, rendered in
  * the viewer's zone exactly as the current one is.
  *
@@ -233,6 +353,92 @@ export const movieKey = (id: number): string => `${MOVIE_PREFIX}${id}`;
  */
 export const recordedSerial = (recorded: string | null | undefined, timezone: string): number | null =>
   watchSerial(instantFrom(recorded), timezone);
+
+// --- What a run records ------------------------------------------------------
+
+/**
+ * The two maps a run moves observations between, and the three moves there are.
+ *
+ * `observed` is seeded library-wide before the walk, so *not writing* is the
+ * default and every exit that does something else has to say so. Two exits do:
+ * a value an edit carries is **banked** into `writing`, recordable only once
+ * that edit lands; and a value this run decided to leave for a later one is
+ * **withdrawn** from both, so the later run still sees it as moved.
+ *
+ * The third case needs nothing. A move a run *declines* — a hand-typed count, a
+ * row whose episodes are not the season's — stays in `observed` and is
+ * recorded, because nothing about a later poll would decide it differently and
+ * re-deciding it every poll is what keeps a row permanently in scope.
+ *
+ * One copy for both halves. The show planner and the films planner return the
+ * same pair of maps to the same `saveBaseline`, and a half that banked without
+ * withdrawing would record a value the sheet never received — the one failure
+ * this whole mechanism exists to avoid.
+ */
+export interface Recording {
+  observed: Baseline;
+  writing: Baseline;
+  /** The fields this run is taking out of the record itself — see `forget`. */
+  forgetting: Forgetting;
+}
+
+/** Key → the fields of that entry to drop from the record. `forget` is the only writer. */
+export type Forgetting = Map<string, Set<string>>;
+
+/**
+ * Take one field out of an entry, and do nothing where there is no entry.
+ *
+ * Replaces the entry rather than deleting in place: `observed` starts as a
+ * shallow copy of a seed the run reuses across every planning pass and every
+ * re-read, so the entries are shared and deleting would strip the field from
+ * the seed itself.
+ *
+ * An entry emptied to `{}` **keeps its key**, and the key is the record that
+ * this row was seen at all: `titleKnown` and `anyTitleRecorded` both read the
+ * key alone, because `Status` is the only field a title entry carries and a
+ * banked `Status` edit withdraws it. A key that was never there stays absent,
+ * which is the same rule from the other side — nothing was seen, so nothing is
+ * claimed. `saveBaseline` stores an emptied entry without moving `at`, since a
+ * key carrying no field moved no value.
+ */
+export const withdraw = (into: Baseline, key: string, field: string): void => {
+  const entry = into.get(key);
+  if (entry === undefined) return;
+  const next = { ...entry };
+  delete next[field];
+  into.set(key, next);
+};
+
+/** Bank a value against the edit that carries it, and take it out of what this run records regardless. */
+export const bank = ({ observed, writing }: Recording, key: string, field: string, value: string): void => {
+  writing.set(key, { ...writing.get(key), [field]: value });
+  withdraw(observed, key, field);
+};
+
+/**
+ * Take a field out of the record itself, not only out of what this run
+ * records.
+ *
+ * `withdraw` leaves the stored value standing: `saveBaseline` folds a run's
+ * observations into what the file holds, so a field absent from them keeps
+ * whatever it had. That is the right answer for every hold whose stored value
+ * differs from SIMKL's — the next poll compares and finds the same move — and
+ * the wrong one for a row the activity window put in scope and the budget
+ * held back while its stored count already agreed: nothing differs, so once
+ * its watch date leaves the window nothing brings the row back, and a complete
+ * row stays undated for as long as the sheet lives. Forgetting the count makes
+ * it absent on a known title, which `countMoved` reads as moved, so it is the
+ * record rather than the window that brings the row back. Out of `writing` as
+ * well, for the reason `holdOpen` gives: an edit built beside the hold may have
+ * banked it.
+ */
+export const forget = (keep: Recording, key: string, field: string): void => {
+  withdraw(keep.observed, key, field);
+  withdraw(keep.writing, key, field);
+  const fields = keep.forgetting.get(key) ?? new Set<string>();
+  fields.add(field);
+  keep.forgetting.set(key, fields);
+};
 
 // --- Artwork links -----------------------------------------------------------
 

@@ -151,6 +151,7 @@ export const gridFixture = (...named: NamedRow[]): GridFixture => {
       kind: 'season',
       row: index,
       rows: 1,
+      waiting: false,
       title,
       season,
       fill: (
@@ -228,12 +229,12 @@ export const gridFixture = (...named: NamedRow[]): GridFixture => {
 
     return {
       kind: 'block',
+      waiting: [],
       row: index,
-      rows: 2,
       id,
       title,
       franchise,
-      season,
+      seasons: [season],
       fill: [
         ...show.map(([field, value]) => blockCell(index, field, value)),
         ...under.map(([field, value]) => blockCell(index + 1, field, value)),

@@ -6,8 +6,9 @@
  * rules are about the tab: which fields may be written, what a season row or a
  * film row must look like, what value a column accepts. Those live in
  * `5-guard.ts` and `movies/5-guard.ts`, whose whitelists are each tab's own
- * spec. What is here names no field and belongs to neither tab: the budget, the
- * shape every written cell has, and the alignment check — is this address the
+ * spec. What is here names no field and belongs to neither tab: the budget, and
+ * the admission step both planners take a candidate through against it; the
+ * shape every written cell has; and the alignment check — is this address the
  * row the plan thinks it is — which is the one rule that catches a plan built
  * against a different grid, the one catastrophic failure the feature has.
  *
@@ -21,7 +22,7 @@
 import type { ExtendedValue } from '../api/google/types.ts';
 import { isFormula, sameValue } from './2-grid.ts';
 import type { SheetSnapshot } from './io/spreadsheet.ts';
-import type { PlannedWrites } from './6-requests.ts';
+import type { PlannedCell, PlannedWrites } from './6-requests.ts';
 import { rowsTouched } from './6-requests.ts';
 
 /**
@@ -54,21 +55,172 @@ export const describeValue = (value: ExtendedValue | undefined): string => {
 };
 
 /**
+ * Which budget a set of writes crosses, and by how much, or null where it
+ * crosses neither.
+ *
+ * The two count different things. `maxEdits` counts cells written into rows
+ * that already exist — an insert's fill is not among them, so a fifteen-season
+ * block is a hundred cells and zero edits. `maxRows` counts every distinct row
+ * touched, an insert's whole span included, and is the one bound an insert
+ * meets. An operator lowering `SHEET_MAX_EDITS` therefore caps what a poll may
+ * change on the rows the sheet has, and `SHEET_MAX_ROWS` how much it may add.
+ *
+ * **One arithmetic, for the guard's refusal and both planners' admission step.**
+ * Each planner takes rows while the run still fits, and the guard refuses a run
+ * that does not — so a second copy of the counting would let the two disagree:
+ * loose in the planner, every poll is refused whole over rows the guard counted
+ * differently; loose in the guard, the blast radius is not the number it names.
+ * The two budgets bind on different backlogs, which is why both are counted — a
+ * hundred rows each gaining one cell cross `SHEET_MAX_ROWS` first, where a
+ * handful of closing rows at four cells apiece cross `SHEET_MAX_EDITS` first.
+ */
+export const budgetProblem = (
+  plan: PlannedWrites,
+  { maxEdits, maxRows, spent }: { maxEdits: number; maxRows: number; spent: SpentBudget },
+): string | null => {
+  const edits = plan.edits.length + spent.edits;
+  if (edits > maxEdits) {
+    return `${edits} edits this poll exceeds SHEET_MAX_EDITS=${maxEdits}. Nothing written; the report lists every proposed edit.`;
+  }
+  const rows = rowsTouched(plan) + spent.rows;
+  return rows > maxRows ? `${rows} distinct rows this poll exceeds SHEET_MAX_ROWS=${maxRows}.` : null;
+};
+
+/** What a budget is measured against: the poll's two ceilings, and what an earlier half already sent. */
+export interface Budgets {
+  maxEdits: number;
+  maxRows: number;
+  spent: SpentBudget;
+}
+
+/**
+ * How many more distinct rows a plan may touch before it crosses the row
+ * budget — `budgetProblem`'s arithmetic read the other way round, for the one
+ * caller that sizes a write to the room rather than measuring a finished one:
+ * a block lands whole or not at all, so the block walk cuts it to this before
+ * building it. Derived anywhere else, the two counts disagree exactly where
+ * `rowsTouched` folds a span row onto an edited one, and the guard then refuses
+ * whole a block the planner sized.
+ */
+export const rowsRemaining = (plan: PlannedWrites, { maxRows, spent }: Budgets): number => maxRows - spent.rows - rowsTouched(plan);
+
+/** The parts of a plan the admission step reads and merges — what both tabs' plans hold. */
+export interface Admissible<E extends PlannedCell, I extends { row: number }, S> {
+  edits: E[];
+  insert: I | null;
+  skips: S[];
+  notes: string[];
+  deferred: number;
+}
+
+/**
+ * One piece of work a run may not have room for: what it would write, and what
+ * has to happen if the poll's budgets cannot take it.
+ *
+ * Built as a closure rather than as a finished edit set, because what a
+ * candidate costs is only known once it is built, and a per-row figure guessed
+ * in advance is wrong in the direction that matters: too low admits a row whose
+ * cells the guard then refuses *whole*, which is the outcome the admission step
+ * exists to prevent.
+ *
+ * `defer` is what a candidate owes when it is held back — the withdrawals no
+ * build ran to make. Optional, because most candidates owe nothing: the
+ * admission step shares `observed` with the run, so anything a rejected build
+ * banked is already out of the record and the next poll sees it as moved.
+ */
+export interface Rationed<T> {
+  write: (out: T) => void;
+  defer?: () => void;
+}
+
+/**
+ * Take a candidate's plan into the run's only if the whole run still fits the
+ * poll's budgets. **One admission for both tabs**, on the same arithmetic the
+ * guard refuses at, so what either planner stops short of is exactly what the
+ * guard would have refused.
+ *
+ * Both budgets are measured, because they bind on different backlogs: a
+ * hundred rows each gaining one cell cross `SHEET_MAX_ROWS` first, where a
+ * handful of closing rows at four cells apiece cross `SHEET_MAX_EDITS` first.
+ * The run's insert or the candidate's, never both: only the insert tier
+ * proposes one, and it admits a single candidate. Counted here rather than off
+ * the run alone, or a span would pass a rows check that never measured it and
+ * then be dropped when the candidate committed.
+ *
+ * The candidate's skips are merged whatever the verdict: they are observations
+ * about the row — a hand-typed count, a stamp out of range — and a poll with no
+ * room for the row still owes the report its diagnosis, where dropping them
+ * leaves only the tier's aggregate line until a poll with room re-plans it.
+ * Its notes are not: a note may describe a write, and a rejected candidate is
+ * making none.
+ */
+export const admitPlan = <E extends PlannedCell, I extends { row: number }, S>(
+  run: Admissible<E, I, S>,
+  candidate: Admissible<E, I, S>,
+  budgets: Budgets,
+  span: (insert: I) => NonNullable<PlannedWrites['insert']>,
+): boolean => {
+  run.skips.push(...candidate.skips);
+  const edits = [...run.edits, ...candidate.edits];
+  const insert = run.insert ?? candidate.insert;
+  if (budgetProblem({ edits, insert: insert === null ? null : span(insert) }, budgets) !== null) return false;
+
+  run.edits = edits;
+  run.insert = insert;
+  run.notes.push(...candidate.notes);
+  run.deferred += candidate.deferred;
+  return true;
+};
+
+/**
+ * Take a tier's candidates in order, while the poll's budgets have room, and
+ * leave the rest for a later poll.
+ *
+ * Every candidate is built, even once a budget is full, and there is no cheap
+ * exit to be had: a candidate's cost is known only once it is built, and one
+ * that turns out to write nothing — a row whose dates did not move, a count
+ * cell holding text — has to be admitted rather than counted as work waiting,
+ * or the run asks for another poll to do nothing on. Building is pure and the
+ * run's own plan never grows past the budget, so the measurement stays small
+ * whatever the backlog.
+ *
+ * What a held-back candidate must do is leave nothing of itself recorded — a
+ * value recorded at a figure the sheet never received is a change the next
+ * poll finds unmoved and loses for good. That is `Rationed.defer`, and the
+ * admission step has already done it for anything the rejected build banked,
+ * since the two share `observed`.
+ *
+ * One note per tier, not one per row: a library marked whole would otherwise
+ * put a line per row into a report read beside the sheet.
+ */
+export const admitTier = <T>(
+  plan: { deferred: number; notes: string[] },
+  candidates: readonly Rationed<T>[],
+  admit: (build: (out: T) => void) => boolean,
+  held: (count: number) => string,
+): void => {
+  let count = 0;
+  for (const candidate of candidates) {
+    if (admit(candidate.write)) continue;
+    plan.deferred += 1;
+    count += 1;
+    candidate.defer?.();
+  }
+  if (count) plan.notes.push(held(count));
+};
+
+/**
  * Over budget refuses the whole plan; it never truncates. The budget is a
  * blast radius for the poll, not an allowance per tab, so what earlier halves
  * sent counts too.
  */
 export const checkBudgets = (
   plan: PlannedWrites,
-  { maxEdits, maxRows, spent }: { maxEdits: number; maxRows: number; spent: SpentBudget },
+  budget: { maxEdits: number; maxRows: number; spent: SpentBudget },
   refuse: Refuse,
 ): void => {
-  const edits = plan.edits.length + spent.edits;
-  if (edits > maxEdits) {
-    refuse(`${edits} edits this poll exceeds SHEET_MAX_EDITS=${maxEdits}. Nothing written; the report lists every proposed edit.`);
-  }
-  const rows = rowsTouched(plan) + spent.rows;
-  if (rows > maxRows) refuse(`${rows} distinct rows this poll exceeds SHEET_MAX_ROWS=${maxRows}.`);
+  const problem = budgetProblem(plan, budget);
+  if (problem !== null) refuse(problem);
 };
 
 /** What the shape and alignment rules read off a planned cell. */

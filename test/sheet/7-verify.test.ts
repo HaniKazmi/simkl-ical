@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { a1, parseGrid, type HeaderName } from '../../src/sheet/2-grid.ts';
-import { shiftRow, verify } from '../../src/sheet/7-verify.ts';
-import type { CellEdit, SheetPlan } from '../../src/sheet/4-plan.ts';
+import { shiftRow, SHOW_GRID, verifyAgainst, verify } from '../../src/sheet/7-verify.ts';
+import { emptyPlan, type CellEdit, type SheetPlan } from '../../src/sheet/4-plan.ts';
+import { emptyFilmPlan } from '../../src/sheet/movies/4-plan.ts';
 import { cellOf, col, rowByLabel, seasonRow, sheetSnapshot, type CellSpec } from '../helpers.ts';
 import { fx, H, planOf } from './fixture.ts';
 
@@ -196,7 +197,7 @@ const insertFixture = () => {
     address: a1(fx.end, before.columns[field]),
     note: 'new',
   }));
-  return { after, newRow, plan: planOf([], { kind: 'season', row: fx.end, rows: 1, title: 'Fargo', season: 3, fill, note: 'new row' }) };
+  return { after, newRow, plan: planOf([], { kind: 'season', row: fx.end, rows: 1, waiting: false, title: 'Fargo', season: 3, fill, note: 'new row' }) };
 };
 
 test('an insert with exactly its planned fill verifies', () => {
@@ -286,11 +287,13 @@ const afterInsertAt3 = (): CellSpec[][] => {
 };
 
 const insertPlan = (before: ReturnType<typeof parseGrid>): SheetPlan => ({
+  ...emptyPlan(),
   edits: [],
   insert: {
     kind: 'season',
     row: 3,
     rows: 1,
+    waiting: false,
     title: 'Fargo',
     season: 2,
     fill: (['Season', 'Episode', 'Start'] as HeaderName[]).map((field) => ({
@@ -306,7 +309,7 @@ const insertPlan = (before: ReturnType<typeof parseGrid>): SheetPlan => ({
   },
   skips: [],
   notes: [],
-  deferredInserts: 0,
+  deferred: 0,
 });
 
 test("a formula Sheets rewrote because the row moved is not an unplanned change", () => {
@@ -373,11 +376,12 @@ const blockFill = (grid: ReturnType<typeof parseGrid>, row: number) =>
  * says `1` — and that a span of two verifies is the property under test.
  */
 const blockPlan = (grid: ReturnType<typeof parseGrid>): SheetPlan => ({
+  ...emptyPlan(),
   edits: [],
-  insert: { kind: 'block', row: 3, rows: 2, title: 'Halt and Catch Fire', season: 1, fill: blockFill(grid, 3), note: 'new block' } as unknown as SheetPlan['insert'],
+  insert: { kind: 'block', row: 3, seasons: [1], title: 'Halt and Catch Fire', fill: blockFill(grid, 3), note: 'new block' } as unknown as SheetPlan['insert'],
   skips: [],
   notes: [],
-  deferredInserts: 0,
+  deferred: 0,
 });
 
 test('a span whose fill lands on each of its rows verifies', () => {
@@ -448,7 +452,7 @@ test('without an insert a changed formula is still a change', () => {
   const grid = parseGrid(sheetSnapshot(rowsWithFormulas()));
   const tampered = rowsWithFormulas();
   tampered[3]![grid.columns.Note] = { formula: '=BROKEN()' };
-  const result = verify(grid, sheetSnapshot(tampered), { edits: [], insert: null, skips: [], notes: [], deferredInserts: 0 });
+  const result = verify(grid, sheetSnapshot(tampered), { edits: [], insert: null, skips: [], notes: [], deferred: 0 });
   assert.equal(result.ok, false);
   assert.match(result.problems.join('; '), /O4: changed without being planned/);
 });
@@ -488,4 +492,24 @@ test('an unplanned change to a runtime cell is caught', () => {
   const result = verify(before, withChange('fargoS2', 'Runtime', 50), planOf([fx.cell('fargoS2', 'Episode', { numberValue: 8 })]));
   assert.equal(result.ok, false);
   assert.match(result.problems.join(' '), /changed without being planned/);
+});
+
+/**
+ * The spec is tied to the show plan's own write shape, and this is what that
+ * buys: a films plan meeting the show grid reads one tab's column indices off
+ * the other's, finds none of its own cells, and sends `applyPlan` to roll back a
+ * write that was correct. A compile error is the only place to catch it — both
+ * plans are structurally `{ edits, insert }`, so nothing at runtime can tell
+ * them apart.
+ *
+ * Delete the `P` parameter from `SHOW_GRID`'s type and the directive below
+ * becomes an unused one, which `tsc` reports.
+ */
+test('a films plan cannot be verified against the show grid', () => {
+  // Never called: the claim is the compile error on the line below, which
+  // `tsc` reports as an unused directive the moment the type stops making one.
+  const mismatched = (): unknown =>
+    // @ts-expect-error a films plan is not what SHOW_GRID verifies
+    verifyAgainst(SHOW_GRID, before, before.snapshot, emptyFilmPlan());
+  assert.equal(typeof mismatched, 'function');
 });

@@ -75,16 +75,54 @@ by, and a block missing them costs more to finish by hand than one never added. 
 additionally needs `TVDB_API_KEY`; without it the five cell writes behave exactly as they do with
 it.
 
-The block is the single exception to *never write a formula*. It is a show row and its first season
-row in one two-row insert, and the show row it creates has no roll-up to replace: the batch writes
-the five formulas that will do the rolling up, from one template that the guard re-derives and
-VERIFY compares byte for byte. Where the block goes is the tab's own `Franchise` order, under which
-all 309 live blocks sort with no inversions.
+The block is the single exception to *never write a formula*. It is a show row and one season row
+for every season the title needs, all in one span, and the show row it creates has no roll-up to
+replace: the batch writes the five formulas that will do the rolling up, from one template that the
+guard re-derives and VERIFY compares byte for byte. One span rather than a row a poll, because a
+show row with no season row under it is a block whose roll-ups count the *next* block's rows as
+their own. Where the block goes is the tab's own `Franchise` order, under which all 309 live blocks
+sort with no inversions.
+
+The activity window has two signals, and a title inside either is in scope: watched inside it, or
+**changed since this sync last observed it**. The second is needed because a watch timestamp is a
+date the user set — marking a 2005 show watched today stamps each episode at the day it aired, so a
+window over watch dates sees nothing to do — and SIMKL supplies no modification stamp of its own. So
+the record does: `io/baseline.ts` holds a season's watched count and a title's status beside the two
+tracked dates, and `4-plan.ts` reads a move off them. Absent on a title the record knows counts as a
+move, which is also how a season that has just appeared is recognised; a title with no record of its
+own at all, while other titles have one, is a new title and earns a whole block. The first run of
+this code therefore sees nothing move, records everything, and the run after it is the first that
+can act.
+
+The second signal has no time bound, and that is what shapes the rest. A row watched inside the
+window leaves scope when the window passes it; a row in scope because its count disagrees with the
+record leaves scope only when that count is recorded — which happens when, and only when, the write
+carrying it lands. So a run that cannot finish a row **records nothing about it**: a close waiting on
+a runtime or on a timestamp it cannot use, a row a budget held back, a season a placement refused, a
+block waiting on a credential, a title whose status nothing has answered for yet. Recorded early, the
+next poll finds nothing moved and the row is never written at all. One hold goes further and
+**forgets**: a row the activity window put in scope and the budget held back may already be recorded
+at SIMKL's own count, so recording nothing leaves nothing to differ, and the row would leave scope
+with the window; its count is dropped from the record instead, and the record brings it back. The
+mirror of that rule is that work held back is **counted**, in `plan.deferred`, which is what asks for
+the next poll rather than waiting on the library's next unrelated move.
+
+The same reasoning caps what one poll may take on: a library marked whole puts every row of every
+block in scope at once, and a plan over `SHEET_MAX_EDITS` or `SHEET_MAX_ROWS` is refused *whole* and
+arms no retry, which without a cap would mean writing nothing for ever rather than for ninety days.
+So **every** write goes through one admission step rather than being planned outright, and the step
+takes candidates in tier order while both of the poll's remaining budgets still hold — remaining,
+because the budgets bound a poll and not a tab, and both halves' planners read what is left of them
+rather than the configured figure. The tiers are the order the run would rather lose the work in:
+the two fields that follow SIMKL, then the rows the activity window reaches and the statuses beside
+them, then the run's one insert, then the rows in scope on the record alone. Even a row watched this
+week can wait a poll — it goes ahead of a backfill rather than ahead of the budget, because a
+refusal costs every other row on the sheet and a wait costs one poll.
 
 `Start` and `End` are the two that **follow SIMKL**, the only two written to a row already dated,
-and the only two that ignore the activity window — a corrected watch date is a recent change that
-moves no watch timestamp, so a recency gate cannot see it, and the baseline is what keeps a dormant
-sheet quiet instead. A write needs the value to have moved away from what `io/baseline.ts` recorded — not away
+and the only two that ignore that window entirely — a corrected watch date moves no timestamp and no
+count, so neither signal can see it, and the record read for those two fields is what keeps a
+dormant sheet quiet instead. A write needs the value to have moved away from what `io/baseline.ts` recorded — not away
 from what the cell holds, which may have disagreed since before the sync first ran. A season not yet
 recorded is recorded and left alone, so the feature only ever acts on changes from the point it was
 switched on.

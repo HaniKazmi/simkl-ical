@@ -29,9 +29,9 @@ export interface PlannedWrites {
   edits: readonly PlannedCell[];
   /**
    * One contiguous span of `rows` rows starting at `row`, or nothing. A span
-   * rather than a row because a block is a show row and its first season row,
-   * which have to arrive together — a show row alone merges the block below it
-   * into the one above, and a season row alone belongs to the wrong block.
+   * rather than a row because a block is a show row and every season row under
+   * it, which have to arrive together — a show row alone merges the block below
+   * it into the one above, and a season row alone belongs to the wrong block.
    */
   insert: { row: number; rows: number; fill: readonly PlannedCell[] } | null;
 }

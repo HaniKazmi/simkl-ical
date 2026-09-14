@@ -1,6 +1,5 @@
 /**
- * What SIMKL last said about the fields that follow it, on disk so it survives
- * a restart.
+ * What SIMKL last said, on disk so it survives a restart.
  *
  * This is the record that makes "changed" a question with an answer. SIMKL has
  * no per-field revision and the sheet cannot supply one — a cell that disagrees
@@ -24,12 +23,24 @@ import { config } from '../../shared/config.ts';
 import { errorMessage } from '../../shared/errors.ts';
 import { instantFrom, nowIso } from '../../shared/dates.ts';
 import type { Logger } from '../../shared/logger.ts';
-import { MOVIE_PREFIX, type Baseline, type BaselineEntry } from '../values.ts';
+import { parseBaselineKey, type Baseline, type BaselineEntry, type Forgetting } from '../values.ts';
 
 interface BaselineFile {
   version: number;
   /** When the record last moved. Read by the status page, never by the sync. */
   at: string | null;
+  /**
+   * Every entry, whatever it names: a season, a film, or a title. One key shape
+   * each — `seasonKey`, `movieKey` and `titleRecordKey` in `../values.ts` — and
+   * `parseBaselineKey` is the one reader of which shape a key has.
+   *
+   * One map rather than a section per shape, and not because a second map would
+   * cost a version bump: an optional one reads as absent on a file written
+   * before it, which is the same first-sighting state a new field already has.
+   * What one map buys is that `Baseline` is a single value — the planners take
+   * it, `PlanResult` returns it, `saveBaseline` merges it — so neither half can
+   * be handed the map the other half's entries are in.
+   */
   seasons: Record<string, BaselineEntry>;
 }
 
@@ -41,6 +52,12 @@ interface BaselineFile {
  * column name, so a new field is simply one no stored entry has yet — which is
  * exactly the absent state, and exactly the behaviour wanted for a field the
  * sync has not observed before.
+ *
+ * Nor is a new key shape beside the season keys: an entry no reader looks up is
+ * never read, and a season entry means what it always did. A bump would cost
+ * one move of every tracked field — dropped, each `Start` and `End` is a first
+ * sighting again, so the next move of one is recorded and not written, and only
+ * the move after that reaches the cell.
  */
 const VERSION = 1;
 
@@ -54,7 +71,7 @@ const baselinePath = (): string => join(config.dataDir, 'sheet-baseline.json');
 let seasons: Baseline = new Map();
 let movedAt: string | null = null;
 
-/** What SIMKL last said, keyed by `seasonKey`. */
+/** What SIMKL last said, keyed by `seasonKey`, `movieKey` or `titleRecordKey`. */
 export const baseline = (): Baseline => seasons;
 
 /** Exported for tests, exactly as `clearSheetRuns` is. */
@@ -75,11 +92,21 @@ export interface BaselineSummary {
  * it shows. Rolled together, a first films poll adds one entry per film in the
  * library and the season count roughly doubles overnight — on the very number
  * whose job is telling a recording-only first run from a sync that never armed.
+ *
+ * Counted *in*, never subtracted from the total: the file also holds one entry
+ * per title, so `size` minus the films would report the show tab's season count
+ * as roughly twice what it is. `parseBaselineKey` is the one reader of what
+ * shape a key has.
  */
 export const baselineSummary = (): BaselineSummary => {
   let films = 0;
-  for (const key of seasons.keys()) if (key.startsWith(MOVIE_PREFIX)) films += 1;
-  return { seasons: seasons.size - films, films, at: movedAt };
+  let counted = 0;
+  for (const key of seasons.keys()) {
+    const named = parseBaselineKey(key);
+    if (named.kind === 'movie') films += 1;
+    else if (named.kind === 'season') counted += 1;
+  }
+  return { seasons: counted, films, at: movedAt };
 };
 
 /**
@@ -147,23 +174,54 @@ export const loadBaseline = async ({ log }: { log?: Logger } = {}): Promise<void
  * ever held, which is the same order as the library itself; a title that leaves
  * and returns is worth re-observing anyway, since what happened while it was
  * gone is not knowable.
+ *
+ * **Persisting a key and moving `at` are two questions.** A key appearing for
+ * the first time carrying no field at all — a row every one of whose values this
+ * run withdrew — has to be stored, because the key *is* the record that the row
+ * was seen and `titleKnown` reads nothing else. It moved no value, so it does
+ * not restamp `at`, which the status page renders as when the record last
+ * changed: a poll that observed nothing would otherwise read as "just now"
+ * forever.
  */
-export const saveBaseline = (observed: Baseline, { log }: { log?: Logger } = {}): Promise<void> => {
+export const saveBaseline = (
+  observed: Baseline,
+  { forgetting = new Map(), log }: { forgetting?: Forgetting; log?: Logger } = {},
+): Promise<void> => {
+  let wrote = false;
   let moved = false;
+  // Dropped before the fold, since the fold can only add: a forgotten field is
+  // one the run wants read as never observed, and `at` stands because nothing
+  // moved to a value.
+  for (const [key, fields] of forgetting) {
+    const before = seasons.get(key);
+    if (!before) continue;
+    const next = { ...before };
+    let dropped = false;
+    for (const field of fields) {
+      if (!(field in next)) continue;
+      delete next[field];
+      dropped = true;
+    }
+    if (!dropped) continue;
+    seasons.set(key, next);
+    wrote = true;
+  }
   for (const [key, entry] of observed) {
     const before = seasons.get(key);
+    const fields = Object.entries(entry);
     // Asked of the incoming fields rather than of the merge: since `after` is
     // `before` plus `entry`, "did the merge change anything" is exactly "did
-    // every incoming field already match". Compared at all so an unchanged
-    // library does not restamp `at` on every poll, which would render as "just
-    // now" forever and say nothing.
-    if (before && Object.entries(entry).every(([field, value]) => before[field as keyof BaselineEntry] === value)) continue;
+    // every incoming field already match". An entry with no fields matches
+    // vacuously, so a key already stored and withdrawn to `{}` this run keeps
+    // what it holds.
+    if (before && fields.every(([field, value]) => before[field as keyof BaselineEntry] === value)) continue;
     seasons.set(key, { ...before, ...entry });
-    moved = true;
+    wrote = true;
+    if (fields.length) moved = true;
   }
-  if (!moved) return Promise.resolve();
+  if (!wrote) return Promise.resolve();
 
-  movedAt = nowIso();
+  if (moved) movedAt = nowIso();
   return save(log);
 };
 

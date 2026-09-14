@@ -114,6 +114,23 @@ export const tvdbIdOf = (detail: { ids?: { tvdb?: string } } | undefined): numbe
 export const tmdbIdOf = (detail: { ids?: { tmdb?: string } } | undefined): number | null => externalId(detail?.ids?.tmdb);
 
 /**
+ * Whether `/tv/{id}` has answered for a title: the one question every rule
+ * that waits on the detail asks, spelled once.
+ *
+ * Read off `tvdbId` because `foldCatalogue` stamps it as a number or an
+ * explicit null the moment the detail lands, and never before — so absent
+ * reliably means the call is still outstanding, where `status` or `title` can
+ * be absent on an answered record. `tmdbId` lands in the same assignment, so
+ * one field answers for both keys. Spelled per site, a change to what the fold
+ * stamps would leave some readers holding a title in scope, at a lookup a day,
+ * for an answer that had already come back.
+ */
+export const detailAnswered = (entry: TitleCatalogue | undefined): entry is AnsweredCatalogue => entry?.tvdbId !== undefined;
+
+/** A title whose detail has landed: both join keys present, as a number or a settled null. */
+export type AnsweredCatalogue = TitleCatalogue & { tvdbId: number | null; tmdbId: number | null };
+
+/**
  * A season's average episode runtime in whole minutes, or null with no usable
  * answer.
  *

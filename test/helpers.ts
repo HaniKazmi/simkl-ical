@@ -57,6 +57,13 @@ config.artworkPublicAcl = false;
 config.booksSheetName = undefined;
 config.hardcoverToken = undefined;
 config.hardcoverTokenPath = undefined;
+// The poll's blast radius, pinned to the defaults rather than left to the
+// environment: both planners stop short of these rather than being refused at
+// them, so a `SHEET_MAX_EDITS` in `.env` would silently change what a plan
+// contains — a smaller one defers rows a test expects written, a larger one
+// hides the deferral a test is about.
+config.sheetMaxEdits = 30;
+config.sheetMaxRows = 20;
 // Same guard, for writes: everything that persists lands under config.dataDir,
 // which defaults to ./data and holds a live token on a real checkout. The
 // default moves somewhere harmless; `withTempDataDir` stays for tests that
@@ -427,7 +434,8 @@ export interface ItemSpec {
   /** Films nest under `movie` and carry no seasons; everything else under `show`. */
   type?: SyncType;
   title?: string;
-  status?: string;
+  /** `null` builds a record with no `status` at all — the state `itemStatus` answers null for. */
+  status?: string | null;
   lastWatchedAt?: string | null;
   watched?: number;
   total?: number;
@@ -453,7 +461,7 @@ export const libraryItem = ({
   id,
   type = 'shows',
   title = `Show ${id}`,
-  status = 'watching',
+  status: membership = 'watching',
   lastWatchedAt,
   watched,
   total,
@@ -465,6 +473,7 @@ export const libraryItem = ({
   runtime = 100,
   animeType,
 }: ItemSpec): LibraryItem => {
+  const status = membership ?? undefined;
   const episodes = Object.values(seasons).flat();
   const counted = episodes.filter((at) => at !== null).length;
   // An anime record nests under `show` like any other, and carries the same

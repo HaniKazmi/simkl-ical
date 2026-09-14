@@ -20,7 +20,7 @@ import { movieCellAt, type MovieGrid } from '../sheet/movies/2-grid.ts';
 import { bookCellAt, type BookGrid } from '../sheet/books/2-grid.ts';
 import type { SheetRunRecord } from '../sheet/io/journal.ts';
 import { ARTWORK_LABEL, artworkKeyFor, serialDate } from '../sheet/values.ts';
-import { instantFrom } from '../shared/dates.ts';
+import { instantFrom, later } from '../shared/dates.ts';
 import { classifyCell, type CellKind } from './3-decide.ts';
 
 /**
@@ -163,9 +163,6 @@ const cellText = (cell: CellData | undefined): string | null => {
 
 /** The id a block is keyed by: the show row's, else the first season row's (a cour block). */
 const blockId = (block: ShowBlock): number | null => block.ids[0] ?? block.seasons.flatMap((s) => s.ids)[0] ?? null;
-
-const later = (a: Temporal.Instant | null, b: Temporal.Instant | null): Temporal.Instant | null =>
-  a === null ? b : b === null ? a : Temporal.Instant.compare(a, b) >= 0 ? a : b;
 
 /**
  * When the sync last inserted a row for a title on a tab, off the journal.
