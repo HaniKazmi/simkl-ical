@@ -342,11 +342,13 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
     new ResizeObserver(edge).observe(strip);
     const progress = el('div', 'prog');
     listing.candidates.forEach((cand, i) => {
-      // A book tile is its own class rather than 'port' because it renders
-      // 'contain' where the other two crop. Nothing authors a book cover to a
-      // standard, so a square audiobook cover reaches the strip; cropped to
-      // 2:3 it would look like the poster it is not, hiding the very defect
-      // its low rank is telling the reader about.
+      // A book tile is its own class rather than 'port' because its box takes
+      // the cover's own width where the other two crop to a fixed one. Nothing
+      // authors a book cover to a standard, so a square audiobook cover
+      // reaches the strip; cropped to 2:3 it would look like the poster it is
+      // not, hiding the very defect its low rank is telling the reader about,
+      // and letterboxed into 2:3 the border would stand off every cover that
+      // is not exactly that shape.
       const shape = kind === 'movie' ? 'land' : kind === 'book' ? 'book' : 'port';
       const item = el('div', 'cand ' + shape + (i === 0 ? ' pick' : ''));
       const button = el('button');

@@ -222,12 +222,12 @@ const STYLE = `${BASE_STYLE}
 .cand img{display:block;background:var(--bg)}
 .cand.land img{width:240px;height:135px;object-fit:cover}
 .cand.port img{width:136px;height:200px;object-fit:cover}
-.cand.book img{width:136px;height:204px;object-fit:contain;background:var(--bg)}
+.cand.book img{height:204px;width:auto;max-width:272px;background:var(--bg)}
 .cand.pick button{box-shadow:0 0 0 2px var(--accent)}
 .cand .badge{position:absolute;top:.375rem;left:.375rem;font-size:.625rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;padding:.15rem .4rem;border-radius:4px;background:rgba(27,31,36,.8);color:#fff}
 .cand.pick .badge{background:var(--accent)}
 .cand .badge.top{left:auto;right:.375rem;background:var(--ok)}
-.cand .cap{display:flex;justify-content:space-between;gap:.5rem;font-size:.6875rem;color:var(--faint);font-family:var(--mono)}
+.cand .cap{display:flex;justify-content:space-between;gap:.5rem;font-size:.6875rem;color:var(--faint);font-family:var(--mono);width:0;min-width:100%;white-space:nowrap}
 .prog{margin-top:.5rem;color:var(--muted);font-size:.8125rem}
 .err{color:var(--crit)}
 .note{padding:.75rem .9rem;border:1px solid var(--line);background:var(--card);border-radius:8px;color:var(--muted)}
