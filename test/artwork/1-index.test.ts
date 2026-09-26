@@ -236,7 +236,13 @@ test('the summary counts what the chips show', () => {
     run({ tab: 'films', at: daysAgo(60), inserts: [{ address: 'row 3', title: 'B', note: '' }] }),
   ];
   const titles = indexArtwork(input({ films, shows, runs, stored: stored(['A'], []) }), { timezone: 'Europe/London' });
-  assert.deepEqual(summarise(titles), { total: 5, needing: 3, adoptable: 1, addedRecently: 1, noId: 1, shows: 1, films: 4, books: 0, bulkAdoptable: 1 });
+  assert.deepEqual(summarise(titles), {
+    total: 5,
+    needing: 3,
+    addedRecently: 1,
+    byState: { done: 1, 'missing-object': 0, unlinked: 2, adopt: 1, cover: 0, 'no-id': 1, unrecognised: 0 },
+    byKind: { movie: 4, show: 1, book: 0 },
+  });
 });
 
 test('a book indexes off its own tab: the id is the provider id, the author is the context, and no sync ever inserted it', () => {
@@ -259,8 +265,10 @@ test('a book indexes off its own tab: the id is the provider id, the author is t
   assert.equal(book?.franchise, '1984');
   assert.equal(book?.addedBySync, null);
   assert.equal(book?.releasedOn?.toString(), '1949-06-08');
-  // Every live cell links another host, so every book opens adoptable.
-  assert.equal(book?.state, 'adopt');
+  // Every live cell on the tab links a Hardcover cover, most of them the one
+  // this page exists to replace, so a linked book is a cover it holds rather
+  // than artwork the row needs.
+  assert.equal(book?.state, 'cover');
 });
 
 test('a book is dated by when it was finished, and by when it was started while it is still being read', () => {
@@ -273,7 +281,7 @@ test('a book is dated by when it was finished, and by when it was started while 
   assert.equal(dayOf(books({ started: null, ended: null })), undefined);
 });
 
-test('a book on two rows cannot be picked for, and the counts name books apart from the bulk button', () => {
+test('a book on two rows cannot be picked for, and a linked book cover is not adoptable', () => {
   const books = parseBookGrid(
     sheetSnapshot([
       BOOK_SHEET_HEADERS,
@@ -287,15 +295,32 @@ test('a book on two rows cannot be picked for, and the counts name books apart f
   assert.deepEqual(
     titles.filter((t) => t.kind === 'book').map((t) => [t.title, t.state]),
     [
-      ['Fine', 'adopt'],
+      ['Fine', 'cover'],
       ['Twice A', 'no-id'],
       ['Twice B', 'no-id'],
     ],
   );
   const summary = summarise(titles);
-  assert.equal(summary.books, 3);
-  // Two adoptable rows, but only the film is one the bulk button will act on:
-  // adopting a book copies the cover this page exists to replace.
-  assert.equal(summary.adoptable, 2);
-  assert.equal(summary.bulkAdoptable, 1);
+  assert.equal(summary.byKind.book, 3);
+  // The one linked cover is what the "Covers to pick" chip counts; a row with no id has no cover to pick.
+  assert.equal(summary.byState.cover, 1);
+  // Only the film: adopting a book copies the cover this page exists to
+  // replace, so the one count the chip and the bulk button read leaves it out.
+  assert.equal(summary.byState.adopt, 1);
+});
+
+test('a linked book cover neither counts as needing artwork nor sorts ahead of a film that does', () => {
+  // Titled so the alphabetical tiebreak would put the book first: only the
+  // needs-first rule puts the film ahead of it.
+  const books = parseBookGrid(sheetSnapshot([BOOK_SHEET_HEADERS, bookRow({ name: 'Anathem', id: 8, banner: 'https://wsrv.nl/?url=https://assets.hardcover.app/c.jpg' })]));
+  const films = parseMovieGrid(sheetSnapshot([MOVIE_SHEET_HEADERS, filmRow({ name: 'Zodiac', id: '1', banner: 'https://image.tmdb.org/t/p/w1280/x.jpg' })]));
+  const titles = indexArtwork(input({ books, films }), { timezone: 'Europe/London' });
+  assert.deepEqual(
+    titles.map((t) => [t.title, t.state]),
+    [
+      ['Zodiac', 'adopt'],
+      ['Anathem', 'cover'],
+    ],
+  );
+  assert.equal(summarise(titles).needing, 1);
 });

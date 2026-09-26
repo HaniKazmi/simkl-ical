@@ -41,7 +41,13 @@ export type ArtworkKind = (typeof ARTWORK_KINDS)[number];
  * - `missing-object`: the cell links this bucket and nothing is behind it —
  *   a row the sync inserted, or an object never uploaded.
  * - `unlinked`: a blank cell; a pick writes the link.
- * - `adopt`: an https URL; a pick may replace it, or adopt it.
+ * - `adopt`: an https URL on a film or show; a pick may replace it, or
+ *   adopt it.
+ * - `cover`: an https URL on a book. The same cell shape as `adopt`, and a
+ *   pick may still replace or adopt it one row at a time, but it is not
+ *   artwork the row needs: every cell on that tab links a Hardcover cover,
+ *   most of them the one the page exists to replace, so counted as needing
+ *   they would outnumber every film and show and sort above all of them.
  * - `no-id`: no SIMKL id, or one shared with another row; nothing can be
  *   looked up or written safely.
  * - `unrecognised`: a formula that does not resolve to this bucket, text
@@ -49,10 +55,19 @@ export type ArtworkKind = (typeof ARTWORK_KINDS)[number];
  *   address; a person has to look. The same test a pick makes, so a row is
  *   offered as adoptable only where adopting can be attempted.
  */
-export type ArtworkState = 'done' | 'missing-object' | 'unlinked' | 'adopt' | 'no-id' | 'unrecognised';
+export const ARTWORK_STATES = ['done', 'missing-object', 'unlinked', 'adopt', 'cover', 'no-id', 'unrecognised'] as const;
+
+export type ArtworkState = (typeof ARTWORK_STATES)[number];
 
 /** The states a pick can change. */
 export const NEEDS_ARTWORK: readonly ArtworkState[] = ['missing-object', 'unlinked', 'adopt'];
+
+/**
+ * The states a cell linking another public host lands in — `adopt` on a film
+ * or show, `cover` on a book. The client offers the adopt button for both and
+ * mirrors this as `LINKED`; the test suite pins the two lists equal.
+ */
+export const LINKED_ELSEWHERE: readonly ArtworkState[] = ['adopt', 'cover'];
 
 export interface ArtworkTitle {
   kind: ArtworkKind;
@@ -85,21 +100,17 @@ export interface ArtworkTitle {
 export interface ArtworkSummary {
   total: number;
   needing: number;
-  adoptable: number;
   /** Inserted by the sync inside the recency window. */
   addedRecently: number;
-  noId: number;
-  shows: number;
-  films: number;
-  books: number;
   /**
-   * Adoptable rows the bulk button will actually act on — every kind but
-   * books. Counted apart from `adoptable` because the button reads this and
-   * the filter chip reads that: a book is adoptable one row at a time, and
-   * a tab whose every cell is adoptable would otherwise make the button claim
-   * four hundred rows it skips.
+   * One count per state and per kind, each a chip on the page. Records rather
+   * than a field per chip, so a new state or kind fails `tsc` here instead of
+   * going uncounted. A book is never `adopt` (its linked cover is `cover`), so
+   * `byState.adopt` is at once what the Adoptable chip lists and what the bulk
+   * button acts on.
    */
-  bulkAdoptable: number;
+  byState: Record<ArtworkState, number>;
+  byKind: Record<ArtworkKind, number>;
 }
 
 export interface IndexInput {
@@ -182,6 +193,7 @@ const insertedAt = (runs: readonly SheetRunRecord[], tab: 'shows' | 'films', tit
 };
 
 const stateOf = (
+  kind: ArtworkKind,
   cell: { kind: CellKind; key: string | null; url: string | null },
   id: number | null,
   stored: Map<string, StoredObject> | null,
@@ -197,7 +209,7 @@ const stateOf = (
     case 'blank':
       return { state: 'unlinked', exists };
     case 'foreign':
-      return { state: allowedImageUrl(cell.url ?? '') ? 'adopt' : 'unrecognised', exists };
+      return { state: allowedImageUrl(cell.url ?? '') ? (kind === 'book' ? 'cover' : 'adopt') : 'unrecognised', exists };
     case 'other':
       return { state: 'unrecognised', exists };
   }
@@ -212,7 +224,7 @@ const entry = (
 ): ArtworkTitle => {
   const reading = classifyCell(cellData, bucket);
   const key = reading.key ?? artworkKeyFor(base.title);
-  const { state, exists } = stateOf(reading, base.id, stored, key);
+  const { state, exists } = stateOf(base.kind, reading, base.id, stored, key);
   return {
     ...base,
     cell: { kind: reading.kind, url: reading.url, previous: cellData },
@@ -361,15 +373,15 @@ export const summarise = (
   // its total in seconds is exact and needs no anchor.
   const since = now.subtract({ seconds: recentWindow.total('seconds') });
   const recent = (t: ArtworkTitle): boolean => t.addedBySync !== null && Temporal.Instant.compare(t.addedBySync, since) >= 0;
-  return {
-    total: titles.length,
-    needing: titles.filter((t) => NEEDS.has(t.state)).length,
-    adoptable: titles.filter((t) => t.state === 'adopt').length,
-    addedRecently: titles.filter(recent).length,
-    noId: titles.filter((t) => t.state === 'no-id').length,
-    shows: titles.filter((t) => t.kind === 'show').length,
-    films: titles.filter((t) => t.kind === 'movie').length,
-    books: titles.filter((t) => t.kind === 'book').length,
-    bulkAdoptable: titles.filter((t) => t.state === 'adopt' && t.kind !== 'book').length,
-  };
+  const byState = Object.fromEntries(ARTWORK_STATES.map((state) => [state, 0])) as Record<ArtworkState, number>;
+  const byKind = Object.fromEntries(ARTWORK_KINDS.map((kind) => [kind, 0])) as Record<ArtworkKind, number>;
+  let needing = 0;
+  let addedRecently = 0;
+  for (const t of titles) {
+    byState[t.state] += 1;
+    byKind[t.kind] += 1;
+    if (NEEDS.has(t.state)) needing += 1;
+    if (recent(t)) addedRecently += 1;
+  }
+  return { total: titles.length, needing, addedRecently, byState, byKind };
 };

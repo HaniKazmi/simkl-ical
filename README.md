@@ -170,7 +170,9 @@ Rows whose `Artwork` still links another host are **adoptable**: a pick may repl
 **Adopt** copies the current one into the bucket as-is. **Adopt all** does that over every such
 row, one at a time, with progress on the page — the migration from a tab of TMDB URLs to a tab of
 bucket links, resumable if it is interrupted. It skips books: every cell on that tab links a cover
-this page exists to replace, so adopting them in bulk would freeze the ones worth changing.
+this page exists to replace, so adopting them in bulk would freeze the ones worth changing. A book
+whose cell links a cover elsewhere is shown as a linked cover rather than as needing artwork, and
+can still be picked for or adopted one at a time.
 
 What it will not do: write a formula cell, write a cell that is not blank, a bucket link or a
 recognisable URL, or write at all while a sync run holds the sheet (it answers "busy" and the page

@@ -361,8 +361,8 @@ test('a book lists, offers Hardcover covers ranked, and a pick lands in the book
   await serve(async (app, { bucket, sheet }) => {
     const page = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork` });
     assert.equal(page.statusCode, 200);
-    // Every live cell links another host, so a book opens adoptable.
-    assert.match(page.body, /data-kind="book"[^>]*data-id="379760"[^>]*data-state="adopt"/);
+    // Every live book cell links another host, so a book opens as a linked cover.
+    assert.match(page.body, /data-kind="book"[^>]*data-id="379760"[^>]*data-state="cover"/);
 
     const listing = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=book&id=379760` });
     assert.equal(listing.statusCode, 200);
@@ -427,8 +427,8 @@ test('without a books tab the page still serves, and simply lists no books', asy
 test('the bulk adopt skips books, in the tile and in the script', async () => {
   await serve(async (app) => {
     const page = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork` });
-    // Two rows are adoptable — Star Wars and 1984 — but only the film is one
-    // the button acts on, so the tile must not claim both.
+    // Star Wars and 1984 both link another host, but only the film is
+    // adoptable in bulk — 1984 is a linked cover — so the tile claims one.
     assert.match(page.body, /<span class="t-name">adoptable<\/span><span class="t-head" style="display:block">1</);
     const script = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/app.js` });
     assert.match(script.body, /dataset\.kind !== 'book'/);
