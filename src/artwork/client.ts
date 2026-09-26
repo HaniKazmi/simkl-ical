@@ -17,6 +17,23 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
   /** Films, then shows, then books, within one franchise. */
   const KIND_RANK = { movie: 0, show: 1, book: 2 };
   const NEEDS = new Set(['missing-object', 'unlinked', 'adopt']);
+  /** Mirrors LINKED_ELSEWHERE in 1-index.ts: the states a cell linking another host lands in. */
+  const LINKED = new Set(['adopt', 'cover']);
+  // The upstreams send ISO 639 codes in two widths, TVDB three letters and
+  // TMDB and Hardcover two, and the browser names both; a code it cannot
+  // parse is shown as sent.
+  const languageNames = new Intl.DisplayNames(['en'], { type: 'language' });
+  const languageName = (code) => {
+    if (!code) return null;
+    try {
+      return languageNames.of(code.toLowerCase());
+    } catch {
+      return code;
+    }
+  };
+  // A backdrop with no language is textless: TMDB files title-free art under
+  // null. A poster or a cover with none is merely unrecorded.
+  const languageOf = (cand, kind) => languageName(cand.language) || (kind === 'movie' ? 'textless' : 'unknown');
   const rows = Array.from(document.querySelectorAll('.row'));
   const chips = Array.from(document.querySelectorAll('[data-filter]'));
   const search = document.querySelector('[data-search]');
@@ -40,20 +57,13 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
   };
 
   // --- filtering -----------------------------------------------------------
-  const matchesFilter = (row, name) => {
-    const state = row.dataset.state;
-    const kind = row.dataset.kind;
-    return (
-      name === 'all' ||
-      (name === 'needs' && NEEDS.has(state)) ||
-      (name === 'recent' && row.dataset.recent === '1') ||
-      (name === 'show' && kind === 'show') ||
-      (name === 'movie' && kind === 'movie') ||
-      (name === 'book' && kind === 'book') ||
-      (name === 'adopt' && state === 'adopt') ||
-      (name === 'no-id' && state === 'no-id')
-    );
-  };
+  // A chip is named after the state or kind it lists, so those need no case each.
+  const matchesFilter = (row, name) =>
+    name === 'all' ||
+    (name === 'needs' && NEEDS.has(row.dataset.state)) ||
+    (name === 'recent' && row.dataset.recent === '1') ||
+    name === row.dataset.state ||
+    name === row.dataset.kind;
   const matches = (row) => matchesFilter(row, filter) && (!query || row.dataset.q.includes(query));
   const applyFilter = () => {
     let shown = 0;
@@ -62,41 +72,52 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
       row.hidden = !ok;
       if (ok) shown += 1;
     }
-    // A franchise heading with nothing visible under it goes too.
-    for (const heading of document.querySelectorAll('.grp')) {
-      let any = false;
-      for (let next = heading.nextElementSibling; next && !next.classList.contains('grp'); next = next.nextElementSibling) {
-        if (!next.hidden) any = true;
-      }
-      heading.hidden = !any;
-    }
+    // A franchise heading with nothing visible under it goes too. Membership
+    // is held rather than walked, because a row outside any group can follow
+    // a group's last row with no heading between them.
+    for (const [heading, members] of headings) heading.hidden = !members.some((row) => !row.hidden);
     if (showing) showing.textContent = 'showing ' + shown + ' of ' + rows.length;
   };
 
   // --- ordering ------------------------------------------------------------
   // The server's order is needs-first, then most recently touched. By
-  // franchise regroups the same rows under headings, films in release order
-  // and shows by title, and a title with no franchise stands as its own.
+  // franchise sorts the same rows by franchise, films in release order, then
+  // shows, then books; a title with no franchise sorts under its own title.
+  // A heading goes only over a group of two or more: over one row it repeats
+  // the title printed directly beneath it, and most rows have no franchise.
   const list = document.querySelector('.rows');
+  const order = document.querySelector('[data-order]');
   const serverOrder = rows.slice();
+  /** Each heading on the page, and the rows under it. */
+  const headings = new Map();
   const franchiseOf = (row) => row.dataset.franchise || row.dataset.title;
+  /** One collator: the sort's group key and the run pass below compare with the same one by construction. */
+  const collate = new Intl.Collator(undefined, { sensitivity: 'base' }).compare;
   const byFranchise = (a, b) =>
-    franchiseOf(a).localeCompare(franchiseOf(b), undefined, { sensitivity: 'base' }) ||
+    collate(franchiseOf(a), franchiseOf(b)) ||
     KIND_RANK[a.dataset.kind] - KIND_RANK[b.dataset.kind] ||
     (a.dataset.released || '9999').localeCompare(b.dataset.released || '9999') ||
-    a.dataset.title.localeCompare(b.dataset.title, undefined, { sensitivity: 'base' });
+    collate(a.dataset.title, b.dataset.title);
   const reorder = (mode) => {
     if (!list) return;
-    for (const heading of list.querySelectorAll('.grp')) heading.remove();
+    for (const heading of headings.keys()) heading.remove();
+    headings.clear();
     if (mode === 'franchise') {
-      let last = null;
+      // The sort's first key is the group, so a group's rows are contiguous
+      // and one pass finds each run.
+      const runs = [];
       for (const row of rows.slice().sort(byFranchise)) {
-        const group = franchiseOf(row);
-        if (group !== last) {
-          list.appendChild(el('div', 'grp', group));
-          last = group;
+        const run = runs[runs.length - 1];
+        if (run && collate(run.name, franchiseOf(row)) === 0) run.rows.push(row);
+        else runs.push({ name: franchiseOf(row), rows: [row] });
+      }
+      for (const run of runs) {
+        if (run.rows.length > 1) {
+          const heading = el('div', 'grp', run.name);
+          list.appendChild(heading);
+          headings.set(heading, run.rows);
         }
-        list.appendChild(row);
+        for (const row of run.rows) list.appendChild(row);
       }
     } else {
       for (const row of serverOrder) list.appendChild(row);
@@ -107,6 +128,7 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
   for (const button of sorts) {
     button.addEventListener('click', () => {
       for (const other of sorts) other.setAttribute('aria-pressed', String(other === button));
+      if (order) order.textContent = button.dataset.caption;
       reorder(button.dataset.sort);
     });
   }
@@ -151,14 +173,53 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
     }
     recount();
   };
+  // The current image's size is known nowhere but the browser: the cell holds
+  // a URL, the bucket listing holds bytes, and neither says how many pixels are
+  // behind the link. So it is read off the thumbnail once that loads, and a
+  // row scrolled past unloaded shows nothing until it does. The ratio is
+  // written the way the candidate tiles write theirs — height over width for
+  // a portrait, width over height for a landscape — so the two compare at a glance.
+  const shapeOf = (width, height) => (height >= width ? '1:' + (height / width).toFixed(2) : (width / height).toFixed(2) + ':1');
+  const dimsOf = (img) => (img && img.naturalWidth > 0 ? img.naturalWidth + '×' + img.naturalHeight + ' · ' + shapeOf(img.naturalWidth, img.naturalHeight) : null);
+  /** Run fn with the image's dimensions once it has them. */
+  const whenSized = (img, fn) => {
+    if (!img) return;
+    const now = dimsOf(img);
+    if (now) fn(now);
+    else img.addEventListener('load', () => {
+      const dims = dimsOf(img);
+      if (dims) fn(dims);
+    }, { once: true });
+  };
+  /** Fill the row's dims cell, which the renderer leaves empty; text only, so no node is inserted while the list is scrolling. */
+  const noteDims = (row, dims) => {
+    const span = row.querySelector('.dims');
+    if (span && dims) span.textContent = ' · ' + dims;
+  };
+  // Thumbnails load lazily as the page scrolls. 'load' does not bubble, so one
+  // capturing listener on the list hears every one in place of a listener per
+  // row; images already complete from cache are read once here.
+  if (list) list.addEventListener('load', (event) => {
+    const img = event.target;
+    if (img.matches && img.matches('.thb img')) noteDims(img.closest('.row'), dimsOf(img));
+  }, true);
+  for (const row of rows) noteDims(row, dimsOf(row.querySelector('.thb img')));
+  /** Swap the current image after a pick. The button is the renderer's; only its child changes. */
   const setThumb = (row, url) => {
     if (!loadable(url)) return;
-    const old = row.querySelector('.th, .ph');
+    const button = row.querySelector('.thb');
+    if (!button) return;
     const img = el('img', 'th' + (row.dataset.kind === 'movie' ? '' : ' portrait'));
     img.alt = '';
     img.loading = 'lazy';
     img.src = url + (url.includes('?') ? '&' : '?') + 't=' + Date.now();
-    if (old) old.replaceWith(img);
+    button.replaceChildren(img);
+    button.disabled = false;
+    // An open panel's "current" label describes this image now, not the one it replaced.
+    whenSized(img, (dims) => {
+      const current = row.querySelector('.cands .current');
+      if (current) current.textContent = 'current ' + dims;
+    });
   };
   const settle = (row, result) => {
     const link = result.link;
@@ -231,19 +292,27 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
     });
   }
   // One reading of an upstream's own figure, for the tile caption and the
-  // dialog both: Hardcover counts the readers holding an edition, which is not
-  // a vote on its cover, and TVDB publishes a score and no count at all. Two
-  // copies of this is how the dialog came to call a book's readers votes.
-  const tally = (cand, kind) => (kind === 'book' ? cand.votes + ' readers' : cand.votes !== null ? cand.votes + ' votes' : 'score ' + cand.score);
+  // dialog both, so the two cannot name it differently. Hardcover counts the
+  // readers holding an edition, which is not a vote on its cover. TVDB
+  // publishes a score and no count, and the score is an internal figure in
+  // the hundred thousands that orders nothing a reader can check, so a
+  // poster says its language instead.
+  const tally = (cand, kind) => (kind === 'book' ? cand.votes + ' readers' : cand.votes !== null ? cand.votes + ' votes' : languageOf(cand, kind));
 
   const describe = (cand, kind) => cand.width + '×' + cand.height + ' · ' + tally(cand, kind) + ' · ' + cand.source;
 
-  // The row's current image enlarges the same way; the URL is the cell's.
-  for (const row of rows) {
-    const current = row.querySelector('img.th');
-    if (!current) continue;
-    current.addEventListener('click', () => openDialog(current.src, row.dataset.title + ' · current image', null));
-  }
+  // The row's current image enlarges the same way; the URL is the cell's. One
+  // listener on the list, reading the image at click time, so the thumbnail
+  // 'setThumb' swaps in after a pick needs no wiring of its own.
+  if (list) list.addEventListener('click', (event) => {
+    const button = event.target.closest('.thb');
+    if (!button) return;
+    const img = button.querySelector('img');
+    const row = button.closest('.row');
+    if (!img || !row) return;
+    const dims = dimsOf(img);
+    openDialog(img.src, row.dataset.title + ' · current image' + (dims ? ' · ' + dims : ''), null);
+  });
 
   const renderStrip = (row, listing, panel) => {
     panel.replaceChildren();
@@ -253,9 +322,24 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
     label.appendChild(el('span', '', listing.candidates.length + what));
     const ranked = kind === 'movie' ? '16:9 only · English first, ranked by votes' : kind === 'show' ? 'English first, 680×1000 next, then by score' : 'English first, then 2:3, then 300px wide, then UK, then readers';
     label.appendChild(el('span', 'dim', ranked + ' · click a tile to enlarge and use it'));
+    // The current image's size beside the candidates', so a pick can be judged against what it replaces.
+    const current = el('span', 'dim current');
+    whenSized(row.querySelector('.thb img'), (dims) => {
+      current.textContent = 'current ' + dims;
+    });
+    label.appendChild(current);
     if (listing.error) label.appendChild(el('span', 'err', listing.error));
     panel.appendChild(label);
     const strip = el('div', 'strip');
+    // The fade on the frame's right edge says the strip scrolls; it goes once
+    // the strip has nothing further to show. On the frame, not the strip,
+    // because a pseudo-element on a scroll container scrolls with it.
+    const frame = el('div', 'frame');
+    frame.appendChild(strip);
+    const edge = () => frame.classList.toggle('end', strip.scrollLeft + strip.clientWidth >= strip.scrollWidth - 1);
+    strip.addEventListener('scroll', edge, { passive: true });
+    // Fires once the strip is in the document and sized, which is the first reading.
+    new ResizeObserver(edge).observe(strip);
     const progress = el('div', 'prog');
     listing.candidates.forEach((cand, i) => {
       // A book tile is its own class rather than 'port' because it renders
@@ -274,22 +358,24 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
       button.appendChild(img);
       // A null language means textless on a film backdrop and merely unknown
       // on a book cover, so a book badges its country — the fact its rank
-      // turned on — and falls back to the language.
-      const mark = kind === 'book' ? cand.country || cand.language || '?' : cand.language === null ? 'textless' : cand.language;
-      button.appendChild(el('span', 'badge', i === 0 ? 'top' : mark));
+      // turned on — and falls back to the language. The first tile's rank is
+      // a badge of its own, so the language is shown on every tile.
+      const mark = kind === 'book' ? cand.country || languageName(cand.language) || '?' : languageOf(cand, kind);
+      button.appendChild(el('span', 'badge', mark));
+      if (i === 0) button.appendChild(el('span', 'badge top', 'top'));
       const cap = el('div', 'cap');
       cap.appendChild(el('span', '', cand.width + '×' + cand.height));
       cap.appendChild(el('span', '', tally(cand, kind)));
       item.appendChild(button);
       item.appendChild(cap);
       if (kind === 'book') {
-        // Height over width, so a cover reads as 1.50 against the 1.5 of 2:3 —
-        // the shape tier's own question, in the form a reader can compare at a
-        // glance. The dimensions above say how big; this says what shape.
-        const shapeOf = el('div', 'cap');
-        shapeOf.appendChild(el('span', '', cand.format || 'edition'));
-        shapeOf.appendChild(el('span', '', '1:' + (cand.height / cand.width).toFixed(2)));
-        item.appendChild(shapeOf);
+        // A cover reads as 1:1.50 against the 1:1.5 of 2:3 — the shape tier's
+        // own question, in the form a reader can compare at a glance. The
+        // dimensions above say how big; this says what shape.
+        const shapeCap = el('div', 'cap');
+        shapeCap.appendChild(el('span', '', cand.format || 'edition'));
+        shapeCap.appendChild(el('span', '', shapeOf(cand.width, cand.height)));
+        item.appendChild(shapeCap);
       }
       const use = async () => {
         for (const other of strip.querySelectorAll('.cand')) other.classList.remove('pick');
@@ -300,9 +386,10 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
       button.addEventListener('click', () => openDialog(cand.url, row.dataset.title + ' · ' + describe(cand, kind), use));
       strip.appendChild(item);
     });
-    panel.appendChild(strip);
+    panel.appendChild(frame);
     panel.appendChild(progress);
-    if (row.dataset.state === 'adopt') {
+    // A book's linked cover is adopted here, one row at a time.
+    if (LINKED.has(row.dataset.state)) {
       const adopt = el('button', 'btn quiet', 'Adopt the current image instead');
       adopt.type = 'button';
       adopt.addEventListener('click', async () => {
@@ -344,10 +431,9 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
   const adoptAll = document.querySelector('[data-adopt-all]');
   const adoptProgress = document.querySelector('[data-adopt-progress]');
   if (adoptAll) adoptAll.addEventListener('click', async () => {
-    // Books are excluded, and the tile's count is computed the same way
-    // server-side. Adopting copies the cover the cell already links, and every
-    // cell on that tab links one this page exists to replace — in bulk that
-    // freezes four hundred of them in the bucket.
+    // A book's linked cover is 'cover', never 'adopt', so the kind check is a
+    // second copy of that rule in the one place where a regression in it
+    // would freeze four hundred covers in the bucket.
     const targets = rows.filter((row) => row.dataset.state === 'adopt' && row.dataset.id && row.dataset.kind !== 'book');
     if (!targets.length) return;
     if (!window.confirm('Copy the image behind ' + targets.length + ' rows into the bucket and rewrite each cell to the static link?')) return;

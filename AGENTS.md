@@ -680,12 +680,14 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   undefaulted so each is a real test; a defaulted one would answer "a tab was named" on every
   machine, which is the trap `googleCredentialsExplicit` exists to work around. Unconfigured, books
   are simply not listed, and no read is paid for them.
-- **Adopt all skips books, and the tile's count skips them with it.** Adopting copies the cover the
-  cell already links, and every cell on that tab links one this page exists to replace — in bulk it
-  would freeze four hundred of them in the bucket. The rule lives twice, once in `summarise`'s
-  `bulkAdoptable` and once inside the client string, because the button reads the first and acts on
-  the second; both are pinned. The `Adoptable` **chip** still counts books, because it filters rows
-  and a book is genuinely adoptable one at a time.
+- **A book's linked cover is `cover`, never `adopt` and never a state that needs artwork.** Every
+  cell on that tab links a Hardcover cover, most of them the one this page exists to replace, so
+  read as `adopt` the 401 books would outnumber every film and show in the needing count and sort
+  above all of them, and **Adopt all** would freeze four hundred covers in the bucket. A `cover` row
+  can still be picked for, or adopted one row at a time. Because a book is never `adopt`, the bulk
+  button and the `Adoptable` chip read one count, `summarise`'s `byState.adopt`, and cannot disagree.
+  The client's `kind !== 'book'` guard in `adoptAll` is the rule's second copy, in the one place
+  that acts on it, and is pinned alongside the state.
 - **A caller may name its own request-log path, and only a caller that has to.** `HttpRequestOptions.path`
   reaches `beginRequest` only when supplied; otherwise the log keeps `describeUrl`, which retains
   the `?season=3` and `?date_from=` that distinguish one REST row from another. GraphQL is the one
