@@ -50,7 +50,7 @@ test('the show tab\'s Artwork column is resolved apart from the sync\'s headers,
   const withBanner = parseGrid(sheetSnapshot([SHEET_HEADERS, ...block('Severance', 1, null)]));
   assert.equal(showBannerColumn(withBanner), ARTWORK_COL);
   const noArtwork = SHEET_HEADERS.filter((h) => h !== 'Artwork');
-  const without = parseGrid(sheetSnapshot([noArtwork, rowByLabel(noArtwork, { Title: 'Severance', Status: 'Ended', ID: 1, Type: 'show' })]));
+  const without = parseGrid(sheetSnapshot([noArtwork, rowByLabel(noArtwork, { Title: 'Severance', Status: 'Ended', ID: 1, Style: 'Realistic' })]));
   assert.equal(showBannerColumn(without), null);
   const [title] = indexArtwork(input({ shows: without }), { timezone: 'Europe/London' });
   assert.equal(title?.address, null);
@@ -95,13 +95,13 @@ test('every cell kind has a state, and the key follows the cell where it links t
 });
 
 test('a show\'s franchise comes from its own tab\'s column, and a tab without one degrades', () => {
-  const withColumn = parseGrid(sheetSnapshot([SHEET_HEADERS, showRow('Loki', 'Ended', 1, 'show', { franchise: 'Marvel' })]));
+  const withColumn = parseGrid(sheetSnapshot([SHEET_HEADERS, showRow('Loki', 'Ended', 1, 'Realistic', { franchise: 'Marvel' })]));
   const [loki] = indexArtwork(input({ shows: withColumn }), { timezone: 'Europe/London' });
   assert.equal(loki?.franchise, 'Marvel');
   assert.equal(loki?.context, 'Ended');
   assert.equal(loki?.releasedOn, null);
   const noFranchise = SHEET_HEADERS.filter((h) => h !== 'Franchise');
-  const without = parseGrid(sheetSnapshot([noFranchise, rowByLabel(noFranchise, { Title: 'Loki', Status: 'Ended', ID: 1, Type: 'show' })]));
+  const without = parseGrid(sheetSnapshot([noFranchise, rowByLabel(noFranchise, { Title: 'Loki', Status: 'Ended', ID: 1, Style: 'Realistic' })]));
   assert.equal(indexArtwork(input({ shows: without }), { timezone: 'Europe/London' })[0]?.franchise, null);
 });
 

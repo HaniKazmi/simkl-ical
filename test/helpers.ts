@@ -255,7 +255,7 @@ export const cellOf = (spec: CellSpec): CellData => {
   }
   // A boolean is its own `ExtendedValue` member, not a stringified one — kept
   // so a guard test can prove a `boolValue` cell is refused where the tab now
-  // holds a string (`Format`, `Type`).
+  // holds a string (`Format`, `Style`).
   const value =
     typeof spec === 'number' ? { numberValue: spec } : typeof spec === 'boolean' ? { boolValue: spec } : { stringValue: spec };
   return { userEnteredValue: value, effectiveValue: value };
@@ -272,7 +272,7 @@ export const SHEET_HEADERS = [
   'Other Genres',
   'Network',
   'Certificate',
-  'Type',
+  'Style',
   'Status',
   'Season',
   'Subtitle',
@@ -302,7 +302,7 @@ export const MOVIE_SHEET_HEADERS = [
   'Watch Date',
   'Runtime (min)',
   'Score',
-  'Type',
+  'Style',
   'ID',
   'Artwork',
 ];
@@ -384,14 +384,14 @@ export const showRow = (
   title: string,
   status: string | null,
   id: number | string | null = null,
-  type = 'show',
+  style = 'Realistic',
   { artwork = null, franchise = null }: { artwork?: string | null; franchise?: string | null } = {},
 ): CellSpec[] => {
   const formulas = showRowFormulas(SHEET_COLUMNS, SHOW_FIXTURE_ROW);
   return rowByLabel(SHEET_HEADERS, {
     Title: title,
     Franchise: franchise,
-    Type: type,
+    Style: style,
     Status: status,
     Season: { formula: formulas.Season, value: 1 },
     Episodes: { formula: formulas.Episode, value: 6 },
@@ -532,8 +532,8 @@ export interface FilmRowSpec {
   director?: string | null;
   /** Text, matching what all 366 live rows hold. A number here is a different cell. */
   id?: string | number | null;
-  /** `film` or `anime`, always present on a real row; default `film`. */
-  type?: 'film' | 'anime' | null;
+  /** One of the three `Style` words, always present on a real row; default `Realistic`. */
+  style?: string | null;
   /** The field id `bannerFor`/the guard use — the tab's `Artwork` cell. */
   banner?: string | null;
   series?: string | null;
@@ -554,7 +554,7 @@ export const filmRow = ({
   franchise = null,
   director = null,
   id = null,
-  type = 'film',
+  style = 'Realistic',
   banner = null,
   series = null,
   seriesNumber = null,
@@ -573,7 +573,7 @@ export const filmRow = ({
     'Watch Date': watched,
     'Runtime (min)': runtime,
     Score: score,
-    Type: type,
+    Style: style,
     ID: id === null ? null : String(id),
     Artwork: banner,
   });

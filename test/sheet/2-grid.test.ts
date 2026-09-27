@@ -39,12 +39,12 @@ test('column letters are real base 26 past Z', () => {
 // --- headers ---------------------------------------------------------------
 
 test('the header row is found by content, so a title row above it is survivable', () => {
-  const rows = [['My shows', null], [], H, ...[show('Fargo', 'Ended', 1, 'show')]];
+  const rows = [['My shows', null], [], H, ...[show('Fargo', 'Ended', 1, 'Realistic')]];
   assert.equal(findHeaderRow(rows.map((r) => r.map(cellOf)), ['Title', 'Season']), 2);
 });
 
 test('headers resolve case-insensitively and on trimmed text', () => {
-  const header = ['  TITLE ', 'status', 'seasons / last watched', 'Season', 'Episodes', 'Start Date', 'End Date', 'episode length (min)', 'ID', 'type'];
+  const header = ['  TITLE ', 'status', 'seasons / last watched', 'Season', 'Episodes', 'Start Date', 'End Date', 'episode length (min)', 'ID', 'style'];
   const columns = resolveColumns(header.map(cellOf), header.length, HEADERS, labelOf);
   assert.equal(columns.Show, 0);
   assert.equal(columns.id, 8);
@@ -55,7 +55,7 @@ test('headers resolve case-insensitively and on trimmed text', () => {
 test('a shuffled column order resolves to the same blocks', () => {
   const shuffled = [...H].reverse();
   const pick = (row: CellSpec[]): CellSpec[] => shuffled.map((label) => row[col(H, label)] as CellSpec);
-  const rows = [show('Fargo', 'Ended', 3381, 'show'), season(1, 6, 45000, null)];
+  const rows = [show('Fargo', 'Ended', 3381, 'Realistic'), season(1, 6, 45000, null)];
 
   const straight = parseGrid(sheetSnapshot([H, ...rows]));
   const mixed = parseGrid(sheetSnapshot([shuffled, ...rows.map(pick)]));
@@ -76,15 +76,15 @@ test('a missing, renamed or duplicated header is a hard failure', () => {
 test('the declared width is used, not the widest row', () => {
   // A short read must not present a displaced header as missing — under the
   // fail-closed rule that disables the sync entirely.
-  const snapshot = sheetSnapshot([H, show('Fargo', 'Ended', 1, 'show')], { columnCount: 31 });
-  assert.equal(parseGrid(snapshot).columns.Type, col(H, 'Type'));
+  const snapshot = sheetSnapshot([H, show('Fargo', 'Ended', 1, 'Realistic')], { columnCount: 31 });
+  assert.equal(parseGrid(snapshot).columns.Style, col(H, 'Style'));
 });
 
 // --- blocks ----------------------------------------------------------------
 
 test('a show row starts a block and the rows under it are its seasons', () => {
   const grid = parseGrid(
-    sheetSnapshot([H, show('Fargo', 'Ended', 3381, 'show'), season(1, 6, 45000, 45010), season(2, 10, 45100, null), show('Silo', 'Watching', 7, 'show'), season(3, 7, 46000, null)]),
+    sheetSnapshot([H, show('Fargo', 'Ended', 3381, 'Realistic'), season(1, 6, 45000, 45010), season(2, 10, 45100, null), show('Silo', 'Watching', 7, 'Realistic'), season(3, 7, 46000, null)]),
   );
   assert.deepEqual(grid.blocks.map((b) => b.title), ['Fargo', 'Silo']);
   assert.deepEqual(grid.blocks[0]?.seasons.map((s) => s.season), [1, 2]);
@@ -103,16 +103,16 @@ test('a numeric show title is refused, because the roll-up would merge two block
   const numericTitle = seasonRow(1, 1, null, { id: 2 });
   numericTitle[col(H, 'Title')] = 1899;
   numericTitle[col(H, 'Status')] = 'Ended';
-  assert.throws(() => parseGrid(sheetSnapshot([H, show('Fargo', 'Ended', 1, 'show'), season(1, 6, 45000, null), numericTitle])), /is not text/);
+  assert.throws(() => parseGrid(sheetSnapshot([H, show('Fargo', 'Ended', 1, 'Realistic'), season(1, 6, 45000, null), numericTitle])), /is not text/);
 });
 
 test('trailing blank rows are the sheet tail, not data', () => {
-  const grid = parseGrid(sheetSnapshot([H, show('Fargo', 'Ended', 1, 'show'), season(1, 6, 45000, null), [null, null, null], [null]]));
+  const grid = parseGrid(sheetSnapshot([H, show('Fargo', 'Ended', 1, 'Realistic'), season(1, 6, 45000, null), [null, null, null], [null]]));
   assert.equal(grid.blocks[0]?.seasons.length, 1);
 });
 
 test('a fractional season label parses as itself, so callers can refuse it', () => {
-  const grid = parseGrid(sheetSnapshot([H, show('Doctor Who', 'Ended', 8530, 'show'), season(13.5, 1, 45000, 45001)]));
+  const grid = parseGrid(sheetSnapshot([H, show('Doctor Who', 'Ended', 8530, 'Realistic'), season(13.5, 1, 45000, 45001)]));
   assert.equal(grid.blocks[0]?.seasons[0]?.season, 13.5);
 });
 
@@ -129,24 +129,24 @@ test('a split cour reads as an ordered list of ids', () => {
 // Both exceptions exist in the real sheet: Doctor Who carries ids in both
 // places, Parasyte only on a season row.
 test("a season row's own id wins, and a blank one inherits the show row's", () => {
-  const grid = parseGrid(sheetSnapshot([H, show('Doctor Who', 'Ended', 8530, 'show'), season(13, 8, 45000, 45010), season(14, 8, 45500, null, 2463827)]));
+  const grid = parseGrid(sheetSnapshot([H, show('Doctor Who', 'Ended', 8530, 'Realistic'), season(13, 8, 45000, 45010), season(14, 8, 45500, null, 2463827)]));
   const block = grid.blocks[0]!;
   assert.deepEqual(idsFor(block, block.seasons[0]!), [8530]);
   assert.deepEqual(idsFor(block, block.seasons[1]!), [2463827]);
 });
 
 test('a block whose show row has no id still resolves from its season rows', () => {
-  const grid = parseGrid(sheetSnapshot([H, show('Parasyte: The Grey', 'Ended', null, 'show'), season(1, 6, 45000, null, 1990183)]));
+  const grid = parseGrid(sheetSnapshot([H, show('Parasyte: The Grey', 'Ended', null, 'Realistic'), season(1, 6, 45000, null, 1990183)]));
   const block = grid.blocks[0]!;
   assert.deepEqual(block.ids, []);
-  // Type says `show` and SIMKL agrees, so the id's location is not inferable
-  // from it — which is why nothing infers it.
-  assert.equal(block.type, 'show');
+  // Style says `Realistic` and SIMKL agrees, so the id's location is not
+  // inferable from it — which is why nothing infers it.
+  assert.equal(block.style, 'Realistic');
   assert.deepEqual(idsFor(block, block.seasons[0]!), [1990183]);
 });
 
 test('an id claimed by two rows is reported, because neither claimant is safe to write', () => {
-  const grid = parseGrid(sheetSnapshot([H, show('A', 'Ended', null, 'anime'), season(1, 6, 45000, null, 99), season(2, 6, 45100, null, 99)]));
+  const grid = parseGrid(sheetSnapshot([H, show('A', 'Ended', null, 'Anime'), season(1, 6, 45000, null, 99), season(2, 6, 45100, null, 99)]));
   assert.deepEqual([...duplicateIds(grid.blocks)], [99]);
 });
 
@@ -155,7 +155,7 @@ test('an id claimed by two rows is reported, because neither claimant is safe to
 // edits in two places.
 test('the same id on two show rows is caught, not just on two season rows', () => {
   const grid = parseGrid(
-    sheetSnapshot([H, show('Fargo', 'Ended', 3381, 'show'), season(1, 6, 45000, null), show('Fargo (again)', 'Ended', 3381, 'show'), season(1, 6, 45000, null)]),
+    sheetSnapshot([H, show('Fargo', 'Ended', 3381, 'Realistic'), season(1, 6, 45000, null), show('Fargo (again)', 'Ended', 3381, 'Realistic'), season(1, 6, 45000, null)]),
   );
   assert.deepEqual([...duplicateIds(grid.blocks)], [3381]);
 });
@@ -163,7 +163,7 @@ test('the same id on two show rows is caught, not just on two season rows', () =
 // A row is closed by anything in End, not by it parsing as a date — otherwise
 // a hand-typed note reads as open and gets overwritten.
 test('a non-numeric End still closes the row', () => {
-  const rows = [H, show('Fargo', 'Ended', 1, 'show'), season(1, 6, 45000, null)];
+  const rows = [H, show('Fargo', 'Ended', 1, 'Realistic'), season(1, 6, 45000, null)];
   rows[2]![col(H, 'End Date')] = 'TBD';
   assert.equal(parseGrid(sheetSnapshot(rows)).blocks[0]?.seasons[0]?.closed, true);
 });
@@ -173,7 +173,7 @@ test('a non-numeric End still closes the row', () => {
 // conflict. Counted per row, every row in the block reads as clashing and the
 // block goes permanently inert.
 test('a show row and its own season row naming one id is not a duplicate', () => {
-  const grid = parseGrid(sheetSnapshot([H, show('Frieren', 'Watching', 99, 'anime'), season(1, 12, 44000, null, 99)]));
+  const grid = parseGrid(sheetSnapshot([H, show('Frieren', 'Watching', 99, 'Anime'), season(1, 12, 44000, null, 99)]));
   assert.deepEqual([...duplicateIds(grid.blocks)], []);
 });
 
@@ -193,7 +193,7 @@ test('a row carrying only an id is not read as a season row', () => {
 // planner, a guard or a verifier asks for a column is the field, never which
 // of the two lists it came from.
 test('the six block columns resolve from the live header order', () => {
-  const grid = parseGrid(sheetSnapshot([H, show('Fargo', 'Ended', 3381, 'show')]));
+  const grid = parseGrid(sheetSnapshot([H, show('Fargo', 'Ended', 3381, 'Realistic')]));
   assert.deepEqual(Object.fromEntries(BLOCK_HEADERS.map((field) => [field, grid.fields[field]])), {
     Franchise: col(H, 'Franchise'),
     Genre: col(H, 'Genre'),
@@ -208,14 +208,14 @@ test('the six block columns resolve from the live header order', () => {
 // reason to fail closed the way a missing required column is.
 test('a header lacking an optional column parses without throwing, leaving it unresolved', () => {
   const noNetwork = H.filter((label) => label !== 'Network');
-  const rows = [noNetwork, rowByLabel(noNetwork, { Title: 'Fargo', Status: 'Ended', Type: 'show', ID: 3381 })];
+  const rows = [noNetwork, rowByLabel(noNetwork, { Title: 'Fargo', Status: 'Ended', Style: 'Realistic', ID: 3381 })];
   const grid = parseGrid(sheetSnapshot(rows));
   assert.equal(grid.fields.Network, undefined);
 });
 
 test('a duplicated optional column resolves to absent, not a thrown error', () => {
   const duped = [...H, 'Genre'];
-  const rows = [duped, [...rowByLabel(H, { Title: 'Fargo', Status: 'Ended', Type: 'show', ID: 3381 }), null]];
+  const rows = [duped, [...rowByLabel(H, { Title: 'Fargo', Status: 'Ended', Style: 'Realistic', ID: 3381 }), null]];
   const grid = parseGrid(sheetSnapshot(rows));
   assert.equal(grid.fields.Genre, undefined);
   // The other five are untouched by one column's duplicate.
@@ -227,14 +227,14 @@ test('a block\'s franchise reads the Franchise cell as text, and is null when th
   const grid = parseGrid(
     sheetSnapshot([
       H,
-      show('Fargo', 'Ended', 3381, 'show', { franchise: 'Fargo' }),
-      show('Silo', 'Watching', 7, 'show'),
+      show('Fargo', 'Ended', 3381, 'Realistic', { franchise: 'Fargo' }),
+      show('Silo', 'Watching', 7, 'Realistic'),
     ]),
   );
   assert.equal(grid.blocks[0]?.franchise, 'Fargo');
   assert.equal(grid.blocks[1]?.franchise, null);
 
-  const without = parseGrid(sheetSnapshot([noFranchise, rowByLabel(noFranchise, { Title: 'Fargo', Status: 'Ended', Type: 'show', ID: 3381 })]));
+  const without = parseGrid(sheetSnapshot([noFranchise, rowByLabel(noFranchise, { Title: 'Fargo', Status: 'Ended', Style: 'Realistic', ID: 3381 })]));
   assert.equal(without.blocks[0]?.franchise, null);
 });
 

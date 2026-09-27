@@ -9,7 +9,7 @@
  */
 
 import { plainDateIn, releaseDate } from '../../shared/dates.ts';
-import { CERTIFICATE_AGES, artworkKeyFor, artworkLink, dateSerial, mapGenres } from '../values.ts';
+import { CERTIFICATE_AGES, artworkKeyFor, artworkLink, dateSerial, mapGenres, STYLE_ANIME, STYLE_REALISTIC, STYLE_STYLISED, type Style } from '../values.ts';
 import { config } from '../../shared/config.ts';
 import type { TmdbBackdrop, TmdbMovie, TmdbRelease } from '../../api/tmdb/types.ts';
 
@@ -19,7 +19,7 @@ import type { TmdbBackdrop, TmdbMovie, TmdbRelease } from '../../api/tmdb/types.
  * are one scale. Re-exported rather than re-imported at each call site so this
  * tab's modules have one place to read its conventions from.
  */
-export { genreListProblem, genresCell, isCertificate, isGenre, MAX_SECONDARY_GENRES } from '../values.ts';
+export { genreListProblem, genresCell, isCertificate, isGenre, isStyle, MAX_SECONDARY_GENRES, STYLES } from '../values.ts';
 
 // --- Genres ----------------------------------------------------------------
 
@@ -36,7 +36,9 @@ export { genreListProblem, genresCell, isCertificate, isGenre, MAX_SECONDARY_GEN
  * pick a primary in any case: TMDB never lists `History` first.
  *
  * `Animation`, `Crime`, `Family`, `Music`, `TV Movie`, `War` and `Western` are
- * dropped because the vocabulary has nowhere to put them.
+ * dropped because the vocabulary has nowhere to put them. `Animation` still
+ * decides the row's `Style` — through `animatedOn`, which reads TMDB's list
+ * and not this map's output.
  */
 const TMDB_GENRES: Record<string, string> = {
   Action: 'Action',
@@ -150,7 +152,7 @@ export const watchedInCinema = (
   return since >= 0 && since <= windowDays;
 };
 
-// --- Format and Type -------------------------------------------------------
+// --- Format and Style ------------------------------------------------------
 
 /**
  * How the `Format` column spells where a film was watched. Both words are
@@ -167,19 +169,31 @@ export const formatCell = (inCinema: boolean): string => (inCinema ? FORMAT_CINE
 /** The closed set the guard re-derives: anything else is a word the tab does not use. */
 export const isFormat = (value: string): boolean => FORMATS.has(value);
 
+/** TMDB's genre id for `Animation`. */
+const TMDB_ANIMATION = 16;
+
 /**
- * How the `Type` column spells what kind of film a row holds — the same
- * vocabulary the show tab's `Type` uses for a series, so a reader filtering on
- * `anime` gets both.
+ * Whether TMDB files the film under `Animation`, by genre id rather than by
+ * name: the id is the same in every response language, and it keeps the style
+ * decision apart from `TMDB_GENRES`, which drops `Animation` from the `Genre`
+ * cells altogether.
  */
-export const TYPE_ANIME = 'anime';
-export const TYPE_FILM = 'film';
+export const animatedOn = (movie: TmdbMovie | undefined): boolean =>
+  (movie?.genres ?? []).some((genre) => genre.id === TMDB_ANIMATION);
 
-const FILM_TYPES = new Set<string>([TYPE_ANIME, TYPE_FILM]);
-
-export const typeCell = (anime: boolean): string => (anime ? TYPE_ANIME : TYPE_FILM);
-
-export const isFilmType = (value: string): boolean => FILM_TYPES.has(value);
+/**
+ * The `Style` cell — the vocabulary the Shows tab's `Style` uses too, so a
+ * reader filtering on `Anime` gets both tabs.
+ *
+ * SIMKL's anime flag first: an anime film is `Anime` whatever TMDB files it
+ * under, and TMDB files most of them `Animation` too. After that TMDB's
+ * `Animation` genre is what separates a cartoon from a picture of the real
+ * world, which is the whole of what `Stylised` against `Realistic` says.
+ */
+export const styleCell = (anime: boolean, animated: boolean): Style =>
+  anime ? STYLE_ANIME
+  : animated ? STYLE_STYLISED
+  : STYLE_REALISTIC;
 
 // --- Certificate -----------------------------------------------------------
 

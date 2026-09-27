@@ -1144,7 +1144,7 @@ test('a TV show with no block gets one, in one run, from three upstreams', async
         assert.equal(cell(rows, 4, 'Other Genres')?.stringValue, 'Sci-Fi, Thriller');
         assert.equal(cell(rows, 4, 'Network')?.stringValue, 'Apple TV+', 'SIMKL’s, through the spelling map');
         assert.equal(cell(rows, 4, 'Certificate')?.numberValue, 15, 'TMDB’s GB rating, as an age');
-        assert.equal(cell(rows, 4, 'Type')?.stringValue, 'show');
+        assert.equal(cell(rows, 4, 'Style')?.stringValue, 'Realistic', 'TVDB files it under no Animation');
         assert.equal(cell(rows, 4, 'Status')?.stringValue, 'Watching');
         // Text, as all 189 live show rows hold it: a number compares unequal to
         // every other id cell, so the next run would not recognise its own block.
@@ -1176,6 +1176,26 @@ test('a TV show with no block gets one, in one run, from three upstreams', async
         assert.equal(recorded?.status, 'applied');
         assert.equal(recorded?.inserts[0]?.address, 'rows 5-6');
         assert.match(recorded?.inserts[0]?.note ?? '', /Severance \(simkl 900\): new block at rows 5-6, S1 with 2 episodes/);
+      }),
+    );
+  });
+});
+
+// `Animation` is dropped on the way to the genre cells, so this is the one
+// place the style can be seen to come off TVDB's raw answer rather than off
+// what the `Genre` column ends up holding.
+test('a series TVDB files under Animation lands as a Stylised block', async () => {
+  clearTokenCache();
+  clearTvdbTokenCache();
+  const sheet = blockServer({ tvdb: tvdbSeries(['Animation', 'Comedy', 'Science Fiction']) });
+  await withFreshJournal(async () => {
+    await withBlockKeys({}, () =>
+      withFetch(sheet.handler, async () => {
+        const result = await new SheetSync({ logger: recorder() }).run(NEW_SHOW_LIBRARY);
+        assert.equal(result.status, 'applied', result.error ?? '');
+        const rows = sheet.tab('Shows');
+        assert.equal(cell(rows, 4, 'Style')?.stringValue, 'Stylised');
+        assert.equal(cell(rows, 4, 'Genre')?.stringValue, 'Comedy', 'Animation has no place in the genre vocabulary');
       }),
     );
   });

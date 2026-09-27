@@ -13,7 +13,7 @@
  */
 
 import { a1, parseGrid, type Grid, type HeaderName, type ShowField } from '../../src/sheet/2-grid.ts';
-import { artworkFormula, dateSerial, ROLLUP_FIELDS, showRowFormulas, SHOW_TYPE } from '../../src/sheet/values.ts';
+import { artworkFormula, dateSerial, ROLLUP_FIELDS, showRowFormulas, STYLE_REALISTIC } from '../../src/sheet/values.ts';
 import { emptyPlan, type BlockCell, type BlockInsert, type CellEdit, type Insert, type RowInsert, type SheetPlan } from '../../src/sheet/4-plan.ts';
 import { indexLibrary, type TitleProgress } from '../../src/sheet/1-index.ts';
 import { seasonShapes, type TitleCatalogue } from '../../src/sheet/3-catalogue.ts';
@@ -42,11 +42,11 @@ export const show = (
   {
     status = 'Ended' as string | null,
     id = 1 as number | string | null,
-    type = 'show',
+    style = 'Realistic',
     /** The `Franchise` cell. Blank sorts the block where its title puts it, which is what 62 hand judgements on the tab are not. */
     franchise = null as string | null,
   } = {},
-): NamedRow => ({ name, cells: showRow(title, status, id, type, { franchise }) });
+): NamedRow => ({ name, cells: showRow(title, status, id, style, { franchise }) });
 
 export const season = (
   name: string | null,
@@ -208,7 +208,7 @@ export const gridFixture = (...named: NamedRow[]): GridFixture => {
     const show: Array<[ShowField, ExtendedValue]> = [
       ['Show', { stringValue: title }],
       ['Franchise', { stringValue: franchise }],
-      ['Type', { stringValue: SHOW_TYPE }],
+      ['Style', { stringValue: STYLE_REALISTIC }],
       ['id', { stringValue: String(id) }],
     ];
     for (const field of ROLLUP_FIELDS) show.push([field, { formulaValue: formulas[field] }]);
@@ -285,6 +285,7 @@ export const blockLibrary = (
         title: BLOCK_SHOW.title,
         network: 'Apple TV+',
         genres: ['Drama', 'Sci-Fi', 'Thriller'],
+        style: 'Realistic',
         certificate: 15,
         seasonRuntimes: new Map<number, number | null>([[1, 45]]),
         ...catalogue,

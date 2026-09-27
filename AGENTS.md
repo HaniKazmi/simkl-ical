@@ -194,9 +194,9 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   edit lands.
   **In the block walk withdrawal is the default**, done once at the top of the candidate loop, and
   only an exit with a final word puts the title back with `recordBlock` — on the wrong tab, the tab
-  already holds that name, SIMKL holds no join key. The exits that come back are most of them, so an
-  exit added without a withdrawal beside it would silently record a title the run could not build,
-  and the run that finally can would walk past it.
+  already holds that name, SIMKL holds no join key, TVDB does not know the series. The exits that
+  come back are most of them, so an exit added without a withdrawal beside it would silently record
+  a title the run could not build, and the run that finally can would walk past it.
   **Held work is withdrawn too, and that is the rule with the sharpest edge.** A row in scope only
   because its count moved has no time bound — it leaves scope the moment that count is recorded, and
   nothing brings it back — so any batch that leaves such a row unfinished must record nothing about
@@ -345,7 +345,10 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   in `2-grid.ts`, with the Attack on Titan measurement in the doc comment. A SIMKL anime record
   numbers every cour `season: 1` and all cours share one TVDB id, so an anime row's number
   addresses no TVDB season; live-action agrees 35 of 35 seasons measured, Doctor Who's 2024
-  renumbering included, because SIMKL keeps that as a separate record.
+  renumbering included, because SIMKL keeps that as a separate record. The test names the two
+  styles in scope — `Realistic` and `Stylised` — rather than excluding `Anime`, so a blank `Style`
+  or a word outside the dropdown is out of scope too. The endpoint choice is a different rule:
+  `/anime/{id}` against `/tv/{id}` follows `usesCourModel`, where the ids sit, never `Style`.
 - **The planner is one pass, run to a fixpoint.** `planSync` returns the plan *and* the lookups it
   still needs; the sync fetches, folds them into the catalogue store, and re-plans until nothing
   new is demanded. There are no separate what-to-fetch passes to keep in agreement — a row the
@@ -486,7 +489,9 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
 - **A block waits a poll rather than landing half-filled.** Its show row needs the SIMKL detail and
   episode list, TVDB's genres, TMDB's certificate, and the season's runtime where that season has
   aired. **Absent** means the lookup has not answered and the block waits; **null** means it
-  answered that nothing is obtainable and that one cell stays blank — the discipline `runtimeAnswer`
+  answered that nothing is obtainable and that one cell stays blank — except `Style`, which the
+  show row cannot carry blank, so TVDB answering a 404 names the block as one to add by hand and
+  records it, the way a missing join key does. The discipline `runtimeAnswer`
   and the films half already hold, and the one that matters most here, since a dated show row is
   never revisited and a cell left blank because a 503 read as an answer is blank for the life of
   the row. Both `TVDB_API_KEY` and `TMDB_API_KEY` gate block inserts rather than degrading them,
@@ -541,12 +546,15 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   TMDB gives 144 — so the column costs no request of its own. `certificateFor` reads TMDB's GB
   content rating **by territory and never by position**, 161 of 189, with 10 carrying no GB rating
   and staying blank; TVDB carries a GB rating on 19, and SIMKL's `certification` is the US TV
-  rating. The genre vocabulary is one closed set across both tabs — the show tab's
+  rating. `Style` comes off the same TVDB answer as the genres, folded in the same call so the two
+  are always in one state: `Stylised` where TVDB names `Animation`, `Realistic` otherwise, read off
+  the raw names because `mappedTvdbGenres` drops `Animation`. Never `Anime` — no anime block is
+  inserted. The genre vocabulary is one closed set across both tabs — the show tab's
   conditional-format values are the films tab's twelve — so it lives in the parent `values.ts` and
   `movies/values.ts` imports it back; two copies would be two closed sets free to drift apart with
   nothing to notice.
 - **The show row's look is conditional formatting, not cell formats.** 25 rules cover the data
-  rows: `=$A2<>""` paints every show row across A:Q, and the rest colour `Genre`, `Type`, `Status`
+  rows: `=$A2<>""` paints every show row across A:Q, and the rest colour `Genre`, `Style`, `Status`
   and `Certificate` per value, while a season row carries only right-alignment on its numeric
   columns and `yyyy-mm-dd` on its dates. So a two-row insert with `inheritFromBefore: true` under a
   season row inherits the right formats for both of its rows and the show row is painted on
@@ -730,7 +738,7 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   judgement but SIMKL's — and all three come off the library delta with no lookup at all
   (`movie.runtime` agrees with the tab on 346 of 346 rows, `user_rating` on 245 of 245). Everything
   else is a judgement: which backdrop, which genre is primary, whether a franchise is "Pixar",
-  including `Format` (`Cinema`/`Home`) and `Type` (`film`/`anime`) — both strings, both written on
+  including `Format` (`Cinema`/`Home`) and `Style` (`Anime`/`Realistic`/`Stylised`) — both strings, both written on
   every insert and enumerated by the guard, neither followed again after. `Name` is deliberately
   *not* followed though it is 95% derivable, because the 18 rows that disagree carry hand titles.
   `Series` and `Series #` are hand columns the sync never writes, kept as required headers so the
@@ -812,10 +820,15 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   chose not to make are its `unfetched` and arm `retry` the way deferred inserts do — without that,
   the poll that inserts the last film the store knows has nothing deferred, and the rest of the
   backlog waits on unrelated activity.
-- **`Format` and `Type` are strings, always present, and `id` only ever as text.** `Format` is
-  `Cinema` or `Home`, `Type` is `film` or `anime`, and both are written on every insert rather than
-  left to default — neither follows SIMKL after that. All 348 id cells hold `{ stringValue }`, so a
-  number there compares unequal to every other row and the sync would not recognise its own insert.
+- **`Format` and `Style` are strings, always present, and `id` only ever as text.** `Format` is
+  `Cinema` or `Home`; `Style` is `Anime` where SIMKL files the film as anime, else `Stylised` where
+  TMDB carries genre id 16 (`Animation`), else `Realistic` — `animatedOn` reads the id off TMDB's own
+  list, apart from the genre map that drops `Animation` from `Genre`. Both are written on every
+  insert rather than left to default — neither follows SIMKL after that. `Style` is the Shows tab's
+  vocabulary too, defined once in `2-grid.ts` (whose `runtimeScopeOk` reads it) and re-exported by
+  `values.ts`; its `Anime` is the sheet's word and is never compared with SIMKL's `SyncType`
+  `anime`. All 348 id cells hold `{ stringValue }`, so a number there compares unequal to every
+  other row and the sync would not recognise its own insert.
   All three are guard rules, not conventions.
 - **A film is SIMKL's `movies` category plus `anime` with an `anime_type` of `movie`** — a
   top-level key beside `show`, and the one fact `LibraryEntry.type` cannot supply, since `type` says
@@ -918,14 +931,14 @@ the process, and the rest carries its pipeline position in the filename, so `ls`
 | Step | Module |
 | --- | --- |
 | INDEX | `1-index.ts` — library → what was watched, and the early-out that decides whether to read the grid at all |
-| PARSE | `2-grid.ts` — snapshot → blocks, plus the two block predicates (`usesCourModel`, `runtimeScopeOk`); the ten required `HEADERS`, and `BLOCK_HEADERS` through `resolveOptionalColumns` |
+| PARSE | `2-grid.ts` — snapshot → blocks, plus the two block predicates (`usesCourModel`, `runtimeScopeOk`); the ten required `HEADERS`, and `BLOCK_HEADERS` through `resolveOptionalColumns`; the `Style` vocabulary both tabs share |
 | FOLD | `3-catalogue.ts` — what the upstreams said, reduced and retained across polls: the `CatalogueStore`, the stamping discipline, the reductions of every payload, and `factsRejected` |
 | PLAN | `4-plan.ts` — grid + library + catalogue + baseline → `{ plan, demands, observed, writing }`; the sync re-plans until nothing new is demanded, and records `writing` only once the write lands. One insert per run, a `RowInsert` or a `BlockInsert` |
 | GUARD | `5-guard.ts` — a checklist of named rules; refuses a plan that does not re-derive. `checkBlockInsert` is the block's own checklist beside the season insert's |
 | BUILD | `6-requests.ts` — a plan → one ordered batch, plus the rollback request builders; `spanRows` is what an insert covers |
 | — | `guard-core.ts` — the rules both guards re-derive the same way: budget, cell shape, alignment; each guard passes its own `refuse` |
 | VERIFY | `7-verify.ts` — did the write do exactly what was planned, for either tab: `verifyAgainst` holds the rules and `VerifiedTab` what a tab answers for itself |
-| — | `values.ts` — the sheet's value conventions (serials, runtime bounds, the watch note's shape, the show row's formula templates, the genre and network maps, where a block sorts), one copy for planner and guard |
+| — | `values.ts` — the sheet's value conventions (serials, runtime bounds, the watch note's shape, the show row's formula templates, the genre and network maps, a new block's `Style`, where a block sorts), one copy for planner and guard |
 | io | `io/spreadsheet.ts` (read/apply/list), four that fetch only — `io/catalogue.ts`, `io/runtimes.ts`, `io/tvdb-series.ts` (a series' genres) and `io/tmdb-tv.ts` (a series' content ratings) — `io/apply.ts` (the write-and-recover protocol, over an `ApplySpec` either tab supplies), `io/backups.ts` (the snapshot tab's whole life), `io/journal.ts` (the run history), `io/baseline.ts` (what SIMKL last said — the one file here that *decides* something) |
 | — | `sync.ts` — the driver for **both** tabs: one loop (`runTab`) over a per-tab `TabSpec`, one plan-fetch fixpoint (`toFixpoint`, over a per-tab plan step and ration step), per-poll state in a `Poll`, the journal choke point |
 
@@ -1019,8 +1032,9 @@ Where a sheet run stopped is `SheetSyncStatus`, which `/healthz` reports as `she
   that matters: only `userEnteredValue.formulaValue` distinguishes a formula, and a formula target
   must be refused unconditionally. `seasonRow`'s `runtime` option is the other: `null` is a blank
   runtime cell, which is the only state the runtime write may touch; `note` sets the season's
-  last-watched note. `filmRow`'s `format` (`'Cinema'|'Home'|null`) and `type`
-  (`'film'|'anime'|null`) cover the two columns every insert writes.
+  last-watched note. `filmRow`'s `format` (`'Cinema'|'Home'|null`) and `style` (default
+  `'Realistic'`) cover the two columns every insert writes; `showRow`'s fourth argument is the show
+  row's `Style`.
 - A fetch handler must be **host-qualified**. `url.includes('/tv/')` matches TVDB's season path as
   well as SIMKL's, and answering one upstream with the other's body makes a test assert nothing.
 

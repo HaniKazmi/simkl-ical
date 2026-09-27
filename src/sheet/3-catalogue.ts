@@ -13,7 +13,7 @@
  */
 
 import { config, tvdbConfigured } from '../shared/config.ts';
-import { certificateFor, mappedTvdbGenres, networkCell } from './values.ts';
+import { certificateFor, mappedTvdbGenres, networkCell, showStyleOf, type ShowStyle } from './values.ts';
 import type { EpisodeDetail } from '../api/simkl/types.ts';
 import type { TvdbEpisode } from '../api/tvdb/types.ts';
 import type { TitleProgress } from './1-index.ts';
@@ -257,6 +257,14 @@ export interface TitleCatalogue {
    */
   genres?: string[] | null;
   /**
+   * The `Style` cell, from the same TVDB answer as `genres` and folded in the
+   * same call, so the two are always in the same one of the three states.
+   * Null is TVDB not knowing the series, which leaves no style to write — and
+   * unlike `Genre` the show row cannot carry a blank one, so the planner hands
+   * such a block to the reader.
+   */
+  style?: ShowStyle | null;
+  /**
    * The `Certificate` cell — the GB rating as a minimum age. Same three states
    * as `genres`: absent is unanswered, null is settled with nothing to write,
    * which is a series TMDB carries no GB entry for as well as a 404.
@@ -419,7 +427,7 @@ export class CatalogueStore {
    * included — because an unrecorded key is re-requested every poll forever; a
    * **retryable** failure is never recorded, so the next poll asks again.
    */
-  private foldFact<T, F extends 'genres' | 'certificate'>(
+  private foldFact<T, F extends 'genres' | 'style' | 'certificate'>(
     requests: readonly { id: number }[],
     answers: Map<number, T>,
     unavailable: readonly number[],
@@ -441,6 +449,7 @@ export class CatalogueStore {
 
   foldGenres(requests: readonly SeriesRequest[], { genres, unavailable }: SeriesGenres): void {
     this.foldFact(requests, genres, unavailable, 'genres', mappedTvdbGenres);
+    this.foldFact(requests, genres, unavailable, 'style', showStyleOf);
   }
 
   foldCertificates(requests: readonly CertificateRequest[], { shows, unavailable }: ShowCertificates): void {

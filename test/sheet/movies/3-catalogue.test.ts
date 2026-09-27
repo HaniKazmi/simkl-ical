@@ -7,7 +7,7 @@ import type { TmdbMovie } from '../../../src/api/tmdb/types.ts';
 
 const MOVIE: TmdbMovie = {
   title: 'Not This One',
-  genres: [{ name: 'Adventure' }, { name: 'Animation' }, { name: 'Comedy' }],
+  genres: [{ id: 12, name: 'Adventure' }, { id: 16, name: 'Animation' }, { id: 35, name: 'Comedy' }],
   belongs_to_collection: { name: 'Pixar Collection' },
   release_dates: { results: [{ iso_3166_1: 'GB', release_dates: [{ type: 3, release_date: '2003-10-10', certification: 'U' }] }] },
   credits: { crew: [{ job: 'Director', name: 'Andrew Stanton' }] },
@@ -18,6 +18,7 @@ test('a payload reduces to the cells a row needs', () => {
   const facts = filmFacts(MOVIE, 'Finding Nemo');
   assert.equal(facts.genre, 'Adventure');
   assert.equal(facts.genres, 'Comedy');
+  assert.equal(facts.animated, true, 'Animation is dropped from the genre cells and still decides the style');
   assert.equal(facts.certificate, 3);
   assert.equal(facts.releaseDate?.toString(), '2003-10-10');
   assert.equal(facts.openedInCinemas?.toString(), '2003-10-10');

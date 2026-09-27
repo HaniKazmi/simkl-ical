@@ -132,7 +132,7 @@ test('a header that moved during the write fails before anything else is inspect
 // moved under the write puts a value in whatever column took its place. Every
 // column that fill can address is checked, including the three the cell diff
 // spares on a pre-existing row because a hand maintains them.
-test('a column a block’s fill addresses is checked for moving, ID and Type included', () => {
+test('a column a block’s fill addresses is checked for moving, ID and Style included', () => {
   const swapped = (a: string, b: string) => {
     const shuffled = [...H];
     const [i, j] = [col(H, a), col(H, b)];
@@ -142,7 +142,7 @@ test('a column a block’s fill addresses is checked for moving, ID and Type inc
 
   for (const [a, b, named] of [
     ['Franchise', 'Genre', /the Franchise column moved during the write/],
-    ['Type', 'Status', /the Type column moved during the write/],
+    ['Style', 'Status', /the Style column moved during the write/],
     ['ID', 'Artwork', /the id column moved during the write/],
   ] as const) {
     const result = verify(before, swapped(a, b), planOf([editOf('fargoS2', 'Episode', 8)]));
@@ -273,7 +273,7 @@ const showRowAt = (row: number, title: string, status: string, id: number, episo
     'Start Date': 45000,
     'Seasons / Last Watched': { formula: `=IFERROR(MATCH("*",OFFSET($A${row},1,0,40),0)-1,COUNTA(OFFSET($I${row},1,0,40)))`, value: 1 },
     ID: id,
-    Type: 'show',
+    Style: 'Realistic',
   });
 
 /** Fargo (rows 1-2), then Silo (rows 3-4) — Silo is what shifts when a row is inserted into Fargo's block. */

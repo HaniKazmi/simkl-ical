@@ -158,9 +158,12 @@ a sibling numbered core in `src/sheet/movies/`. It is inert without `TMDB_API_KE
 tab's sixteen columns come from TMDB, and a row inserted with those blank is worse than no row.
 Three columns follow SIMKL for the life of a row — `Watch Date`, `Score`, `Runtime` — off the
 library alone and against the same baseline file; the rest are written once when the row is
-created, one row per run, below the last row the tab holds. `Format` (`Cinema`/`Home`) and `Type`
-(`film`/`anime`) are always written on that one insert; `Series` and `Series #` are hand columns
-the sync never writes.
+created, one row per run, below the last row the tab holds. `Format` (`Cinema`/`Home`) and `Style`
+(`Anime`/`Realistic`/`Stylised`) are always written on that one insert; `Series` and `Series #` are
+hand columns the sync never writes. `Style` is one vocabulary across both tabs, decided by form:
+SIMKL's anime flag makes a film `Anime`, TMDB's `Animation` genre makes any other film `Stylised`,
+and everything else is `Realistic`. A new show block takes `Stylised` or `Realistic` the same way
+off TVDB's genres, and never `Anime`, since no anime block is inserted.
 
 `sync.ts` runs both tabs through one loop. What the loop holds — the read, the freshness budget,
 the report/refuse/apply branches, the freeze latch, the journal — holds no rule about what may be
@@ -320,8 +323,12 @@ that no code can derive.
 
 - A row with `Show` filled starts a block; every row after it belongs to that block. Columns are
   resolved by header, never position.
-- Which SIMKL entry a row means is decided by **where its id sits**, never by `Type`: a season row's
+- Which SIMKL entry a row means is decided by **where its id sits**, never by `Style`: a season row's
   own id wins, a blank one inherits the show row's. Both exceptions exist in the live sheet.
+- `Style` on a show row is one of `Anime`, `Realistic`, `Stylised`, compared exactly as the tab's
+  dropdown spells them. It scopes the runtime write — only a `Realistic` or `Stylised` block with an
+  id on its show row takes one — and it is a required header, so a tab still headed `Type` fails
+  closed as a missing column rather than being read by position.
 - `Episode` on a season row is a **count**, not an episode number.
 - `Runtime` on a season row is the per-episode runtime in **whole minutes**, written once into a
   blank cell only — 793 of 796 season rows carry one. The season average is the arithmetic mean

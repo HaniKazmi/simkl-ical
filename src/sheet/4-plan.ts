@@ -68,7 +68,6 @@ import {
   runtimeMinutes,
   seasonKey,
   showRowFormulas,
-  SHOW_TYPE,
   titleCell,
   titleKey,
   titleRecordKey,
@@ -78,7 +77,7 @@ import {
   watchSerial,
   withdraw,
 } from './values.ts';
-import type { Baseline, FieldOf, Forgetting, RecordKey, RecordOf, Recording, SeasonKey, SeasonRecord, TitleKey, TrackedField } from './values.ts';
+import type { Baseline, FieldOf, Forgetting, RecordKey, RecordOf, Recording, SeasonKey, SeasonRecord, ShowStyle, TitleKey, TrackedField } from './values.ts';
 import { instantFrom, isoOf, later } from '../shared/dates.ts';
 import { detailAnswered, episodesAnswered, seasonAired, seasonComplete, type FactsCredential, type SeasonShape, type TitleCatalogue } from './3-catalogue.ts';
 import { runtimeKeyOf, type RuntimeRequest } from './io/runtimes.ts';
@@ -636,7 +635,7 @@ const blockRecent = ({ index, cutoff, known }: PlanRun, ids: number[]): boolean 
 
 /**
  * What a season row resolves to. The route depends on **where its id sits**,
- * never on `Type`: a row carrying its own id *is* that SIMKL entry (an anime
+ * never on `Style`: a row carrying its own id *is* that SIMKL entry (an anime
  * cour, Doctor Who's 2024 renumbering, Parasyte) and its counters describe
  * the whole season; a row inheriting the show row's id is selected out of a
  * multi-season entry by season number.
@@ -940,7 +939,7 @@ const candidateOf = (source: TitleProgress, season: SeasonProgress, titles: Map<
  * (`runtimeScopeOk` — anime is never inserted into, because one SIMKL record
  * is one cour and its season numbers do not address rows the user numbers by
  * broadcast season). A block being created has neither: it holds no rows yet,
- * and the type it will carry is `SHOW_TYPE` by construction.
+ * and the style it will carry is a `ShowStyle` by construction.
  */
 const insertTarget = ({ titles, cutoff, known }: PlanRun, source: TitleProgress, covered: Set<number>): InsertTarget | null => {
   // False, never `titleIsNew`: this block exists, so its height is the reader's
@@ -2335,8 +2334,9 @@ const withdrawBlock = ({ keep }: PlanRun, progress: TitleProgress): void => {
  * about the title, and nothing a later poll does will change the answer.
  *
  * The title is on the wrong tab, the tab already holds that name, SIMKL holds no
- * join key. Left withdrawn, each of those notes would be said on every poll for
- * the life of the sheet, and the title would stay in scope for a lookup a day.
+ * join key, TVDB does not know the series. Left withdrawn, each of those notes
+ * would be said on every poll for the life of the sheet, and the title would
+ * stay in scope for a lookup a day.
  *
  * Only the two fields the withdrawal took. `Start` and `End` are
  * `followUpstream`'s and are still in the seed exactly as `observeWatches` put
@@ -2376,7 +2376,7 @@ const byFirstWatch = (a: TitleProgress, b: TitleProgress): number => compareWatc
 interface BlockReady {
   progress: TitleProgress;
   /** Answered on both cells only an upstream can fill — null there is settled-with-nothing, which lands the block blank. */
-  entry: TitleCatalogue & { shapes: Map<number, SeasonShape>; genres: string[] | null; certificate: number | null };
+  entry: TitleCatalogue & { shapes: Map<number, SeasonShape>; genres: string[] | null; style: ShowStyle; certificate: number | null };
   /** What the `Show` cell is written with, and the key the collision test was decided on. */
   title: string;
   /**
@@ -2465,7 +2465,7 @@ const buildBlock = (ctx: PlanRun, seasonRows: ReadonlySet<number>, { progress, e
   }
   const firstFill = filled[0] as SeasonFill;
 
-  const { genres, certificate } = entry;
+  const { genres, style, certificate } = entry;
   const status = deriveStatus(progress, { detailStatus: entry.status, latestSeasonAiring: latestSeasonAiring(entry.shapes) });
   const formulas = showRowFormulas(grid.columns, row);
   const secondary = genres === null ? '' : genresCell(genres.slice(1, 1 + MAX_SECONDARY_GENRES));
@@ -2474,7 +2474,7 @@ const buildBlock = (ctx: PlanRun, seasonRows: ReadonlySet<number>, { progress, e
   const showRow: Array<{ field: ShowField; value: ExtendedValue }> = [
     { field: 'Show', value: str(title) },
     { field: 'Franchise', value: str(franchise) },
-    { field: 'Type', value: str(SHOW_TYPE) },
+    { field: 'Style', value: str(style) },
     // Text, matching all 189 show rows. A number here compares unequal to
     // every other id cell, so a later run would not recognise its own block.
     { field: 'id', value: str(String(progress.id)) },
@@ -2544,8 +2544,9 @@ const buildBlock = (ctx: PlanRun, seasonRows: ReadonlySet<number>, { progress, e
  * say what it has decided. **Withdrawal is the default**: every candidate is
  * withdrawn as the loop reaches it, and only an exit with a final word puts the
  * title back through `recordBlock` — the title is on the wrong tab, the tab
- * already holds that name, SIMKL holds no join key. Everything else expects to
- * come back, so the run that can build the block still sees an unseen title.
+ * already holds that name, SIMKL holds no join key, TVDB does not know the
+ * series. Everything else expects to come back, so the run that can build the
+ * block still sees an unseen title.
  * `writing` gains the title's `Status` and each inserted season's count only
  * where the block is actually planned, and only for a row that lands finished.
  */
@@ -2753,6 +2754,16 @@ const planBlocks = (ctx: PlanRun, seen: Set<number>, filed: Set<number> | undefi
       recordBlock(ctx, progress);
       continue;
     }
+    // TVDB answering that it does not know the series settles `Genre` blank,
+    // but a show row cannot carry a blank `Style` and nothing revisits one, so
+    // a guess would stand for the life of the block. The same final word as a
+    // missing join key — no poll changes a 404 — and said before the runtimes
+    // are asked for, which a block nothing will build has no use for.
+    if (entry.style === null) {
+      plan.notes.push(`${label}: TVDB does not know this series, so its Style cannot be decided and its block has to be added by hand`);
+      recordBlock(ctx, progress);
+      continue;
+    }
 
     const seasonLabel = `${label} S${chosen.number}`;
 
@@ -2817,11 +2828,13 @@ const planBlocks = (ctx: PlanRun, seen: Set<number>, filed: Set<number> | undefi
       answered.push({ candidate, runtime });
     }
 
-    const { genres, certificate } = entry;
-    if (genres === undefined || certificate === undefined) {
-      if (genres === undefined) demand(ctx, { kind: 'genres', request: { id: progress.id, tvdbId } });
+    const { genres, style, certificate } = entry;
+    // `style` is folded from the same TVDB answer as `genres`, so the two are
+    // unanswered together and the ask for one is the ask for both.
+    if (genres === undefined || style === undefined || certificate === undefined) {
+      if (genres === undefined || style === undefined) demand(ctx, { kind: 'genres', request: { id: progress.id, tvdbId } });
       if (certificate === undefined) demand(ctx, { kind: 'certificates', request: { id: progress.id, tmdbId } });
-      const waitingOn = [...(genres === undefined ? ['TVDB'] : []), ...(certificate === undefined ? ['TMDB'] : [])];
+      const waitingOn = [...(genres === undefined || style === undefined ? ['TVDB'] : []), ...(certificate === undefined ? ['TMDB'] : [])];
       plan.skips.push({ code: 'awaiting-lookup', message: `${label}: waiting on ${waitingOn.join(' and ')} before a block can be added` });
       continue;
     }
@@ -2863,7 +2876,7 @@ const planBlocks = (ctx: PlanRun, seen: Set<number>, filed: Set<number> | undefi
       plan.deferred += answered.length;
       continue;
     }
-    const built = buildBlock(ctx, seasonRows, { progress, entry: { ...entry, genres, certificate }, title, rows });
+    const built = buildBlock(ctx, seasonRows, { progress, entry: { ...entry, genres, style, certificate }, title, rows });
     if ('code' in built) {
       plan.skips.push(built);
       // Withdrawn, like every other exit that has not said a final word. What
