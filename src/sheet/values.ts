@@ -14,7 +14,7 @@
 
 import { columnLetter, isBlank, isFormula, STYLE_REALISTIC, STYLE_STYLISED } from './2-grid.ts';
 import { instantFrom, plainDateFrom, plainDateIn } from '../shared/dates.ts';
-import type { ColumnMap, HeaderName, Style } from './2-grid.ts';
+import type { ColumnMap, HeaderName, ShowStyle } from './2-grid.ts';
 import type { CellData } from '../api/google/types.ts';
 import type { TmdbTv } from '../api/tmdb/types.ts';
 
@@ -764,16 +764,7 @@ export const networkCell = (name: string | null | undefined): string | null => {
  * guards read it where they read every other convention. Defined in
  * `2-grid.ts`, whose `runtimeScopeOk` needs it and which this module imports.
  */
-export { isStyle, STYLE_ANIME, STYLE_REALISTIC, STYLE_STYLISED, STYLES, type Style } from './2-grid.ts';
-
-/**
- * The two styles a new show block can carry. `Anime` is not one of them: an
- * anime block uses the cour model, where a new cour is a separate SIMKL title,
- * so the sync inserts no anime block.
- */
-export type ShowStyle = Exclude<Style, 'Anime'>;
-
-export const isShowStyle = (value: string): value is ShowStyle => value === STYLE_REALISTIC || value === STYLE_STYLISED;
+export { isShowStyle, isStyle, SHOW_STYLES, STYLE_ANIME, STYLE_REALISTIC, STYLE_STYLISED, STYLES, type ShowStyle, type Style } from './2-grid.ts';
 
 /**
  * A new block's `Style` from TVDB's genre names for the series: `Stylised`

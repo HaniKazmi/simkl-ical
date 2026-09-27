@@ -107,7 +107,7 @@ export const SHOW_HEADER_MARKERS: readonly string[] = [SHOW_LABELS.Show, SHOW_LA
  * Movies row.
  *
  * Here rather than in `values.ts`, which re-exports them: `runtimeScopeOk`
- * reads two of them, and `values.ts` imports this module.
+ * reads `SHOW_STYLES`, and `values.ts` imports this module.
  */
 export const STYLE_ANIME = 'Anime';
 export const STYLE_REALISTIC = 'Realistic';
@@ -118,6 +118,18 @@ export const STYLES = [STYLE_ANIME, STYLE_REALISTIC, STYLE_STYLISED] as const;
 export type Style = (typeof STYLES)[number];
 
 export const isStyle = (value: string): value is Style => (STYLES as readonly string[]).includes(value);
+
+/**
+ * The styles a show block can carry and take a runtime in. `Anime` is not one
+ * of them: an anime block uses the cour model, where a new cour is a separate
+ * SIMKL title, so the sync inserts no anime block and TVDB's season numbers
+ * address none of its rows.
+ */
+export const SHOW_STYLES = [STYLE_REALISTIC, STYLE_STYLISED] as const;
+
+export type ShowStyle = (typeof SHOW_STYLES)[number];
+
+export const isShowStyle = (value: string): value is ShowStyle => (SHOW_STYLES as readonly string[]).includes(value);
 
 /** How far down to look for the header row, so a title row above it is survivable. */
 const HEADER_SEARCH_ROWS = 5;
@@ -554,4 +566,4 @@ export const usesCourModel = (block: Pick<ShowBlock, 'ids'>): boolean => block.i
  * are both on the fill, a row before the row exists.
  */
 export const runtimeScopeOk = (block: Pick<ShowBlock, 'style' | 'ids'>): boolean =>
-  (block.style === STYLE_REALISTIC || block.style === STYLE_STYLISED) && block.ids.length > 0;
+  block.style !== null && isShowStyle(block.style) && block.ids.length > 0;

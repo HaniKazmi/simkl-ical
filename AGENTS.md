@@ -346,9 +346,10 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   numbers every cour `season: 1` and all cours share one TVDB id, so an anime row's number
   addresses no TVDB season; live-action agrees 35 of 35 seasons measured, Doctor Who's 2024
   renumbering included, because SIMKL keeps that as a separate record. The test names the two
-  styles in scope — `Realistic` and `Stylised` — rather than excluding `Anime`, so a blank `Style`
-  or a word outside the dropdown is out of scope too. The endpoint choice is a different rule:
-  `/anime/{id}` against `/tv/{id}` follows `usesCourModel`, where the ids sit, never `Style`.
+  styles in scope — `SHOW_STYLES`, `Realistic` and `Stylised` — rather than excluding `Anime`, so a
+  blank `Style` or a word outside the dropdown is out of scope too. The endpoint choice is a
+  different rule: `/anime/{id}` against `/tv/{id}` follows `usesCourModel`, where the ids sit, never
+  `Style`.
 - **The planner is one pass, run to a fixpoint.** `planSync` returns the plan *and* the lookups it
   still needs; the sync fetches, folds them into the catalogue store, and re-plans until nothing
   new is demanded. There are no separate what-to-fetch passes to keep in agreement — a row the
@@ -546,13 +547,12 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   TMDB gives 144 — so the column costs no request of its own. `certificateFor` reads TMDB's GB
   content rating **by territory and never by position**, 161 of 189, with 10 carrying no GB rating
   and staying blank; TVDB carries a GB rating on 19, and SIMKL's `certification` is the US TV
-  rating. `Style` comes off the same TVDB answer as the genres, folded in the same call so the two
-  are always in one state: `Stylised` where TVDB names `Animation`, `Realistic` otherwise, read off
-  the raw names because `mappedTvdbGenres` drops `Animation`. Never `Anime` — no anime block is
-  inserted. The genre vocabulary is one closed set across both tabs — the show tab's
-  conditional-format values are the films tab's twelve — so it lives in the parent `values.ts` and
-  `movies/values.ts` imports it back; two copies would be two closed sets free to drift apart with
-  nothing to notice.
+  rating. `Style` comes off the same TVDB answer as the genres: the catalogue keeps TVDB's names
+  raw as `tvdbGenres`, one field in one of three states, and the planner reads both cells off it —
+  the style through `showStyleOf`, which carries the rule. The genre vocabulary is one closed set
+  across both tabs — the show tab's conditional-format values are the films tab's twelve — so it
+  lives in the parent `values.ts` and `movies/values.ts` imports it back; two copies would be two
+  closed sets free to drift apart with nothing to notice.
 - **The show row's look is conditional formatting, not cell formats.** 25 rules cover the data
   rows: `=$A2<>""` paints every show row across A:Q, and the rest colour `Genre`, `Style`, `Status`
   and `Certificate` per value, while a season row carries only right-alignment on its numeric
@@ -821,14 +821,13 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   the poll that inserts the last film the store knows has nothing deferred, and the rest of the
   backlog waits on unrelated activity.
 - **`Format` and `Style` are strings, always present, and `id` only ever as text.** `Format` is
-  `Cinema` or `Home`; `Style` is `Anime` where SIMKL files the film as anime, else `Stylised` where
-  TMDB carries genre id 16 (`Animation`), else `Realistic` — `animatedOn` reads the id off TMDB's own
-  list, apart from the genre map that drops `Animation` from `Genre`. Both are written on every
-  insert rather than left to default — neither follows SIMKL after that. `Style` is the Shows tab's
-  vocabulary too, defined once in `2-grid.ts` (whose `runtimeScopeOk` reads it) and re-exported by
-  `values.ts`; its `Anime` is the sheet's word and is never compared with SIMKL's `SyncType`
-  `anime`. All 348 id cells hold `{ stringValue }`, so a number there compares unequal to every
-  other row and the sync would not recognise its own insert.
+  `Cinema` or `Home`; `Style` is whichever word `styleCell` decides, and the rule is on it. Both are
+  written on every insert rather than left to default — neither follows SIMKL after that. `Style` is
+  the Shows tab's vocabulary too, defined once in `2-grid.ts` — `STYLES`, and `SHOW_STYLES` for the
+  two a show block may carry, which `runtimeScopeOk` reads — and re-exported by `values.ts`; its
+  `Anime` is the sheet's word and is never compared with SIMKL's `SyncType` `anime`. All 348 id
+  cells hold `{ stringValue }`, so a number there compares unequal to every other row and the sync
+  would not recognise its own insert.
   All three are guard rules, not conventions.
 - **A film is SIMKL's `movies` category plus `anime` with an `anime_type` of `movie`** — a
   top-level key beside `show`, and the one fact `LibraryEntry.type` cannot supply, since `type` says

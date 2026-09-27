@@ -36,9 +36,8 @@ export { genreListProblem, genresCell, isCertificate, isGenre, isStyle, MAX_SECO
  * pick a primary in any case: TMDB never lists `History` first.
  *
  * `Animation`, `Crime`, `Family`, `Music`, `TV Movie`, `War` and `Western` are
- * dropped because the vocabulary has nowhere to put them. `Animation` still
- * decides the row's `Style` — through `animatedOn`, which reads TMDB's list
- * and not this map's output.
+ * dropped because the vocabulary has nowhere to put them. `Animation` decides
+ * the row's `Style` instead, through `styleCell`.
  */
 const TMDB_GENRES: Record<string, string> = {
   Action: 'Action',
@@ -174,21 +173,23 @@ const TMDB_ANIMATION = 16;
 
 /**
  * Whether TMDB files the film under `Animation`, by genre id rather than by
- * name: the id is the same in every response language, and it keeps the style
- * decision apart from `TMDB_GENRES`, which drops `Animation` from the `Genre`
- * cells altogether.
+ * name: the id is the same in every response language.
  */
 export const animatedOn = (movie: TmdbMovie | undefined): boolean =>
   (movie?.genres ?? []).some((genre) => genre.id === TMDB_ANIMATION);
 
 /**
- * The `Style` cell — the vocabulary the Shows tab's `Style` uses too, so a
- * reader filtering on `Anime` gets both tabs.
+ * A new film row's `Style` cell — the vocabulary the Shows tab's `Style` uses
+ * too, so a reader filtering on `Anime` gets both tabs.
  *
  * SIMKL's anime flag first: an anime film is `Anime` whatever TMDB files it
  * under, and TMDB files most of them `Animation` too. After that TMDB's
  * `Animation` genre is what separates a cartoon from a picture of the real
- * world, which is the whole of what `Stylised` against `Realistic` says.
+ * world, which is the whole of what `Stylised` against `Realistic` says;
+ * anything else is `Realistic`. `animated` is read off TMDB's own genre list
+ * (`animatedOn`) and never off the `Genre` cells, since `TMDB_GENRES` drops
+ * `Animation` — the style and the genre are two questions about one answer,
+ * and neither may decide the other.
  */
 export const styleCell = (anime: boolean, animated: boolean): Style =>
   anime ? STYLE_ANIME

@@ -13,7 +13,7 @@
  */
 
 import { config, tvdbConfigured } from '../shared/config.ts';
-import { certificateFor, mappedTvdbGenres, networkCell, showStyleOf, type ShowStyle } from './values.ts';
+import { certificateFor, networkCell } from './values.ts';
 import type { EpisodeDetail } from '../api/simkl/types.ts';
 import type { TvdbEpisode } from '../api/tvdb/types.ts';
 import type { TitleProgress } from './1-index.ts';
@@ -246,28 +246,24 @@ export interface TitleCatalogue {
    */
   network?: string | null;
   /**
-   * TVDB's genres reduced to the tab's vocabulary, in the order TVDB sent
-   * them: the first is the block's `Genre` and the rest its `Genres`.
+   * TVDB's genre names for the series, raw and in the order TVDB sent them.
+   * Kept unreduced because two cells read them: `Genre` and `Genres` through
+   * `mappedTvdbGenres`, and `Style` through `showStyleOf`, which needs the
+   * `Animation` the genre map drops. One field for one answer, so the two
+   * cells cannot be in different states.
    *
    * Three states, and the planner reads all three. **Absent**: the lookup has
-   * not answered, so the block waits a poll. **Null**: it answered that nothing
-   * is obtainable — no TVDB id, or a 404 — so the block may land with the cells
-   * blank. An **empty array**: TVDB has the series and none of its genres is in
-   * the vocabulary, which is settled the same way.
+   * not answered, so the block waits a poll. **Null**: TVDB answered that it
+   * does not know the series, which leaves no style to write, so the planner
+   * hands the block to the reader. An **array**: TVDB has the series, so the
+   * style is decided and the block may land — with `Genre` blank where no name
+   * in it maps to the vocabulary, an empty array included.
    */
-  genres?: string[] | null;
+  tvdbGenres?: readonly string[] | null;
   /**
-   * The `Style` cell, from the same TVDB answer as `genres` and folded in the
-   * same call, so the two are always in the same one of the three states.
-   * Null is TVDB not knowing the series, which leaves no style to write — and
-   * unlike `Genre` the show row cannot carry a blank one, so the planner hands
-   * such a block to the reader.
-   */
-  style?: ShowStyle | null;
-  /**
-   * The `Certificate` cell — the GB rating as a minimum age. Same three states
-   * as `genres`: absent is unanswered, null is settled with nothing to write,
-   * which is a series TMDB carries no GB entry for as well as a 404.
+   * The `Certificate` cell — the GB rating as a minimum age. Absent is
+   * unanswered, null is settled with nothing to write, which is a series TMDB
+   * carries no GB entry for as well as a 404.
    */
   certificate?: number | null;
   /**
@@ -417,17 +413,18 @@ export class CatalogueStore {
   }
 
   /**
-   * Fold one show-fact lookup in, reducing each answer to the cell it becomes.
-   * The reduction happens here, not in the source: which names the sheet has a
-   * column for and which territory rates a series are rules about the sheet,
-   * and the source's job is one HTTP call.
+   * Fold one show-fact lookup in, reducing each answer to what the entry
+   * keeps. The reduction happens here, not in the source: which territory
+   * rates a series is a rule about the sheet, and the source's job is one HTTP
+   * call. TVDB's genre names are kept whole, since the planner reads two cells
+   * off them.
    *
    * `foldCatalogue`'s stamping rule, with the entry's own key as the record
    * rather than a stamp: a **settled** answer is always recorded — a 404
    * included — because an unrecorded key is re-requested every poll forever; a
    * **retryable** failure is never recorded, so the next poll asks again.
    */
-  private foldFact<T, F extends 'genres' | 'style' | 'certificate'>(
+  private foldFact<T, F extends 'tvdbGenres' | 'certificate'>(
     requests: readonly { id: number }[],
     answers: Map<number, T>,
     unavailable: readonly number[],
@@ -448,8 +445,7 @@ export class CatalogueStore {
   }
 
   foldGenres(requests: readonly SeriesRequest[], { genres, unavailable }: SeriesGenres): void {
-    this.foldFact(requests, genres, unavailable, 'genres', mappedTvdbGenres);
-    this.foldFact(requests, genres, unavailable, 'style', showStyleOf);
+    this.foldFact(requests, genres, unavailable, 'tvdbGenres', (names) => names);
   }
 
   foldCertificates(requests: readonly CertificateRequest[], { shows, unavailable }: ShowCertificates): void {

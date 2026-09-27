@@ -632,15 +632,15 @@ test('the title and franchise cells must say what the block was placed as', () =
 });
 
 // `Anime` is never inserted: an anime block uses the cour model, where a new
-// cour is a separate SIMKL title. Any other word — a lowercase spelling included —
-// is one the sheet's dropdown refuses, so the guard refuses it too.
+// cour is a separate SIMKL title. Any other word is one the sheet's dropdown
+// refuses, so the guard refuses it too; `isShowStyle` compares exactly, which
+// the runtime-scope test above probes with a lowercase spelling.
 test('a block carries Realistic or Stylised and nothing else', () => {
   const block = fx.blockAt(fx.end);
   const styled = (value: ExtendedValue) => ({ ...block, fill: block.fill.map((c) => (c.field === 'Style' ? { ...c, value } : c)) });
   assert.doesNotThrow(() => assertPlanSafe(planOf([], styled({ stringValue: 'Stylised' })), fx.grid));
   refuses(planOf([], styled({ stringValue: 'Anime' })), /is not Realistic or Stylised/);
   refuses(planOf([], styled({ stringValue: 'show' })), /is not Realistic or Stylised/);
-  refuses(planOf([], styled({ stringValue: 'realistic' })), /is not Realistic or Stylised/);
   refuses(planOf([], styled({ boolValue: true })), /is not Realistic or Stylised/);
 });
 

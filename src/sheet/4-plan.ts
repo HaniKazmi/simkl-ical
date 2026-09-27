@@ -56,6 +56,7 @@ import {
   franchiseKeyFor,
   genresCell,
   MAX_SECONDARY_GENRES,
+  mappedTvdbGenres,
   maxSerial,
   NOT_HELD,
   ownsNote,
@@ -68,6 +69,7 @@ import {
   runtimeMinutes,
   seasonKey,
   showRowFormulas,
+  showStyleOf,
   titleCell,
   titleKey,
   titleRecordKey,
@@ -77,7 +79,7 @@ import {
   watchSerial,
   withdraw,
 } from './values.ts';
-import type { Baseline, FieldOf, Forgetting, RecordKey, RecordOf, Recording, SeasonKey, SeasonRecord, ShowStyle, TitleKey, TrackedField } from './values.ts';
+import type { Baseline, FieldOf, Forgetting, RecordKey, RecordOf, Recording, SeasonKey, SeasonRecord, TitleKey, TrackedField } from './values.ts';
 import { instantFrom, isoOf, later } from '../shared/dates.ts';
 import { detailAnswered, episodesAnswered, seasonAired, seasonComplete, type FactsCredential, type SeasonShape, type TitleCatalogue } from './3-catalogue.ts';
 import { runtimeKeyOf, type RuntimeRequest } from './io/runtimes.ts';
@@ -2375,8 +2377,13 @@ const byFirstWatch = (a: TitleProgress, b: TitleProgress): number => compareWatc
  */
 interface BlockReady {
   progress: TitleProgress;
-  /** Answered on both cells only an upstream can fill — null there is settled-with-nothing, which lands the block blank. */
-  entry: TitleCatalogue & { shapes: Map<number, SeasonShape>; genres: string[] | null; style: ShowStyle; certificate: number | null };
+  /**
+   * Answered on both lookups only an upstream can fill. TVDB's names are
+   * present, since a series TVDB does not know is handed to the reader before
+   * this; a null certificate is settled-with-nothing, which lands that cell
+   * blank.
+   */
+  entry: TitleCatalogue & { shapes: Map<number, SeasonShape>; tvdbGenres: readonly string[]; certificate: number | null };
   /** What the `Show` cell is written with, and the key the collision test was decided on. */
   title: string;
   /**
@@ -2465,16 +2472,17 @@ const buildBlock = (ctx: PlanRun, seasonRows: ReadonlySet<number>, { progress, e
   }
   const firstFill = filled[0] as SeasonFill;
 
-  const { genres, style, certificate } = entry;
+  const { tvdbGenres, certificate } = entry;
+  const genres = mappedTvdbGenres(tvdbGenres);
   const status = deriveStatus(progress, { detailStatus: entry.status, latestSeasonAiring: latestSeasonAiring(entry.shapes) });
   const formulas = showRowFormulas(grid.columns, row);
-  const secondary = genres === null ? '' : genresCell(genres.slice(1, 1 + MAX_SECONDARY_GENRES));
+  const secondary = genresCell(genres.slice(1, 1 + MAX_SECONDARY_GENRES));
   const note = `${label}: new block`;
 
   const showRow: Array<{ field: ShowField; value: ExtendedValue }> = [
     { field: 'Show', value: str(title) },
     { field: 'Franchise', value: str(franchise) },
-    { field: 'Style', value: str(style) },
+    { field: 'Style', value: str(showStyleOf(tvdbGenres)) },
     // Text, matching all 189 show rows. A number here compares unequal to
     // every other id cell, so a later run would not recognise its own block.
     { field: 'id', value: str(String(progress.id)) },
@@ -2487,7 +2495,7 @@ const buildBlock = (ctx: PlanRun, seasonRows: ReadonlySet<number>, { progress, e
     // The first survivor of TVDB's own ordering is the primary and the next
     // three the secondaries. An empty `Genres` is omitted rather than written
     // blank, the way the films insert omits it.
-    ...(genres === null || genres[0] === undefined ? [] : [{ field: 'Genre' as const, value: str(genres[0]) }]),
+    ...(genres[0] === undefined ? [] : [{ field: 'Genre' as const, value: str(genres[0]) }]),
     ...(secondary === '' ? [] : [{ field: 'Genres' as const, value: str(secondary) }]),
     ...(entry.network ? [{ field: 'Network' as const, value: str(entry.network) }] : []),
     ...(certificate === null ? [] : [{ field: 'Certificate' as const, value: num(certificate) }]),
@@ -2754,12 +2762,14 @@ const planBlocks = (ctx: PlanRun, seen: Set<number>, filed: Set<number> | undefi
       recordBlock(ctx, progress);
       continue;
     }
-    // TVDB answering that it does not know the series settles `Genre` blank,
-    // but a show row cannot carry a blank `Style` and nothing revisits one, so
-    // a guess would stand for the life of the block. The same final word as a
-    // missing join key — no poll changes a 404 — and said before the runtimes
-    // are asked for, which a block nothing will build has no use for.
-    if (entry.style === null) {
+    // TVDB answering that it does not know the series leaves no `Style` to
+    // write, and a show row cannot carry a blank one and nothing revisits it,
+    // so a guess would stand for the life of the block. The same final word as
+    // a missing join key — no poll changes a 404. It stands before this pass's
+    // runtime lookups, so a pass that finds the 404 asks for none; the pass
+    // that first asks TVDB asks the runtime beside it, as step 7 does for
+    // every block.
+    if (entry.tvdbGenres === null) {
       plan.notes.push(`${label}: TVDB does not know this series, so its Style cannot be decided and its block has to be added by hand`);
       recordBlock(ctx, progress);
       continue;
@@ -2775,8 +2785,9 @@ const planBlocks = (ctx: PlanRun, seen: Set<number>, filed: Set<number> | undefi
     //    genres answered would spend the fourth, and the ceiling's whole
     //    headroom, on a dependency that does not exist.
     //
-    //    For the cells, absent is unanswered and the block waits; null is
-    //    answered-with-nothing, which lands the block with that cell blank —
+    //    For the cells, absent is unanswered and the block waits; a null
+    //    certificate is answered-with-nothing, which lands the block with that
+    //    cell blank, and a null TVDB answer is handed to the reader above —
     //    the same absent-versus-settled distinction `runtimeAnswer` draws, and
     //    for the same reason: every cell on a show row is written once, so
     //    closing one on a 503 forfeits it for good.
@@ -2828,13 +2839,11 @@ const planBlocks = (ctx: PlanRun, seen: Set<number>, filed: Set<number> | undefi
       answered.push({ candidate, runtime });
     }
 
-    const { genres, style, certificate } = entry;
-    // `style` is folded from the same TVDB answer as `genres`, so the two are
-    // unanswered together and the ask for one is the ask for both.
-    if (genres === undefined || style === undefined || certificate === undefined) {
-      if (genres === undefined || style === undefined) demand(ctx, { kind: 'genres', request: { id: progress.id, tvdbId } });
+    const { tvdbGenres, certificate } = entry;
+    if (tvdbGenres === undefined || certificate === undefined) {
+      if (tvdbGenres === undefined) demand(ctx, { kind: 'genres', request: { id: progress.id, tvdbId } });
       if (certificate === undefined) demand(ctx, { kind: 'certificates', request: { id: progress.id, tmdbId } });
-      const waitingOn = [...(genres === undefined || style === undefined ? ['TVDB'] : []), ...(certificate === undefined ? ['TMDB'] : [])];
+      const waitingOn = [...(tvdbGenres === undefined ? ['TVDB'] : []), ...(certificate === undefined ? ['TMDB'] : [])];
       plan.skips.push({ code: 'awaiting-lookup', message: `${label}: waiting on ${waitingOn.join(' and ')} before a block can be added` });
       continue;
     }
@@ -2876,7 +2885,7 @@ const planBlocks = (ctx: PlanRun, seen: Set<number>, filed: Set<number> | undefi
       plan.deferred += answered.length;
       continue;
     }
-    const built = buildBlock(ctx, seasonRows, { progress, entry: { ...entry, genres, style, certificate }, title, rows });
+    const built = buildBlock(ctx, seasonRows, { progress, entry: { ...entry, tvdbGenres, certificate }, title, rows });
     if ('code' in built) {
       plan.skips.push(built);
       // Withdrawn, like every other exit that has not said a final word. What

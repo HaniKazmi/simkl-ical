@@ -62,7 +62,7 @@ export interface FilmProgress {
    * the planner settles rather than re-asking each poll.
    */
   tmdbId: number | null;
-  /** Whether this arrived under SIMKL's `anime`, which makes the row's `Style` `Anime` whatever TMDB says. */
+  /** Whether this arrived under SIMKL's `anime`, the first question `styleCell` asks of the row's `Style`. */
   anime: boolean;
 }
 

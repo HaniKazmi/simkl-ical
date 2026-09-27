@@ -37,6 +37,7 @@ import {
   genreListProblem,
   isCertificate,
   isGenre,
+  isShowStyle,
   isStatus,
   isTracked,
   maxSerial,
@@ -46,9 +47,7 @@ import {
   plausibleSerial,
   ROLLUP_FIELDS,
   showRowFormulas,
-  isShowStyle,
-  STYLE_REALISTIC,
-  STYLE_STYLISED,
+  SHOW_STYLES,
   titleKey,
   watchedNoteSerial,
   type RollupField,
@@ -259,7 +258,7 @@ const checkRuntimeScope = (where: string, block: Pick<ShowBlock, 'style' | 'ids'
   // same batch, so the blank-cell rule stops protecting the cell the instant
   // the write lands. `runtimeScopeOk` carries the reasoning.
   if (!runtimeScopeOk(block)) {
-    refuse(`${where}: a runtime may only be written in a ${STYLE_REALISTIC} or ${STYLE_STYLISED} block that carries ids on its show row.`);
+    refuse(`${where}: a runtime may only be written in a ${SHOW_STYLES.join(' or ')} block that carries ids on its show row.`);
   }
 };
 
@@ -517,7 +516,7 @@ const checkShowValue = (cell: BlockCell, value: ExtendedValue, where: string, in
       // `Realistic` or `Stylised`, exactly: an anime block uses the cour model,
       // where a new cour is a separate SIMKL title, so `Anime` is never
       // inserted, and any other word is one the tab's dropdown refuses.
-      if (typeof text !== 'string' || !isShowStyle(text)) refuse(`${where}: ${describeValue(value)} is not ${STYLE_REALISTIC} or ${STYLE_STYLISED}.`);
+      if (typeof text !== 'string' || !isShowStyle(text)) refuse(`${where}: ${describeValue(value)} is not ${SHOW_STYLES.join(' or ')}.`);
       return;
     case 'id':
       // Text, matching all 189 show rows. A number here compares unequal to

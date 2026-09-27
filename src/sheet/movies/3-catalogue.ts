@@ -37,9 +37,9 @@ export interface FilmFacts {
   /** The secondaries, already joined the way the cell spells them. Empty string for none. */
   genres: string;
   /**
-   * Whether TMDB files it under `Animation`, which is what makes a film that
-   * is not anime `Stylised` rather than `Realistic`. Read apart from `genre`,
-   * whose vocabulary has no place for `Animation`.
+   * Whether TMDB files it under `Animation`, the second question `styleCell`
+   * asks. Read apart from `genre`, whose vocabulary has no place for
+   * `Animation`.
    */
   animated: boolean;
   /** The BBFC certificate as a minimum age, or null to leave the cell blank. */

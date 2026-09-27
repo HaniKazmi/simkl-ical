@@ -2919,7 +2919,7 @@ test('a block waits while no episode list came back', () => {
 });
 
 test('a block waits on TVDB’s genres and TMDB’s certificate, and asks for both', () => {
-  const both = blocks({ genres: undefined, certificate: undefined });
+  const both = blocks({ tvdbGenres: undefined, certificate: undefined });
   assert.equal(both.plan.insert, null);
   assert.match(both.plan.skips.find((s) => s.code === 'awaiting-lookup')?.message ?? '', /waiting on TVDB and TMDB/);
   assert.deepEqual(both.demands.genres, [{ id: 900, tvdbId: 111 }]);
@@ -2935,27 +2935,19 @@ test('a block waits on TVDB’s genres and TMDB’s certificate, and asks for bo
 
   // TVDB filing the series under nothing the vocabulary holds is settled the
   // same way: `Genre` blank, and the style still decided.
-  const unfiled = blocks({ genres: [], style: 'Realistic' });
+  const unfiled = blocks({ tvdbGenres: [] });
   assert.equal(unfiled.plan.insert?.kind, 'block');
   assert.equal(valueOf(unfiled.plan.insert, blockGrid.end, 'Genre'), undefined);
   assert.equal(valueOf(unfiled.plan.insert, blockGrid.end, 'Style')?.stringValue, 'Realistic');
-});
-
-// The style comes off TVDB's answer as the genres do, so it is waited on with
-// them: a block with its genres and no style is a lookup half-folded, not one
-// to build.
-test('a block waits on TVDB while its style is unanswered', () => {
-  const { plan, demands } = blocks({ style: undefined });
-  assert.equal(plan.insert, null);
-  assert.match(plan.skips.find((s) => s.code === 'awaiting-lookup')?.message ?? '', /waiting on TVDB before/);
-  assert.deepEqual(demands.genres, [{ id: 900, tvdbId: 111 }]);
 });
 
 // A show row cannot carry a blank Style and nothing revisits one, so TVDB not
 // knowing the series leaves nothing honest to write. No poll changes a 404, so
 // it is said once and the title recorded, the way a missing join key is.
 test('a series TVDB does not know is named as a block to add by hand, once', () => {
-  const { plan, demands, observed } = blocks({ genres: null, style: null });
+  // No runtime seeded, so the assertion below can see one asked for: the exit has to come before
+  // this pass's runtime lookups, not merely before a lookup the fixture already answered.
+  const { plan, demands, observed } = blocks({ tvdbGenres: null, seasonRuntimes: new Map() });
   assert.equal(plan.insert, null);
   assert.match(plan.notes.join('\n'), /Severance \(simkl 900\): TVDB does not know this series, so its Style cannot be decided/);
   assert.deepEqual(demands.runtimes, [], 'no runtime is asked for a block nothing will build');
@@ -2967,7 +2959,7 @@ test('a series TVDB does not know is named as a block to add by hand, once', () 
 // `Genre` cells — the vocabulary has no place for it — so the style is decided
 // off TVDB's own names, apart from what the genre cells say.
 test('a series TVDB files under Animation becomes a Stylised block', () => {
-  const { plan } = blocks({ style: 'Stylised' });
+  const { plan } = blocks({ tvdbGenres: ['Animation', 'Drama', 'Science Fiction', 'Thriller'] });
   assert.equal(plan.insert?.kind, 'block');
   assert.equal(valueOf(plan.insert, blockGrid.end, 'Style')?.stringValue, 'Stylised');
   assert.equal(valueOf(plan.insert, blockGrid.end, 'Genre')?.stringValue, 'Drama');
@@ -3003,7 +2995,7 @@ test('anime keeps the add-it-by-hand note rather than becoming a block', () => {
 test('a show with no numbered season inside the window is reported, never added, and costs no lookup', () => {
   // SIMKL's season 0 is specials, which `seasonsOf` drops — so a title watched
   // only there has no season a row could be for.
-  const specials = blocks({ genres: undefined, certificate: undefined }, {}, { seasons: { 0: [daysAgo(9), daysAgo(2)] } });
+  const specials = blocks({ tvdbGenres: undefined, certificate: undefined }, {}, { seasons: { 0: [daysAgo(9), daysAgo(2)] } });
   assert.equal(specials.plan.insert, null);
   assert.match(specials.plan.notes.join('\n'), /Severance \(simkl 900\) has recent activity and no row/);
   assert.deepEqual(specials.demands.catalogue, [], 'nothing is asked of SIMKL for a title with no row to gain');
@@ -3016,7 +3008,7 @@ test('a show with no numbered season inside the window is reported, never added,
 // — but which season a row would be for is decided by the episode stamps, and
 // those can all sit outside the window the title's own stamp is inside.
 test('a show whose episodes were all watched outside the window is reported, never added', () => {
-  const stale = blocks({ genres: undefined, certificate: undefined }, {}, { seasons: { 1: [daysAgo(400), daysAgo(300)] }, lastWatchedAt: daysAgo(2) });
+  const stale = blocks({ tvdbGenres: undefined, certificate: undefined }, {}, { seasons: { 1: [daysAgo(400), daysAgo(300)] }, lastWatchedAt: daysAgo(2) });
   assert.equal(stale.plan.insert, null);
   assert.match(stale.plan.notes.join('\n'), /Severance \(simkl 900\) has recent activity and no row/);
   assert.deepEqual(stale.demands.catalogue, []);
@@ -3199,7 +3191,7 @@ test('a tab missing a column a show row is written into gets one note and no blo
 // and a blank one reads as a series with no genre rather than an install with
 // no key.
 test('a run with a credential unset names the key once and adds nothing', () => {
-  const { plan, demands } = blocks({ genres: undefined, certificate: undefined }, { facts: { tvdb: false, tmdb: true } });
+  const { plan, demands } = blocks({ tvdbGenres: undefined, certificate: undefined }, { facts: { tvdb: false, tmdb: true } });
   assert.equal(plan.insert, null);
   assert.deepEqual(plan.notes, ['1 show(s) have no row; set TVDB_API_KEY to have a block added for them']);
   assert.deepEqual(demands.genres, [], 'nothing is asked of an upstream there is no key for');
@@ -3210,7 +3202,7 @@ test('a run with a credential unset names the key once and adds nothing', () => 
 // nothing can use.
 test('a show waiting on an unset credential is not even looked up', () => {
   for (const facts of [{ tvdb: false, tmdb: true }, { tvdb: true, tmdb: false }]) {
-    const { demands } = blocks({ genres: undefined, certificate: undefined }, { facts });
+    const { demands } = blocks({ tvdbGenres: undefined, certificate: undefined }, { facts });
     assert.deepEqual(demands.catalogue, [], `${JSON.stringify(facts)}: nothing is asked of SIMKL either`);
   }
 });
@@ -3219,7 +3211,7 @@ test('a show waiting on an unset credential is not even looked up', () => {
 // no block is settled, nothing further is asked, and the fix arrives with a
 // restart.
 test('a rejected credential names the key to fix and asks for nothing', () => {
-  const { plan, demands } = blocks({ genres: undefined }, { factsRejected: new Set(['tvdb'] as const) });
+  const { plan, demands } = blocks({ tvdbGenres: undefined }, { factsRejected: new Set(['tvdb'] as const) });
   assert.equal(plan.insert, null);
   assert.deepEqual(plan.notes, ['1 show(s) need a block and the credential was rejected; fix TVDB_API_KEY and restart']);
   assert.deepEqual(demands.genres, []);
@@ -3228,7 +3220,7 @@ test('a rejected credential names the key to fix and asks for nothing', () => {
 // One restart has to fix everything standing in the way: named one at a time,
 // the operator corrects a key, restarts, and is told about the other.
 test('both credentials rejected are named in one note', () => {
-  const { plan } = blocks({ genres: undefined }, { factsRejected: new Set(['tvdb', 'tmdb'] as const) });
+  const { plan } = blocks({ tvdbGenres: undefined }, { factsRejected: new Set(['tvdb', 'tmdb'] as const) });
   assert.equal(plan.insert, null);
   assert.deepEqual(plan.notes, ['1 show(s) need a block and the credential was rejected; fix TVDB_API_KEY and TMDB_API_KEY and restart']);
 });
@@ -3239,7 +3231,7 @@ test('both credentials rejected are named in one note', () => {
 // a final word has to put the title back, or the note is said on every poll for
 // the life of the sheet and the title stays in scope for a lookup a day.
 test('a show SIMKL holds no TVDB or TMDB id for is named once, not waited on', () => {
-  const { plan, demands, observed } = blocks({ tvdbId: null, tmdbId: null, genres: undefined, certificate: undefined });
+  const { plan, demands, observed } = blocks({ tvdbId: null, tmdbId: null, tvdbGenres: undefined, certificate: undefined });
   assert.equal(plan.insert, null);
   assert.match(plan.notes.join('\n'), /has no TVDB or TMDB id, so its block has to be added by hand/);
   assert.deepEqual(demands.genres, []);
@@ -3395,7 +3387,7 @@ test('a block behind a taken slot demands nothing, not even its season runtime',
     namedShow('fargo', 'Fargo', { id: 1, status: 'Watching' }),
     namedSeason('fargoS1', 1, 6, 44000),
   );
-  const { index, titles } = blockLibrary({ genres: undefined, certificate: undefined, seasonRuntimes: new Map() });
+  const { index, titles } = blockLibrary({ tvdbGenres: undefined, certificate: undefined, seasonRuntimes: new Map() });
   index.set(1, indexLibrary(libraryOf({ id: 1, title: 'Fargo', status: 'watching', seasons: { 1: watched(6, 400), 2: watched(3) }, watched: 9, total: 9 })).get(1)!);
   titles.set(1, { shapes: seasonShapes([...eps(1, 6), ...eps(2, 3)]), status: 'ended', runtime: 45, tvdbId: 5, tmdbId: 6, seasonRuntimes: new Map([[2, 45]]) });
 
@@ -3460,7 +3452,7 @@ test('the planner asks for every lookup it wants, once per key', () => {
       id,
       // A TVDB id of its own each: a runtime ask is keyed by TVDB season, so
       // two titles sharing one would rightly fold into one ask.
-      { ...blockLibrary({ genres: undefined, certificate: undefined, seasonRuntimes: new Map() }).titles.get(900)!, title: `Show ${id}`, tvdbId: id },
+      { ...blockLibrary({ tvdbGenres: undefined, certificate: undefined, seasonRuntimes: new Map() }).titles.get(900)!, title: `Show ${id}`, tvdbId: id },
     ]),
   );
   const { demands } = planSync(blockGrid.grid, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } });
