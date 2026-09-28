@@ -684,9 +684,9 @@ test('an anime film on no Sheet1 block is inserted on the films tab, marked as a
       const row = sheet.films?.[3];
       assert.deepEqual(row?.[col(MH, 'Title')]?.userEnteredValue, { stringValue: 'A New Film' });
       assert.deepEqual(row?.[col(MH, 'ID')]?.userEnteredValue, { stringValue: '999' });
-      // The column this tab now always carries as a string, whichever kind of
-      // film the row is.
-      assert.deepEqual(row?.[col(MH, 'Type')]?.userEnteredValue, { stringValue: 'anime' });
+      // The column this tab always carries as a string, whichever kind of film
+      // the row is.
+      assert.deepEqual(row?.[col(MH, 'Style')]?.userEnteredValue, { stringValue: 'Anime' });
     });
   });
 });
@@ -694,7 +694,7 @@ test('an anime film on no Sheet1 block is inserted on the films tab, marked as a
 test('an anime film already on a Sheet1 block is left there rather than given a second row', async () => {
   await withFreshJournal(async () => {
     // The same library, and the only difference is that `Sheet1` holds the id.
-    const grid = [...DEFAULT_GRID, showRow('Kara no Kyoukai', 'Completed', null, 'anime'), seasonRow(1, 7, 45100, { id: 999 })];
+    const grid = [...DEFAULT_GRID, showRow('Kara no Kyoukai', 'Completed', null, 'Anime'), seasonRow(1, 7, 45100, { id: 999 })];
     await run('report', { grid }, libraryOf(SHOW, animeFilm()), (result, _calls, _sheet, log) => {
       assert.equal(result.record.inserts.length, 0);
       // And silently. Everything past the insert filter reports, so a gate

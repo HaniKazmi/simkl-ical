@@ -37,14 +37,13 @@ import {
   FORMAT_HOME,
   genreListProblem,
   isCertificate,
-  isFilmType,
   isFormat,
   isGenre,
+  isStyle,
   plausibleReleaseSerial,
   plausibleScore,
   releaseCeiling as releaseHorizon,
-  TYPE_ANIME,
-  TYPE_FILM,
+  STYLES,
 } from './values.ts';
 import { MOVIE_LABELS, nextFilmRow, type MovieGrid, type MovieHeaderName } from './2-grid.ts';
 import type { FilmCellEdit, FilmPlan, FilmRowInsert } from './4-plan.ts';
@@ -70,8 +69,8 @@ const EMPTIABLE: Set<MovieHeaderName> = new Set();
  * together would either forbid the insert or let an ordinary edit reach every
  * one of them.
  *
- * `Type` is here and not in `EDIT_FIELDS`: what kind of film a row holds is
- * settled when the row is built and is not a thing SIMKL revises. `Series` and
+ * `Style` is here and not in `EDIT_FIELDS`: how a film is drawn is settled
+ * when the row is built and is not a thing SIMKL revises. `Series` and
  * `SeriesNumber` are in neither — they are hand columns, and the tab holds them
  * blank on every row.
  */
@@ -89,7 +88,7 @@ export const INSERT_FIELDS = new Set<MovieHeaderName>([
   'Director',
   'id',
   'Banner',
-  'Type',
+  'Style',
 ]);
 
 export class UnsafeFilmPlanError extends PlanRefusal {
@@ -168,12 +167,13 @@ const checkValue = (field: MovieHeaderName, value: ExtendedValue, where: string,
         refuse(`${where}: ${describeValue(value)} is not ${FORMAT_CINEMA} or ${FORMAT_HOME}.`);
       }
       return;
-    case 'Type':
+    case 'Style':
       // Same shape as `Format`, and needed for the same reason the case above
       // it is: the switch has no `default`, so a whitelisted field with no case
-      // of its own is accepted at any shape.
-      if (typeof value.stringValue !== 'string' || !isFilmType(value.stringValue)) {
-        refuse(`${where}: ${describeValue(value)} is not ${TYPE_FILM} or ${TYPE_ANIME}.`);
+      // of its own is accepted at any shape. Exact words: the tab's dropdown
+      // holds one spelling of each.
+      if (typeof value.stringValue !== 'string' || !isStyle(value.stringValue)) {
+        refuse(`${where}: ${describeValue(value)} is not one of ${STYLES.join(', ')}.`);
       }
       return;
     case 'Series':
@@ -270,7 +270,7 @@ const checkInsert = (insert: FilmRowInsert, ctx: FilmGuardContext): void => {
   // Every row the tab holds fills both, and neither is ever revisited, so a row
   // inserted without one carries a blank nothing will come back to fill.
   if (!insert.fill.some((cell) => cell.field === 'Format')) refuse(`insert at row ${insert.row + 1}: a film row must say how it was watched.`);
-  if (!insert.fill.some((cell) => cell.field === 'Type')) refuse(`insert at row ${insert.row + 1}: a film row must say what kind of film it is.`);
+  if (!insert.fill.some((cell) => cell.field === 'Style')) refuse(`insert at row ${insert.row + 1}: a film row must carry a Style.`);
 
   const fields = insert.fill.map((cell) => cell.field);
   const duplicated = fields.find((field, i) => fields.indexOf(field) !== i);

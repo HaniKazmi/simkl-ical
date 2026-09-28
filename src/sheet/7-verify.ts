@@ -27,10 +27,11 @@ import type { SheetSnapshot } from './io/spreadsheet.ts';
  *
  * Derived rather than listed: forgetting an entry here is a corruption nobody
  * sees — a new header in `HEADERS` would be written by the sync and never
- * inspected. `id` and `Type` are excluded: the sync writes neither, and both
- * carry hand-maintained values a user edits between polls.
+ * inspected. `id` and `Style` are excluded: the sync writes them only on a row
+ * it creates, never on one that exists, and both carry hand-maintained values
+ * a user edits between polls.
  */
-const INSPECTED: HeaderName[] = HEADERS.filter((header) => header !== 'id' && header !== 'Type');
+const INSPECTED: HeaderName[] = HEADERS.filter((header) => header !== 'id' && header !== 'Style');
 
 /**
  * What the diff needs from one planned write. Structural, because the two tabs

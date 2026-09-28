@@ -18,6 +18,7 @@
 import type { TmdbMovie } from '../../api/tmdb/types.ts';
 import type { FilmProgress } from './1-index.ts';
 import {
+  animatedOn,
   bannerFor,
   certificateOf,
   directorOf,
@@ -35,6 +36,12 @@ export interface FilmFacts {
   genre: string | null;
   /** The secondaries, already joined the way the cell spells them. Empty string for none. */
   genres: string;
+  /**
+   * Whether TMDB files it under `Animation`, the second question `styleCell`
+   * asks. Read apart from `genre`, whose vocabulary has no place for
+   * `Animation`.
+   */
+  animated: boolean;
   /** The BBFC certificate as a minimum age, or null to leave the cell blank. */
   certificate: number | null;
   releaseDate: Temporal.PlainDate | null;
@@ -61,6 +68,7 @@ export const filmFacts = (movie: TmdbMovie | undefined, title: string, options: 
   return {
     genre: genres[0] ?? null,
     genres: genresCell(genres.slice(1, 1 + MAX_SECONDARY_GENRES)),
+    animated: animatedOn(movie),
     certificate: certificateOf(movie),
     releaseDate: releaseDateOf(movie),
     openedInCinemas: openedInCinemas(movie),

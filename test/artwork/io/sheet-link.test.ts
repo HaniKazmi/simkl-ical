@@ -20,7 +20,7 @@ const movies = (nemoBanner: CellSpec = null): CellSpec[][] => {
   return [MOVIE_SHEET_HEADERS, filmRow({ name: 'Star Wars', id: '53078', banner: 'https://image.tmdb.org/t/p/w1280/sw.jpg' }), nemo];
 };
 
-const shows = (banner: string | null = null): CellSpec[][] => [SHEET_HEADERS, showRow('Fargo', 'Watching', 3381, 'show', { artwork: banner })];
+const shows = (banner: string | null = null): CellSpec[][] => [SHEET_HEADERS, showRow('Fargo', 'Watching', 3381, 'Realistic', { artwork: banner })];
 
 const request = (over: Partial<LinkRequest> = {}): LinkRequest => ({ kind: 'movie', id: 53080, title: 'Finding Nemo', adopt: false, expectPrevious: cellOf(null), ...over });
 

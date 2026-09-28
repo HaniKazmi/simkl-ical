@@ -280,35 +280,37 @@ test('the tmdb id folds in whatever the TVDB credential is doing', () => {
   assert.equal(store.titles.get(1)?.tmdbId, 95396);
 });
 
-test('a genre fold maps into the vocabulary and keeps the order TVDB sent', () => {
+test('a genre fold keeps TVDB’s names whole, in the order TVDB sent them', () => {
   const store = new CatalogueStore();
   store.foldGenres([{ id: 1, tvdbId: 99 }], {
     genres: new Map([[1, ['Science Fiction', 'Crime', 'Drama']]]),
     failed: [],
     unavailable: [],
   });
-  // Crime has no column to go in; Sci-Fi leads because TVDB sent it first,
-  // which is what makes it the block's primary genre.
-  assert.deepEqual(store.titles.get(1)?.genres, ['Sci-Fi', 'Drama']);
+  // Unmapped: Crime has no column to go in, but the planner reads two cells off
+  // these names and `Style` needs ones the genre map drops. The order is kept
+  // because the first to survive the map is the block's primary genre.
+  assert.deepEqual(store.titles.get(1)?.tvdbGenres, ['Science Fiction', 'Crime', 'Drama']);
 });
 
-// Three states, and the planner reads all three: a settled empty list lets the
-// block land with the cells blank, where an absent key makes it wait a poll.
+// Three states, and the planner reads all three: an answer holding nothing the
+// vocabulary maps lets the block land with the cells blank, where an absent
+// key makes it wait a poll.
 test('a series TVDB has but files under nothing is settled, not pending', () => {
   const store = new CatalogueStore();
   store.foldGenres([{ id: 1, tvdbId: 99 }], { genres: new Map([[1, ['Reality']]]), failed: [], unavailable: [] });
-  assert.deepEqual(store.titles.get(1)?.genres, [], 'answered, nothing in the vocabulary');
+  assert.deepEqual(store.titles.get(1)?.tvdbGenres, ['Reality'], 'answered, nothing in the vocabulary');
 });
 
-test('a 404 settles the genres as null and a failed lookup leaves them absent', () => {
+test('a 404 settles TVDB’s genres as null and a failed lookup leaves them absent', () => {
   const store = new CatalogueStore();
   store.foldGenres([{ id: 1, tvdbId: 99 }, { id: 2, tvdbId: 98 }], {
     genres: new Map(),
     failed: [2],
     unavailable: [1],
   });
-  assert.equal(store.titles.get(1)?.genres, null, 'gone, so asking again never helps');
-  assert.equal(store.titles.get(2)?.genres, undefined, 'a transient failure is not settled');
+  assert.equal(store.titles.get(1)?.tvdbGenres, null, 'gone, so asking again never helps');
+  assert.equal(store.titles.get(2)?.tvdbGenres, undefined, 'a transient failure is not settled');
 });
 
 // A recorded answer is the answer: a later 404 must not blank a series that
@@ -317,7 +319,7 @@ test('an unavailable never overwrites genres already recorded', () => {
   const store = new CatalogueStore();
   store.foldGenres([{ id: 1, tvdbId: 99 }], { genres: new Map([[1, ['Drama']]]), failed: [], unavailable: [] });
   store.foldGenres([{ id: 1, tvdbId: 99 }], { genres: new Map(), failed: [], unavailable: [1] });
-  assert.deepEqual(store.titles.get(1)?.genres, ['Drama']);
+  assert.deepEqual(store.titles.get(1)?.tvdbGenres, ['Drama']);
 });
 
 test('a certificate fold records the GB age, and a 404 records the absence of one', () => {

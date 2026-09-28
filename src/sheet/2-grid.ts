@@ -21,7 +21,7 @@ import type { SheetSnapshot } from './io/spreadsheet.ts';
  * (`test/artwork/1-index.test.ts:97-105`), and a block insert that needs one
  * of the six declines rather than writing a half-filled row.
  */
-export const HEADERS = ['Show', 'Status', 'Note', 'Season', 'Episode', 'Start', 'End', 'Runtime', 'id', 'Type'] as const;
+export const HEADERS = ['Show', 'Status', 'Note', 'Season', 'Episode', 'Start', 'End', 'Runtime', 'id', 'Style'] as const;
 
 export type HeaderName = (typeof HEADERS)[number];
 
@@ -47,7 +47,7 @@ export const SHOW_LABELS: Record<HeaderName, string> = {
   End: 'End Date',
   Runtime: 'Episode Length (min)',
   id: 'ID',
-  Type: 'Type',
+  Style: 'Style',
 };
 
 /**
@@ -90,6 +90,46 @@ export const isHeaderName = (field: ShowField): field is HeaderName => (HEADERS 
  * two labels no other tab in the file carries together.
  */
 export const SHOW_HEADER_MARKERS: readonly string[] = [SHOW_LABELS.Show, SHOW_LABELS.Season];
+
+/**
+ * The `Style` column's words, shared by the Shows and Movies tabs: a picture
+ * in the anime idiom is `Anime`; one that presents as the real world is
+ * `Realistic`, live action and photoreal CG alike; anything else animated is
+ * `Stylised`. Decided by form, never by country of origin.
+ *
+ * Title Case, exactly as the tab's dropdown spells them, and never compared
+ * with case folded: a strict dropdown holds one spelling, so a cell in any
+ * other is a hand edit this code cannot read.
+ *
+ * `STYLE_ANIME` is the sheet's word and not SIMKL's: SIMKL's `SyncType` also
+ * says `anime`, for which response key a record arrived under, and the two
+ * answer different questions — an anime *film* is a SIMKL `anime` record on a
+ * Movies row.
+ *
+ * Here rather than in `values.ts`, which re-exports them: `runtimeScopeOk`
+ * reads `SHOW_STYLES`, and `values.ts` imports this module.
+ */
+export const STYLE_ANIME = 'Anime';
+export const STYLE_REALISTIC = 'Realistic';
+export const STYLE_STYLISED = 'Stylised';
+
+export const STYLES = [STYLE_ANIME, STYLE_REALISTIC, STYLE_STYLISED] as const;
+
+export type Style = (typeof STYLES)[number];
+
+export const isStyle = (value: string): value is Style => (STYLES as readonly string[]).includes(value);
+
+/**
+ * The styles a show block can carry and take a runtime in. `Anime` is not one
+ * of them: an anime block uses the cour model, where a new cour is a separate
+ * SIMKL title, so the sync inserts no anime block and TVDB's season numbers
+ * address none of its rows.
+ */
+export const SHOW_STYLES = [STYLE_REALISTIC, STYLE_STYLISED] as const;
+
+export type ShowStyle = (typeof SHOW_STYLES)[number];
+
+export const isShowStyle = (value: string): value is ShowStyle => (SHOW_STYLES as readonly string[]).includes(value);
 
 /** How far down to look for the header row, so a title row above it is survivable. */
 const HEADER_SEARCH_ROWS = 5;
@@ -335,12 +375,13 @@ export interface ShowBlock {
   title: string;
   status: string | null;
   /**
-   * `show` or `anime`. Governs what may be written: rows are only inserted
-   * into a `show` block, and only a `show` block's season rows can take a
-   * runtime — a SIMKL anime record numbers every cour "season 1", so the
-   * row's number addresses no TVDB season.
+   * The `Style` cell's text, exactly as the tab holds it — one of `STYLES`
+   * when the dropdown is honoured, null when blank. Governs what may be
+   * written: only a `Realistic` or `Stylised` block's season rows can take a
+   * runtime — a SIMKL anime record numbers every cour "season 1", so an
+   * `Anime` row's number addresses no TVDB season.
    */
-  type: string | null;
+  style: string | null;
   /** Ids on the *show* row. A season row's own id wins over these. */
   ids: number[];
   /**
@@ -418,7 +459,7 @@ export const parseGrid = (snapshot: SheetSnapshot): Grid => {
         row,
         title,
         status: textOf(cells[columns.Status]),
-        type: textOf(cells[columns.Type])?.toLowerCase() ?? null,
+        style: textOf(cells[columns.Style]),
         ids: parseIds(cells[columns.id]),
         franchise: blockColumns.Franchise === undefined ? null : textOf(cells[blockColumns.Franchise]),
         seasons: [],
@@ -455,9 +496,10 @@ export const parseGrid = (snapshot: SheetSnapshot): Grid => {
  * Which SIMKL entries a season row maps to: **its own ids win, a blank one
  * inherits the show row's**.
  *
- * Never inferred from `Type`. Both exceptions exist in the sheet — Doctor Who
+ * Never inferred from `Style`. Both exceptions exist in the sheet — Doctor Who
  * carries ids in *both* places (precedence matters) and Parasyte carries one
- * *only* on a season row despite `Type=show` (location cannot be inferred).
+ * *only* on a season row despite `Style=Realistic` (location cannot be
+ * inferred).
  */
 export const idsFor = (block: ShowBlock, season: SeasonRow): number[] => (season.ids.length ? season.ids : block.ids);
 
@@ -499,7 +541,7 @@ export const duplicateIds = (blocks: ShowBlock[]): Set<number> => {
  * Whether a block's status and lookups run on the cour model: no id on the
  * show row, so each season row carries its own SIMKL entry whose counters
  * describe the whole season. This is how anime is laid out — one record per
- * cour — and it is a fact about where the ids sit, never about `Type`.
+ * cour — and it is a fact about where the ids sit, never about `Style`.
  */
 export const usesCourModel = (block: Pick<ShowBlock, 'ids'>): boolean => block.ids.length === 0;
 
@@ -515,8 +557,13 @@ export const usesCourModel = (block: Pick<ShowBlock, 'ids'>): boolean => block.i
  * point at tvdb 267440, whose season 1 holds 25 episodes against their
  * 25/12/12/16/12/2.
  *
+ * Keyed on the two styles that are not `Anime` rather than on "not `Anime`":
+ * a blank cell or a word outside the dropdown is a block this code cannot
+ * place, and a runtime written into it is a claim nothing takes back.
+ *
  * The two facts and not the block, so the guard can ask it of a block being
- * *created*: the type the show row will carry and whether it carries an id are
- * both on the fill, a row before the row exists.
+ * *created*: the style the show row will carry and whether it carries an id
+ * are both on the fill, a row before the row exists.
  */
-export const runtimeScopeOk = (block: Pick<ShowBlock, 'type' | 'ids'>): boolean => block.type === 'show' && block.ids.length > 0;
+export const runtimeScopeOk = (block: Pick<ShowBlock, 'style' | 'ids'>): boolean =>
+  block.style !== null && isShowStyle(block.style) && block.ids.length > 0;

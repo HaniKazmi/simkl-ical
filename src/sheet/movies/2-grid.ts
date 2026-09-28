@@ -35,7 +35,7 @@ export const MOVIE_HEADERS = [
   'Director',
   'id',
   'Banner',
-  'Type',
+  'Style',
   'Series',
   'SeriesNumber',
 ] as const;
@@ -59,7 +59,7 @@ export const MOVIE_LABELS: Record<MovieHeaderName, string> = {
   Director: 'Director',
   id: 'ID',
   Banner: ARTWORK_LABEL,
-  Type: 'Type',
+  Style: 'Style',
   Series: 'Series',
   SeriesNumber: 'Series #',
 };

@@ -23,7 +23,13 @@ const TZ = 'Europe/London';
 
 /** A payload complete enough to fill every column a film row can carry. */
 const TMDB = {
-  genres: [{ name: 'Adventure' }, { name: 'Animation' }, { name: 'Science Fiction' }, { name: 'Comedy' }, { name: 'Drama' }],
+  genres: [
+    { id: 12, name: 'Adventure' },
+    { id: 16, name: 'Animation' },
+    { id: 878, name: 'Science Fiction' },
+    { id: 35, name: 'Comedy' },
+    { id: 18, name: 'Drama' },
+  ],
   belongs_to_collection: { name: 'A Reference Collection' },
   release_dates: {
     results: [{ iso_3166_1: 'GB', release_dates: [{ type: 3, release_date: '2026-08-07', certification: '12A' }] }],

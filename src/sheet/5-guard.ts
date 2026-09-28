@@ -37,6 +37,7 @@ import {
   genreListProblem,
   isCertificate,
   isGenre,
+  isShowStyle,
   isStatus,
   isTracked,
   maxSerial,
@@ -46,7 +47,7 @@ import {
   plausibleSerial,
   ROLLUP_FIELDS,
   showRowFormulas,
-  SHOW_TYPE,
+  SHOW_STYLES,
   titleKey,
   watchedNoteSerial,
   type RollupField,
@@ -131,7 +132,7 @@ interface GuardContext {
   /**
    * The block comes along because the runtime rule is about the block, not
    * the row: whether the season number means anything to TVDB is a property
-   * of `type` and where the id came from.
+   * of `Style` and where the id came from.
    */
   seasonRows: Map<number, { season: SeasonRow; block: ShowBlock }>;
 }
@@ -252,12 +253,12 @@ const checkEpisodeEdit = (cell: CellEdit, where: string, season: SeasonRow, ctx:
  * the row is created and dated by a single fill. Scope and bounds are all
  * the guard can re-derive there.
  */
-const checkRuntimeScope = (where: string, block: Pick<ShowBlock, 'type' | 'ids'>): void => {
+const checkRuntimeScope = (where: string, block: Pick<ShowBlock, 'style' | 'ids'>): void => {
   // The one planner claim a row cannot take back: the row is dated by the
   // same batch, so the blank-cell rule stops protecting the cell the instant
   // the write lands. `runtimeScopeOk` carries the reasoning.
   if (!runtimeScopeOk(block)) {
-    refuse(`${where}: a runtime may only be written in a live-action block that carries ids on its show row.`);
+    refuse(`${where}: a runtime may only be written in a ${SHOW_STYLES.join(' or ')} block that carries ids on its show row.`);
   }
 };
 
@@ -364,7 +365,7 @@ const checkInsertPlacement = (insert: RowInsert, where: string, ctx: GuardContex
  * they come off the grid; for a block they come off the show row the same batch
  * writes, which is what makes the rule answerable a row before the row exists.
  */
-const checkSeasonRowFill = (fill: readonly BlockCell[], block: Pick<ShowBlock, 'type' | 'ids'>, ctx: GuardContext): void => {
+const checkSeasonRowFill = (fill: readonly BlockCell[], block: Pick<ShowBlock, 'style' | 'ids'>, ctx: GuardContext): void => {
   // Shape first, so the field-specific rules below run against a cell whose
   // field, column and emptiability the whitelists have already settled.
   //
@@ -431,7 +432,7 @@ const checkSeasonInsert = (insert: RowInsert, ctx: GuardContext): void => {
 const BLOCK_SHOW_FIELDS = new Set<ShowField>([
   'Show',
   'Franchise',
-  'Type',
+  'Style',
   'id',
   'Status',
   'Genre',
@@ -450,7 +451,7 @@ const EMPTIABLE_BLOCK = new Set<ShowField>();
  * one the sync inserts again on every poll; missing a roll-up, it is a block
  * whose totals are blank for good, since nothing revisits a show row.
  */
-const BLOCK_REQUIRED: readonly ShowField[] = ['Show', 'Franchise', 'Type', 'id', ...ROLLUP_FIELDS];
+const BLOCK_REQUIRED: readonly ShowField[] = ['Show', 'Franchise', 'Style', 'id', ...ROLLUP_FIELDS];
 
 const isRollup = (field: ShowField): field is RollupField => (ROLLUP_FIELDS as readonly ShowField[]).includes(field);
 
@@ -511,10 +512,11 @@ const checkShowValue = (cell: BlockCell, value: ExtendedValue, where: string, in
       if (typeof text !== 'string' || !text.trim()) refuse(`${where}: a show row must carry a franchise.`);
       if (text !== insert.franchise) refuse(`${where}: the franchise cell says ${describeValue(value)} but the block was placed under ${insert.franchise}.`);
       return;
-    case 'Type':
-      // Only `show` is ever inserted: an anime block uses the cour model, where
-      // a new cour is a separate SIMKL title.
-      if (text !== SHOW_TYPE) refuse(`${where}: ${describeValue(value)} is not ${SHOW_TYPE}.`);
+    case 'Style':
+      // `Realistic` or `Stylised`, exactly: an anime block uses the cour model,
+      // where a new cour is a separate SIMKL title, so `Anime` is never
+      // inserted, and any other word is one the tab's dropdown refuses.
+      if (typeof text !== 'string' || !isShowStyle(text)) refuse(`${where}: ${describeValue(value)} is not ${SHOW_STYLES.join(' or ')}.`);
       return;
     case 'id':
       // Text, matching all 189 show rows. A number here compares unequal to
@@ -689,11 +691,11 @@ const checkBlockInsert = (insert: BlockInsert, ctx: GuardContext): void => {
 
   // The runtime's scope, re-derived from the **planned show row**: the block is
   // not in the grid yet, so `runtimeScopeOk` has nothing to read. The two facts
-  // it asks for are both on the fill — the type this row will carry, and
+  // it asks for are both on the fill — the style this row will carry, and
   // whether it carries an id at all — and reading them off the plan is what
   // makes the same rule answerable a row before the row exists.
-  const planned: Pick<ShowBlock, 'type' | 'ids'> = {
-    type: showFill.find((cell) => cell.field === 'Type')?.value?.stringValue?.toLowerCase() ?? null,
+  const planned: Pick<ShowBlock, 'style' | 'ids'> = {
+    style: showFill.find((cell) => cell.field === 'Style')?.value?.stringValue ?? null,
     ids: parseIds({ userEnteredValue: showFill.find((cell) => cell.field === 'id')?.value }),
   };
   for (const fill of seasonFills) checkSeasonRowFill(fill, planned, ctx);

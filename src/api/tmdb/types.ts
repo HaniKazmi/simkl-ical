@@ -8,6 +8,8 @@
  */
 
 export interface TmdbGenre {
+  /** TMDB's own genre id, the same in every response language. */
+  id?: number;
   name?: string;
 }
 

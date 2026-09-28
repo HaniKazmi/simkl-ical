@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import {
   ARTWORK_HOST,
   NOT_HELD,
-  SHOW_TYPE,
+  isShowStyle,
+  isStyle,
+  showStyleOf,
   anyTitleRecorded,
   artworkFormula,
   artworkKeyFor,
@@ -221,7 +223,7 @@ test('a shuffled header order re-letters every reference', () => {
     'Other Genres',
     'Network',
     'Certificate',
-    'Type',
+    'Style',
     'Status',
     'Subtitle',
     'Episode Length (min)',
@@ -259,8 +261,24 @@ test('the status vocabulary is the five values the tab holds', () => {
   assert.equal(isStatus(''), false);
 });
 
-test('a series is typed in the lowercase the tab uses', () => {
-  assert.equal(SHOW_TYPE, 'show');
+// One dropdown, shared by both tabs, in the case it spells: a word in any
+// other spelling is a cell this code cannot read.
+test('the style vocabulary is the three words the dropdown holds, exactly', () => {
+  for (const style of ['Anime', 'Realistic', 'Stylised']) assert.ok(isStyle(style), style);
+  for (const word of ['anime', 'show', 'film', 'Stylized', '']) assert.equal(isStyle(word), false, word);
+  // A block is never inserted as anime: the cour model makes every new cour a
+  // separate SIMKL title.
+  assert.equal(isShowStyle('Anime'), false);
+  assert.ok(isShowStyle('Realistic') && isShowStyle('Stylised'));
+});
+
+// Read off TVDB's raw names, where `Animation` survives: the genre map drops
+// it, and the style must not depend on what lands in `Genre`.
+test('a new block is Stylised where TVDB files the series under Animation, and Realistic otherwise', () => {
+  assert.equal(showStyleOf(['Animation', 'Comedy']), 'Stylised');
+  assert.equal(showStyleOf(['Comedy', 'Animation']), 'Stylised');
+  assert.equal(showStyleOf(['Drama', 'Science Fiction']), 'Realistic');
+  assert.equal(showStyleOf([]), 'Realistic', 'filed under nothing is still a series TVDB knows');
 });
 
 // --- Where a block goes ------------------------------------------------------
@@ -324,7 +342,7 @@ test('a title the tab spells differently is still the same title', () => {
 // guard would be re-deriving over two different shapes. Written as a call
 // rather than a type alias so `tsc` checks the assignment.
 test('a parsed block is something placement can be asked about', () => {
-  const parsed = { row: 3, title: 'The Bear', status: 'Watching', type: 'show', ids: [1], seasons: [{ row: 4 }] } as ShowBlock;
+  const parsed = { row: 3, title: 'The Bear', status: 'Watching', style: 'Realistic', ids: [1], seasons: [{ row: 4 }] } as ShowBlock;
   assert.equal(blockFranchise(parsed), 'Bear');
   assert.equal(blockEnd(parsed), 4);
 });

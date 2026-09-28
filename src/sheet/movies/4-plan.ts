@@ -50,7 +50,7 @@ import { compareWatched, type PlanRecord } from '../4-plan.ts';
 // bound the guard refuses at, and a second copy of the counting is a plan
 // refused whole over rows the planner thought it had room for.
 import { admitPlan, admitTier, type Rationed } from '../guard-core.ts';
-import { formatCell, plausibleReleaseSerial, plausibleScore, releaseCeiling, typeCell, watchedInCinema } from './values.ts';
+import { formatCell, plausibleReleaseSerial, plausibleScore, releaseCeiling, styleCell, watchedInCinema } from './values.ts';
 
 // --- The plan --------------------------------------------------------------
 
@@ -678,7 +678,7 @@ const buildInsert = (
     // unconditionally: a blank here is an unfinished row, not a "no", and
     // neither cell is ever revisited to say so later.
     fillCell(grid, row, film.id, 'Format', str(formatCell(watchedInCinema(facts.openedInCinemas, watchedOn))), note),
-    fillCell(grid, row, film.id, 'Type', str(typeCell(film.anime)), note),
+    fillCell(grid, row, film.id, 'Style', str(styleCell(film.anime, facts.animated)), note),
   ];
 
   if (film.rating !== null && plausibleScore(film.rating)) fill.push(fillCell(grid, row, film.id, 'Score', num(film.rating), note));

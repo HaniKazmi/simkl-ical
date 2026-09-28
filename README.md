@@ -286,18 +286,34 @@ in the same batch, which are the formulas every other block on the tab already c
 Adding a block is TV only, and needs both `TVDB_API_KEY` and `TMDB_API_KEY`. An anime series is
 left for you to add by hand: the tab files a new cour as another season of one block, while SIMKL
 files it as a separate title under its romaji name, so there is no way to tell a new series from a
-new cour of one you already have. The new block goes where the `Franchise` column says, and its
-genre comes from TVDB, its network from SIMKL and its certificate from TMDB — each from whichever
-of the three lists that column the way your tab does. If any of that has not answered yet, the
-block waits for the next poll rather than arriving with blank cells, because nothing revisits a
-show row once it exists. The block lands whole — a show row and one season row for every season the
-title needs, in one go — because a show row with no season rows under it would have its totals
-counting the *next* block's rows until the missing ones arrived. Which seasons those are: the ones
-you have no row for that were either watched inside the activity window or have moved since this
-service last looked. So a show you have been watching week by week gets a block starting at the
+new cour of one you already have — which is also why a block this service adds never says `Anime`
+in its `Style` column. The new block goes where the `Franchise` column says, and its genre comes
+from TVDB, its network from SIMKL and its certificate from TMDB — each from whichever of the three
+lists that column the way your tab does — and its `Style` from TVDB's genres as well (below). If
+any of that has not answered yet, the block waits for the next poll rather than arriving with blank
+cells, because nothing revisits a show row once it exists. A series TVDB does not know at all is
+left for you to add by hand: its genre can stay blank, but a show row needs a `Style`, and a
+guessed one would never be corrected. The block lands whole — a show row and one season row for
+every season the title needs, in one go — because a show row with no season rows under it would
+have its totals counting the *next* block's rows until the missing ones arrived. Which seasons
+those are: the ones you have no row for that were either watched inside the activity window or
+have moved since this service last looked. So a show you have been watching week by week gets a block starting at the
 recent season and you add the earlier rows by hand, while a back catalogue you mark watched in one
 go arrives with every season at once. A very tall block is cut to what one run may write and the
 rest follow on later polls.
+
+A new row's `Style` follows one rule on both tabs: `Anime` for a film SIMKL files as anime,
+`Stylised` for anything else TVDB (for a show) or TMDB (for a film) files under Animation, and
+`Realistic` for the rest — so a show block is never `Anime`, for the reason above. Animation is not
+one of the genres the tabs colour, so it never reaches the `Genre` cells; it decides the style and
+nothing else.
+
+Both tabs must carry that `Style` column, holding exactly `Anime`, `Realistic` or `Stylised` — a
+three-word dropdown shared by the Shows and Movies tabs, decided by how a picture looks rather than
+where it was made. A tab still headed `Type` reads as missing a required column: that tab's sync
+fails every poll with `Style is missing` and writes nothing, and the artwork page cannot read the
+tab either, until the header is renamed. That is deliberate: columns are found by their header, and
+a sync that guessed would write into whatever column now sits there.
 
 The start and end dates are the two that **keep following SIMKL** after the row is finished: if a
 date changes upstream — you correct a watch date, or rewatch the last episode — the cell is

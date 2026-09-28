@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  animatedOn,
   bannerFor,
   bannerOf,
   certificateOf,
@@ -12,6 +13,7 @@ import {
   mappedGenres,
   openedInCinemas,
   releaseDateOf,
+  styleCell,
   watchedInCinema,
 } from '../../../src/sheet/movies/values.ts';
 import type { TmdbMovie } from '../../../src/api/tmdb/types.ts';
@@ -37,6 +39,25 @@ test('genres outside the vocabulary are dropped, not renamed to something near',
   // survives — which is exactly what its row holds.
   assert.deepEqual(mappedGenres(withGenres('Animation', 'Family', 'Adventure')), ['Adventure']);
   assert.deepEqual(mappedGenres(withGenres('Crime', 'Drama', 'Mystery')), ['Drama', 'Mystery']);
+});
+
+// By id, so the answer is the same in any response language, and apart from
+// the genre map, which drops Animation from `Genre` altogether.
+test('a film is animated when TMDB files it under genre 16, whatever the name says', () => {
+  assert.equal(animatedOn({ genres: [{ id: 12, name: 'Adventure' }, { id: 16, name: 'Animation' }] }), true);
+  assert.equal(animatedOn({ genres: [{ id: 16, name: 'Animación' }] }), true);
+  assert.equal(animatedOn({ genres: [{ id: 18, name: 'Drama' }] }), false);
+  assert.equal(animatedOn(withGenres('Animation')), false, 'a name with no id is not an id');
+  assert.equal(animatedOn(undefined), false);
+});
+
+// SIMKL's anime flag outranks TMDB: an anime film is Anime though TMDB files
+// it under Animation too.
+test('a film row is Anime, then Stylised if animated, then Realistic', () => {
+  assert.equal(styleCell(true, true), 'Anime');
+  assert.equal(styleCell(true, false), 'Anime');
+  assert.equal(styleCell(false, true), 'Stylised');
+  assert.equal(styleCell(false, false), 'Realistic');
 });
 
 test('a documentary is a True Story — the only films the map would otherwise empty', () => {

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { assertPlanSafe, UnsafePlanError } from '../../src/sheet/5-guard.ts';
 import { a1, type Grid } from '../../src/sheet/2-grid.ts';
 import type { SheetPlan } from '../../src/sheet/4-plan.ts';
+import type { ExtendedValue } from '../../src/api/google/types.ts';
 import type { HeaderName } from '../../src/sheet/2-grid.ts';
 import { fx, gridFixture, H, planOf, raw, season, show, TODAY, TODAY_NOTE } from './fixture.ts';
 import { dateSerial } from '../../src/sheet/values.ts';
@@ -103,7 +104,7 @@ test('a field outside the whitelist is refused however plausible', () => {
   refuses(planOf([fx.cell('fargoS2', 'Season', { numberValue: 3 })]), /not a field this sync may write/);
   refuses(planOf([fx.cell('fargo', 'Show', { stringValue: 'Renamed' })]), /not a field this sync may write/);
   refuses(planOf([fx.cell('fargoS2', 'id', { numberValue: 7 })]), /not a field this sync may write/);
-  refuses(planOf([fx.cell('fargo', 'Type', { stringValue: 'anime' })]), /not a field this sync may write/);
+  refuses(planOf([fx.cell('fargo', 'Style', { stringValue: 'Anime' })]), /not a field this sync may write/);
 });
 
 /**
@@ -369,13 +370,14 @@ test('a runtime is refused on a row that already has an end date', () => {
 });
 
 /**
- * The same grid under an `anime` type, or a show row with no id — the two
- * shapes whose season number means nothing to TVDB. Otherwise identical to
- * `blank`, so a refusal can only be the scope rule.
+ * The same grid under the `Anime` style, a blank one, or a show row with no id
+ * — the shapes whose season number means nothing to TVDB, or that this code
+ * cannot place. Otherwise identical to `blank`, so a refusal can only be the
+ * scope rule.
  */
-const scoped = (type: string, id: number | null) =>
+const scoped = (style: string, id: number | null) =>
   gridFixture(
-    show('fargo', 'Fargo', { id, type }),
+    show('fargo', 'Fargo', { id, style }),
     season('fargoS1', 1, 6, 44000),
     season('fargoS2', 2, 3, null, { runtime: null }),
     season('fargoS3', 3, 2, null, { runtime: null }),
@@ -388,11 +390,21 @@ const scoped = (type: string, id: number | null) =>
  * season — every cour is `season: 1` and a franchise shares one TVDB id.
  */
 test('a runtime is refused in an anime block, and in a block whose show row has no id', () => {
-  // Type decides the first case, not a missing id: this block has an id and is
+  // Style decides the first case, not a missing id: this block has an id and is
   // still refused. A hand-maintained sheet can put a show-row id on an anime
   // block, which a bare "no ids" test reads as live-action.
-  refuses(planOf([endCell(), runtimeCell(49)]), /live-action block/, scoped('anime', 1).grid);
-  refuses(planOf([endCell(), runtimeCell(49)]), /live-action block/, scoped('show', null).grid);
+  refuses(planOf([endCell(), runtimeCell(49)]), /Realistic or Stylised block/, scoped('Anime', 1).grid);
+  refuses(planOf([endCell(), runtimeCell(49)]), /Realistic or Stylised block/, scoped('Realistic', null).grid);
+  // A blank style, or a word outside the dropdown, is a block this code cannot
+  // place: refused rather than read as "not anime".
+  refuses(planOf([endCell(), runtimeCell(49)]), /Realistic or Stylised block/, scoped('', 1).grid);
+  refuses(planOf([endCell(), runtimeCell(49)]), /Realistic or Stylised block/, scoped('realistic', 1).grid);
+});
+
+// Stylised is the other style whose seasons TVDB numbers, so it takes a runtime
+// exactly as Realistic does.
+test('a runtime is allowed in a Stylised block that carries ids', () => {
+  assert.doesNotThrow(() => assertPlanSafe(planOf([endCell(), runtimeCell(49)]), scoped('Stylised', 1).grid));
 });
 
 /**
@@ -453,11 +465,11 @@ test('an insert’s End is bounded exactly as an edit’s is', () => {
 // Re-derived on the insert path too: the same fill dates the row, so nothing
 // protects the cell a second time.
 test('an insert carrying a runtime into a block TVDB cannot describe is refused', () => {
-  const anime = gridFixture(show('bleach', 'Bleach', { status: 'Watching', type: 'anime' }), season('bleachS1', 1, 6, 44000), season('bleachS2', 2, 3, null));
-  refuses(planOf([], anime.insertAt(anime.end, 3, { title: 'Bleach' })), /live-action block/, anime.grid);
+  const anime = gridFixture(show('bleach', 'Bleach', { status: 'Watching', style: 'Anime' }), season('bleachS1', 1, 6, 44000), season('bleachS2', 2, 3, null));
+  refuses(planOf([], anime.insertAt(anime.end, 3, { title: 'Bleach' })), /Realistic or Stylised block/, anime.grid);
 
   const idless = gridFixture(show('fargo', 'Fargo', { id: null }), season('fargoS1', 1, 6, 44000), season('fargoS2', 2, 3, null));
-  refuses(planOf([], idless.insertAt(idless.end, 3)), /live-action block/, idless.grid);
+  refuses(planOf([], idless.insertAt(idless.end, 3)), /Realistic or Stylised block/, idless.grid);
 
   // Both blocks accept a row with no runtime, so the refusals above are the
   // runtime rule and nothing else.
@@ -607,7 +619,7 @@ test('a show row missing any cell nothing will come back to fill is refused', ()
   refuses(planOf([], without('id')), /a show row must carry ID/);
   refuses(planOf([], without('Show')), /a show row must carry Title/);
   refuses(planOf([], without('Franchise')), /a show row must carry Franchise/);
-  refuses(planOf([], without('Type')), /a show row must carry Type/);
+  refuses(planOf([], without('Style')), /a show row must carry Style/);
   refuses(planOf([], without('Note')), /a show row must carry Seasons \/ Last Watched/);
 });
 
@@ -619,11 +631,17 @@ test('the title and franchise cells must say what the block was placed as', () =
   refuses(planOf([], { ...block, fill: block.fill.map((c) => (c.field === 'Franchise' ? { ...c, value: { stringValue: 'Apple' } } : c)) }), /but the block was placed under Severance/);
 });
 
-// Only `show` is ever inserted: an anime block uses the cour model, where a
-// new cour is a separate SIMKL title.
-test('a block is always typed show', () => {
+// `Anime` is never inserted: an anime block uses the cour model, where a new
+// cour is a separate SIMKL title. Any other word is one the sheet's dropdown
+// refuses, so the guard refuses it too; `isShowStyle` compares exactly, which
+// the runtime-scope test above probes with a lowercase spelling.
+test('a block carries Realistic or Stylised and nothing else', () => {
   const block = fx.blockAt(fx.end);
-  refuses(planOf([], { ...block, fill: block.fill.map((c) => (c.field === 'Type' ? { ...c, value: { stringValue: 'anime' } } : c)) }), /is not show/);
+  const styled = (value: ExtendedValue) => ({ ...block, fill: block.fill.map((c) => (c.field === 'Style' ? { ...c, value } : c)) });
+  assert.doesNotThrow(() => assertPlanSafe(planOf([], styled({ stringValue: 'Stylised' })), fx.grid));
+  refuses(planOf([], styled({ stringValue: 'Anime' })), /is not Realistic or Stylised/);
+  refuses(planOf([], styled({ stringValue: 'show' })), /is not Realistic or Stylised/);
+  refuses(planOf([], styled({ boolValue: true })), /is not Realistic or Stylised/);
 });
 
 // Text, matching all 189 show rows: a number compares unequal to every other
@@ -764,7 +782,7 @@ test('a block’s season runtime is bounded in whole minutes', () => {
 // rule and still names no SIMKL entry — which is exactly what the runtime write
 // may not be given.
 test('a block’s runtime is refused where the planned show row names no SIMKL entry', () => {
-  refuses(planOf([], fx.blockAt(fx.end, { id: 0 })), /live-action block that carries ids on its show row/);
+  refuses(planOf([], fx.blockAt(fx.end, { id: 0 })), /Realistic or Stylised block that carries ids on its show row/);
   assert.doesNotThrow(() => assertPlanSafe(planOf([], fx.blockAt(fx.end, { id: 0, runtime: null })), fx.grid));
 });
 

@@ -12,9 +12,9 @@
  * sets drifting apart with nothing to notice.
  */
 
-import { columnLetter, isBlank, isFormula } from './2-grid.ts';
+import { columnLetter, isBlank, isFormula, STYLE_REALISTIC, STYLE_STYLISED } from './2-grid.ts';
 import { instantFrom, plainDateFrom, plainDateIn } from '../shared/dates.ts';
-import type { ColumnMap, HeaderName } from './2-grid.ts';
+import type { ColumnMap, HeaderName, ShowStyle } from './2-grid.ts';
 import type { CellData } from '../api/google/types.ts';
 import type { TmdbTv } from '../api/tmdb/types.ts';
 
@@ -760,14 +760,24 @@ export const networkCell = (name: string | null | undefined): string | null => {
 // --- The show row a block insert writes --------------------------------------
 
 /**
- * How the `Type` column spells a series. Lowercase, as every show row on the
- * tab holds it, and beside the films tab's `film`/`anime` so a reader
- * filtering on `anime` gets both.
- *
- * Only `show` is ever written: an anime block uses the cour model, where a new
- * cour is a separate SIMKL title, so the sync inserts no anime block.
+ * The `Style` vocabulary both tabs write, re-exported so the planners and
+ * guards read it where they read every other convention. Defined in
+ * `2-grid.ts`, whose `runtimeScopeOk` needs it and which this module imports.
  */
-export const SHOW_TYPE = 'show';
+export { isShowStyle, isStyle, SHOW_STYLES, STYLE_ANIME, STYLE_REALISTIC, STYLE_STYLISED, STYLES, type ShowStyle, type Style } from './2-grid.ts';
+
+/**
+ * A new block's `Style` from TVDB's genre names for the series: `Stylised`
+ * where TVDB files it under `Animation`, `Realistic` otherwise.
+ *
+ * Read off the raw names rather than `mappedTvdbGenres`, which drops
+ * `Animation` because the genre vocabulary has nowhere to put it — the style
+ * and the `Genre` cell are two questions about one answer, and neither may
+ * decide the other. `Anime` among the names changes nothing, since a show
+ * block never carries `Anime`: a series TVDB files under `Anime` without
+ * `Animation` reads as `Realistic`, and its row is the reader's to correct.
+ */
+export const showStyleOf = (tvdbGenres: readonly string[]): ShowStyle => (tvdbGenres.includes('Animation') ? STYLE_STYLISED : STYLE_REALISTIC);
 
 /**
  * The `Status` column's closed set — the five values the 189 blocks hold.

@@ -1248,7 +1248,7 @@ test('the status source is the show row id, or the latest cour when there is non
   const live = parseGrid(sheetSnapshot([H, show('Fargo', 'Ended', 3381), season(1, 6, 44000, 999)]));
   assert.equal(statusSource(live.blocks[0]!), 3381);
 
-  const anime = parseGrid(sheetSnapshot([H, show('Frieren', 'Ended', null, 'anime'), season(1, 14, 44000, 11), season(2, 14, null, '12,13')]));
+  const anime = parseGrid(sheetSnapshot([H, show('Frieren', 'Ended', null, 'Anime'), season(1, 14, 44000, 11), season(2, 14, null, '12,13')]));
   assert.equal(statusSource(anime.blocks[0]!), 13);
 });
 
@@ -1256,7 +1256,7 @@ test('the status source is the show row id, or the latest cour when there is non
 
 const splitCour = (overrides: Partial<Record<'aEnd' | 'bEnd', boolean>> = {}) =>
   scenario({
-    rows: [show('Ajin: Demi-Human', 'Ended', null, 'anime'), season(1, 20, null, '522882,581835')],
+    rows: [show('Ajin: Demi-Human', 'Ended', null, 'Anime'), season(1, 20, null, '522882,581835')],
     items: [
       { id: 522882, status: 'completed', seasons: { 1: watched(13, 40) }, watched: 13, total: 13, notAired: overrides.aEnd === false ? 1 : 0 },
       { id: 581835, status: 'completed', seasons: { 1: watched(13, 3) }, watched: 13, total: 13, notAired: overrides.bEnd === false ? 1 : 0 },
@@ -1273,7 +1273,7 @@ test("a cour row is dated on its season's last episode, not the record's own tim
   const first = daysAgo(60);
   const last = daysAgo(9);
   const { plan } = scenario({
-    rows: [show('Koukyoushihen: Eureka Seven', 'Ended', null, 'anime'), season(1, 12, null, 38597)],
+    rows: [show('Koukyoushihen: Eureka Seven', 'Ended', null, 'Anime'), season(1, 12, null, 38597)],
     items: [
       {
         id: 38597,
@@ -1320,7 +1320,7 @@ test("a split cour's counts are compared and banked per id, never against the su
   // the row in scope.
   const dormant = () =>
     scenario({
-      rows: [show('Ajin: Demi-Human', 'Ended', null, 'anime'), season(1, 20, null, '522882,581835')],
+      rows: [show('Ajin: Demi-Human', 'Ended', null, 'Anime'), season(1, 20, null, '522882,581835')],
       items: [
         { id: 522882, status: 'completed', seasons: { 1: watched(13, 900) }, watched: 13, total: 13 },
         { id: 581835, status: 'completed', seasons: { 1: watched(13, 880) }, watched: 13, total: 13 },
@@ -1344,7 +1344,7 @@ test("a split cour's counts are compared and banked per id, never against the su
 // decreases — so a wrong-but-larger number would be waved straight through.
 test('an unresolved half poisons the whole row rather than summing the survivors', () => {
   const { plan } = scenario({
-    rows: [show('Ajin: Demi-Human', 'Ended', null, 'anime'), season(1, 20, null, '522882,581835')],
+    rows: [show('Ajin: Demi-Human', 'Ended', null, 'Anime'), season(1, 20, null, '522882,581835')],
     items: [{ id: 522882, status: 'completed', seasons: { 1: watched(13, 3) }, watched: 13, total: 13 }],
   });
   const result = plan();
@@ -1356,7 +1356,7 @@ test('an unresolved half poisons the whole row rather than summing the survivors
 
 test('an anime cour is completed on its own counters, with no episode lookup', () => {
   const { plan, demands } = scenario({
-    rows: [show('Frieren', 'Watching', null, 'anime'), season(1, 2, null, 1500)],
+    rows: [show('Frieren', 'Watching', null, 'Anime'), season(1, 2, null, 1500)],
     items: [{ id: 1500, status: 'completed', seasons: { 1: watched(11) }, watched: 11, total: 11 }],
     details: { 1500: { status: 'ended' } },
   });
@@ -1370,7 +1370,7 @@ test('an anime cour is completed on its own counters, with no episode lookup', (
 // to a block needs fuzzy matching that takes 24 hand-written overrides.
 test('a title with no row anywhere is reported, never added', () => {
   const { plan } = scenario({
-    rows: [show('Frieren', 'Watching', null, 'anime'), season(1, 11, 44000, 1500)],
+    rows: [show('Frieren', 'Watching', null, 'Anime'), season(1, 11, 44000, 1500)],
     items: [
       { id: 1500, title: 'Frieren', status: 'completed', seasons: { 1: watched(11, 3) }, watched: 11, total: 11 },
       { id: 1600, type: 'anime' as const, title: 'Sousou no Frieren 2nd Season', status: 'watching', seasons: { 1: watched(4) } },
@@ -1387,7 +1387,7 @@ test('a title with no row anywhere is reported, never added', () => {
 // an `unknown-id` skip on each of those.
 test('an anime film the films tab places is not a title missing a row', () => {
   const args = {
-    rows: [show('Frieren', 'Watching', null, 'anime'), season(1, 11, 44000, 1500)],
+    rows: [show('Frieren', 'Watching', null, 'Anime'), season(1, 11, 44000, 1500)],
     items: [
       { id: 1500, title: 'Frieren', status: 'completed', seasons: { 1: watched(11, 3) }, watched: 11, total: 11 },
       { id: 1600, type: 'anime' as const, title: 'Spirited Away', status: 'completed', seasons: { 1: watched(1) } },
@@ -1643,7 +1643,7 @@ test('a season with no row above it in the block is reported rather than inserte
 // a judgement no rule here reproduces.
 test('anime blocks are never inserted into', () => {
   const { plan } = scenario({
-    rows: [show('Frieren', 'Watching', null, 'anime'), season(1, 11, 44000, 1500)],
+    rows: [show('Frieren', 'Watching', null, 'Anime'), season(1, 11, 44000, 1500)],
     items: [{ id: 1500, status: 'watching', seasons: { 1: watched(11, 3), 2: watched(4) }, watched: 15, total: 15 }],
     details: { 1500: { status: 'airing', runtime: 24 } },
   });
@@ -1807,7 +1807,7 @@ test('a block whose id another row claims leaves its Status withdrawn', () => {
 test('a Status nothing can derive withdraws while the detail is out, and records once it answers', () => {
   const held = (details?: Record<number, ShowDetail>) =>
     scenario({
-      rows: [show('Frieren', 'Watching', null, 'anime'), season(1, 11, 44000, 1500)],
+      rows: [show('Frieren', 'Watching', null, 'Anime'), season(1, 11, 44000, 1500)],
       items: [{ id: 1500, status: 'hold', seasons: { 1: watched(11, 3) }, watched: 11, total: 11 }],
       ...(details ? { details } : {}),
     }).result(new Map([[titleRecordKey(1500), { Status: 'completed' }]]));
@@ -1841,7 +1841,7 @@ test('a complete season with an unusable last watch leaves its count unrecorded'
 // derives from its own not-aired counter.
 test('an anime block still gets a Status without any episode list', () => {
   const { plan } = scenario({
-    rows: [show('Frieren', 'Watching', null, 'anime'), season(1, 11, 44000, 1500)],
+    rows: [show('Frieren', 'Watching', null, 'Anime'), season(1, 11, 44000, 1500)],
     items: [{ id: 1500, status: 'completed', seasons: { 1: watched(11, 3) }, watched: 11, total: 11, notAired: 0 }],
     details: { 1500: { status: 'ended' } },
   });
@@ -2196,18 +2196,18 @@ test('a part-watched season, a filled cell and a dated row are all left alone', 
 // A SIMKL anime record numbers every cour "season 1" and all cours of a
 // franchise share one TVDB id, so the row's season number means nothing there.
 test('an anime block is never demanded, however its ids are arranged', () => {
-  const anime = (type: string, showId: number | null, rowId: number | null) =>
+  const anime = (style: string, showId: number | null, rowId: number | null) =>
     scenario({
-      rows: [showRow('Frieren', 'Watching', showId, type), seasonRow(1, 27, null, { id: rowId, runtime: null })],
+      rows: [showRow('Frieren', 'Watching', showId, style), seasonRow(1, 27, null, { id: rowId, runtime: null })],
       items: [{ id: 900, status: 'watching', seasons: { 1: watched(28) }, watched: 28, total: 28 }],
       episodes: { 900: eps(1, 28) },
       details: { 900: { status: 'ended', runtime: 30 } },
       tvdbIds: { 900: 424536 },
     });
-  assert.deepEqual(anime('anime', null, 900).runtimeDemands(), [], 'ids on the cour row, as anime is kept');
-  // Type says anime but the id sits on the show row, so an id-location rule
+  assert.deepEqual(anime('Anime', null, 900).runtimeDemands(), [], 'ids on the cour row, as anime is kept');
+  // Style says Anime but the id sits on the show row, so an id-location rule
   // alone would read it as live-action.
-  assert.deepEqual(anime('anime', 900, null).runtimeDemands(), [], 'Type is what settles it');
+  assert.deepEqual(anime('Anime', 900, null).runtimeDemands(), [], 'Style is what settles it');
 });
 
 test('a row carrying its own id is never demanded — its number is not the entry’s', () => {
@@ -2396,7 +2396,7 @@ const runFrom = (first: number): string[] => [daysAgo(first), ...Array.from({ le
  */
 const animeCour = (first: number) =>
   scenario({
-    rows: [show('Frieren', 'Ended', null, 'anime'), season(2, 6, TODAY_SERIAL, 1500)],
+    rows: [show('Frieren', 'Ended', null, 'Anime'), season(2, 6, TODAY_SERIAL, 1500)],
     items: [{ id: 1500, status: 'completed', seasons: { 1: runFrom(first) }, watched: 6, total: 6 }],
   });
 
@@ -2429,11 +2429,11 @@ test('an anime cour follows a start date that moved, on a row the sheet dated', 
  */
 test('a split cour keeps the key it had before the second half existed', () => {
   const half = scenario({
-    rows: [show('Ajin: Demi-Human', 'Ended', null, 'anime'), season(1, 13, TODAY_SERIAL, 522882)],
+    rows: [show('Ajin: Demi-Human', 'Ended', null, 'Anime'), season(1, 13, TODAY_SERIAL, 522882)],
     items: [{ id: 522882, status: 'completed', seasons: { 1: runFrom(31) }, watched: 13, total: 13 }],
   });
   const both = scenario({
-    rows: [show('Ajin: Demi-Human', 'Ended', null, 'anime'), season(1, 26, TODAY_SERIAL, '522882,581835')],
+    rows: [show('Ajin: Demi-Human', 'Ended', null, 'Anime'), season(1, 26, TODAY_SERIAL, '522882,581835')],
     items: [
       { id: 522882, status: 'completed', seasons: { 1: runFrom(31) }, watched: 13, total: 13 },
       { id: 581835, status: 'completed', seasons: { 1: watched(13, 3) }, watched: 13, total: 13 },
@@ -2851,7 +2851,7 @@ test('a TV show the tab has no block for becomes a show row and its first season
   const show = blockGrid.end;
   assert.equal(valueOf(insert, show, 'Show')?.stringValue, 'Severance');
   assert.equal(valueOf(insert, show, 'Franchise')?.stringValue, 'Severance');
-  assert.equal(valueOf(insert, show, 'Type')?.stringValue, 'show');
+  assert.equal(valueOf(insert, show, 'Style')?.stringValue, 'Realistic');
   assert.equal(valueOf(insert, show, 'id')?.stringValue, '900', 'text, as all 189 show rows hold it');
   assert.equal(valueOf(insert, show, 'Status')?.stringValue, 'Watching');
   assert.equal(valueOf(insert, show, 'Genre')?.stringValue, 'Drama');
@@ -2919,20 +2919,50 @@ test('a block waits while no episode list came back', () => {
 });
 
 test('a block waits on TVDB’s genres and TMDB’s certificate, and asks for both', () => {
-  const both = blocks({ genres: undefined, certificate: undefined });
+  const both = blocks({ tvdbGenres: undefined, certificate: undefined });
   assert.equal(both.plan.insert, null);
   assert.match(both.plan.skips.find((s) => s.code === 'awaiting-lookup')?.message ?? '', /waiting on TVDB and TMDB/);
   assert.deepEqual(both.demands.genres, [{ id: 900, tvdbId: 111 }]);
   assert.deepEqual(both.demands.certificates, [{ id: 900, tmdbId: 222 }]);
 
   // Answered with nothing is not the same as unanswered: the block lands with
-  // those cells blank, which is what a series TVDB or TMDB has nothing for
-  // looks like for the life of the row.
-  const settled = blocks({ genres: null, certificate: null });
+  // the cell blank, which is what a series TMDB has nothing for looks like for
+  // the life of the row.
+  const settled = blocks({ certificate: null });
   assert.equal(settled.plan.insert?.kind, 'block');
-  assert.deepEqual(settled.demands.genres, []);
-  assert.equal(valueOf(settled.plan.insert, blockGrid.end, 'Genre'), undefined);
+  assert.deepEqual(settled.demands.certificates, []);
   assert.equal(valueOf(settled.plan.insert, blockGrid.end, 'Certificate'), undefined);
+
+  // TVDB filing the series under nothing the vocabulary holds is settled the
+  // same way: `Genre` blank, and the style still decided.
+  const unfiled = blocks({ tvdbGenres: [] });
+  assert.equal(unfiled.plan.insert?.kind, 'block');
+  assert.equal(valueOf(unfiled.plan.insert, blockGrid.end, 'Genre'), undefined);
+  assert.equal(valueOf(unfiled.plan.insert, blockGrid.end, 'Style')?.stringValue, 'Realistic');
+});
+
+// A show row cannot carry a blank Style and nothing revisits one, so TVDB not
+// knowing the series leaves nothing honest to write. No poll changes a 404, so
+// it is said once and the title recorded, the way a missing join key is.
+test('a series TVDB does not know is named as a block to add by hand, once', () => {
+  // No runtime seeded, so the assertion below can see one asked for: the exit has to come before
+  // this pass's runtime lookups, not merely before a lookup the fixture already answered.
+  const { plan, demands, observed } = blocks({ tvdbGenres: null, seasonRuntimes: new Map() });
+  assert.equal(plan.insert, null);
+  assert.match(plan.notes.join('\n'), /Severance \(simkl 900\): TVDB does not know this series, so its Style cannot be decided/);
+  assert.deepEqual(demands.runtimes, [], 'no runtime is asked for a block nothing will build');
+  assert.equal(observed.get(titleRecordKey(BLOCK_SHOW.id))?.Status, 'watching', 'recorded, so the next poll is quiet about it');
+  assert.equal(observed.get(seasonKey(BLOCK_SHOW.id, 1))?.Watched, '2');
+});
+
+// Animated and not anime is the third style. `Animation` never reaches the
+// `Genre` cells — the vocabulary has no place for it — so the style is decided
+// off TVDB's own names, apart from what the genre cells say.
+test('a series TVDB files under Animation becomes a Stylised block', () => {
+  const { plan } = blocks({ tvdbGenres: ['Animation', 'Drama', 'Science Fiction', 'Thriller'] });
+  assert.equal(plan.insert?.kind, 'block');
+  assert.equal(valueOf(plan.insert, blockGrid.end, 'Style')?.stringValue, 'Stylised');
+  assert.equal(valueOf(plan.insert, blockGrid.end, 'Genre')?.stringValue, 'Drama');
 });
 
 // Gated on airing, not watching: mid-air SIMKL's episode count has not
@@ -2965,7 +2995,7 @@ test('anime keeps the add-it-by-hand note rather than becoming a block', () => {
 test('a show with no numbered season inside the window is reported, never added, and costs no lookup', () => {
   // SIMKL's season 0 is specials, which `seasonsOf` drops — so a title watched
   // only there has no season a row could be for.
-  const specials = blocks({ genres: undefined, certificate: undefined }, {}, { seasons: { 0: [daysAgo(9), daysAgo(2)] } });
+  const specials = blocks({ tvdbGenres: undefined, certificate: undefined }, {}, { seasons: { 0: [daysAgo(9), daysAgo(2)] } });
   assert.equal(specials.plan.insert, null);
   assert.match(specials.plan.notes.join('\n'), /Severance \(simkl 900\) has recent activity and no row/);
   assert.deepEqual(specials.demands.catalogue, [], 'nothing is asked of SIMKL for a title with no row to gain');
@@ -2978,7 +3008,7 @@ test('a show with no numbered season inside the window is reported, never added,
 // — but which season a row would be for is decided by the episode stamps, and
 // those can all sit outside the window the title's own stamp is inside.
 test('a show whose episodes were all watched outside the window is reported, never added', () => {
-  const stale = blocks({ genres: undefined, certificate: undefined }, {}, { seasons: { 1: [daysAgo(400), daysAgo(300)] }, lastWatchedAt: daysAgo(2) });
+  const stale = blocks({ tvdbGenres: undefined, certificate: undefined }, {}, { seasons: { 1: [daysAgo(400), daysAgo(300)] }, lastWatchedAt: daysAgo(2) });
   assert.equal(stale.plan.insert, null);
   assert.match(stale.plan.notes.join('\n'), /Severance \(simkl 900\) has recent activity and no row/);
   assert.deepEqual(stale.demands.catalogue, []);
@@ -3161,7 +3191,7 @@ test('a tab missing a column a show row is written into gets one note and no blo
 // and a blank one reads as a series with no genre rather than an install with
 // no key.
 test('a run with a credential unset names the key once and adds nothing', () => {
-  const { plan, demands } = blocks({ genres: undefined, certificate: undefined }, { facts: { tvdb: false, tmdb: true } });
+  const { plan, demands } = blocks({ tvdbGenres: undefined, certificate: undefined }, { facts: { tvdb: false, tmdb: true } });
   assert.equal(plan.insert, null);
   assert.deepEqual(plan.notes, ['1 show(s) have no row; set TVDB_API_KEY to have a block added for them']);
   assert.deepEqual(demands.genres, [], 'nothing is asked of an upstream there is no key for');
@@ -3172,7 +3202,7 @@ test('a run with a credential unset names the key once and adds nothing', () => 
 // nothing can use.
 test('a show waiting on an unset credential is not even looked up', () => {
   for (const facts of [{ tvdb: false, tmdb: true }, { tvdb: true, tmdb: false }]) {
-    const { demands } = blocks({ genres: undefined, certificate: undefined }, { facts });
+    const { demands } = blocks({ tvdbGenres: undefined, certificate: undefined }, { facts });
     assert.deepEqual(demands.catalogue, [], `${JSON.stringify(facts)}: nothing is asked of SIMKL either`);
   }
 });
@@ -3181,7 +3211,7 @@ test('a show waiting on an unset credential is not even looked up', () => {
 // no block is settled, nothing further is asked, and the fix arrives with a
 // restart.
 test('a rejected credential names the key to fix and asks for nothing', () => {
-  const { plan, demands } = blocks({ genres: undefined }, { factsRejected: new Set(['tvdb'] as const) });
+  const { plan, demands } = blocks({ tvdbGenres: undefined }, { factsRejected: new Set(['tvdb'] as const) });
   assert.equal(plan.insert, null);
   assert.deepEqual(plan.notes, ['1 show(s) need a block and the credential was rejected; fix TVDB_API_KEY and restart']);
   assert.deepEqual(demands.genres, []);
@@ -3190,7 +3220,7 @@ test('a rejected credential names the key to fix and asks for nothing', () => {
 // One restart has to fix everything standing in the way: named one at a time,
 // the operator corrects a key, restarts, and is told about the other.
 test('both credentials rejected are named in one note', () => {
-  const { plan } = blocks({ genres: undefined }, { factsRejected: new Set(['tvdb', 'tmdb'] as const) });
+  const { plan } = blocks({ tvdbGenres: undefined }, { factsRejected: new Set(['tvdb', 'tmdb'] as const) });
   assert.equal(plan.insert, null);
   assert.deepEqual(plan.notes, ['1 show(s) need a block and the credential was rejected; fix TVDB_API_KEY and TMDB_API_KEY and restart']);
 });
@@ -3201,7 +3231,7 @@ test('both credentials rejected are named in one note', () => {
 // a final word has to put the title back, or the note is said on every poll for
 // the life of the sheet and the title stays in scope for a lookup a day.
 test('a show SIMKL holds no TVDB or TMDB id for is named once, not waited on', () => {
-  const { plan, demands, observed } = blocks({ tvdbId: null, tmdbId: null, genres: undefined, certificate: undefined });
+  const { plan, demands, observed } = blocks({ tvdbId: null, tmdbId: null, tvdbGenres: undefined, certificate: undefined });
   assert.equal(plan.insert, null);
   assert.match(plan.notes.join('\n'), /has no TVDB or TMDB id, so its block has to be added by hand/);
   assert.deepEqual(demands.genres, []);
@@ -3357,7 +3387,7 @@ test('a block behind a taken slot demands nothing, not even its season runtime',
     namedShow('fargo', 'Fargo', { id: 1, status: 'Watching' }),
     namedSeason('fargoS1', 1, 6, 44000),
   );
-  const { index, titles } = blockLibrary({ genres: undefined, certificate: undefined, seasonRuntimes: new Map() });
+  const { index, titles } = blockLibrary({ tvdbGenres: undefined, certificate: undefined, seasonRuntimes: new Map() });
   index.set(1, indexLibrary(libraryOf({ id: 1, title: 'Fargo', status: 'watching', seasons: { 1: watched(6, 400), 2: watched(3) }, watched: 9, total: 9 })).get(1)!);
   titles.set(1, { shapes: seasonShapes([...eps(1, 6), ...eps(2, 3)]), status: 'ended', runtime: 45, tvdbId: 5, tmdbId: 6, seasonRuntimes: new Map([[2, 45]]) });
 
@@ -3422,7 +3452,7 @@ test('the planner asks for every lookup it wants, once per key', () => {
       id,
       // A TVDB id of its own each: a runtime ask is keyed by TVDB season, so
       // two titles sharing one would rightly fold into one ask.
-      { ...blockLibrary({ genres: undefined, certificate: undefined, seasonRuntimes: new Map() }).titles.get(900)!, title: `Show ${id}`, tvdbId: id },
+      { ...blockLibrary({ tvdbGenres: undefined, certificate: undefined, seasonRuntimes: new Map() }).titles.get(900)!, title: `Show ${id}`, tvdbId: id },
     ]),
   );
   const { demands } = planSync(blockGrid.grid, index, titles, { timezone: TZ, facts: { tvdb: true, tmdb: true } });

@@ -430,7 +430,8 @@ test('a cold start asks about every film, oldest watch first', () => {
 // --- Placing an anime film ---------------------------------------------------
 
 test('an anime film with no row anywhere is inserted, and marked as one', () => {
-  const known = new Map<number, FilmFacts | null>([[2, facts()]]);
+  // TMDB files it under Animation too, which SIMKL's anime flag outranks.
+  const known = new Map<number, FilmFacts | null>([[2, facts({ animated: true })]]);
   const { plan: p } = plan(
     [film('a', { id: 1 })],
     [movie({ id: 1 }), animeFilm({ id: 2, title: 'Spirited Away', lastWatchedAt: watchedOn(TODAY - 2), runtime: 125 })],
@@ -438,15 +439,23 @@ test('an anime film with no row anywhere is inserted, and marked as one', () => 
   );
   assert.equal(p.insert?.id, 2);
   const filled = Object.fromEntries(p.insert!.fill.map((c) => [c.field, c.value]));
-  assert.deepEqual(filled.Type, { stringValue: 'anime' });
+  assert.deepEqual(filled.Style, { stringValue: 'Anime' });
   assert.deepEqual(filled.Runtime, { numberValue: 125 });
 });
 
-test('an ordinary film is marked film, not anime', () => {
+test('a live-action film is marked Realistic, not Anime', () => {
   const known = new Map<number, FilmFacts | null>([[2, facts()]]);
   const { plan: p } = plan([film('a', { id: 1 })], [movie({ id: 1 }), movie({ id: 2, lastWatchedAt: watchedOn(TODAY - 2) })], { known });
   assert.equal(p.insert?.id, 2);
-  assert.deepEqual(p.insert!.fill.find((c) => c.field === 'Type')?.value, { stringValue: 'film' });
+  assert.deepEqual(p.insert!.fill.find((c) => c.field === 'Style')?.value, { stringValue: 'Realistic' });
+});
+
+// Animated and not anime — a Western cartoon, stop motion — is the third
+// style, told apart from a live-action film by TMDB's Animation genre alone.
+test('a film TMDB files under Animation, and SIMKL not as anime, is marked Stylised', () => {
+  const known = new Map<number, FilmFacts | null>([[2, facts({ animated: true })]]);
+  const { plan: p } = plan([film('a', { id: 1 })], [movie({ id: 1 }), movie({ id: 2, lastWatchedAt: watchedOn(TODAY - 2) })], { known });
+  assert.deepEqual(p.insert!.fill.find((c) => c.field === 'Style')?.value, { stringValue: 'Stylised' });
 });
 
 test('an anime film already on the show grid stays there rather than gaining a second row', () => {
