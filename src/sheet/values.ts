@@ -526,8 +526,14 @@ export const ARTWORK_HOST = 'https://storage.googleapis.com';
  * concatenating a literal bucket prefix with the title cell, and the objects
  * behind them are named the same way, so any rule but identity would break the
  * link between a key derived here and one the sheet already holds.
+ *
+ * A season row's key is the show's, then ` S` and the season as the tab holds
+ * it — `Doctor Who S7.5` for a specials row. All 53 season cells linking the
+ * show bucket name their object this way, for the same reason. The number is
+ * printed by `String`, which writes `7.5` and `10` the way the tab shows them;
+ * a season is a typed number on the tab, never text.
  */
-export const artworkKeyFor = (title: string): string => title;
+export const artworkKeyFor = (title: string, season?: number): string => (season === undefined ? title : `${title} S${String(season)}`);
 
 /**
  * The static link the sheet holds for a key. Only `%`, `#` and `?` are

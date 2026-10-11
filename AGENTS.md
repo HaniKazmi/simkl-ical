@@ -626,16 +626,42 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   read → decide → write → verify and gives up with `SheetBusyError` after `LINK_WAIT`, which the
   route answers as a 503 with `Retry-After`. The object is already uploaded by then, and a re-pick
   puts the same bytes under the same key, so nothing is lost.
-- **An `Artwork` cell is the one cell on a show row the page may write, and only ever through
-  `decideLink`.** The show-row rule below protects roll-up formulas; `Artwork` (field id `Banner`
-  in code) is hand-maintained, not derived. The checklist: a formula is never written,
-  unconditionally — kept where its value already links the bucket, refused otherwise; blank takes
-  the static link for the title; a link into this bucket is kept under the key **the cell** names,
+- **An `Artwork` cell is the one cell on a show row the page may write — the show row's or a season
+  row's — and only ever through `decideLink`.** The show-row rule below protects roll-up formulas;
+  `Artwork` (field id `Banner` in code) is hand-maintained, not derived. The checklist: a formula is
+  never written, unconditionally — kept where its value already links the bucket, refused otherwise;
+  blank takes the static link for the key the caller names, the title's or the season's; a link into
+  this bucket is kept under the key **the cell** names,
   so the 18 hand-written show rows and the two typo'd object names keep serving; a URL on another
   host is replaced only on `adopt`; anything else is refused. The write additionally requires the
   live cell to still hold what the page showed, the row to be found again by SIMKL id under the
   lock, and that row to still carry the title acted on. Not through the sync's planner or guard:
   their whitelists are the poll's.
+- **A season row's poster is `<title> S<n>`, and its row is found through the block.** The key is
+  `artworkKeyFor(title, season)` — the show's key, ` S`, and the number as the tab holds it, `Doctor Who
+  S7.5` — the name all 53 season cells linking the show bucket already use. A pick finds the block
+  by SIMKL id under the lock exactly as a show-row pick does, checks the block's title, and only
+  then looks for the **one** season row holding the number: none, or two, is refused (`no-season`,
+  `duplicate-season`) rather than written to the first. No block on the tab repeats a number today.
+  A season's state is its own and **feeds nothing the title is counted by** — not its state, not
+  `needing`, not `byState`: 858 of the 911 season cells are blank, mostly on purpose, and counted
+  they would bury every film and show. `seasonsToPick` is the one count they reach, the Season
+  posters chip, and it lists a block from `SEASON_POSTERS_FROM` = 2 season rows: 175 of the 355
+  blocks have one, whose season poster mostly repeats the show's, and listing them would double the
+  chip. The panel itself opens on any block with a numbered season row, one included.
+- **A season row's posters come from its own TVDB series, grouped by ordering and number, and
+  every one is listed.** A row carrying its own SIMKL id is a title of its own and may be another
+  TVDB series — Doctor Who's S14 is the 2023 series, Persona 4's *the Golden* a series of its own —
+  so its posters come from there; a row with no id is the block's. TVDB files a season poster under
+  a season *id*, and a series carries one season list per ordering — 892 of 2,828 season posters
+  measured hang off DVD-order seasons — so a group is an ordering and a number, never a number
+  alone. Which group a row opens on is `placeSeasons`: its own number in the block's series, the
+  specials for an `x.5` row (TVDB files every special in season 0), and for another series its
+  count among the block's numbered rows of that series, falling back to that series' own posters.
+  A suggestion, never a pick. Posters are **not filtered on size**: 1,904 of the 2,828 season
+  posters are TVDB's older 400×578, and a filter on 680×1000 drops every one of them, so every
+  poster is listed and the larger ranks first, below English. Series posters are all 680×1000
+  (1,612 of 1,612 across 52 series), so on the show strip the size tier orders and drops nothing.
 - **A book's covers come from its editions, and one ordering cannot find them.** Hardcover hangs a
   cover off an *edition*, so a book's own default is one edition's and often a poor one — 44 of the
   401 cells on the tab are under 300px wide and 15 under 100px. `io/hardcover-covers.ts` therefore
@@ -895,7 +921,7 @@ needs it**, and **is it transport or business logic**.
 | Path | Role |
 | --- | --- |
 | `src/orchestrator.ts` | `Orchestrator` — the poll, the timers, and `snapshot()`, the one export of state; owns the library and drives both halves. The poll's consequences are named predicates (`feedChanged`, `filmsNeedResolving`, `libraryMoved`) over one `PollOutcome` |
-| `src/server.ts`, `src/index.ts`, `src/login.ts` | Fastify (seven routes, no state of its own beyond the artwork shell it builds), boot, and the device-flow CLI |
+| `src/server.ts`, `src/index.ts`, `src/login.ts` | Fastify (eight routes, no state of its own beyond the artwork shell it builds), boot, and the device-flow CLI |
 | `src/shared/` | Used by both halves, and with no feature knowledge at all: config, dates, errors, logger, signals, atomic-write |
 | `src/health.ts` | What the state *means*: `assess` (restart-worthiness, the `/healthz` status code) and `pageHealthy` (the page's stricter question), plus the `/healthz` body |
 | `src/library.ts` | How the library is gated, merged and read: the signatures, the delta merge, the removal diff |
@@ -985,7 +1011,7 @@ at a hard failure.
 | Step | Module |
 | --- | --- |
 | INDEX | `1-index.ts` — every grid, the library, the run history and every bucket listing → one `ArtworkTitle` per row with a state a pick can act on, plus `summarise` |
-| CANDIDATES | `2-candidates.ts` — a TMDB images, TVDB artworks or Hardcover editions payload → `Candidate[]`, ranked as a starting point. Films and shows filter on shape; books rank on it |
+| CANDIDATES | `2-candidates.ts` — a TMDB images, TVDB artworks or Hardcover editions payload → `Candidate[]`, ranked as a starting point. Films filter on shape; posters are all listed, larger first; books rank on shape. A series' season posters are grouped by ordering and number, and `placeSeasons` says which group each row opens on |
 | DECIDE | `3-decide.ts` — an `Artwork` cell → `keep` / `write` / `refuse`; the whole of the page's guard, as a checklist |
 | RENDER | `4-html.ts` — the model and the page; every value through `html` |
 | — | `client.ts` — the page's script, served as `artwork/app.js`; `page.ts` — the read shell, index → model → page |
@@ -1133,7 +1159,12 @@ lists backdrops with dimensions and vote counts — the appended `images` on a f
 neither — and `en` backdrops carry the title across the frame while `null` ones are textless. TVDB's
 `/series/{id}/artworks?type=2` lists posters, 680×1000 with a `_t` thumbnail and a `score`, in every
 language — an anime often has only a Japanese one, so the page ranks English first rather than filtering;
-type numbers are 1 banner, 2 poster, 3 background, 5 icon, 22 clear art, 23 clear logo. Cloud
+type numbers are 1 banner, 2 poster, 3 background, 5 icon, 7 season poster, 22 clear art, 23 clear
+logo. A season poster carries a `seasonId`, and `/series/{id}/extended?short=true` is what says which
+number and which ordering (`type.type`: `official`, `dvd`, `absolute`, …) that id is, plus each
+season's default `image` — on four series measured every `seasonId` is in that list and every default
+is one of the season's posters. `short` matters: without it the record carries every artwork, 374 kB
+for Doctor Who against 26 kB. Cloud
 Storage's JSON API is at <https://cloud.google.com/storage/docs/json_api>: a listing is
 `GET /storage/v1/b/{bucket}/o` and an upload `POST /upload/storage/v1/b/{bucket}/o?uploadType=multipart`
 — multipart because it is the one form that carries `cacheControl`, and without it a public object

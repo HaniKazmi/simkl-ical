@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { timingSafeEqual } from 'node:crypto';
 import { artworkConfigured, config } from './shared/config.ts';
 import { errorMessage } from './shared/errors.ts';
@@ -73,6 +73,18 @@ const PICK_STATUS: Record<PickRefused['code'], number> = {
   'no-id': 422,
   'nothing-to-adopt': 400,
   frozen: 409,
+  'no-season': 404,
+};
+
+/**
+ * What an artwork route answers when its call throws: a refusal at its own
+ * status, a held sheet as "try again" — only a pick can meet one, waiting on
+ * the lock — and anything else as the upstream's failure.
+ */
+const failed = (reply: FastifyReply, err: unknown): FastifyReply => {
+  if (err instanceof PickRefused) return reply.code(PICK_STATUS[err.code]).send({ error: err.code, detail: err.message });
+  if (err instanceof SheetBusyError) return reply.code(503).header('Retry-After', '10').send({ error: 'busy', detail: err.message });
+  return reply.code(502).send({ error: 'upstream', detail: errorMessage(err) });
 };
 
 export const buildServer = (state: Orchestrator, { logger = true, logStream, artwork = new Artwork(state) }: ServerOptions = {}): FastifyInstance => {
@@ -216,8 +228,20 @@ export const buildServer = (state: Orchestrator, { logger = true, logStream, art
     try {
       return reply.header('Cache-Control', 'private, no-store').send(await artwork.candidates(kind, id));
     } catch (err) {
-      if (err instanceof PickRefused) return reply.code(PICK_STATUS[err.code]).send({ error: err.code, detail: err.message });
-      return reply.code(502).send({ error: 'upstream', detail: errorMessage(err) });
+      return failed(reply, err);
+    }
+  });
+
+  // A show's season rows and the TVDB posters each can take; the panel a show
+  // row opens into below its own strip.
+  app.get<{ Params: { token: string }; Querystring: { id?: string } }>('/:token/artwork/seasons', async (req, reply) => {
+    if (!artworkGate(req.params.token)) return reply.code(404).send(NOT_FOUND);
+    const id = idOf(req.query.id);
+    if (id === null) return reply.code(400).send({ error: 'bad-request', detail: 'id must be a positive integer' });
+    try {
+      return reply.header('Cache-Control', 'private, no-store').send(await artwork.seasons(id));
+    } catch (err) {
+      return failed(reply, err);
     }
   });
 
@@ -229,13 +253,17 @@ export const buildServer = (state: Orchestrator, { logger = true, logStream, art
     const url = typeof body.url === 'string' ? body.url : undefined;
     const adopt = body.adopt === true;
     if (!kind || id === null) return reply.code(400).send({ error: 'bad-request', detail: 'kind must be movie, show or book, and id a positive integer' });
+    // A season is a number as the tab holds it, `7.5` included, and only a
+    // show has rows to hold one. Absent means the title's own cell.
+    const season = body.season;
+    if (season !== undefined && (kind !== 'show' || typeof season !== 'number' || !Number.isFinite(season) || season < 0)) {
+      return reply.code(400).send({ error: 'bad-request', detail: 'season must be a number, and only on a show' });
+    }
     try {
-      const result = await artwork.pick(kind, id, { url, adopt });
+      const result = await artwork.pick(kind, id, { url, adopt, season });
       return reply.header('Cache-Control', 'private, no-store').send({ ok: true, ...result });
     } catch (err) {
-      if (err instanceof PickRefused) return reply.code(PICK_STATUS[err.code]).send({ error: err.code, detail: err.message });
-      if (err instanceof SheetBusyError) return reply.code(503).header('Retry-After', '10').send({ error: 'busy', detail: err.message });
-      return reply.code(502).send({ error: 'upstream', detail: errorMessage(err) });
+      return failed(reply, err);
     }
   });
 

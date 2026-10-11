@@ -18,6 +18,9 @@
  *      the same bytes twice is harmless;
  *   4. `ensureLink`, the authoritative pass under the sheet lock, which
  *      re-reads and re-decides and is the only step that writes the sheet.
+ *
+ * A season row's pick is the same four steps against that row's cell, under
+ * the season's key, from the posters its show's season panel offered.
  */
 
 import type { Orchestrator } from '../orchestrator.ts';
@@ -33,11 +36,14 @@ import { fetchCatalogue } from '../sheet/io/catalogue.ts';
 import { sheetRuns } from '../sheet/io/journal.ts';
 import { readSnapshot } from '../sheet/io/spreadsheet.ts';
 import { tvdbIdOf } from '../sheet/3-catalogue.ts';
-import { indexArtwork, summarise, type ArtworkKind, type ArtworkSummary, type ArtworkTitle } from './1-index.ts';
-import { bookCandidates, filmCandidates, showCandidates, type Candidate } from './2-candidates.ts';
+import { lookupPool } from '../api/pool.ts';
+import { classify } from '../api/tvdb/client.ts';
+import { artworkKeyFor } from '../sheet/values.ts';
+import { indexArtwork, offersSeasons, summarise, type ArtworkCell, type ArtworkKind, type ArtworkState, type ArtworkSummary, type ArtworkTitle, type SeasonArtwork } from './1-index.ts';
+import { bookCandidates, filmCandidates, placeSeasons, seasonPosters, showCandidates, type Candidate, type SeriesPosters } from './2-candidates.ts';
 import { decideLink } from './3-decide.ts';
 import { fetchFilmImages } from './io/tmdb-images.ts';
-import { fetchShowPosters } from './io/tvdb-art.ts';
+import { fetchSeasonPosters, fetchShowPosters } from './io/tvdb-art.ts';
 import { fetchBookCovers } from './io/hardcover-covers.ts';
 import { bucketsOf, ensureLink, tabOf, type LinkOutcome } from './io/sheet-link.ts';
 
@@ -75,6 +81,33 @@ export interface CandidateListing {
   error: string | null;
 }
 
+/** One season row as its show's season panel shows it. */
+export interface SeasonRowListing {
+  /** The tab's own number: `7.5` for a specials row. */
+  season: number;
+  /** The row on the tab, one-based, as a reader would find it. */
+  rowNumber: number;
+  address: string | null;
+  key: string;
+  state: ArtworkState;
+  /** The image the row shows today: the cell's URL, and whether an object is behind the link. */
+  current: { url: string | null; exists: boolean | null };
+  /** The TVDB series the row's posters come from; null where none could be resolved. */
+  tvdbId: number | null;
+  /** The group the panel opens for this row, per `groupToOpen`; null to open none. */
+  open: string | null;
+}
+
+export interface SeasonListing {
+  id: number;
+  title: string;
+  rows: SeasonRowListing[];
+  /** One entry per TVDB series the rows belong to: two for a block whose later rows are another series. */
+  series: SeriesPosters[];
+  /** Per lookup that failed, in the reader's words. */
+  errors: string[];
+}
+
 /**
  * Why a row has no candidates to offer. A record rather than a ternary so a
  * fourth kind fails `tsc` rather than inheriting a message naming the wrong
@@ -98,7 +131,7 @@ const NO_PROVIDER_ID: Record<ArtworkKind, string> = {
   book: 'the books tab holds no Hardcover id for this row',
 };
 
-export type PickError = 'unknown-title' | 'not-offered' | 'formula' | 'needs-adopt' | 'unrecognised' | 'no-id' | 'nothing-to-adopt' | 'frozen';
+export type PickError = 'unknown-title' | 'not-offered' | 'formula' | 'needs-adopt' | 'unrecognised' | 'no-id' | 'nothing-to-adopt' | 'frozen' | 'no-season';
 
 export class PickRefused extends Error {
   readonly code: PickError;
@@ -125,6 +158,13 @@ export class Artwork {
   private index: ArtworkIndex | null = null;
   private building: Promise<ArtworkIndex> | null = null;
   private readonly listings = new Map<string, { listing: CandidateListing; expires: Temporal.Instant }>();
+  /**
+   * Each TVDB series' season posters, held like `listings` and for the same
+   * reason, and keyed by the series rather than the show: a series that
+   * failed is asked again on its own, and one shared by several rows or
+   * blocks is fetched once.
+   */
+  private readonly seriesPosters = new Map<string, { listing: SeriesPosters; expires: Temporal.Instant }>();
   /**
    * Provider ids resolved on demand, kept across index rebuilds: the library
    * record that lacked a TVDB id still lacks it after a rebuild, and asking
@@ -155,14 +195,6 @@ export class Artwork {
 
   private async build(signal?: AbortSignal): Promise<ArtworkIndex> {
     const errors: string[] = [];
-    const attempt = async <T>(what: string, fn: () => Promise<T>): Promise<T | null> => {
-      try {
-        return await fn();
-      } catch (err) {
-        errors.push(`${what}: ${errorMessage(err)}`);
-        return null;
-      }
-    };
     const buckets = bucketsOf();
     // Books are gated separately from the two tabs the page cannot run
     // without, so an install with neither a books tab nor a bucket pays no
@@ -170,12 +202,12 @@ export class Artwork {
     const wantBooks = booksArtworkConfigured();
     const booksTab = config.booksSheetName ?? '';
     const [shows, films, books, storedShow, storedMovie, storedBook] = await Promise.all([
-      attempt<Grid>(`the ${config.sheetName} tab`, async () => parseGrid(await readSnapshot(config.sheetName, { signal }))),
-      attempt<MovieGrid>(`the ${config.moviesSheetName} tab`, async () => parseMovieGrid(await readSnapshot(config.moviesSheetName, { signal }))),
-      wantBooks ? attempt<BookGrid>(`the ${booksTab} tab`, async () => parseBookGrid(await readSnapshot(booksTab, { signal }))) : null,
-      attempt<Map<string, StoredObject>>(`bucket ${buckets.show}`, () => listObjects(buckets.show, { component: 'artwork', signal })),
-      attempt<Map<string, StoredObject>>(`bucket ${buckets.movie}`, () => listObjects(buckets.movie, { component: 'artwork', signal })),
-      wantBooks ? attempt<Map<string, StoredObject>>(`bucket ${buckets.book}`, () => listObjects(buckets.book, { component: 'artwork', signal })) : null,
+      attempt<Grid>(errors, `the ${config.sheetName} tab`, async () => parseGrid(await readSnapshot(config.sheetName, { signal }))),
+      attempt<MovieGrid>(errors, `the ${config.moviesSheetName} tab`, async () => parseMovieGrid(await readSnapshot(config.moviesSheetName, { signal }))),
+      wantBooks ? attempt<BookGrid>(errors, `the ${booksTab} tab`, async () => parseBookGrid(await readSnapshot(booksTab, { signal }))) : null,
+      attempt<Map<string, StoredObject>>(errors, `bucket ${buckets.show}`, () => listObjects(buckets.show, { component: 'artwork', signal })),
+      attempt<Map<string, StoredObject>>(errors, `bucket ${buckets.movie}`, () => listObjects(buckets.movie, { component: 'artwork', signal })),
+      wantBooks ? attempt<Map<string, StoredObject>>(errors, `bucket ${buckets.book}`, () => listObjects(buckets.book, { component: 'artwork', signal })) : null,
     ]);
     const titles = indexArtwork(
       {
@@ -218,10 +250,10 @@ export class Artwork {
   /** The candidates for a title, cached so a pick can name one by URL. */
   async candidates(kind: ArtworkKind, id: number, { signal }: { signal?: AbortSignal } = {}): Promise<CandidateListing> {
     const now = Temporal.Now.instant();
-    const cached = this.listings.get(cacheKey(kind, id));
+    const cached = fresh(this.listings, cacheKey(kind, id), now);
     // A listing that failed on the upstream is asked again; one that failed
     // for want of an id is an answer, and asking again cannot change it.
-    if (cached && Temporal.Instant.compare(now, cached.expires) < 0 && (cached.listing.error === null || cached.listing.providerId === null)) return cached.listing;
+    if (cached && (cached.error === null || cached.providerId === null)) return cached;
 
     const index = await this.current({ signal });
     const title = this.titleOf(index, kind, id);
@@ -234,15 +266,11 @@ export class Artwork {
       // A show's TVDB id is off the library only under `extended=full`; a
       // title without one is asked for on demand, once, when its row is
       // opened — never for every row at index time.
-      if (kind === 'show' && providerId === null && !this.resolved.has(cacheKey(kind, id))) {
-        const detail = await fetchCatalogue([{ id, detail: true, anime: this.state.library?.get(id)?.type === 'anime' }], { signal });
-        // Recorded either way, null included: SIMKL answered, and an answer
-        // of "no id" is not one to ask for again on every open. A lookup
-        // that failed is not recorded, so the next open asks again.
-        if (!detail.failed.includes(id)) {
-          providerId = tvdbIdOf(detail.details.get(id));
-          this.resolved.set(cacheKey(kind, id), providerId);
-          title.providerId = providerId;
+      if (kind === 'show' && providerId === null) {
+        const answer = (await this.tvdbIdsOf([id], signal)).get(id);
+        if (answer !== undefined) {
+          providerId = answer;
+          title.providerId = answer;
         }
       }
       if (providerId === null) {
@@ -264,19 +292,128 @@ export class Artwork {
       candidates,
       error,
     };
-    this.remember(cacheKey(kind, id), listing, now);
+    remember(this.listings, cacheKey(kind, id), listing, now);
     return listing;
   }
 
-  private remember(key: string, listing: CandidateListing, now: Temporal.Instant): void {
-    this.listings.delete(key);
-    this.listings.set(key, { listing, expires: later(now, CANDIDATE_TTL) });
-    // Insertion-ordered, so the first key is the oldest.
-    while (this.listings.size > CANDIDATE_CAP) {
-      const oldest = this.listings.keys().next().value;
-      if (oldest === undefined) break;
-      this.listings.delete(oldest);
+  /**
+   * TVDB ids for SIMKL show ids: the library's where its record carries one,
+   * else SIMKL's earlier answer, else asked now, in one batch. Recorded either
+   * way, null included: SIMKL answered, and an answer of "no id" is not one
+   * to ask for again on every open. A lookup that failed is absent from the
+   * result and not recorded, so the next open asks again.
+   */
+  private async tvdbIdsOf(ids: readonly number[], signal?: AbortSignal): Promise<Map<number, number | null>> {
+    const out = new Map<number, number | null>();
+    const ask: number[] = [];
+    for (const id of new Set(ids)) {
+      const known = this.knownTvdbId(id);
+      if (known === undefined) ask.push(id);
+      else out.set(id, known);
     }
+    if (ask.length === 0) return out;
+    const detail = await fetchCatalogue(
+      ask.map((id) => ({ id, detail: true, anime: this.state.library?.get(id)?.type === 'anime' })),
+      { signal },
+    );
+    for (const id of ask) {
+      if (detail.failed.includes(id)) continue;
+      const tvdbId = tvdbIdOf(detail.details.get(id));
+      this.resolved.set(cacheKey('show', id), tvdbId);
+      out.set(id, tvdbId);
+    }
+    return out;
+  }
+
+  /** A SIMKL id's TVDB id where it is known without asking: off the library, or SIMKL's earlier answer. Undefined when it has to be asked. */
+  private knownTvdbId(id: number): number | null | undefined {
+    const fromLibrary = tvdbIdOf(this.state.library?.get(id)?.item.show);
+    if (fromLibrary !== null) return fromLibrary;
+    const key = cacheKey('show', id);
+    return this.resolved.has(key) ? (this.resolved.get(key) ?? null) : undefined;
+  }
+
+  /**
+   * What a show's season panel offers: every numbered season row with its
+   * state and the group it opens on, and the posters of each TVDB series its
+   * rows belong to.
+   *
+   * A row with its own SIMKL id is its own title, which may be another series
+   * on TVDB — Doctor Who's S14 is the 2023 series, Persona 4's *the Golden* is
+   * a series of its own — so its posters come from there. A row carrying no
+   * id is the block's. The rows and their placement are read on every call,
+   * so a pick made since shows as made; only the lookups are cached.
+   */
+  async seasons(id: number, { signal }: { signal?: AbortSignal } = {}): Promise<SeasonListing> {
+    const index = await this.current({ signal });
+    const title = this.titleOf(index, 'show', id);
+    if (!title) throw new PickRefused('unknown-title', `no show with id ${id} is on the sheet`);
+    if (!offersSeasons(title)) throw new PickRefused('no-season', `${title.title} has no season rows to pick posters for`);
+
+    const errors: string[] = [];
+    const seriesOf = (await attempt(errors, 'SIMKL', () => this.tvdbIdsOf([id, ...title.seasons.flatMap((s) => (s.ownId === null ? [] : [s.ownId]))], signal))) ?? new Map<number, number | null>();
+    const blockSeries = seriesOf.get(id) ?? null;
+    if (title.providerId === null && blockSeries !== null) title.providerId = blockSeries;
+    const seriesOfRow = (season: SeasonArtwork): number | null => seriesOf.get(season.ownId ?? id) ?? null;
+
+    const wanted = [...new Set(title.seasons.map(seriesOfRow).filter((t): t is number => t !== null))];
+    if (wanted.length === 0 && errors.length === 0) errors.push(NO_PROVIDER_ID.show);
+    const series = await this.postersOf(wanted, errors, signal);
+    const placed = placeSeasons(
+      title.seasons.map((season) => ({ season: season.season, series: seriesOfRow(season) })),
+      blockSeries,
+      (tvdbId) => series.find((s) => s.tvdbId === tvdbId)?.groups ?? [],
+    );
+    return {
+      id,
+      title: title.title,
+      rows: title.seasons.map((season) => ({
+        season: season.season,
+        rowNumber: season.row + 1,
+        address: season.address,
+        key: season.key,
+        state: season.state,
+        current: { url: season.cell.url, exists: season.stored.exists },
+        ...(placed.get(season.season) ?? { tvdbId: null, open: null }),
+      })),
+      series,
+      errors,
+    };
+  }
+
+  /**
+   * Each series' season posters, from the cache or fetched — three series at
+   * a time, since a block of eight cours is eight series and each is three
+   * calls. A series that fails is reported in `errors` and left out, and is
+   * not held, so the next open asks for it again.
+   */
+  private async postersOf(tvdbIds: readonly number[], errors: string[], signal?: AbortSignal): Promise<SeriesPosters[]> {
+    const now = Temporal.Now.instant();
+    const found = new Map<number, SeriesPosters>();
+    await lookupPool(
+      [...tvdbIds],
+      (tvdbId) => tvdbId,
+      async (tvdbId) => {
+        const held = fresh(this.seriesPosters, String(tvdbId), now);
+        const posters = held ?? (await attempt(errors, `TVDB series ${tvdbId}`, async () => seasonPosters(tvdbId, await fetchSeasonPosters(tvdbId, { signal }))));
+        if (!posters) return;
+        if (!held) remember(this.seriesPosters, String(tvdbId), posters, now);
+        found.set(tvdbId, posters);
+      },
+      // `attempt` keeps every failure as a message, so nothing reaches the pool's own split.
+      { concurrency: 3, classify },
+    );
+    return tvdbIds.flatMap((tvdbId) => found.get(tvdbId) ?? []);
+  }
+
+  /** A season poster the panel offered for that row, by URL: one of its series' posters. */
+  private offeredForSeason(id: number, row: SeasonArtwork, url: string): Candidate | undefined {
+    const tvdbId = this.knownTvdbId(row.ownId ?? id);
+    if (tvdbId === undefined || tvdbId === null) return undefined;
+    return this.seriesPosters
+      .get(String(tvdbId))
+      ?.listing.groups.flatMap((g) => g.candidates)
+      .find((c) => c.url === url);
   }
 
   /**
@@ -285,7 +422,7 @@ export class Artwork {
    * copied in. Throws `PickRefused` before anything is uploaded, and
    * `SheetBusyError` from the link step when the sheet is held.
    */
-  async pick(kind: ArtworkKind, id: number, { url, adopt = false, signal }: { url?: string; adopt?: boolean; signal?: AbortSignal }): Promise<PickResult> {
+  async pick(kind: ArtworkKind, id: number, { url, adopt = false, season, signal }: { url?: string; adopt?: boolean; season?: number; signal?: AbortSignal }): Promise<PickResult> {
     // The sync's freeze latch is process-wide: a rollback did not complete,
     // the tab is in a state nobody has verified, and the repair copies a
     // backup over it — taking any cell written in between with it.
@@ -298,21 +435,30 @@ export class Artwork {
     const bucket = tabOf(kind).bucket;
     if (!bucket) throw new PickRefused('unrecognised', `no bucket is configured for ${kind}s`);
 
+    // The cell a pick writes is the title's, or one season row's — a film or
+    // a book has none, so a season names nothing there. Everything below
+    // reads `target` and never `title.cell`, so a season's pick cannot decide
+    // off the show row's cell.
+    const row = season === undefined ? undefined : title.seasons.find((s) => s.season === season);
+    if (season !== undefined && !row) throw new PickRefused('no-season', `${title.title} has no season ${season} row`);
+    const target: ArtworkCell = row ?? title;
+    const name = artworkKeyFor(title.title, season);
+
     // Pre-decide off the cached cell. The authoritative decision is
     // `ensureLink`'s; this one only stops an upload the link step would
     // then refuse.
-    const early = decideLink(title.cell.previous, { title: title.title, bucket, adopt });
+    const early = decideLink(target.cell.previous, { key: name, bucket, adopt });
     if (early.action === 'refuse') throw new PickRefused(early.reason, early.detail);
 
     let source: string;
     if (url !== undefined) {
-      const offered = this.listings.get(cacheKey(kind, id))?.listing.candidates.find((c) => c.url === url);
-      if (!offered) throw new PickRefused('not-offered', 'that image is not one the page was offered for this title; reopen the row');
+      const offered = row ? this.offeredForSeason(id, row, url) : this.listings.get(cacheKey(kind, id))?.listing.candidates.find((c) => c.url === url);
+      if (!offered) throw new PickRefused('not-offered', `that image is not one the page was offered for ${name}; reopen the row`);
       source = offered.url;
-    } else if (adopt && title.cell.kind === 'foreign' && title.cell.url && allowedImageUrl(title.cell.url)) {
-      source = title.cell.url;
+    } else if (adopt && target.cell.kind === 'foreign' && target.cell.url && allowedImageUrl(target.cell.url)) {
+      source = target.cell.url;
     } else {
-      throw new PickRefused('nothing-to-adopt', `${title.title} has no image to adopt: the cell holds ${title.cell.url ?? 'nothing'}`);
+      throw new PickRefused('nothing-to-adopt', `${name} has no image to adopt: the cell holds ${target.cell.url ?? 'nothing'}`);
     }
 
     const image = await fetchImage(source, { component: 'artwork', signal, ...(this.resolve ? { resolve: this.resolve } : {}) });
@@ -325,24 +471,55 @@ export class Artwork {
     });
     this.log.info(`artwork: ${uploaded.bucket}/${uploaded.key} ← ${source} (${uploaded.bytes} bytes)`);
 
-    const link = await ensureLink({ kind, id, title: title.title, adopt, expectPrevious: title.cell.previous, signal }, { log: this.log, wait: this.linkWait });
-    this.settle(title, link);
+    const link = await ensureLink(
+      { kind, id, title: title.title, adopt, expectPrevious: target.cell.previous, season, signal },
+      { log: this.log, wait: this.linkWait },
+    );
+    this.settle(target, link);
     return { key: early.key, uploaded, link };
   }
 
-  /** Patch the cached row after a pick, so the page reflects it before the next rebuild. */
-  private settle(title: ArtworkTitle, link: LinkOutcome): void {
-    title.stored = { exists: true, updated: Temporal.Now.instant() };
+  /** Patch the cached row — a title's or a season's — after a pick, so the page reflects it before the next rebuild. */
+  private settle(target: ArtworkCell, link: LinkOutcome): void {
+    target.stored = { exists: true, updated: Temporal.Now.instant() };
     // `unverified` and `failed` leave the cached row alone too: whether the
     // cell holds the link is exactly what is not known, and the next rebuild
     // reads it.
     if (link.status === 'written' || link.status === 'kept') {
-      title.cell = { kind: 'bucket', url: link.link, previous: { userEnteredValue: { stringValue: link.link }, effectiveValue: { stringValue: link.link } } };
-      title.key = link.key;
-      title.state = 'done';
+      target.cell = { kind: 'bucket', url: link.link, previous: { userEnteredValue: { stringValue: link.link }, effectiveValue: { stringValue: link.link } } };
+      target.key = link.key;
+      target.state = 'done';
     }
     // `reported` and `refused` leave the cell as it was: the object is there,
     // the state still says what the row needs, and the next rebuild agrees.
     if (this.index) this.index.summary = summarise(this.index.titles);
   }
 }
+
+/** A held listing, or undefined once it has expired or was never held. */
+const fresh = <T>(map: Map<string, { listing: T; expires: Temporal.Instant }>, key: string, now: Temporal.Instant): T | undefined => {
+  const held = map.get(key);
+  return held && Temporal.Instant.compare(now, held.expires) < 0 ? held.listing : undefined;
+};
+
+/** Hold a listing for `CANDIDATE_TTL`, evicting the oldest past `CANDIDATE_CAP`. */
+const remember = <T>(map: Map<string, { listing: T; expires: Temporal.Instant }>, key: string, listing: T, now: Temporal.Instant): void => {
+  map.delete(key);
+  map.set(key, { listing, expires: later(now, CANDIDATE_TTL) });
+  // Insertion-ordered, so the first key is the oldest.
+  while (map.size > CANDIDATE_CAP) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) break;
+    map.delete(oldest);
+  }
+};
+
+/** Run a read, keeping its failure as a message in `errors` rather than failing whatever asked for it. */
+const attempt = async <T>(errors: string[], what: string, fn: () => Promise<T>): Promise<T | null> => {
+  try {
+    return await fn();
+  } catch (err) {
+    errors.push(`${what}: ${errorMessage(err)}`);
+    return null;
+  }
+};

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { ensureLink, type LinkRequest } from '../../../src/artwork/io/sheet-link.ts';
 import { clearTokenCache } from '../../../src/api/google/auth.ts';
 import { sheetRuns } from '../../../src/sheet/io/journal.ts';
-import { BOOK_SHEET_HEADERS, bookRow, cellOf, col, filmRow, MOVIE_SHEET_HEADERS, quiet, SHEET_HEADERS, showRow, withConfig, withFetch, withFreshJournal, type CellSpec } from '../../helpers.ts';
+import { BOOK_SHEET_HEADERS, bookRow, cellOf, col, filmRow, MOVIE_SHEET_HEADERS, quiet, seasonRow, SHEET_HEADERS, showRow, withConfig, withFetch, withFreshJournal, type CellSpec } from '../../helpers.ts';
 import { CREDENTIAL, fakeSheets, type FakeSheetsOptions } from '../../sheet/fake-sheets.ts';
 
 const MOVIE_BUCKET = 'movies-bucket';
@@ -277,4 +277,79 @@ test('a formula in a book\'s Artwork cell is never written, adopt or not', async
       assert.equal(batches(calls).length, 0);
     },
   );
+});
+
+// --- Season rows ---------------------------------------------------------------
+
+const DW_S7_5 = 'https://storage.googleapis.com/shows-bucket/Doctor Who S7.5';
+
+/** Doctor Who's block: the show row at row 2, then seasons 7, 7.5 and 8 at rows 3–5, each `Artwork` cell as given. */
+const doctorWho = (cells: { show?: CellSpec; s7?: CellSpec; s75?: CellSpec; s8?: CellSpec } = {}, extra: CellSpec[][] = []): CellSpec[][] => {
+  const show = showRow('Doctor Who', 'Watching', 3381);
+  show[SHOW_ARTWORK_COL] = cells.show ?? 'https://storage.googleapis.com/shows-bucket/Doctor Who';
+  return [SHEET_HEADERS, show, seasonRow(7, 13, 45000, { artwork: cells.s7 }), seasonRow(7.5, 2, 45001, { artwork: cells.s75 }), seasonRow(8, 12, 45002, { artwork: cells.s8 }), ...extra];
+};
+
+const seasonRequest = (over: Partial<LinkRequest> = {}): LinkRequest => ({ kind: 'show', id: 3381, title: 'Doctor Who', adopt: false, expectPrevious: cellOf(null), season: 7.5, ...over });
+
+test('a season is written on its own row, under the season\'s key, and the show row is left alone', async () => {
+  await run('apply', { grid: doctorWho() }, seasonRequest(), (outcome, sheet, calls) => {
+    assert.deepEqual(outcome, { status: 'written', address: 'Q4', key: 'Doctor Who S7.5', link: DW_S7_5 });
+    assert.equal(batches(calls).length, 1);
+    assert.equal(sheet.state[3]?.[SHOW_ARTWORK_COL]?.userEnteredValue?.stringValue, DW_S7_5);
+    assert.equal(sheet.state[1]?.[SHOW_ARTWORK_COL]?.userEnteredValue?.stringValue, 'https://storage.googleapis.com/shows-bucket/Doctor Who', 'the show row keeps its own link');
+    for (const row of [2, 4]) assert.equal(sheet.state[row]?.[SHOW_ARTWORK_COL]?.userEnteredValue, undefined, `row ${row + 1} is untouched`);
+    const [record] = sheetRuns();
+    assert.deepEqual(record?.edits.map((e) => [e.address, e.field, e.note]), [['Q4', 'Artwork', 'artwork: Doctor Who S7.5']]);
+  });
+});
+
+// The same checklist a show row's cell meets, against the season row's cell.
+test('a season cell already linking the bucket is kept under the key it names, and a foreign one needs adopt', async () => {
+  const typo = 'https://storage.googleapis.com/shows-bucket/Doctor%20Who%20S7.5b';
+  await run('apply', { grid: doctorWho({ s75: typo }) }, seasonRequest({ expectPrevious: cellOf(typo) }), (outcome, _sheet, calls) => {
+    assert.deepEqual(outcome, { status: 'kept', address: 'Q4', key: 'Doctor Who S7.5b', link: typo });
+    assert.equal(batches(calls).length, 0);
+  });
+  const foreign = 'https://image.tmdb.org/t/p/original/x.jpg';
+  await run('apply', { grid: doctorWho({ s75: foreign }) }, seasonRequest({ expectPrevious: cellOf(foreign) }), (outcome, _sheet, calls) => {
+    assert.equal(outcome.status === 'refused' && outcome.reason, 'needs-adopt');
+    assert.equal(batches(calls).length, 0);
+  });
+});
+
+test('a season the block does not hold, or holds twice, is refused rather than written', async () => {
+  await run('apply', { grid: doctorWho() }, seasonRequest({ season: 9 }), (outcome, _sheet, calls) => {
+    assert.equal(outcome.status === 'refused' && outcome.reason, 'no-season');
+    assert.equal(batches(calls).length, 0);
+  });
+  await run('apply', { grid: doctorWho({}, [seasonRow(7.5, 1, 45003)]) }, seasonRequest(), (outcome, _sheet, calls) => {
+    assert.equal(outcome.status === 'refused' && outcome.reason, 'duplicate-season');
+    assert.equal(batches(calls).length, 0);
+  });
+});
+
+test('a season write meets the show row\'s rules first: the block by id, its title, the cell the page showed', async () => {
+  await run('apply', { grid: doctorWho() }, seasonRequest({ title: 'Torchwood' }), (outcome, _sheet, calls) => {
+    assert.equal(outcome.status === 'refused' && outcome.reason, 'title-moved');
+    assert.equal(batches(calls).length, 0);
+  });
+  await run('apply', { grid: doctorWho() }, seasonRequest({ id: 1 }), (outcome) => {
+    assert.equal(outcome.status === 'refused' && outcome.reason, 'not-found');
+  });
+  await run('apply', { grid: doctorWho({ s75: 'https://example.com/typed-since.jpg' }) }, seasonRequest({ adopt: true }), (outcome, _sheet, calls) => {
+    assert.equal(outcome.status === 'refused' && outcome.reason, 'cell-changed');
+    assert.equal(batches(calls).length, 0);
+  });
+});
+
+test('only a show has season rows', async () => {
+  await run('apply', { movies: movies(null) }, request({ season: 1 }), (outcome, _sheet, calls) => {
+    assert.equal(outcome.status === 'refused' && outcome.reason, 'no-season');
+    assert.equal(batches(calls).length, 0);
+  });
+  await run('apply', { books: books(WSRV) }, { kind: 'book', id: 379760, title: '1984', adopt: true, expectPrevious: cellOf(WSRV), season: 1 }, (outcome, _sheet, calls) => {
+    assert.equal(outcome.status === 'refused' && outcome.reason, 'no-season');
+    assert.equal(batches(calls).length, 0);
+  });
 });

@@ -62,6 +62,7 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
     name === 'all' ||
     (name === 'needs' && NEEDS.has(row.dataset.state)) ||
     (name === 'recent' && row.dataset.recent === '1') ||
+    (name === 'seasons' && row.dataset.seasonsOpen === '1') ||
     name === row.dataset.state ||
     name === row.dataset.kind;
   const matches = (row) => matchesFilter(row, filter) && (!query || row.dataset.q.includes(query));
@@ -164,13 +165,15 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
       pill.className = 'pill ' + (needing ? 'warn' : 'ok');
     }
   };
+  /** Repaint a status pill in place, a row's or a season's. */
+  const paintPill = (pill, text, cls) => {
+    pill.className = 'pill ' + cls;
+    pill.textContent = text;
+  };
   const setPill = (row, state, text, cls) => {
     row.dataset.state = state;
     const pill = row.querySelector('[data-pill]');
-    if (pill) {
-      pill.className = 'pill ' + cls;
-      pill.textContent = text;
-    }
+    if (pill) paintPill(pill, text, cls);
     recount();
   };
   // The current image's size is known nowhere but the browser: the cell holds
@@ -199,43 +202,65 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
   // Thumbnails load lazily as the page scrolls. 'load' does not bubble, so one
   // capturing listener on the list hears every one in place of a listener per
   // row; images already complete from cache are read once here.
+  // The row header's image only: a season's current image is inside the row
+  // too, and its size is not the title's.
   if (list) list.addEventListener('load', (event) => {
     const img = event.target;
-    if (img.matches && img.matches('.thb img')) noteDims(img.closest('.row'), dimsOf(img));
+    if (img.matches && img.matches('.rh .thb img')) noteDims(img.closest('.row'), dimsOf(img));
   }, true);
   for (const row of rows) noteDims(row, dimsOf(row.querySelector('.thb img')));
-  /** Swap the current image after a pick. The button is the renderer's; only its child changes. */
+  /** A URL the browser fetches afresh rather than from its cache: a pick replaces the object behind a link in place. */
+  const busted = (url) => url + (url.includes('?') ? '&' : '?') + 't=' + Date.now();
+  /**
+   * Put an image in a current-image button, or the placeholder where there is
+   * none to show, and return the image. The button stays; only its child
+   * changes, which is how the renderer's buttons are built to be updated.
+   */
+  const fillThumb = (button, url, cls) => {
+    const showable = Boolean(url) && loadable(url);
+    button.disabled = !showable;
+    if (!showable) {
+      button.replaceChildren(el('span', 'ph'));
+      return null;
+    }
+    const img = el('img', cls);
+    img.alt = '';
+    img.loading = 'lazy';
+    img.src = url;
+    button.replaceChildren(img);
+    return img;
+  };
+  /** Swap the current image after a pick. */
   const setThumb = (row, url) => {
     if (!loadable(url)) return;
     const button = row.querySelector('.thb');
     if (!button) return;
-    const img = el('img', 'th' + (row.dataset.kind === 'movie' ? '' : ' portrait'));
-    img.alt = '';
-    img.loading = 'lazy';
-    img.src = url + (url.includes('?') ? '&' : '?') + 't=' + Date.now();
-    button.replaceChildren(img);
-    button.disabled = false;
+    const img = fillThumb(button, busted(url), 'th' + (row.dataset.kind === 'movie' ? '' : ' portrait'));
     // An open panel's "current" label describes this image now, not the one it replaced.
     whenSized(img, (dims) => {
       const current = row.querySelector('.cands .current');
       if (current) current.textContent = 'current ' + dims;
     });
   };
-  const settle = (row, result) => {
-    const link = result.link;
-    if (link.status === 'written' || link.status === 'kept') {
-      setPill(row, 'done', 'done', 'ok');
-      setThumb(row, link.link);
-      return 'uploaded';
-    }
-    if (link.status === 'reported') {
-      setThumb(row, link.link);
-      return 'uploaded; link reported for ' + link.address + ' (mode is not apply)';
-    }
+  /** What a pick's link step came to, in the reader's words; one wording for a title and a season. */
+  const outcome = (link) => {
+    if (link.status === 'written' || link.status === 'kept') return 'uploaded';
+    if (link.status === 'reported') return 'uploaded; link reported for ' + link.address + ' (mode is not apply)';
     if (link.status === 'refused') return 'uploaded; link refused: ' + link.detail;
     if (link.status === 'unverified') return 'uploaded; link written at ' + link.address + ' but not read back: ' + link.detail + ' — re-read the page to see whether it landed';
     return 'uploaded; link failed at ' + link.address + ': ' + link.detail;
   };
+  /**
+   * Show a pick's link outcome: the image wherever an object now stands behind
+   * the link, and the done state only where the cell holds it. One branching
+   * for a title and a season; each passes what shows it.
+   */
+  const settleLink = (link, { thumb, done }) => {
+    if (link.status === 'written' || link.status === 'kept' || link.status === 'reported') thumb(link.link);
+    if (link.status === 'written' || link.status === 'kept') done();
+    return outcome(link);
+  };
+  const settle = (row, result) => settleLink(result.link, { thumb: (url) => setThumb(row, url), done: () => setPill(row, 'done', 'done', 'ok') });
 
   // --- the API ---------------------------------------------------------------
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -247,6 +272,14 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
       return { error: text || response.statusText };
     }
   };
+  /** GET a listing, throwing the route's own words on anything but a 200. */
+  const getJson = async (url) => {
+    const response = await fetch(url);
+    const body = await read(response);
+    if (response.status !== 200) throw new Error(body.detail || body.error || 'HTTP ' + response.status);
+    return body;
+  };
+  const messageOf = (err) => (err && err.message ? err.message : String(err));
   /** POST a pick; a 503 while the sheet is held waits Retry-After and tries once more. */
   const post = async (body, retried) => {
     const response = await fetch('artwork/pick', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -257,27 +290,33 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
     }
     return { status: response.status, body: await read(response) };
   };
-  const pick = async (row, body, progress) => {
+  /**
+   * Post a pick and settle what came back. A season passes its own name for
+   * the confirm and its own settle, since what changes on the page is that
+   * season's header rather than the row's.
+   */
+  const pick = async (row, body, { apply = (result) => settle(row, result), name = row.dataset.title } = {}) => {
     let result = await post(body, false);
     if (result.status === 409 && !body.adopt) {
       const current = result.body && result.body.detail ? result.body.detail : 'the cell links another host';
-      if (!window.confirm(row.dataset.title + ': ' + current + '.\n\nReplace it with this image?')) return 'kept the current image';
+      if (!window.confirm(name + ': ' + current + '.\n\nReplace it with this image?')) return 'kept the current image';
       result = await post(Object.assign({}, body, { adopt: true }), false);
     }
     if (result.status !== 200) return 'refused: ' + (result.body && (result.body.detail || result.body.error) ? result.body.detail || result.body.error : 'HTTP ' + result.status);
-    return settle(row, result.body);
+    return apply(result.body);
   };
 
   // --- candidates ------------------------------------------------------------
   const strips = new Map();
   /** Full size. No onUse means the image is only being looked at, so the button is hidden. */
-  const openDialog = (url, caption, onUse) => {
+  const openDialog = (url, caption, onUse, useLabel) => {
     if (!dialog || !dialog.showModal) return;
     const img = dialog.querySelector('[data-dialog-image]');
     img.src = loadable(url) ? url : '';
     dialog.querySelector('[data-dialog-caption]').textContent = caption;
     const use = dialog.querySelector('[data-dialog-use]');
     use.hidden = !onUse;
+    use.textContent = useLabel || 'Use this one';
     use.onclick = () => {
       dialog.close();
       if (onUse) onUse();
@@ -311,8 +350,51 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
     const row = button.closest('.row');
     if (!img || !row) return;
     const dims = dimsOf(img);
-    openDialog(img.src, row.dataset.title + ' · current image' + (dims ? ' · ' + dims : ''), null);
+    openDialog(img.src, (button.dataset.name || row.dataset.title) + ' · current image' + (dims ? ' · ' + dims : ''), null);
   });
+
+  /**
+   * One candidate tile: the thumbnail in a button, badges over it as
+   * '[text, class]', and caption rows beneath it as '[left, right]'. 'onOpen'
+   * is handed the tile, to mark it picked.
+   */
+  const tile = (cand, cls, badges, caps, onOpen) => {
+    const item = el('div', 'cand' + (cls ? ' ' + cls : ''));
+    const button = el('button');
+    button.type = 'button';
+    const img = el('img');
+    img.alt = '';
+    img.loading = 'lazy';
+    if (loadable(cand.thumb)) img.src = cand.thumb;
+    button.appendChild(img);
+    for (const [text, badgeCls] of badges) button.appendChild(el('span', badgeCls, text));
+    item.appendChild(button);
+    for (const [left, right] of caps) {
+      const cap = el('div', 'cap');
+      cap.appendChild(el('span', '', left));
+      cap.appendChild(el('span', '', right));
+      item.appendChild(cap);
+    }
+    button.addEventListener('click', () => onOpen(item));
+    return item;
+  };
+  /** Mark a tile picked among the others in 'container' and run the pick, reporting into 'progress'. */
+  const choose = async (container, item, progress, run) => {
+    for (const other of container.querySelectorAll('.cand')) other.classList.remove('pick');
+    item.classList.add('pick');
+    progress.textContent = 'uploading…';
+    progress.textContent = await run();
+  };
+  /** The button that copies a cell's current image into the bucket instead, reporting into 'progress'. */
+  const adoptButton = (progress, run) => {
+    const adopt = el('button', 'btn quiet', 'Adopt the current image instead');
+    adopt.type = 'button';
+    adopt.addEventListener('click', async () => {
+      progress.textContent = 'adopting…';
+      progress.textContent = await run();
+    });
+    return adopt;
+  };
 
   const renderStrip = (row, listing, panel) => {
     panel.replaceChildren();
@@ -320,7 +402,7 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
     const kind = row.dataset.kind;
     const what = kind === 'movie' ? ' backdrops from TMDb' : kind === 'show' ? ' posters from TVDB' : ' covers from Hardcover';
     label.appendChild(el('span', '', listing.candidates.length + what));
-    const ranked = kind === 'movie' ? '16:9 only · English first, ranked by votes' : kind === 'show' ? 'English first, 680×1000 next, then by score' : 'English first, then 2:3, then 300px wide, then UK, then readers';
+    const ranked = kind === 'movie' ? '16:9 only · English first, ranked by votes' : kind === 'show' ? 'English first, then largest, then by score' : 'English first, then 2:3, then 300px wide, then UK, then readers';
     label.appendChild(el('span', 'dim', ranked + ' · click a tile to enlarge and use it'));
     // The current image's size beside the candidates', so a pick can be judged against what it replaces.
     const current = el('span', 'dim current');
@@ -350,55 +432,180 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
       // and letterboxed into 2:3 the border would stand off every cover that
       // is not exactly that shape.
       const shape = kind === 'movie' ? 'land' : kind === 'book' ? 'book' : 'port';
-      const item = el('div', 'cand ' + shape + (i === 0 ? ' pick' : ''));
-      const button = el('button');
-      button.type = 'button';
-      const img = el('img');
-      img.alt = '';
-      img.loading = 'lazy';
-      if (loadable(cand.thumb)) img.src = cand.thumb;
-      button.appendChild(img);
       // A null language means textless on a film backdrop and merely unknown
       // on a book cover, so a book badges its country — the fact its rank
       // turned on — and falls back to the language. The first tile's rank is
       // a badge of its own, so the language is shown on every tile.
       const mark = kind === 'book' ? cand.country || languageName(cand.language) || '?' : languageOf(cand, kind);
-      button.appendChild(el('span', 'badge', mark));
-      if (i === 0) button.appendChild(el('span', 'badge top', 'top'));
-      const cap = el('div', 'cap');
-      cap.appendChild(el('span', '', cand.width + '×' + cand.height));
-      cap.appendChild(el('span', '', tally(cand, kind)));
-      item.appendChild(button);
-      item.appendChild(cap);
-      if (kind === 'book') {
-        // A cover reads as 1:1.50 against the 1:1.5 of 2:3 — the shape tier's
-        // own question, in the form a reader can compare at a glance. The
-        // dimensions above say how big; this says what shape.
-        const shapeCap = el('div', 'cap');
-        shapeCap.appendChild(el('span', '', cand.format || 'edition'));
-        shapeCap.appendChild(el('span', '', shapeOf(cand.width, cand.height)));
-        item.appendChild(shapeCap);
-      }
-      const use = async () => {
-        for (const other of strip.querySelectorAll('.cand')) other.classList.remove('pick');
-        item.classList.add('pick');
-        progress.textContent = 'uploading…';
-        progress.textContent = await pick(row, { kind, id: Number(row.dataset.id), url: cand.url }, progress);
-      };
-      button.addEventListener('click', () => openDialog(cand.url, row.dataset.title + ' · ' + describe(cand, kind), use));
+      const badges = i === 0 ? [[mark, 'badge'], ['top', 'badge top']] : [[mark, 'badge']];
+      const caps = [[cand.width + '×' + cand.height, tally(cand, kind)]];
+      // A cover reads as 1:1.50 against the 1:1.5 of 2:3 — the shape tier's
+      // own question, in the form a reader can compare at a glance. The
+      // dimensions above say how big; this says what shape.
+      if (kind === 'book') caps.push([cand.format || 'edition', shapeOf(cand.width, cand.height)]);
+      const item = tile(cand, shape + (i === 0 ? ' pick' : ''), badges, caps, (picked) =>
+        openDialog(cand.url, row.dataset.title + ' · ' + describe(cand, kind), () => choose(strip, picked, progress, () => pick(row, { kind, id: Number(row.dataset.id), url: cand.url }))),
+      );
       strip.appendChild(item);
     });
     panel.appendChild(frame);
     panel.appendChild(progress);
     // A book's linked cover is adopted here, one row at a time.
-    if (LINKED.has(row.dataset.state)) {
-      const adopt = el('button', 'btn quiet', 'Adopt the current image instead');
-      adopt.type = 'button';
-      adopt.addEventListener('click', async () => {
-        progress.textContent = 'adopting…';
-        progress.textContent = await pick(row, { kind, id: Number(row.dataset.id), adopt: true }, progress);
+    if (LINKED.has(row.dataset.state)) progress.before(adoptButton(progress, () => pick(row, { kind, id: Number(row.dataset.id), adopt: true })));
+  };
+
+  // --- season posters ----------------------------------------------------------
+  // A show offering season posters opens a panel below its own strip: one
+  // section per season row, each opening on its own TVDB season with the rest
+  // folded. A folded group builds its tiles the first time it is opened, so a
+  // series with hundreds of season posters loads only the ones looked at.
+  /** Mirrors STATE_LABEL in 4-html.ts, but a blank season reads as a choice rather than a warning. */
+  const SEASON_PILL = {
+    done: ['done', 'ok'],
+    'missing-object': ['no image', 'warn'],
+    unlinked: ['blank', 'mute'],
+    adopt: ['adoptable', 'adopt'],
+    'no-id': ['no id', 'mute'],
+    unrecognised: ['unrecognised', 'crit'],
+  };
+  const pillFor = (state) => SEASON_PILL[state] || [state, 'mute'];
+  /**
+   * The row's own summary of its seasons, kept to what the panel now knows. A
+   * pick only ever links a season, so it can take the row off the Season
+   * posters chip but never put it on — that is the server's rule to decide.
+   */
+  const recountSeasons = (row, seasonRows) => {
+    const linked = seasonRows.filter((r) => r.state === 'done').length;
+    const line = row.querySelector('[data-seasons-line]');
+    if (line) line.textContent = 'seasons ' + linked + '/' + seasonRows.length + ' linked';
+    if (!seasonRows.some((r) => NEEDS.has(r.state))) row.dataset.seasonsOpen = '';
+    recount();
+  };
+  /** A season's current-image button; 'fillThumb' puts the image in it. */
+  const seasonThumb = (name) => {
+    const button = el('button', 'thb');
+    button.type = 'button';
+    button.title = 'enlarge';
+    button.setAttribute('aria-label', 'enlarge the current image');
+    button.dataset.name = name;
+    return button;
+  };
+  /** A fold with a bold heading and a count after it. */
+  const fold = (label, count) => {
+    const details = el('details');
+    const summary = el('summary');
+    summary.appendChild(el('b', '', label));
+    summary.appendChild(document.createTextNode(' · ' + count));
+    details.appendChild(summary);
+    return details;
+  };
+  /** One group's tiles under its fold, built when the fold first opens — or now, for the group a row opens on. */
+  const groupFold = (group, open, onTile) => {
+    const details = fold(group.label, group.candidates.length + (open ? ' · this season' : ''));
+    const build = () => {
+      const grid = el('div', 'sgrid');
+      for (const cand of group.candidates) {
+        const badges = [[languageOf(cand, 'show'), 'badge']];
+        if (cand.url === group.preferred) badges.push(['TVDB default', 'badge top']);
+        grid.appendChild(tile(cand, '', badges, [[cand.width + '×' + cand.height, shapeOf(cand.width, cand.height)]], (item) => onTile(cand, group, item)));
+      }
+      details.appendChild(grid);
+    };
+    if (open) {
+      details.open = true;
+      build();
+    } else {
+      details.addEventListener('toggle', build, { once: true });
+    }
+    return details;
+  };
+  /**
+   * One season row: its header, the group it opens on, and every other group
+   * of its series behind one fold whose own folds are built when it opens —
+   * Doctor Who's 26 rows each carry some 44 groups, and building them all up
+   * front is a thousand folds nobody opens.
+   */
+  const renderSeason = (row, seasonRow, series, multiple, onDone) => {
+    const name = row.dataset.title + ' S' + seasonRow.season;
+    const section = el('section', 'season');
+    const head = el('div', 'sh');
+    const thumb = seasonThumb(name);
+    fillThumb(thumb, seasonRow.current.exists === false ? null : seasonRow.current.url, 'th');
+    head.appendChild(thumb);
+    head.appendChild(el('span', 'sk', 'S' + seasonRow.season));
+    const pill = el('span', 'pill');
+    paintPill(pill, ...pillFor(seasonRow.state));
+    head.appendChild(pill);
+    head.appendChild(el('span', 'ctx', 'row ' + seasonRow.rowNumber + (seasonRow.address ? ' · ' + seasonRow.address : '') + ' · ' + seasonRow.key));
+    if (multiple && series) head.appendChild(el('span', 'ctx', 'from ' + (series.name || 'TVDB ' + series.tvdbId)));
+    section.appendChild(head);
+    const progress = el('div', 'prog');
+    const body = (extra) => Object.assign({ kind: 'show', id: Number(row.dataset.id), season: seasonRow.season }, extra);
+    const apply = (result) =>
+      settleLink(result.link, {
+        thumb: (url) => fillThumb(thumb, busted(url), 'th'),
+        done: () => {
+          seasonRow.state = 'done';
+          paintPill(pill, ...pillFor('done'));
+          onDone();
+        },
       });
-      progress.before(adopt);
+    const onTile = (cand, group, item) =>
+      openDialog(cand.url, name + ' · ' + group.label + ' · ' + describe(cand, 'show'), () => choose(section, item, progress, () => pick(row, body({ url: cand.url }), { apply, name })), 'Use for S' + seasonRow.season);
+    if (!series) {
+      section.appendChild(el('div', 'prog err', seasonRow.tvdbId === null ? 'no TVDB series is known for this row' : 'TVDB did not answer for this row\'s series'));
+    } else {
+      const open = series.groups.find((g) => g.key === seasonRow.open);
+      if (open) section.appendChild(groupFold(open, true, onTile));
+      const rest = series.groups.filter((g) => g !== open);
+      if (rest.length) {
+        const others = fold(open ? 'Other seasons and posters' : 'TVDB posters', rest.length + (rest.length === 1 ? ' group' : ' groups'));
+        others.classList.add('others');
+        others.addEventListener('toggle', () => {
+          for (const group of rest) others.appendChild(groupFold(group, false, onTile));
+        }, { once: true });
+        section.appendChild(others);
+      }
+    }
+    if (LINKED.has(seasonRow.state)) section.appendChild(adoptButton(progress, () => pick(row, body({ adopt: true }), { apply, name })));
+    section.appendChild(progress);
+    return section;
+  };
+  const renderSeasons = (row, listing, box) => {
+    box.replaceChildren();
+    const label = el('div', 'lbl');
+    const posters = listing.series.reduce((n, s) => n + s.groups.reduce((m, g) => m + g.candidates.length, 0), 0);
+    const count = (n, one, many) => n + ' ' + (n === 1 ? one : many);
+    label.appendChild(el('span', '', count(listing.rows.length, 'season row', 'season rows') + ' · ' + count(posters, 'poster', 'posters') + ' from TVDB'));
+    label.appendChild(el('span', 'dim', 'each season opens on its own TVDB season · English first, then largest · click a poster to enlarge and use it'));
+    for (const error of listing.errors) label.appendChild(el('span', 'err', error));
+    box.appendChild(label);
+    const nav = el('div', 'snav');
+    nav.setAttribute('role', 'navigation');
+    nav.setAttribute('aria-label', 'Seasons');
+    box.appendChild(nav);
+    const multiple = listing.series.length > 1;
+    for (const seasonRow of listing.rows) {
+      const series = listing.series.find((s) => s.tvdbId === seasonRow.tvdbId) || null;
+      const chip = el('button', 'chip' + (seasonRow.state === 'done' ? ' done' : ''), 'S' + seasonRow.season);
+      chip.type = 'button';
+      const section = renderSeason(row, seasonRow, series, multiple, () => {
+        chip.classList.add('done');
+        recountSeasons(row, listing.rows);
+      });
+      chip.addEventListener('click', () => section.scrollIntoView({ block: 'start' }));
+      nav.appendChild(chip);
+      box.appendChild(section);
+    }
+  };
+  const loadSeasons = async (row, panel) => {
+    const box = el('div', 'seasons');
+    box.appendChild(el('div', 'prog', 'loading season posters…'));
+    panel.appendChild(box);
+    try {
+      renderSeasons(row, await getJson('artwork/seasons?' + new URLSearchParams({ id: row.dataset.id }).toString()), box);
+    } catch (err) {
+      box.replaceChildren(el('div', 'prog err', 'could not load season posters: ' + messageOf(err)));
     }
   };
 
@@ -419,13 +626,12 @@ export const CLIENT_SCRIPT = String.raw`'use strict';
       button.textContent = 'close';
       const params = new URLSearchParams({ kind: row.dataset.kind, id: row.dataset.id });
       try {
-        const response = await fetch('artwork/candidates?' + params.toString());
-        const listing = await read(response);
-        if (response.status !== 200) throw new Error(listing.detail || listing.error || 'HTTP ' + response.status);
-        renderStrip(row, listing, panel);
+        renderStrip(row, await getJson('artwork/candidates?' + params.toString()), panel);
       } catch (err) {
-        panel.replaceChildren(el('div', 'prog err', 'could not load candidates: ' + (err && err.message ? err.message : String(err))));
+        panel.replaceChildren(el('div', 'prog err', 'could not load candidates: ' + messageOf(err)));
       }
+      // The renderer sets data-seasons only on a show offering season posters.
+      if (row.dataset.seasons) await loadSeasons(row, panel);
     });
   }
 

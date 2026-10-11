@@ -166,6 +166,15 @@ through the service, uploads it to a Cloud Storage bucket under the title's name
 static link into the row's `Artwork` cell. The link is the same shape the show tab's formula cells
 already produce, so a re-pick later touches the bucket and never the sheet again.
 
+A show also opens a panel of season posters below its own: every season poster TVDB has for the
+series, grouped by season, each season row opening on its own season and a specials row (`7.5`) on
+the specials. A season that is a SIMKL title of its own — Doctor Who's
+2023 series — takes its posters from that series. A pick uploads to the show bucket as
+`<title> S<n>`, the name the tab's season links already use, and writes that season row's
+`Artwork` cell under the same rules as a show row's. A blank season is a choice, not a gap, so it
+never counts as needing artwork; the **Season posters** chip lists the shows of two or more seasons
+that still have one.
+
 Rows whose `Artwork` still links another host are **adoptable**: a pick may replace the image, or
 **Adopt** copies the current one into the bucket as-is. **Adopt all** does that over every such
 row, one at a time, with progress on the page — the migration from a tab of TMDB URLs to a tab of
@@ -443,7 +452,7 @@ rather than a runtime failure. Import specifiers carry the real extension
 (`import './config.ts'`), as Node requires.
 
 Routes: `GET /:token/feed.ics`, `GET /:token/status`, `GET /:token/artwork` (with
-`artwork/app.js`, `artwork/candidates` and `POST artwork/pick` beneath it, all 404 unless the
+`artwork/app.js`, `artwork/candidates`, `artwork/seasons` and `POST artwork/pick` beneath it, all 404 unless the
 artwork page is configured) and `GET /healthz`. Health is
 unauthenticated, and answers `503` rather than `200` whenever the feed has stopped moving —
 a revoked token, a CDN that has stopped answering, or a render that keeps throwing — so "the
