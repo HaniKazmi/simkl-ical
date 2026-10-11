@@ -62,6 +62,8 @@ export type ArtworkState = (typeof ARTWORK_STATES)[number];
 /** The states a pick can change. */
 export const NEEDS_ARTWORK: readonly ArtworkState[] = ['missing-object', 'unlinked', 'adopt'];
 
+const NEEDS = new Set<ArtworkState>(NEEDS_ARTWORK);
+
 /**
  * The states a cell linking another public host lands in — `adopt` on a film
  * or show, `cover` on a book. The client offers the adopt button for both and
@@ -69,21 +71,28 @@ export const NEEDS_ARTWORK: readonly ArtworkState[] = ['missing-object', 'unlink
  */
 export const LINKED_ELSEWHERE: readonly ArtworkState[] = ['adopt', 'cover'];
 
-export interface ArtworkTitle {
-  kind: ArtworkKind;
-  id: number | null;
-  /** TMDB for a film, TVDB for a show; null until the library or a lookup supplies it. */
-  providerId: number | null;
-  title: string;
+/**
+ * One `Artwork` cell as a pick reads it — a title's own, or a season row's.
+ * One shape, so a pick and its settle step act on either without asking which.
+ */
+export interface ArtworkCell {
   /** Zero-based row in the tab's snapshot. */
   row: number;
   /** The `Artwork` cell, A1. Null when the tab has no such column. */
   address: string | null;
   cell: { kind: CellKind; url: string | null; previous: CellData | undefined };
-  /** The object key a pick uploads to: the cell's where it links this bucket, else the title's. */
+  /** The object key a pick uploads to: the cell's where it links this bucket, else the static one. */
   key: string;
   stored: { exists: boolean | null; updated: Temporal.Instant | null };
   state: ArtworkState;
+}
+
+export interface ArtworkTitle extends ArtworkCell {
+  kind: ArtworkKind;
+  id: number | null;
+  /** TMDB for a film, TVDB for a show; null until the library or a lookup supplies it. */
+  providerId: number | null;
+  title: string;
   /** When the sync inserted this row, from the run history; null if it never did or the history does not say. */
   addedBySync: Temporal.Instant | null;
   lastWatchedAt: Temporal.Instant | null;
@@ -95,7 +104,55 @@ export interface ArtworkTitle {
   franchise: string | null;
   /** A film's `Release Date`; the order within a franchise. Null for shows. */
   releasedOn: Temporal.PlainDate | null;
+  /** A show's season rows that carry a number, in tab order; empty for a film or a book. */
+  seasons: SeasonArtwork[];
 }
+
+/**
+ * One season row's `Artwork` cell, read the way a title's is: the same cell
+ * kinds, the same key rule, the same states — with the block's id, since a
+ * pick finds the row through it.
+ *
+ * Its state is the row's own and nothing else's. It does not feed the title's
+ * state, `needing` or `byState`: 858 of the 911 season cells on the tab are
+ * blank, and blank is an answer a reader gives on purpose — a season whose
+ * poster would only repeat the show's — so counting them would bury every film
+ * and show under rows nobody means to fill.
+ */
+export interface SeasonArtwork extends ArtworkCell {
+  /** The tab's own number: `7.5` for a specials row. */
+  season: number;
+  /** The row's own SIMKL id, where it carries one; otherwise it is the block's series. */
+  ownId: number | null;
+}
+
+/**
+ * Whether a show's row opens a season panel: it has a numbered season row to
+ * pick for. One is enough — a show one season in, Avatar: Seven Havens among
+ * them, has a season poster of its own as much as a show ten seasons in does.
+ */
+export const offersSeasons = (title: Pick<ArtworkTitle, 'seasons'>): boolean => title.seasons.length > 0;
+
+/**
+ * From how many season rows the Season posters chip lists a show. The panel
+ * opens from one; the chip is the to-do list, and a one-season show's season
+ * poster mostly repeats the show's own, so listing every one would double it
+ * — 175 of the 355 blocks have one season row. A one-season show is still
+ * listed where its cell holds something that needs attention.
+ */
+const SEASON_POSTERS_FROM = 2;
+
+/**
+ * Whether the Season posters chip lists a title: one of its seasons is blank,
+ * links an object that is not there, or links another host — from
+ * `SEASON_POSTERS_FROM` season rows, or with fewer where that season's cell
+ * holds something. A block with no usable id needs no test of its own here,
+ * since every one of its seasons reads `no-id`. A season left blank on purpose
+ * keeps its show listed — nothing on the tab records that decision — which is
+ * the price of a list that finds the rest.
+ */
+export const seasonsToPick = (title: Pick<ArtworkTitle, 'seasons'>): boolean =>
+  title.seasons.some((s) => NEEDS.has(s.state) && (title.seasons.length >= SEASON_POSTERS_FROM || s.cell.kind !== 'blank'));
 
 export interface ArtworkSummary {
   total: number;
@@ -111,6 +168,8 @@ export interface ArtworkSummary {
    */
   byState: Record<ArtworkState, number>;
   byKind: Record<ArtworkKind, number>;
+  /** Shows with a season left to pick, per `seasonsToPick`. */
+  seasonsToPick: number;
 }
 
 export interface IndexInput {
@@ -215,28 +274,61 @@ const stateOf = (
   }
 };
 
+/**
+ * A cell read against its bucket: what it holds, the key it addresses — the
+ * cell's where it links the bucket, `fallbackKey` where it does not — and the
+ * state that follows. One reading for a title's cell and a season row's, the
+ * way `decideLink` reads either when a pick lands.
+ */
+const readCell = (
+  kind: ArtworkKind,
+  cellData: CellData | undefined,
+  { bucket, stored, id, fallbackKey }: { bucket: string; stored: Map<string, StoredObject> | null; id: number | null; fallbackKey: string },
+): Pick<ArtworkCell, 'cell' | 'key' | 'stored' | 'state'> => {
+  const reading = classifyCell(cellData, bucket);
+  const key = reading.key ?? fallbackKey;
+  const { state, exists } = stateOf(kind, reading, id, stored, key);
+  return { cell: { kind: reading.kind, url: reading.url, previous: cellData }, key, stored: { exists, updated: stored?.get(key)?.updated ?? null }, state };
+};
+
 const entry = (
   base: Pick<ArtworkTitle, 'kind' | 'id' | 'providerId' | 'title' | 'row' | 'address' | 'lastWatchedAt' | 'context' | 'franchise' | 'releasedOn'>,
   cellData: CellData | undefined,
   bucket: string,
   stored: Map<string, StoredObject> | null,
   addedBySync: Temporal.Instant | null,
-): ArtworkTitle => {
-  const reading = classifyCell(cellData, bucket);
-  const key = reading.key ?? artworkKeyFor(base.title);
-  const { state, exists } = stateOf(base.kind, reading, base.id, stored, key);
-  return {
-    ...base,
-    cell: { kind: reading.kind, url: reading.url, previous: cellData },
-    key,
-    stored: { exists, updated: stored?.get(key)?.updated ?? null },
-    state,
-    addedBySync,
-    recentAt: later(addedBySync, base.lastWatchedAt),
-  };
-};
+  seasons: SeasonArtwork[] = [],
+): ArtworkTitle => ({
+  ...base,
+  ...readCell(base.kind, cellData, { bucket, stored, id: base.id, fallbackKey: artworkKeyFor(base.title) }),
+  addedBySync,
+  recentAt: later(addedBySync, base.lastWatchedAt),
+  seasons,
+});
 
-const NEEDS = new Set<ArtworkState>(NEEDS_ARTWORK);
+/** A block's numbered season rows, each read against the show bucket under its own key. */
+const seasonEntries = (
+  shows: Grid,
+  block: ShowBlock,
+  id: number | null,
+  banner: number | null,
+  bucket: string,
+  stored: Map<string, StoredObject> | null,
+): SeasonArtwork[] =>
+  block.seasons.flatMap((season) => {
+    // A row with no number has no key: `S` and nothing would name one object
+    // for every such row of the block.
+    if (season.season === null) return [];
+    return [
+      {
+        season: season.season,
+        row: season.row,
+        address: banner === null ? null : a1(season.row, banner),
+        ownId: season.ids[0] ?? null,
+        ...readCell('show', banner === null ? undefined : shows.snapshot.rows[season.row]?.[banner], { bucket, stored, id, fallbackKey: artworkKeyFor(block.title, season.season) }),
+      },
+    ];
+  });
 
 /** Needs-artwork first, then most recently touched, then by title — the order a reader wants to work in. */
 const compare = (a: ArtworkTitle, b: ArtworkTitle): number => {
@@ -281,6 +373,7 @@ export const indexArtwork = (input: IndexInput, { timezone }: IndexOptions): Art
           buckets.show,
           stored.show,
           insertedAt(runs, 'shows', block.title),
+          seasonEntries(shows, block, id, banner, buckets.show, stored.show),
         ),
       );
     }
@@ -377,11 +470,13 @@ export const summarise = (
   const byKind = Object.fromEntries(ARTWORK_KINDS.map((kind) => [kind, 0])) as Record<ArtworkKind, number>;
   let needing = 0;
   let addedRecently = 0;
+  let seasonsLeft = 0;
   for (const t of titles) {
     byState[t.state] += 1;
     byKind[t.kind] += 1;
     if (NEEDS.has(t.state)) needing += 1;
     if (recent(t)) addedRecently += 1;
+    if (seasonsToPick(t)) seasonsLeft += 1;
   }
-  return { total: titles.length, needing, addedRecently, byState, byKind };
+  return { total: titles.length, needing, addedRecently, byState, byKind, seasonsToPick: seasonsLeft };
 };

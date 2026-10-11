@@ -1,5 +1,6 @@
 /**
- * WRITE — put the static link in one `Artwork` cell, or say why not.
+ * WRITE — put the static link in one `Artwork` cell, or say why not: a
+ * title's, or one season row's of a show.
  *
  * The authoritative pass. The shell pre-decides from its cached index so a
  * refusal costs no upload, but the cell is written only against a snapshot
@@ -26,7 +27,7 @@ import { parseMovieGrid } from '../../sheet/movies/2-grid.ts';
 import { appendSheetRun, type RunTab } from '../../sheet/io/journal.ts';
 import { SheetBusyError, withSheetLock } from '../../sheet/io/lock.ts';
 import { applyRequests, readSnapshot, type SheetSnapshot } from '../../sheet/io/spreadsheet.ts';
-import { ARTWORK_LABEL } from '../../sheet/values.ts';
+import { ARTWORK_LABEL, artworkKeyFor } from '../../sheet/values.ts';
 import { showBannerColumn, type ArtworkKind } from '../1-index.ts';
 import { decideLink, type RefusalReason } from '../3-decide.ts';
 
@@ -43,10 +44,15 @@ export interface LinkRequest {
   adopt: boolean;
   /** The `Artwork` cell as the page showed it. The write requires the live cell to match. */
   expectPrevious: CellData | undefined;
+  /**
+   * A show's season, by the number its row holds: the cell written is that
+   * row's rather than the show row's. Absent for a title's own cell.
+   */
+  season?: number;
   signal?: AbortSignal;
 }
 
-export type LinkRefusal = RefusalReason | 'not-found' | 'duplicate' | 'title-moved' | 'no-banner-column' | 'cell-changed';
+export type LinkRefusal = RefusalReason | 'not-found' | 'duplicate' | 'title-moved' | 'no-banner-column' | 'cell-changed' | 'no-season' | 'duplicate-season';
 
 /**
  * `written`: the cell now holds `link`, verified. `kept`: it already linked
@@ -66,7 +72,17 @@ interface Located {
   row: number;
   column: number;
   title: string;
+  /** What a write links: the title's key, or the season's where the row is a season row. */
+  key: string;
 }
+
+type Locate = (snapshot: SheetSnapshot, id: number, season?: number) => Located | { refused: LinkRefusal; detail: string };
+
+/** A film or a book has no season rows: asked for one, it has no row to name. */
+const noSeasons = (snapshot: SheetSnapshot, season: number): { refused: LinkRefusal; detail: string } => ({
+  refused: 'no-season',
+  detail: `${snapshot.title} has no season rows to hold season ${season}`,
+});
 
 /**
  * The row for a SIMKL id on either tab, or the reason there is no single one.
@@ -74,7 +90,8 @@ interface Located {
  * `no-banner-column` names the state, not the header: the page's client and
  * the tests both branch on the code, so it stays whatever the column is called.
  */
-const locateBook = (snapshot: SheetSnapshot, id: number): Located | { refused: LinkRefusal; detail: string } => {
+const locateBook: Locate = (snapshot, id, season) => {
+  if (season !== undefined) return noSeasons(snapshot, season);
   const grid = parseBookGrid(snapshot);
   if (grid.duplicates.has(id)) return { refused: 'duplicate', detail: `id ${id} is on more than one row of ${snapshot.title}` };
   const row = grid.rows.find((r) => r.id === id);
@@ -83,25 +100,42 @@ const locateBook = (snapshot: SheetSnapshot, id: number): Located | { refused: L
   // so a tab missing it throws a `GridError` out of the parse above. Only the
   // show tab, whose headers predate the feature, resolves the column
   // separately and can degrade.
-  return { row: row.row, column: grid.columns.Banner, title: row.name };
+  return { row: row.row, column: grid.columns.Banner, title: row.name, key: artworkKeyFor(row.name) };
 };
 
-const locateFilm = (snapshot: SheetSnapshot, id: number): Located | { refused: LinkRefusal; detail: string } => {
+const locateFilm: Locate = (snapshot, id, season) => {
+  if (season !== undefined) return noSeasons(snapshot, season);
   const grid = parseMovieGrid(snapshot);
   if (grid.duplicates.has(id)) return { refused: 'duplicate', detail: `id ${id} is on more than one row of ${snapshot.title}` };
   const row = grid.rows.find((r) => r.id === id);
   if (!row || row.name === null) return { refused: 'not-found', detail: `no row on ${snapshot.title} carries id ${id}` };
-  return { row: row.row, column: grid.columns.Banner, title: row.name };
+  return { row: row.row, column: grid.columns.Banner, title: row.name, key: artworkKeyFor(row.name) };
 };
 
-const locateShow = (snapshot: SheetSnapshot, id: number): Located | { refused: LinkRefusal; detail: string } => {
+/**
+ * The show row for an id, or — given a season — that block's one season row
+ * holding the number.
+ *
+ * The block is found by id exactly as for the show row, and the title it is
+ * checked against is the block's, so a season write meets every rule a show
+ * write does before the number is looked at. The number then has to name one
+ * row: none is a block that has changed since the page read it, and two is a
+ * block where a number no longer says which row was meant. No block on the
+ * tab repeats one today, and the write refuses rather than picking the first
+ * the day one does.
+ */
+const locateShow: Locate = (snapshot, id, season) => {
   const grid = parseGrid(snapshot);
   const column = showBannerColumn(grid);
   if (column === null) return { refused: 'no-banner-column', detail: `${snapshot.title} has no ${ARTWORK_LABEL} column` };
   if (duplicateIds(grid.blocks).has(id)) return { refused: 'duplicate', detail: `id ${id} is on more than one block of ${snapshot.title}` };
   const block = grid.blocks.find((b) => b.ids.includes(id) || b.seasons.some((s) => s.ids.includes(id)));
   if (!block) return { refused: 'not-found', detail: `no block on ${snapshot.title} carries id ${id}` };
-  return { row: block.row, column, title: block.title };
+  if (season === undefined) return { row: block.row, column, title: block.title, key: artworkKeyFor(block.title) };
+  const [only, ...more] = block.seasons.filter((s) => s.season === season);
+  if (!only) return { refused: 'no-season', detail: `${block.title} has no season ${season} row on ${snapshot.title}` };
+  if (more.length) return { refused: 'duplicate-season', detail: `${block.title} has ${more.length + 1} season ${season} rows on ${snapshot.title}` };
+  return { row: only.row, column, title: block.title, key: artworkKeyFor(block.title, season) };
 };
 
 /**
@@ -114,7 +148,7 @@ const locateShow = (snapshot: SheetSnapshot, id: number): Located | { refused: L
  * `no-banner-column` names the state, not the header: the page's client and
  * the tests both branch on the code, so it stays whatever the column is called.
  */
-const LOCATE: Record<ArtworkKind, (snapshot: SheetSnapshot, id: number) => Located | { refused: LinkRefusal; detail: string }> = {
+const LOCATE: Record<ArtworkKind, Locate> = {
   movie: locateFilm,
   show: locateShow,
   book: locateBook,
@@ -153,13 +187,13 @@ export const tabOf = (kind: ArtworkKind): { title: string; tab: RunTab; bucket: 
 export const ensureLink = (request: LinkRequest, { log, wait = LINK_WAIT }: { log: Logger; wait?: Temporal.Duration }): Promise<LinkOutcome> =>
   withSheetLock(() => linkUnderLock(request, log), { wait });
 
-const linkUnderLock = async ({ kind, id, title, adopt, expectPrevious, signal }: LinkRequest, log: Logger): Promise<LinkOutcome> => {
+const linkUnderLock = async ({ kind, id, title, adopt, expectPrevious, season, signal }: LinkRequest, log: Logger): Promise<LinkOutcome> => {
   const tab = tabOf(kind);
   if (!tab.bucket) return { status: 'refused', reason: 'unrecognised', address: null, key: null, detail: `no bucket is configured for ${kind}s` };
   const bucket = tab.bucket;
 
   const snapshot = await readSnapshot(tab.title, { signal });
-  const found = LOCATE[kind](snapshot, id);
+  const found = LOCATE[kind](snapshot, id, season);
   if ('refused' in found) return { status: 'refused', reason: found.refused, address: null, key: null, detail: found.detail };
   const address = a1(found.row, found.column);
   if (found.title !== title) {
@@ -167,7 +201,7 @@ const linkUnderLock = async ({ kind, id, title, adopt, expectPrevious, signal }:
   }
 
   const cell = snapshot.rows[found.row]?.[found.column];
-  const decision = decideLink(cell, { title, bucket, adopt });
+  const decision = decideLink(cell, { key: found.key, bucket, adopt });
   if (decision.action === 'refuse') return { status: 'refused', reason: decision.reason, address, key: decision.key, detail: decision.detail };
   // Before `keep` as well as `write`: the object was uploaded under the key
   // the page's cell implied, and a cell that changed since may name another
@@ -179,9 +213,10 @@ const linkUnderLock = async ({ kind, id, title, adopt, expectPrevious, signal }:
   if (config.sheetSyncMode !== 'apply') return { status: 'reported', address, key: decision.key, link: decision.link };
 
   const at = nowIso();
-  // The title alone: the link is derived from it, and the address is its own
-  // column on the status page, so repeating either only widens the row.
-  const note = `artwork: ${title}`;
+  // The key alone — the title, or `Doctor Who S7.5` for a season row: the
+  // link is derived from it, and the address is its own column on the status
+  // page, so repeating either only widens the row.
+  const note = `artwork: ${found.key}`;
   let outcome: LinkOutcome;
   let error: string | null = null;
   try {

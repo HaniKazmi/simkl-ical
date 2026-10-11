@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { classifyCell, decideLink } from '../../src/artwork/3-decide.ts';
+import { artworkKeyFor } from '../../src/sheet/values.ts';
 import { cellOf } from '../helpers.ts';
 
 const BUCKET = 'shows-bucket';
@@ -21,38 +22,47 @@ test('a cell is read as blank, formula, bucket, foreign or other', () => {
 // The one unconditional rule: whatever a formula resolves to, the cell is
 // never written. Kept when it already links the bucket, refused otherwise.
 test('a formula is never written', () => {
-  const kept = decideLink(cellOf({ formula: '=CONCAT($Z$2,A5)', value: LINK }), { title: 'Severance', bucket: BUCKET, adopt: true });
+  const kept = decideLink(cellOf({ formula: '=CONCAT($Z$2,A5)', value: LINK }), { key: 'Severance', bucket: BUCKET, adopt: true });
   assert.deepEqual(kept, { action: 'keep', key: 'Severance', link: LINK });
   for (const value of ['Severance', 'https://image.tmdb.org/t/p/w1280/x.jpg', undefined]) {
-    const decision = decideLink(cellOf({ formula: '=CONCAT($Z$2,A5)', value }), { title: 'Severance', bucket: BUCKET, adopt: true });
+    const decision = decideLink(cellOf({ formula: '=CONCAT($Z$2,A5)', value }), { key: 'Severance', bucket: BUCKET, adopt: true });
     assert.equal(decision.action, 'refuse');
     assert.equal(decision.action === 'refuse' && decision.reason, 'formula');
   }
 });
 
-test('a blank cell takes the static link for the title', () => {
-  assert.deepEqual(decideLink(cellOf(null), { title: 'Severance', bucket: BUCKET }), { action: 'write', key: 'Severance', link: LINK });
-  assert.deepEqual(decideLink(cellOf(null), { title: '3%', bucket: BUCKET }), { action: 'write', key: '3%', link: 'https://storage.googleapis.com/shows-bucket/3%25' });
+test('a blank cell takes the static link for the key it is given', () => {
+  assert.deepEqual(decideLink(cellOf(null), { key: 'Severance', bucket: BUCKET }), { action: 'write', key: 'Severance', link: LINK });
+  assert.deepEqual(decideLink(cellOf(null), { key: '3%', bucket: BUCKET }), { action: 'write', key: '3%', link: 'https://storage.googleapis.com/shows-bucket/3%25' });
+  // A season's key goes through the same escaping as a title's.
+  assert.deepEqual(decideLink(cellOf(null), { key: artworkKeyFor('3%', 2), bucket: BUCKET }), { action: 'write', key: '3% S2', link: 'https://storage.googleapis.com/shows-bucket/3%25 S2' });
+});
+
+// The key every link on the tab already names: 53 of 53 season cells.
+test('a season\'s key is the show\'s key, a space, S and the number as the tab holds it', () => {
+  assert.equal(artworkKeyFor('Doctor Who', 7.5), 'Doctor Who S7.5');
+  assert.equal(artworkKeyFor('Doctor Who', 10), 'Doctor Who S10');
+  assert.equal(artworkKeyFor('Fate/Stay Night', 2), 'Fate/Stay Night S2');
 });
 
 // The cell decides the key: a hand-written link naming the object with a
 // typo keeps pointing at that object.
 test('a link into this bucket is kept under the key the cell names', () => {
   const typo = 'https://storage.googleapis.com/shows-bucket/Aquarian%20Evol';
-  assert.deepEqual(decideLink(cellOf(typo), { title: 'Aquarion Evol', bucket: BUCKET }), { action: 'keep', key: 'Aquarian Evol', link: typo });
+  assert.deepEqual(decideLink(cellOf(typo), { key: 'Aquarion Evol', bucket: BUCKET }), { action: 'keep', key: 'Aquarian Evol', link: typo });
 });
 
 test('a link elsewhere is replaced only on adopt', () => {
   const foreign = cellOf('https://image.tmdb.org/t/p/w1280/x.jpg');
-  const refused = decideLink(foreign, { title: 'Severance', bucket: BUCKET });
+  const refused = decideLink(foreign, { key: 'Severance', bucket: BUCKET });
   assert.equal(refused.action, 'refuse');
   assert.equal(refused.action === 'refuse' && refused.reason, 'needs-adopt');
-  assert.deepEqual(decideLink(foreign, { title: 'Severance', bucket: BUCKET, adopt: true }), { action: 'write', key: 'Severance', link: LINK });
+  assert.deepEqual(decideLink(foreign, { key: 'Severance', bucket: BUCKET, adopt: true }), { action: 'write', key: 'Severance', link: LINK });
 });
 
 test('text that is not a link is refused, adopt or not', () => {
   for (const adopt of [false, true]) {
-    const decision = decideLink(cellOf('see notes'), { title: 'Severance', bucket: BUCKET, adopt });
+    const decision = decideLink(cellOf('see notes'), { key: 'Severance', bucket: BUCKET, adopt });
     assert.equal(decision.action, 'refuse');
     assert.equal(decision.action === 'refuse' && decision.reason, 'unrecognised');
   }

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { indexArtwork, showBannerColumn, summarise, type IndexInput } from '../../src/artwork/1-index.ts';
+import { indexArtwork, offersSeasons, seasonsToPick, showBannerColumn, summarise, type IndexInput } from '../../src/artwork/1-index.ts';
 import { parseGrid } from '../../src/sheet/2-grid.ts';
 import { parseBookGrid } from '../../src/sheet/books/2-grid.ts';
 import { parseMovieGrid } from '../../src/sheet/movies/2-grid.ts';
@@ -242,7 +242,92 @@ test('the summary counts what the chips show', () => {
     addedRecently: 1,
     byState: { done: 1, 'missing-object': 0, unlinked: 2, adopt: 1, cover: 0, 'no-id': 1, unrecognised: 0 },
     byKind: { movie: 4, show: 1, book: 0 },
+    seasonsToPick: 0,
   });
+});
+
+// --- Season rows -------------------------------------------------------------
+
+/** A season row whose `Artwork` cell holds `artwork`, the way a reader typed it. */
+const season = (n: number, artwork: CellSpec, { id }: { id?: number } = {}): CellSpec[] => seasonRow(n, 8, 45010, { id, artwork });
+
+test('a show\'s season rows are read like its own cell, each under its own key', () => {
+  const shows = parseGrid(
+    sheetSnapshot([
+      SHEET_HEADERS,
+      ...block(
+        'Doctor Who',
+        3,
+        SHOW_LINK('Doctor Who'),
+        season(1, SHOW_LINK('Doctor Who S1')),
+        season(1.5, null),
+        season(2, SHOW_LINK('Doctor Who S2')),
+        season(3, 'https://artworks.thetvdb.com/banners/seasons/3.jpg'),
+        season(4, { formula: '=CONCAT("x",A1)', value: 'nothing' }),
+        season(14, null, { id: 99 }),
+      ),
+    ]),
+  );
+  const [dw] = indexArtwork(input({ shows, stored: stored([], ['Doctor Who', 'Doctor Who S1']) }), { timezone: 'Europe/London' });
+  assert.deepEqual(
+    dw?.seasons.map((s) => [s.season, s.key, s.state, s.address, s.ownId]),
+    [
+      [1, 'Doctor Who S1', 'done', 'Q3', null],
+      [1.5, 'Doctor Who S1.5', 'unlinked', 'Q4', null],
+      [2, 'Doctor Who S2', 'missing-object', 'Q5', null],
+      [3, 'Doctor Who S3', 'adopt', 'Q6', null],
+      [4, 'Doctor Who S4', 'unrecognised', 'Q7', null],
+      [14, 'Doctor Who S14', 'unlinked', 'Q8', 99],
+    ],
+  );
+  // The title's own state is its own cell's, whatever its seasons hold.
+  assert.equal(dw?.state, 'done');
+});
+
+// 858 of 911 season cells are blank, most of them on purpose: counted as
+// needing, they would bury every film and show.
+test('season states move no title count, and the season chip counts shows with one left to pick', () => {
+  const shows = parseGrid(
+    sheetSnapshot([
+      SHEET_HEADERS,
+      ...block('Two Blank', 1, SHOW_LINK('Two Blank'), season(1, null), season(2, null)),
+      ...block('All Linked', 2, SHOW_LINK('All Linked'), season(1, SHOW_LINK('All Linked S1')), season(2, SHOW_LINK('All Linked S2'))),
+      ...block('One Season', 3, SHOW_LINK('One Season'), season(1, null)),
+      ...block('One Linked', 4, SHOW_LINK('One Linked'), season(1, 'https://example.com/x.jpg')),
+      ...block('No Id', null, null, season(1, null), season(2, null)),
+    ]),
+  );
+  const titles = indexArtwork(input({ shows, stored: stored([], ['Two Blank', 'All Linked', 'All Linked S1', 'All Linked S2', 'One Season', 'One Linked']) }), { timezone: 'Europe/London' });
+  const summary = summarise(titles);
+  assert.equal(summary.needing, 0, 'every show row is linked or has no id; the blank seasons count nothing');
+  assert.equal(summary.byState.unlinked, 0);
+  assert.equal(summary.byState['no-id'], 1);
+  // Two Blank has blanks; One Linked is listed for its one season because the
+  // cell holds a link, and that link is adoptable. One Season's blank season
+  // is offered in its panel but is not the chip's work, and No Id has nothing
+  // to write through.
+  assert.equal(summary.seasonsToPick, 2);
+  const byTitle = Object.fromEntries(titles.map((t) => [t.title, t]));
+  assert.equal(seasonsToPick(byTitle['One Season']!), false);
+  assert.equal(seasonsToPick(byTitle['One Linked']!), true);
+  // The panel opens from one season row: Avatar: Seven Havens is one season in.
+  assert.equal(offersSeasons(byTitle['One Season']!), true);
+  assert.equal(offersSeasons({ seasons: [] }), false);
+  assert.equal(seasonsToPick(byTitle['All Linked']!), false);
+  assert.equal(seasonsToPick(byTitle['No Id']!), false);
+});
+
+test('a season row with no number has no key and is not listed', () => {
+  const unnumbered = seasonRow(1, 8, 45010);
+  unnumbered[col(SHEET_HEADERS, 'Season')] = 'TBD';
+  const shows = parseGrid(sheetSnapshot([SHEET_HEADERS, ...block('Odd', 1, null, seasonRow(1, 8, 45010), unnumbered)]));
+  const [odd] = indexArtwork(input({ shows }), { timezone: 'Europe/London' });
+  assert.deepEqual(odd?.seasons.map((s) => s.key), ['Odd S1']);
+});
+
+test('films and books carry no seasons', () => {
+  const films = parseMovieGrid(sheetSnapshot([MOVIE_SHEET_HEADERS, filmRow({ name: 'A', id: '1' })]));
+  assert.deepEqual(indexArtwork(input({ films }), { timezone: 'Europe/London' })[0]?.seasons, []);
 });
 
 test('a book indexes off its own tab: the id is the provider id, the author is the context, and no sync ever inserted it', () => {

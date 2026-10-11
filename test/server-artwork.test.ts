@@ -1,5 +1,5 @@
 /**
- * The artwork page's four routes, driven end to end over the fakes: the
+ * The artwork page's five routes, driven end to end over the fakes: the
  * Sheets double with both tabs, the bucket double in front of it, and the two
  * candidate upstreams. What is pinned is the route contract — gating, the
  * header set, the status codes — and the one invariant every token-carrying
@@ -19,7 +19,7 @@ import { clearTokenCache as clearTvdbTokenCache } from '../src/api/tvdb/auth.ts'
 import { sheetRuns } from '../src/sheet/io/journal.ts';
 import { withSheetLock } from '../src/sheet/io/lock.ts';
 import { SheetSync } from '../src/sheet/sync.ts';
-import { BOOK_SHEET_HEADERS, bookRow, col, filmRow, jsonResponse, libraryOf, MOVIE_SHEET_HEADERS, quiet, SHEET_HEADERS, showRow, withConfig, withFetch, withFreshJournal, type CellSpec } from './helpers.ts';
+import { BOOK_SHEET_HEADERS, bookRow, col, filmRow, jsonResponse, libraryOf, MOVIE_SHEET_HEADERS, quiet, seasonRow, SHEET_HEADERS, showRow, withConfig, withFetch, withFreshJournal, type CellSpec } from './helpers.ts';
 import { CREDENTIAL, fakeSheets, type FakeSheetsOptions } from './sheet/fake-sheets.ts';
 import { fakeBucket, JPEG, type FakeBucketOptions } from './artwork/fake-bucket.ts';
 
@@ -107,7 +107,13 @@ const serve = async (
       () =>
         withFetch(store.handler, async (calls) => {
           const state = new Orchestrator({ logger: quiet });
-          state.library = libraryOf({ id: 53080, type: 'movies', title: 'Finding Nemo', tmdb: '12' }, { id: 3381, title: 'Severance', tvdb: '371980' }, { id: 3382, title: 'Unmapped' });
+          state.library = libraryOf(
+            { id: 53080, type: 'movies', title: 'Finding Nemo', tmdb: '12' },
+            { id: 3381, title: 'Severance', tvdb: '371980' },
+            { id: 3382, title: 'Unmapped' },
+            // A later season filed as a SIMKL title of its own, on a TVDB series of its own.
+            { id: 3390, title: 'Severance: Outie', tvdb: '400000' },
+          );
           const sync = new SheetSync({ logger: quiet });
           state.sheetSync = sync;
           // A resolver that answers every name publicly: the fakes answer the fetch, and no test reaches DNS.
@@ -122,7 +128,7 @@ const serve = async (
   );
 };
 
-const ROUTES = ['artwork', 'artwork/app.js', 'artwork/candidates?kind=movie&id=53080'];
+const ROUTES = ['artwork', 'artwork/app.js', 'artwork/candidates?kind=movie&id=53080', 'artwork/seasons?id=3381'];
 
 test('every artwork route is a uniform 404 on a wrong token, and when the feature is off', async () => {
   await serve(async (app) => {
@@ -433,4 +439,146 @@ test('the bulk adopt skips books, in the tile and in the script', async () => {
     const script = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/app.js` });
     assert.match(script.body, /dataset\.kind !== 'book'/);
   });
+});
+
+// --- Season posters ---------------------------------------------------------------
+
+const S2_POSTER = 'https://artworks.thetvdb.com/banners/v4/season/2/posters/s2.jpg';
+const SPECIALS_POSTER = 'https://artworks.thetvdb.com/banners/v4/season/0/posters/s0.jpg';
+const OUTIE_POSTER = 'https://artworks.thetvdb.com/banners/v4/season/9/posters/outie.jpg';
+
+/**
+ * Severance from its second season — so a row's number and its place in the
+ * block differ — then a specials row, and a season carrying its own SIMKL id
+ * on another TVDB series.
+ */
+const SEASON_SHOWS: CellSpec[][] = [
+  SHEET_HEADERS,
+  showRow('Severance', 'Watching', 3381),
+  seasonRow(2, 9, 45000),
+  seasonRow(2.5, 1, 45001),
+  seasonRow(3, 10, 45002, { id: 3390 }),
+  showRow('Unmapped', 'Watching', 3382),
+];
+
+const seasonArt = (image: string, seasonId: number, over: Record<string, unknown> = {}) => ({ image, thumbnail: image.replace('.jpg', '_t.jpg'), language: 'eng', type: 7, score: 1, width: 400, height: 578, seasonId, ...over });
+
+const seasonTvdb = (url: string): Response => {
+  const parsed = new URL(url);
+  const match = parsed.pathname.match(/\/series\/(\d+)\/(extended|artworks)$/);
+  if (!match) return new Response('{}', { status: 404 });
+  const main = match[1] === '371980';
+  if (match[2] === 'extended') {
+    const seasons = main
+      ? [{ id: 2, number: 2, type: { type: 'official', name: 'Aired Order' } }, { id: 0, number: 0, type: { type: 'official', name: 'Aired Order' } }]
+      : [{ id: 9, number: 1, type: { type: 'official', name: 'Aired Order' } }];
+    return jsonResponse({ data: { name: main ? 'Severance' : 'Severance: Outie', seasons } });
+  }
+  if (parsed.searchParams.get('type') === '7') return jsonResponse({ data: { artworks: main ? [seasonArt(S2_POSTER, 2), seasonArt(SPECIALS_POSTER, 0)] : [seasonArt(OUTIE_POSTER, 9)] } });
+  return jsonResponse({ data: { artworks: main ? [{ image: POSTER, thumbnail: POSTER, language: 'eng', type: 2, score: 1, width: 680, height: 1000 }] : [] } });
+};
+
+const SEASON_CASE: Case = {
+  sheets: { grid: SEASON_SHOWS, tvdb: seasonTvdb },
+  bucket: { images: { [S2_POSTER]: { bytes: JPEG, contentType: 'image/jpeg' }, [OUTIE_POSTER]: { bytes: JPEG, contentType: 'image/jpeg' }, [POSTER]: { bytes: JPEG, contentType: 'image/jpeg' } } },
+};
+
+test('a show\'s seasons list every row with the series its posters come from and the group it opens on', async () => {
+  await serve(async (app, { calls }) => {
+    const res = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/seasons?id=3381` });
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(res.headers['cache-control'], 'private, no-store');
+    const listing = res.json();
+    assert.equal(listing.title, 'Severance');
+    assert.deepEqual(
+      listing.rows.map((r: { season: number; rowNumber: number; address: string; key: string; state: string; tvdbId: number; open: string | null }) => [r.season, r.rowNumber, r.address, r.key, r.state, r.tvdbId, r.open]),
+      [
+        // Its own number, not its place in the block.
+        [2, 3, 'Q3', 'Severance S2', 'unlinked', 371980, 'official:2'],
+        [2.5, 4, 'Q4', 'Severance S2.5', 'unlinked', 371980, 'official:0'],
+        // Its own series' first season, not season 3 of the block's.
+        [3, 5, 'Q5', 'Severance S3', 'unlinked', 400000, 'official:1'],
+      ],
+    );
+    assert.deepEqual(listing.series.map((s: { tvdbId: number; groups: { key: string }[] }) => [s.tvdbId, s.groups.map((g) => g.key)]), [
+      [371980, ['official:2', 'official:0', 'series']],
+      [400000, ['official:1']],
+    ]);
+    assert.deepEqual(listing.errors, []);
+    // Each series once, three calls each; nobody asked SIMKL, the library knew both ids.
+    assert.equal(calls.filter((c) => c.includes('api4.thetvdb.com/v4/series/')).length, 6);
+    assert.equal(calls.filter((c) => c.includes('api.simkl.com')).length, 0);
+  }, SEASON_CASE);
+});
+
+test('a season pick uploads under the season\'s key and links that season\'s row', async () => {
+  await serve(async (app, { bucket, sheet }) => {
+    await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/seasons?id=3381` });
+    const res = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: { kind: 'show', id: 3381, season: 2, url: S2_POSTER } });
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal(res.json().key, 'Severance S2');
+    assert.deepEqual(res.json().link, { status: 'written', address: 'Q3', key: 'Severance S2', link: 'https://storage.googleapis.com/shows/Severance S2' });
+    assert.deepEqual(bucket.uploads.map((u) => [u.key, u.cacheControl]), [['Severance S2', 'public, max-age=300']]);
+    assert.equal(sheet.state[2]?.[SHOW_ARTWORK_COL]?.userEnteredValue?.stringValue, 'https://storage.googleapis.com/shows/Severance S2');
+    assert.equal(sheet.state[1]?.[SHOW_ARTWORK_COL]?.userEnteredValue, undefined, 'the show row is untouched');
+    // The listing reads the row's state off the index, so the pick shows at once.
+    const again = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/seasons?id=3381` });
+    assert.equal(again.json().rows[0].state, 'done');
+    const page = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork` });
+    assert.match(page.body, /seasons 1\/3 linked/);
+  }, SEASON_CASE);
+});
+
+// What was offered is per row: the show's strip, another row's series, and a
+// row of another show are each a different offer.
+test('a season pick takes only a poster offered for that row', async () => {
+  await serve(async (app, { bucket }) => {
+    await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=show&id=3381` });
+    const unopened = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: { kind: 'show', id: 3381, season: 2, url: S2_POSTER } });
+    assert.equal(unopened.statusCode, 400, 'the season panel was never opened');
+    assert.equal(unopened.json().error, 'not-offered');
+    await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/seasons?id=3381` });
+    for (const [season, url] of [[2, OUTIE_POSTER], [3, S2_POSTER]] as const) {
+      const res = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: { kind: 'show', id: 3381, season, url } });
+      assert.equal(res.statusCode, 400, `S${season}`);
+      assert.equal(res.json().error, 'not-offered');
+    }
+    // The series' own posters are among a row's groups, and so are offered for it.
+    const series = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: { kind: 'show', id: 3381, season: 2.5, url: POSTER } });
+    assert.equal(series.statusCode, 200, series.body);
+    assert.deepEqual(bucket.uploads.map((u) => u.key), ['Severance S2.5']);
+  }, SEASON_CASE);
+});
+
+test('a season is a number on a show, and a show with no season rows has no panel', async () => {
+  await serve(async (app, { bucket }) => {
+    for (const payload of [
+      { kind: 'movie', id: 53080, season: 1, url: BACKDROP },
+      { kind: 'show', id: 3381, season: '1', url: S2_POSTER },
+      { kind: 'show', id: 3381, season: -1, url: S2_POSTER },
+      { kind: 'show', id: 3381, season: null, url: S2_POSTER },
+    ]) {
+      const res = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload });
+      assert.equal(res.statusCode, 400, JSON.stringify(payload));
+    }
+    const missing = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: { kind: 'show', id: 3381, season: 7, url: S2_POSTER } });
+    assert.equal(missing.statusCode, 404);
+    assert.equal(missing.json().error, 'no-season');
+    assert.equal((await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/seasons?id=x` })).statusCode, 400);
+    const none = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/seasons?id=3382` });
+    assert.equal(none.statusCode, 404);
+    assert.equal(none.json().error, 'no-season');
+    assert.equal((await app.inject({ method: 'GET', url: `/nope/artwork/seasons?id=3381` })).statusCode, 404);
+    assert.deepEqual(bucket.uploads, []);
+  }, SEASON_CASE);
+});
+
+test('the page marks a show with seasons to pick, and the chip counts it', async () => {
+  await serve(async (app) => {
+    const page = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork` });
+    assert.match(page.body, /data-title="Severance"[^>]*data-seasons="3" data-seasons-open="1"/);
+    assert.match(page.body, /data-title="Unmapped"[^>]*data-seasons="" data-seasons-open=""/);
+    assert.match(page.body, /data-filter="seasons"[^>]*>Season posters<b>1<\/b>/);
+    assert.match(page.body, /seasons 0\/3 linked/);
+  }, SEASON_CASE);
 });

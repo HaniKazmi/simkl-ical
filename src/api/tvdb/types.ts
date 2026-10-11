@@ -28,15 +28,17 @@ export interface TvdbSeasonResponse {
 }
 
 /**
- * `GET /series/{id}/extended`, which carries the whole series record; only the
- * genre list is read.
+ * `GET /series/{id}/extended`, which carries the whole series record. The sheet
+ * reads the genre list; the artwork page reads the name and the season list,
+ * asking `short=true`, which leaves out characters and artworks — 26 kB for
+ * Doctor Who against 374 kB for the full record and its 899 artworks.
  *
- * The order is TVDB's own genre-id order on all 189 series measured, and that
- * order is what decides a block's primary genre — see `mappedTvdbGenres`, which
- * keeps it.
+ * The genre order is TVDB's own genre-id order on all 189 series measured, and
+ * that order is what decides a block's primary genre — see `mappedTvdbGenres`,
+ * which keeps it.
  */
 export interface TvdbSeriesResponse {
-  data?: { genres?: { id?: number; name?: string }[] };
+  data?: { name?: string; genres?: { id?: number; name?: string }[]; seasons?: TvdbSeason[] };
 }
 
 export interface TvdbLoginResponse {
@@ -45,9 +47,12 @@ export interface TvdbLoginResponse {
 
 /**
  * One artwork from `/series/{id}/artworks`. `type` is TVDB's own numbering:
- * 1 banner, 2 poster (680×1000, thumbnail 340×500), 3 background, 5 icon,
- * 22 clear art, 23 clear logo. `image` is a full `artworks.thetvdb.com`
- * URL, and `thumbnail` its `_t` sibling.
+ * 1 banner, 2 poster, 3 background, 5 icon, 7 season poster, 22 clear art,
+ * 23 clear logo. `image` is a full `artworks.thetvdb.com` URL, and
+ * `thumbnail` its `_t` sibling.
+ *
+ * Sizes, measured across 52 series: every series poster is 680×1000 (1,612 of
+ * 1,612), and season posters are 400×578 (1,904 of 2,828) or 680×1000.
  */
 export interface TvdbArtwork {
   id?: number;
@@ -59,10 +64,31 @@ export interface TvdbArtwork {
   width?: number;
   height?: number;
   includesText?: boolean;
+  /**
+   * On a season poster, the TVDB season it belongs to — an id, not a number.
+   * `/series/{id}/extended` says which number and which order it is, and
+   * every one measured on four series is in that list.
+   */
+  seasonId?: number;
 }
 
 /** `/series/{id}/artworks?type=2`: every language, since an anime often has only a Japanese poster. */
 export interface TvdbArtworksResponse {
   status?: string;
   data?: { id?: number; name?: string; artworks?: TvdbArtwork[] };
+}
+
+/**
+ * One season of a series, from `/series/{id}/extended?short=true`. A series
+ * carries one list per ordering — `type.type` is `official` for aired order,
+ * and `dvd`, `absolute`, `alternate` and a few rarer ones beside it — so a
+ * season number names a season only within one ordering. `image` is TVDB's
+ * default poster for the season, and on four series measured it is always one
+ * of that season's `type=7` artworks.
+ */
+export interface TvdbSeason {
+  id?: number;
+  number?: number;
+  type?: { type?: string; name?: string };
+  image?: string | null;
 }

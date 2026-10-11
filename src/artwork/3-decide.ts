@@ -10,7 +10,7 @@
 
 import type { CellData } from '../api/google/types.ts';
 import { isBlank, isFormula, textOf } from '../sheet/2-grid.ts';
-import { artworkKeyFor, artworkKeyOf, artworkLink } from '../sheet/values.ts';
+import { artworkKeyOf, artworkLink } from '../sheet/values.ts';
 
 /**
  * The kinds a cell can be. `bucket` links this tab's bucket; `foreign` is an
@@ -75,16 +75,19 @@ export type LinkDecision =
  *    `=CONCAT("https://storage.googleapis.com/<bucket>/",A#)` rows, whose
  *    prefix is a literal in each formula — and
  *    refused otherwise, since the page cannot know what the formula means.
- * 2. **Blank** takes the static link for the title.
+ * 2. **Blank** takes the static link for the key.
  * 3. A link into this bucket is kept, under the key the cell names.
  * 4. A URL on any other host is replaced only when the caller says `adopt`:
  *    the image behind it is what the row shows today, and the pick is
  *    choosing to stop showing it.
  * 5. Anything else is text a reader typed, and the page has no idea what.
+ *
+ * `key` is what a write would link — `artworkKeyFor` of a title, and of a
+ * season where the cell is a season row's — so one checklist answers for a
+ * title's cell and a season row's alike.
  */
-export const decideLink = (cell: CellData | undefined, { title, bucket, adopt = false }: { title: string; bucket: string; adopt?: boolean }): LinkDecision => {
+export const decideLink = (cell: CellData | undefined, { key, bucket, adopt = false }: { key: string; bucket: string; adopt?: boolean }): LinkDecision => {
   const reading = classifyCell(cell, bucket);
-  const key = artworkKeyFor(title);
   const link = artworkLink(bucket, key);
   switch (reading.kind) {
     case 'formula':

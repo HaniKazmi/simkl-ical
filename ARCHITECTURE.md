@@ -16,7 +16,8 @@ api.themoviedb.org/3/movie/{id}                     (a film's genres, certificat
 api.themoviedb.org/3/tv/{id}                        (a show's GB certificate)                            ─┘
 
 api.themoviedb.org/3/movie/{id}/images              (a film's backdrops)     ─┐
-api4.thetvdb.com/v4/series/{id}/artworks            (a show's posters)       ─┤
+api4.thetvdb.com/v4/series/{id}/artworks            (series, season posters) ─┤
+api4.thetvdb.com/v4/series/{id}/extended?short=true (a series' seasons)      ─┤
 api.hardcover.app/v1/graphql                        (a book's edition covers)─┤─ the artwork page only
 storage.googleapis.com                              (where a pick is put)    ─┘
 ```

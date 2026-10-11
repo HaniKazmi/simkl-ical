@@ -413,7 +413,13 @@ export const seasonRow = (
   season: number,
   episode: number | null,
   end: number | null,
-  { id = null, start = 45000, runtime = 45, note = null }: { id?: number | string | null; start?: number; runtime?: number | null; note?: string | null } = {},
+  {
+    id = null,
+    start = 45000,
+    runtime = 45,
+    note = null,
+    artwork = null,
+  }: { id?: number | string | null; start?: number; runtime?: number | null; note?: string | null; artwork?: CellSpec } = {},
 ): CellSpec[] =>
   rowByLabel(SHEET_HEADERS, {
     Status: null,
@@ -424,6 +430,7 @@ export const seasonRow = (
     'End Date': end,
     'Seasons / Last Watched': note,
     ID: id,
+    Artwork: artwork,
   });
 
 /** An ISO instant `days` in the past — the cut-off is the gate on everything. */

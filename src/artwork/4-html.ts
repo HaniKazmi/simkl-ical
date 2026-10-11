@@ -16,7 +16,7 @@
 import { BASE_STYLE, document, html, type SafeHtml } from '../shared/html.ts';
 import { duration, plainDateIn } from '../shared/dates.ts';
 import { allowedImageUrl } from '../api/images.ts';
-import type { ArtworkKind, ArtworkState, ArtworkSummary, ArtworkTitle } from './1-index.ts';
+import { offersSeasons, seasonsToPick, type ArtworkKind, type ArtworkState, type ArtworkSummary, type ArtworkTitle } from './1-index.ts';
 
 /**
  * What a row calls its kind. A record so a fourth kind fails `tsc` rather than
@@ -48,6 +48,13 @@ export interface ArtworkRow {
   recent: boolean;
   /** What the cell holds, in a reader's words. */
   cell: string;
+  /**
+   * A show's season rows, where it offers season posters: how many there are,
+   * how many link an image, how many link one that is not there, and whether
+   * the Season posters chip lists the row. Null for a show that offers none,
+   * and for every film and book.
+   */
+  seasons: { total: number; linked: number; broken: number; toPick: boolean } | null;
 }
 
 export interface ArtworkModel {
@@ -166,6 +173,14 @@ export const artworkModel = (
         touched,
         recent: title.addedBySync !== null && Temporal.Instant.compare(title.addedBySync, since) >= 0,
         cell: describeCell(title),
+        seasons: offersSeasons(title)
+          ? {
+              total: title.seasons.length,
+              linked: title.seasons.filter((s) => s.state === 'done').length,
+              broken: title.seasons.filter((s) => s.state === 'missing-object').length,
+              toPick: seasonsToPick(title),
+            }
+          : null,
       };
     }),
   };
@@ -231,6 +246,23 @@ const STYLE = `${BASE_STYLE}
 .prog{margin-top:.5rem;color:var(--muted);font-size:.8125rem}
 .err{color:var(--crit)}
 .note{padding:.75rem .9rem;border:1px solid var(--line);background:var(--card);border-radius:8px;color:var(--muted)}
+.seasons{margin-top:.75rem;padding-top:.75rem;border-top:1px solid var(--line);display:grid;gap:.75rem}
+.snav{position:sticky;top:0;z-index:1;display:flex;flex-wrap:wrap;gap:.375rem;padding:.375rem 0;background:var(--card)}
+.snav .chip.done{border-color:var(--ok);color:var(--ok)}
+.season{display:grid;gap:.375rem;padding:.75rem;border:1px solid var(--line);border-radius:8px;background:var(--bg);scroll-margin-top:3rem}
+.season .sh{display:flex;flex-wrap:wrap;gap:.5rem .75rem;align-items:center}
+.season .sk{font:600 1rem var(--mono);color:var(--accent)}
+.season .thb{width:2.5rem}
+.season .th{width:2.5rem;height:3.75rem;border-radius:4px;object-fit:cover;display:block}
+.season .ph{display:block;width:2.5rem;height:3.75rem;border-radius:4px;border:1px dashed var(--line)}
+.season summary{cursor:pointer;font-size:.8125rem;color:var(--muted);padding:.25rem 0}
+.season summary b{color:var(--ink);font-weight:600}
+.season .others>details{margin-left:.75rem}
+.sgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,200px),1fr));gap:.75rem;padding:.375rem 0 .5rem}
+.sgrid .cand button{width:100%}
+.sgrid .cand img{width:100%;height:auto;aspect-ratio:2/3;object-fit:cover}
+.sgrid .cand .badge.top{top:auto;bottom:.375rem;left:.375rem;right:auto}
+.warnt{color:var(--warn)}
 dialog{border:0;border-radius:8px;padding:0;background:var(--card);width:fit-content;min-width:min(20rem,96vw);max-width:min(96vw,1400px);box-shadow:0 20px 60px rgba(0,0,0,.4)}
 dialog::backdrop{background:rgba(0,0,0,.6)}
 dialog img{display:block;max-width:min(96vw,1400px);max-height:80vh;margin:0 auto}
@@ -238,6 +270,7 @@ dialog .dbar{display:flex;flex-wrap:wrap;gap:.5rem .75rem;align-items:center;pad
 dialog .dbar [data-dialog-caption]{flex:1 1 12rem;min-width:0;overflow-wrap:anywhere}
 @media(max-width:900px){.tiles{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:480px){.tiles{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:480px){.sgrid{grid-template-columns:repeat(2,minmax(0,1fr));gap:.5rem}.season{padding:.5rem}}
 @media(max-width:640px){.rh{grid-template-columns:6rem minmax(0,1fr) auto;grid-template-areas:"th txt txt" "pill pill act";row-gap:.5rem}.rh>.pill{justify-self:start}.rh .kind,.rh .rec{display:none}}
 `;
 
@@ -276,11 +309,16 @@ const thumb = (row: ArtworkRow): SafeHtml =>
 const rowHtml = (row: ArtworkRow): SafeHtml => {
   const label = STATE_LABEL[row.state];
   const actionable = row.id !== null && row.state !== 'no-id';
-  return html`<div class="row" data-kind="${row.kind}" data-id="${row.id ?? ''}" data-state="${row.state}" data-title="${row.title}" data-recent="${row.recent ? '1' : ''}" data-franchise="${row.franchise ?? ''}" data-released="${row.released}" data-q="${`${row.title} ${row.franchise ?? ''} ${row.context ?? ''}`.toLowerCase()}">
+  const seasons = row.seasons;
+  return html`<div class="row" data-kind="${row.kind}" data-id="${row.id ?? ''}" data-state="${row.state}" data-title="${row.title}" data-recent="${row.recent ? '1' : ''}" data-franchise="${row.franchise ?? ''}" data-released="${row.released}" data-q="${`${row.title} ${row.franchise ?? ''} ${row.context ?? ''}`.toLowerCase()}" data-seasons="${seasons ? String(seasons.total) : ''}" data-seasons-open="${seasons?.toPick ? '1' : ''}">
   <div class="rh">
     ${thumb(row)}
     <span class="kind">${KIND_LABEL[row.kind]}</span>
-    <div class="txt"><div class="ttl">${row.title}</div><div class="ctx">${row.franchise && row.franchise !== row.title ? html`${row.franchise} · ` : null}${row.context ? html`${row.context} · ` : null}row ${row.rowNumber}${row.address ? html` · <span class="mono">${row.address}</span>` : null} · ${row.cell}<span class="mono dims"></span></div></div>
+    <div class="txt"><div class="ttl">${row.title}</div><div class="ctx">${row.franchise && row.franchise !== row.title ? html`${row.franchise} · ` : null}${row.context ? html`${row.context} · ` : null}row ${row.rowNumber}${row.address ? html` · <span class="mono">${row.address}</span>` : null} · ${row.cell}<span class="mono dims"></span>${
+      seasons
+        ? html` · <span data-seasons-line>seasons ${seasons.linked}/${seasons.total} linked</span>${seasons.broken ? html`<span class="warnt"> · ${seasons.broken} with no image</span>` : null}`
+        : null
+    }</div></div>
     <span class="pill ${label.pill}" data-pill>${label.text}</span>
     <span class="rec">${row.touched ? html`<b>${row.touched.label}</b>${row.touched.because}` : null}</span>
     ${actionable ? html`<button class="btn quiet act" type="button" data-choose>choose artwork</button>` : html`<span class="act"></span>`}
@@ -324,6 +362,7 @@ ${model.mode === 'apply' ? null : html`<div class="note">Sheet mode is <span cla
   ${chip('needs', 'Needs artwork', model.summary.needing)}
   ${chip('recent', 'Added by the sync', model.summary.addedRecently)}
   ${chip('show', 'Shows', model.summary.byKind.show)}
+  ${chip('seasons', 'Season posters', model.summary.seasonsToPick)}
   ${chip('movie', 'Films', model.summary.byKind.movie)}
   ${model.books ? chip('book', 'Books', model.summary.byKind.book) : null}
   ${chip('adopt', 'Adoptable', model.summary.byState.adopt)}
@@ -345,6 +384,7 @@ ${model.mode === 'apply' ? null : html`<div class="note">Sheet mode is <span cla
   <div class="ctx" style="display:grid;gap:.4rem">
     <div>A pick downloads the image through this service and uploads it to <span class="mono">${model.buckets.movie}</span>, <span class="mono">${model.buckets.show}</span>${model.books ? html` or <span class="mono">${model.buckets.book}</span>` : null} under the title's name, then writes the static link into a blank <span class="mono">Artwork</span> cell. A formula cell is never written; a cell already linking the bucket decides the object name itself.</div>
     ${!model.books ? null : html`<div>Adopt all skips books. Adopting copies the cover a cell already links, and every cell on that tab links a cover this page exists to replace — a bulk adopt would put four hundred of them in the bucket. A book is adopted one row at a time, or picked from its covers.</div>`}
+    <div>A show opens a season panel below its posters: every season poster TVDB has, grouped by season, with each season row's own season open. A pick uploads to <span class="mono">${model.buckets.show}</span> as <span class="mono">&lt;title&gt; S&lt;n&gt;</span> and writes that season row's <span class="mono">Artwork</span> cell under the same rules as a show's. A blank season is a choice, so it never counts as needing artwork; <b>Season posters</b> lists the shows of two or more seasons with one still blank.</div>
     <div><b>Adopt</b> takes the image a row currently links elsewhere and moves it into the bucket the same way. <b>Adopt all</b> runs that over every adoptable row, one at a time, with progress above.</div>
     <div>Sheet writes wait for a running sync and vice-versa, and happen only in <span class="mono">apply</span> mode — in <span class="mono">report</span> the object still uploads and the cell address is reported instead.</div>
   </div>

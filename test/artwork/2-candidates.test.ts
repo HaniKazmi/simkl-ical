@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bookCandidates, filmCandidates, showCandidates } from '../../src/artwork/2-candidates.ts';
+import { bookCandidates, filmCandidates, groupToOpen, placeSeasons, seasonPosters, showCandidates } from '../../src/artwork/2-candidates.ts';
 import type { HardcoverEdition } from '../../src/api/hardcover/types.ts';
 import type { TmdbImage } from '../../src/api/tmdb/types.ts';
 import type { TvdbArtwork } from '../../src/api/tvdb/types.ts';
@@ -56,26 +56,146 @@ const poster = (over: Partial<TvdbArtwork> = {}): TvdbArtwork => ({
   ...over,
 });
 
-test('show candidates are posters, English first, the authored size next, then by score', () => {
+// TVDB authors posters at 680×1000 and at an older 400×578, the size most
+// season posters still have; a smaller poster is offered below a larger one
+// rather than not at all.
+test('show candidates are every poster, English first, then the larger, then by score', () => {
   const got = showCandidates({
     data: {
       artworks: [
         poster({ image: 'https://artworks.thetvdb.com/p/big.jpg', width: 1360, height: 2000, score: 900 }),
         poster({ image: 'https://artworks.thetvdb.com/p/low.jpg', score: 10 }),
         poster({ image: 'https://artworks.thetvdb.com/p/high.jpg', score: 500 }),
+        poster({ image: 'https://artworks.thetvdb.com/p/legacy.jpg', width: 400, height: 578, score: 5000 }),
         poster({ image: 'https://artworks.thetvdb.com/p/banner.jpg', type: 1, width: 758, height: 140 }),
-        poster({ image: 'https://artworks.thetvdb.com/p/jpn.jpg', language: 'jpn', score: 1000 }),
-        poster({ image: 'https://artworks.thetvdb.com/p/wide.jpg', width: 1000, height: 1000 }),
+        poster({ image: 'https://artworks.thetvdb.com/p/jpn.jpg', language: 'jpn', width: 1360, height: 2000, score: 1000 }),
+        poster({ image: 'https://artworks.thetvdb.com/p/nodims.jpg', width: undefined }),
       ],
     },
   });
   assert.deepEqual(
     got.map((c) => c.url.split('/').at(-1)),
-    ['high.jpg', 'low.jpg', 'big.jpg', 'jpn.jpg'],
+    ['big.jpg', 'high.jpg', 'low.jpg', 'legacy.jpg', 'jpn.jpg'],
   );
-  assert.equal(got[0]?.thumb, 'https://artworks.thetvdb.com/banners/v4/series/1/posters/a_t.jpg');
+  assert.equal(got[1]?.thumb, 'https://artworks.thetvdb.com/banners/v4/series/1/posters/a_t.jpg');
   assert.equal(got[0]?.votes, null);
   assert.equal(got[0]?.source, 'tvdb');
+});
+
+// --- Season posters --------------------------------------------------------
+
+const seasonRecord = (id: number, number: number, type = 'official', image: string | null = null) => ({ id, number, type: { type, name: type === 'official' ? 'Aired Order' : 'DVD Order' }, image });
+const seasonPoster = (seasonId: number | undefined, name: string, over: Partial<TvdbArtwork> = {}): TvdbArtwork =>
+  poster({ image: `https://artworks.thetvdb.com/s/${name}.jpg`, thumbnail: `https://artworks.thetvdb.com/s/${name}_t.jpg`, type: 7, seasonId, ...over });
+
+const SEASONS = {
+  data: {
+    name: 'Doctor Who (2005)',
+    seasons: [seasonRecord(10, 0), seasonRecord(11, 1, 'official', 'https://artworks.thetvdb.com/s/one-default.jpg'), seasonRecord(12, 2), seasonRecord(21, 1, 'dvd'), seasonRecord(13, 3, 'official', 'https://artworks.thetvdb.com/s/not-listed.jpg')],
+  },
+};
+
+// A DVD season 1 is not aired season 1, so the two are separate groups; the
+// specials follow the numbered seasons, and the series' own posters come last.
+test('season posters group by ordering and number, every size kept, larger first', () => {
+  const got = seasonPosters(78804, {
+    seasons: SEASONS,
+    posters: {
+      data: {
+        artworks: [
+          seasonPoster(12, 'two'),
+          seasonPoster(11, 'one-small', { width: 400, height: 578, score: 9000 }),
+          seasonPoster(11, 'one-default'),
+          seasonPoster(10, 'specials'),
+          seasonPoster(21, 'dvd-one'),
+          seasonPoster(13, 'three'),
+          seasonPoster(99, 'nowhere'),
+          seasonPoster(undefined, 'no-season'),
+          seasonPoster(11, 'one-series-typed', { type: 2 }),
+        ],
+      },
+    },
+    series: { data: { artworks: [poster({ image: 'https://artworks.thetvdb.com/p/series.jpg' })] } },
+  });
+  assert.equal(got.tvdbId, 78804);
+  assert.equal(got.name, 'Doctor Who (2005)');
+  assert.deepEqual(
+    got.groups.map((g) => [g.key, g.label, g.candidates.map((c) => c.url.split('/').at(-1))]),
+    [
+      ['official:1', 'Season 1', ['one-default.jpg', 'one-small.jpg']],
+      ['official:2', 'Season 2', ['two.jpg']],
+      ['official:3', 'Season 3', ['three.jpg']],
+      ['official:0', 'Specials', ['specials.jpg']],
+      ['dvd:1', 'DVD Order season 1', ['dvd-one.jpg']],
+      ['unnumbered', 'Seasons TVDB does not number', ['no-season.jpg', 'nowhere.jpg']],
+      ['series', 'Series posters', ['series.jpg']],
+    ],
+  );
+  // TVDB's default is kept only where the group lists it.
+  assert.equal(got.groups[0]?.preferred, 'https://artworks.thetvdb.com/s/one-default.jpg');
+  assert.equal(got.groups[2]?.preferred, null);
+  assert.equal(got.groups[0]?.candidates[1]?.thumb, 'https://artworks.thetvdb.com/s/one-small_t.jpg');
+});
+
+test('a series with no season posters still offers its own', () => {
+  const got = seasonPosters(1, { seasons: undefined, posters: undefined, series: { data: { artworks: [poster()] } } });
+  assert.deepEqual(got.groups.map((g) => g.key), ['series']);
+  assert.deepEqual(seasonPosters(1, { seasons: undefined, posters: undefined, series: undefined }).groups, []);
+});
+
+test('a season opens on its own number, a specials row on the specials, another series by its place', () => {
+  const groups = seasonPosters(1, {
+    seasons: SEASONS,
+    posters: { data: { artworks: [seasonPoster(10, 'specials'), seasonPoster(11, 'one'), seasonPoster(12, 'two')] } },
+    series: undefined,
+  }).groups;
+  assert.equal(groupToOpen({ season: 2, sameSeries: true, ordinal: 2 }, groups), 'official:2');
+  assert.equal(groupToOpen({ season: 7.5, sameSeries: true, ordinal: 7 }, groups), 'official:0');
+  // Doctor Who's S14 is the 2023 series' season 1: the first row of that series.
+  assert.equal(groupToOpen({ season: 14, sameSeries: false, ordinal: 1 }, groups), 'official:1');
+  assert.equal(groupToOpen({ season: 15, sameSeries: false, ordinal: 2 }, groups), 'official:2');
+  // Nothing to open is no group rather than a guess.
+  assert.equal(groupToOpen({ season: 9, sameSeries: true, ordinal: 9 }, groups), null);
+  assert.equal(groupToOpen({ season: 1.5, sameSeries: true, ordinal: 1 }, []), null);
+});
+
+// Persona 4's *the Golden* is a TVDB series of its own with no season posters
+// at all: that series' own posters are its season's. The block's own series
+// posters are the show row's, and a season of it falls back to nothing.
+test('a row of another series with no matching season opens on that series\' posters', () => {
+  const golden = seasonPosters(282040, { seasons: undefined, posters: undefined, series: { data: { artworks: [poster()] } } }).groups;
+  assert.equal(groupToOpen({ season: 2, sameSeries: false, ordinal: 1 }, golden), 'series');
+  assert.equal(groupToOpen({ season: 2, sameSeries: true, ordinal: 2 }, golden), null);
+});
+
+// Doctor Who's last rows: S13.5 is a special of the 2005 series, S14 and S15
+// are the 2023 series' first two, and a special between them is no season of it.
+test('rows of another series are placed by their count among that series\' numbered rows', () => {
+  const groups = seasonPosters(1, {
+    seasons: SEASONS,
+    posters: { data: { artworks: [seasonPoster(10, 'specials'), seasonPoster(11, 'one'), seasonPoster(12, 'two'), seasonPoster(13, 'three')] } },
+    series: undefined,
+  }).groups;
+  const placed = placeSeasons(
+    [
+      { season: 13, series: 78804 },
+      { season: 13.5, series: 78804 },
+      { season: 14, series: 436992 },
+      { season: 14.5, series: 436992 },
+      { season: 15, series: 436992 },
+      { season: 16, series: null },
+    ],
+    78804,
+    () => groups,
+  );
+  assert.deepEqual([...placed], [
+    [13, { tvdbId: 78804, open: null }],
+    [13.5, { tvdbId: 78804, open: 'official:0' }],
+    [14, { tvdbId: 436992, open: 'official:1' }],
+    [14.5, { tvdbId: 436992, open: 'official:0' }],
+    [15, { tvdbId: 436992, open: 'official:2' }],
+    [16, { tvdbId: null, open: null }],
+  ]);
 });
 
 test('an empty or absent listing is an empty list, not an error', () => {

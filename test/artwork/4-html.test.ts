@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { artworkModel, loadableImage, renderArtworkPage, type ArtworkModel } from '../../src/artwork/4-html.ts';
-import { LINKED_ELSEWHERE, NEEDS_ARTWORK, type ArtworkTitle } from '../../src/artwork/1-index.ts';
+import { ARTWORK_STATES, LINKED_ELSEWHERE, NEEDS_ARTWORK, type ArtworkTitle } from '../../src/artwork/1-index.ts';
 import { CLIENT_SCRIPT } from '../../src/artwork/client.ts';
 import { ARTWORK_CSP } from '../../src/server.ts';
 
@@ -24,6 +24,7 @@ const title = (over: Partial<ArtworkTitle> = {}): ArtworkTitle => ({
   context: null,
   franchise: 'Pixar',
   releasedOn: Temporal.PlainDate.from('2003-10-10'),
+  seasons: [],
   ...over,
 });
 
@@ -33,6 +34,7 @@ const summary = {
   addedRecently: 0,
   byState: { done: 0, 'missing-object': 0, unlinked: 1, adopt: 0, cover: 0, 'no-id': 0, unrecognised: 0 },
   byKind: { movie: 1, show: 0, book: 0 },
+  seasonsToPick: 0,
 };
 
 const model = (titles: ArtworkTitle[], over: Partial<ArtworkModel> = {}): ArtworkModel => ({
@@ -163,6 +165,14 @@ test('the script\'s state sets list exactly the members of the exported arrays',
   };
   assert.deepEqual(setIn('NEEDS'), [...NEEDS_ARTWORK]);
   assert.deepEqual(setIn('LINKED'), [...LINKED_ELSEWHERE]);
+});
+
+// A season can land in every state but 'cover', which is a book's alone; a
+// state the script has no label for would show its raw code in the pill.
+test('the script labels every state a season can be in', () => {
+  const block = CLIENT_SCRIPT.match(/const SEASON_PILL = \{([^}]*)\}/)?.[1] ?? '';
+  const labelled = [...block.matchAll(/^\s*'?([a-z-]+)'?:/gm)].map((m) => m[1]);
+  assert.deepEqual(labelled.sort(), ARTWORK_STATES.filter((state) => state !== 'cover').sort());
 });
 
 // The CSP's img-src, the renderer's check and the script's check all say the
