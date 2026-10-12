@@ -10,7 +10,7 @@
  * disagree.
  */
 
-import { itemSimklId, itemStatus } from './api/simkl/item.ts';
+import { itemRating, itemSimklId, itemStatus } from './api/simkl/item.ts';
 import type { Activities, AllItemsResponse, CategoryActivity, LibraryItem, SyncType } from './api/simkl/types.ts';
 import { instantFrom } from './shared/dates.ts';
 
@@ -66,6 +66,16 @@ const signature = (activities: Activities | null | undefined, fields: readonly (
  * different questions.
  */
 export const librarySignature = (activities: Activities | null | undefined): string => signature(activities, STATUSES);
+
+/**
+ * Whether a score was set, changed or removed — the ratings pull's own gate.
+ *
+ * Apart from `librarySignature` because a rating moves `rated_at` and no
+ * status timestamp, and because the answer is a different request: a re-rated
+ * title is in no `/sync/all-items` delta, so folding this into the status
+ * gate would pull a delta that comes back empty and leave every score stale.
+ */
+export const ratingSignature = (activities: Activities | null | undefined): string => signature(activities, ['rated_at']);
 
 /**
  * When each category last had something removed from it.
@@ -137,6 +147,7 @@ export const deltaFrom = (watermark: string | null | undefined): string | null =
 /** What the poll holds between runs, and compares each new payload against. */
 export interface GateState {
   librarySignature: string;
+  ratingSignature: string;
   removalAt: Record<SyncType, string>;
   /** The `activities.all` already merged. Absent means there is nothing to delta from. */
   syncedAll: string | null;
@@ -152,6 +163,8 @@ export interface GateState {
 export interface GateDecision {
   /** A status timestamp moved — the gate's own answer, before `force`. */
   changed: boolean;
+  /** A `rated_at` moved. A full pull answers it too, so it costs a request only when `full` is false. */
+  rerated: boolean;
   /** Categories whose `removed_from_list` moved; empty means no reconcile. */
   removedFrom: Set<SyncType>;
   removals: boolean;
@@ -159,6 +172,7 @@ export interface GateDecision {
   full: boolean;
   /** Computed here so the branches store what the comparison already derived. */
   signature: string;
+  ratings: string;
   stamps: Record<SyncType, string>;
 }
 
@@ -179,14 +193,17 @@ export const evaluateGate = (
   { force = false }: { force?: boolean } = {},
 ): GateDecision => {
   const signature = librarySignature(activities);
+  const ratings = ratingSignature(activities);
   const stamps = removalStamps(activities);
   const removedFrom = movedRemovals(held.removalAt, stamps);
   return {
     changed: held.librarySignature !== signature,
+    rerated: held.ratingSignature !== ratings,
     removedFrom,
     removals: removedFrom.size > 0,
     full: force || !held.hasLibrary || !held.syncedAll || held.resyncPending,
     signature,
+    ratings,
     stamps,
   };
 };
@@ -252,6 +269,45 @@ export const mergeDelta = (
     updated += 1;
   }
   return { library, updated, reshaped };
+};
+
+/**
+ * A ratings delta folded into what we already hold.
+ *
+ * A patch, unlike `mergeDelta`: a ratings row carries the title's ids and its
+ * score but not the `seasons[]` or watch counts the library record holds, so
+ * replacing the record with it would erase the sheet's whole view of that
+ * title. Only `user_rating` is taken.
+ *
+ * A row for an id not held is skipped. Rating an unlisted title also files it
+ * on a list, and that arrives through the status delta as a complete record;
+ * a ratings row alone cannot stand in for one.
+ *
+ * Only an explicit null is a removal. A row whose score is absent or not a
+ * number says nothing about it, so it is skipped: read as null, it would erase
+ * a score SIMKL still holds until the next full pull.
+ *
+ * `rerated` counts the scores that differ from the one held, so re-receiving
+ * the second of overlap `deltaFrom` asks for costs nothing. The same Map comes
+ * back when none do.
+ */
+export const mergeRatings = (
+  previous: Library,
+  response: AllItemsResponse | null | undefined,
+): { library: Library; rerated: number } => {
+  let library = previous;
+  let rerated = 0;
+  for (const [id, , row] of entriesOf(response)) {
+    const held = previous.get(id);
+    if (!held) continue;
+    if (row.user_rating !== null && typeof row.user_rating !== 'number') continue;
+    const rating = row.user_rating;
+    if (itemRating(held.item) === rating) continue;
+    if (library === previous) library = new Map(previous);
+    library.set(id, { ...held, item: { ...held.item, user_rating: rating } });
+    rerated += 1;
+  }
+  return { library, rerated };
 };
 
 /** The ids in a membership response — the whole of what `simkl_ids_only` says. */

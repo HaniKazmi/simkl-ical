@@ -28,3 +28,10 @@ export const itemSimklId = (item: LibraryItem | null | undefined): number | null
  */
 export const itemStatus = (item: LibraryItem | null | undefined): string | null =>
   item?.status?.trim().toLowerCase() ?? null;
+
+/**
+ * The user's score, or null where SIMKL holds none. Null is a value: the films
+ * tab records it, so rating a title later reads as a move.
+ */
+export const itemRating = (item: LibraryItem | null | undefined): number | null =>
+  typeof item?.user_rating === 'number' ? item.user_rating : null;

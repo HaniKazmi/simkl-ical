@@ -6,13 +6,15 @@ import {
   librarySignature,
   membershipIds,
   mergeDelta,
+  mergeRatings,
   movedRemovals,
+  ratingSignature,
   removalStamps,
   retainOnly,
   toLibrary,
   watermarkOf,
 } from '../src/library.ts';
-import { libraryItem } from './helpers.ts';
+import { libraryItem, libraryOf, ratingRow } from './helpers.ts';
 import type { Activities, AllItemsResponse, SyncType } from '../src/api/simkl/types.ts';
 import type { Library } from '../src/library.ts';
 
@@ -194,7 +196,7 @@ test('a watching to dropped move leaves exactly one record', () => {
 // plan-to-watch is the one it would drop.
 test('a film moving to completed replaces its plan-to-watch record', () => {
   const base = toLibrary({ movies: [libraryItem({ id: 5, status: 'plantowatch' })] });
-  const { library } = mergeDelta(base, { movies: [libraryItem({ id: 5, status: 'completed' })] });
+  const { library } = mergeDelta(base, { movies: [libraryItem({ id: 5, type: 'movies', status: 'completed' })] });
   assert.equal(library.size, 1);
   assert.equal(library.get(5)?.item.status, 'completed');
 });
@@ -324,6 +326,67 @@ test('a category that reported a removal but came back empty is refused', () => 
   assert.equal(refused.library.size, 3);
 });
 
+// --- Ratings --------------------------------------------------------------
+//
+// A ratings row carries ids and a score and nothing else, so it patches the
+// record it names rather than replacing it.
+
+/** One completed film, id 5, holding `rating`. */
+const ratedFilm = (rating: number | null = 6) => libraryOf({ id: 5, type: 'movies', status: 'completed', rating });
+
+test('a re-rating changes the score and keeps everything else the record held', () => {
+  const base = libraryOf({ id: 5, type: 'movies', status: 'completed', rating: 6, lastWatchedAt: '2026-01-02T20:00:00Z', runtime: 117 });
+  const { library, rerated } = mergeRatings(base, { movies: [ratingRow(5, 9)] });
+  assert.equal(rerated, 1);
+  const item = library.get(5)!.item;
+  assert.equal(item.user_rating, 9);
+  assert.equal(item.last_watched_at, '2026-01-02T20:00:00Z', 'the watch date the row does not carry survives');
+  assert.equal(item.movie?.runtime, 117);
+});
+
+// A null row is how the ratings delta says a score was removed, and the films
+// tab declines to clear its cell on its own terms — the library still has to
+// say what SIMKL says.
+test('a removed rating clears the score held', () => {
+  const base = ratedFilm();
+  const { library, rerated } = mergeRatings(base, { movies: [ratingRow(5, null)] });
+  assert.equal(rerated, 1);
+  assert.equal(library.get(5)!.item.user_rating, null);
+});
+
+// The second of overlap `deltaFrom` asks for re-delivers the newest rows.
+test('a score already held is not counted as re-rated', () => {
+  const base = mergeRatings(ratedFilm(), { movies: [ratingRow(5, 9)] }).library;
+  const again = mergeRatings(base, { movies: [ratingRow(5, 9)] });
+  assert.equal(again.rerated, 0);
+  assert.equal(again.library, base, 'the same Map, so nothing downstream churns');
+});
+
+// Null is how the endpoint says a score was removed, so a row that is not
+// explicit about it must not be read as one.
+test('a row with no readable score leaves the score held', () => {
+  for (const user_rating of [undefined, '8']) {
+    const base = ratedFilm();
+    const row = { ...ratingRow(5, null), user_rating } as unknown as ReturnType<typeof ratingRow>;
+    const { library, rerated } = mergeRatings(base, { movies: [row] });
+    assert.equal(rerated, 0, `user_rating: ${String(user_rating)}`);
+    assert.equal(library.get(5)!.item.user_rating, 6);
+  }
+});
+
+test('a rating for a title not held adds nothing', () => {
+  const base = ratedFilm(null);
+  const { library, rerated } = mergeRatings(base, { movies: [ratingRow(6, 8)] });
+  assert.equal(rerated, 0);
+  assert.deepEqual([...library.keys()], [5]);
+});
+
+test('a ratings merge never mutates the library it merged into', () => {
+  const base = ratedFilm();
+  mergeRatings(base, { movies: [ratingRow(5, 9)] });
+  assert.equal(base.get(5)!.item.user_rating, 6);
+});
+
 // --- Removal stamps --------------------------------------------------------
 
 test('a removal in one category is not read as a removal in another', () => {
@@ -345,6 +408,7 @@ test('nothing moving means no category to reconcile', () => {
 
 const held = (over: Partial<Parameters<typeof evaluateGate>[1]> = {}) => ({
   librarySignature: librarySignature(activities()),
+  ratingSignature: ratingSignature(activities()),
   removalAt: removalStamps(activities()),
   syncedAll: '2026-08-10T11:52:03Z',
   hasLibrary: true,
@@ -399,6 +463,23 @@ test('the decision carries what the caller must store', () => {
   const decision = evaluateGate(after, held());
   assert.equal(decision.signature, librarySignature(after));
   assert.deepEqual(decision.stamps, removalStamps(after));
+});
+
+// A re-rating moves `rated_at` and no status timestamp, and is in no
+// `/sync/all-items` delta — so it is its own trigger, not the status one.
+test('a moved rated_at asks for the ratings and not for a delta', () => {
+  const after = activities();
+  after.movies.rated_at = '2026-08-11T09:00:00Z';
+  const decision = evaluateGate(after, held());
+  assert.equal(decision.rerated, true);
+  assert.equal(decision.changed, false);
+  assert.equal(decision.ratings, ratingSignature(after));
+});
+
+test('a moved status timestamp is not read as a re-rating', () => {
+  const after = activities();
+  after.movies.completed = '2026-08-11T09:00:00Z';
+  assert.equal(evaluateGate(after, held()).rerated, false);
 });
 
 // --- The watermark ---------------------------------------------------------

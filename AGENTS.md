@@ -105,6 +105,14 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   covers the five status timestamps only; `activities.all` is what goes out as `date_from`. Gating
   on `all` instead would pull a delta on every poll, because it rolls up `playback` — a scrobbler
   reporting progress moves it continuously and changes nothing the feed or the sheet can see.
+- **A score has its own gate and its own request, and shares the watermark.** A rating moves `rated_at`
+  and no status timestamp, and a re-rated title is in no `/sync/all-items` delta at all, so the
+  films tab's `Score` would follow SIMKL only on a full pull. `ratingSignature` triggers
+  `/sync/ratings?date_from=…` — never with a rating segment, which drops every removal — and
+  `mergeRatings` patches `user_rating` onto the held record rather than replacing it, because a
+  ratings row carries none of the progress the record holds. The ratings call goes **before** the
+  status delta and `syncedAll` advances after both, so one watermark serves the two: a delta failing
+  after the scores landed re-asks for the delta alone, and neither call is ever skipped past.
 - **Ask for a second more than you need.** `date_from` is compared strictly greater at one-second
   granularity, so passing back `activities.all` verbatim returns nothing at all. `deltaFrom` backs
   the watermark off by a second; `mergeDelta` is an idempotent upsert so the overlap is free. A
