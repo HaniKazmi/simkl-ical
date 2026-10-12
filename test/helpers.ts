@@ -517,6 +517,16 @@ export const libraryItem = ({
 };
 
 /**
+ * A `/sync/ratings` row: the title's ids and its score, and none of the
+ * progress a library record carries — which is why a merge must patch with it
+ * rather than replace. A null score is how the endpoint reports a removal.
+ */
+export const ratingRow = (id: number, rating: number | null) => ({
+  movie: { title: `Film ${id}`, ids: { simkl: id } },
+  user_rating: rating,
+});
+
+/**
  * A library of the given items, typed `shows` unless a spec says otherwise —
  * the type is the one field the item itself cannot supply.
  */

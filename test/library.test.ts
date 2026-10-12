@@ -14,7 +14,7 @@ import {
   toLibrary,
   watermarkOf,
 } from '../src/library.ts';
-import { libraryItem } from './helpers.ts';
+import { libraryItem, libraryOf, ratingRow } from './helpers.ts';
 import type { Activities, AllItemsResponse, SyncType } from '../src/api/simkl/types.ts';
 import type { Library } from '../src/library.ts';
 
@@ -331,21 +331,15 @@ test('a category that reported a removal but came back empty is refused', () => 
 // A ratings row carries ids and a score and nothing else, so it patches the
 // record it names rather than replacing it.
 
-/** A `/sync/ratings` row: the title's ids and its score, and no progress at all. */
-const ratingRow = (id: number, rating: number | null, at = '2026-08-11T09:00:00Z') => ({
-  movie: { title: `Film ${id}`, ids: { simkl: id } },
-  user_rating: rating,
-  user_rated_at: rating === null ? null : at,
-  status: 'completed',
-});
+/** One completed film, id 5, holding `rating`. */
+const ratedFilm = (rating: number | null = 6) => libraryOf({ id: 5, type: 'movies', status: 'completed', rating });
 
 test('a re-rating changes the score and keeps everything else the record held', () => {
-  const base = toLibrary({ movies: [libraryItem({ id: 5, type: 'movies', status: 'completed', rating: 6, lastWatchedAt: '2026-01-02T20:00:00Z', runtime: 117 })] });
+  const base = libraryOf({ id: 5, type: 'movies', status: 'completed', rating: 6, lastWatchedAt: '2026-01-02T20:00:00Z', runtime: 117 });
   const { library, rerated } = mergeRatings(base, { movies: [ratingRow(5, 9)] });
   assert.equal(rerated, 1);
   const item = library.get(5)!.item;
   assert.equal(item.user_rating, 9);
-  assert.equal(item.user_rated_at, '2026-08-11T09:00:00Z');
   assert.equal(item.last_watched_at, '2026-01-02T20:00:00Z', 'the watch date the row does not carry survives');
   assert.equal(item.movie?.runtime, 117);
 });
@@ -354,7 +348,7 @@ test('a re-rating changes the score and keeps everything else the record held', 
 // tab declines to clear its cell on its own terms — the library still has to
 // say what SIMKL says.
 test('a removed rating clears the score held', () => {
-  const base = toLibrary({ movies: [libraryItem({ id: 5, type: 'movies', status: 'completed', rating: 6 })] });
+  const base = ratedFilm();
   const { library, rerated } = mergeRatings(base, { movies: [ratingRow(5, null)] });
   assert.equal(rerated, 1);
   assert.equal(library.get(5)!.item.user_rating, null);
@@ -362,21 +356,21 @@ test('a removed rating clears the score held', () => {
 
 // The second of overlap `deltaFrom` asks for re-delivers the newest rows.
 test('a score already held is not counted as re-rated', () => {
-  const base = mergeRatings(toLibrary({ movies: [libraryItem({ id: 5, type: 'movies', status: 'completed', rating: 6 })] }), { movies: [ratingRow(5, 9)] }).library;
+  const base = mergeRatings(ratedFilm(), { movies: [ratingRow(5, 9)] }).library;
   const again = mergeRatings(base, { movies: [ratingRow(5, 9)] });
   assert.equal(again.rerated, 0);
   assert.equal(again.library, base, 'the same Map, so nothing downstream churns');
 });
 
 test('a rating for a title not held adds nothing', () => {
-  const base = toLibrary({ movies: [libraryItem({ id: 5, type: 'movies', status: 'completed' })] });
+  const base = ratedFilm(null);
   const { library, rerated } = mergeRatings(base, { movies: [ratingRow(6, 8)] });
   assert.equal(rerated, 0);
   assert.deepEqual([...library.keys()], [5]);
 });
 
 test('a ratings merge never mutates the library it merged into', () => {
-  const base = toLibrary({ movies: [libraryItem({ id: 5, type: 'movies', status: 'completed', rating: 6 })] });
+  const base = ratedFilm();
   mergeRatings(base, { movies: [ratingRow(5, 9)] });
   assert.equal(base.get(5)!.item.user_rating, 6);
 });

@@ -10,7 +10,7 @@
  * disagree.
  */
 
-import { itemSimklId, itemStatus } from './api/simkl/item.ts';
+import { itemRating, itemSimklId, itemStatus } from './api/simkl/item.ts';
 import type { Activities, AllItemsResponse, CategoryActivity, LibraryItem, SyncType } from './api/simkl/types.ts';
 import { instantFrom } from './shared/dates.ts';
 
@@ -277,7 +277,7 @@ export const mergeDelta = (
  * A patch, unlike `mergeDelta`: a ratings row carries the title's ids and its
  * score but not the `seasons[]` or watch counts the library record holds, so
  * replacing the record with it would erase the sheet's whole view of that
- * title. Only `user_rating` and `user_rated_at` are taken.
+ * title. Only `user_rating` is taken.
  *
  * A row for an id not held is skipped. Rating an unlisted title also files it
  * on a list, and that arrives through the status delta as a complete record;
@@ -296,12 +296,11 @@ export const mergeRatings = (
   for (const [id, , row] of entriesOf(response)) {
     const held = previous.get(id);
     if (!held) continue;
-    const rating = typeof row.user_rating === 'number' ? row.user_rating : null;
-    const ratedAt = row.user_rated_at ?? null;
-    if ((held.item.user_rating ?? null) === rating && (held.item.user_rated_at ?? null) === ratedAt) continue;
+    const rating = itemRating(row);
+    if (itemRating(held.item) === rating) continue;
     if (library === previous) library = new Map(previous);
-    library.set(id, { ...held, item: { ...held.item, user_rating: rating, user_rated_at: ratedAt } });
-    if ((held.item.user_rating ?? null) !== rating) rerated += 1;
+    library.set(id, { ...held, item: { ...held.item, user_rating: rating } });
+    rerated += 1;
   }
   return { library, rerated };
 };

@@ -20,7 +20,7 @@
  */
 
 import { instantFrom } from '../../shared/dates.ts';
-import { itemStatus } from '../../api/simkl/item.ts';
+import { itemRating, itemStatus } from '../../api/simkl/item.ts';
 import { externalId } from '../3-catalogue.ts';
 import type { Library } from '../../library.ts';
 import type { LibraryItem } from '../../api/simkl/types.ts';
@@ -114,7 +114,7 @@ export const indexFilms = (library: Library | null | undefined): Map<number, Fil
       title: movie?.title?.trim() || String(id),
       status: itemStatus(item),
       watchedAt: instantFrom(item.last_watched_at),
-      rating: typeof item.user_rating === 'number' ? item.user_rating : null,
+      rating: itemRating(item),
       runtime: typeof movie?.runtime === 'number' ? movie.runtime : null,
       tmdbId: tmdbIdOf(movie?.ids?.tmdb),
       anime,

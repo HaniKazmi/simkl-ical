@@ -71,8 +71,8 @@ export const fetchMembership = (token: string, { signal }: { signal?: AbortSigna
  *
  * The only way to learn about a re-rating: a rating moves `rated_at` and no
  * status timestamp, and never puts the item into an `/sync/all-items` delta.
- * Each row carries `user_rating` and `user_rated_at` beside the title's ids;
- * a row whose `user_rating` is null is a score the user removed.
+ * Each row carries `user_rating` beside the title's ids; a row whose
+ * `user_rating` is null is a score the user removed.
  *
  * Never with a rating segment (`/sync/ratings/movies/1,2,…,10`): it keeps only
  * rows holding one of those values, which drops every removal. And never

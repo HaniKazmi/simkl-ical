@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { config } from '../src/shared/config.ts';
 import { Orchestrator } from '../src/orchestrator.ts';
 import { assess } from '../src/health.ts';
-import { emptyCalendars, jsonResponse, libraryOf, paramsOf, quiet, recorder, withConfig, withFetch, withTempDataDir } from './helpers.ts';
+import { emptyCalendars, jsonResponse, libraryOf, paramsOf, quiet, ratingRow, recorder, withConfig, withFetch, withTempDataDir } from './helpers.ts';
 import { nowIso, plainDateIn } from '../src/shared/dates.ts';
 
 const T = '2026-08-15T12:00:00Z';
@@ -414,12 +414,6 @@ test('a delta merges into what is held rather than replacing it', async () => {
 
 const RATED = '2026-08-15T18:00:00Z';
 const rerated = () => activities({ movies: { rated_at: RATED } }, RATED);
-const ratingOf = (id: number, rating: number | null) => ({
-  movie: { title: 'A Film', ids: { simkl: id } },
-  user_rating: rating,
-  user_rated_at: rating === null ? null : RATED,
-  status: 'completed',
-});
 
 // A re-rating is in no `/sync/all-items` delta, so a status delta here would
 // come back empty and the score would stay stale for the life of the process.
@@ -427,7 +421,7 @@ test('re-rating a film asks for the ratings delta and lands the score', async ()
   await withToken(async (state) => {
     await prime(state);
 
-    await withFetch(api(rerated(), { ratings: { movies: [ratingOf(300, 8)] } }), async (calls) => {
+    await withFetch(api(rerated(), { ratings: { movies: [ratingRow(300, 8)] } }), async (calls) => {
       await state.refreshLibraryIfChanged();
       assert.equal(pulls(calls).length, 0, `no library pull, got ${calls.join(', ')}`);
       assert.equal(ratingPulls(calls).length, 1);
@@ -448,7 +442,7 @@ test('a re-rating reaches the sheet sync and does not re-render the feed', async
     const rendered = state.feed.renderedAt;
     const synced = state.libraryAt;
 
-    await withFetch(api(rerated(), { ratings: { movies: [ratingOf(300, 8)] } }), () => state.refreshLibraryIfChanged());
+    await withFetch(api(rerated(), { ratings: { movies: [ratingRow(300, 8)] } }), () => state.refreshLibraryIfChanged());
     assert.equal(runs.length, 2, 'the sheet ran on the re-rating');
     assert.equal(state.feed.renderedAt, rendered, 'the feed reads no score');
     assert.notEqual(state.libraryAt, synced, 'and the library reports having moved');
@@ -458,7 +452,7 @@ test('a re-rating reaches the sheet sync and does not re-render the feed', async
 test('a re-rating is asked for once, then the poll is quiet again', async () => {
   await withToken(async (state) => {
     await prime(state);
-    await withFetch(api(rerated(), { ratings: { movies: [ratingOf(300, 8)] } }), () => state.refreshLibraryIfChanged());
+    await withFetch(api(rerated(), { ratings: { movies: [ratingRow(300, 8)] } }), () => state.refreshLibraryIfChanged());
 
     await withFetch(api(rerated()), async (calls) => {
       await state.refreshLibraryIfChanged();
@@ -467,25 +461,46 @@ test('a re-rating is asked for once, then the poll is quiet again', async () => 
   });
 });
 
-// The two pulls are separate requests with separate watermarks: the status
-// delta landing must not carry the ratings watermark past scores never fetched.
-test('a failed ratings call is asked again from where it left off', async () => {
+// Ratings go first and the watermark moves after both calls, so a failure
+// anywhere leaves it behind whatever the other call did.
+const both = () => activities({ tv_shows: { watching: RATED }, movies: { rated_at: RATED } }, RATED);
+
+test('a failed ratings call asks again for both, from where they left off', async () => {
   await withToken(async (state) => {
     await prime(state);
-    const both = activities({ tv_shows: { watching: RATED }, movies: { rated_at: RATED } }, RATED);
     await withFetch(
-      (url) => (url.includes('/sync/ratings') ? new Response('down', { status: 503 }) : api(both, { body: {} })(url)),
+      (url) => (url.includes('/sync/ratings') ? new Response('down', { status: 503 }) : api(both(), { body: {} })(url)),
       () => state.refreshLibraryIfChanged(),
     );
     assert.ok(state.errors.library, 'the poll really did fail');
-    assert.equal(state.syncedAll, RATED, 'the status delta landed');
+    assert.equal(state.syncedAll, T, 'and the watermark stayed behind');
 
-    await withFetch(api(both, { ratings: { movies: [ratingOf(300, 8)] } }), async (calls) => {
+    await withFetch(api(both(), { body: {}, ratings: { movies: [ratingRow(300, 8)] } }), async (calls) => {
       await state.refreshLibraryIfChanged();
-      assert.equal(deltas(calls).length, 0, 'the status delta is not asked for twice');
-      assert.equal(paramsOf(ratingPulls(calls)[0]!).get('date_from'), '2026-08-15T11:59:59Z', 'the ratings watermark stayed behind');
+      assert.equal(paramsOf(ratingPulls(calls)[0]!).get('date_from'), '2026-08-15T11:59:59Z');
+      assert.equal(paramsOf(deltas(calls)[0]!).get('date_from'), '2026-08-15T11:59:59Z');
     });
     assert.equal(state.library?.get(300)?.item.user_rating, 8);
+  });
+});
+
+test('a delta failing after the scores landed asks for the delta alone', async () => {
+  await withToken(async (state) => {
+    await prime(state);
+    await withFetch(
+      (url) => (url.includes('/sync/all-items') ? new Response('down', { status: 503 }) : api(both(), { ratings: { movies: [ratingRow(300, 8)] } })(url)),
+      () => state.refreshLibraryIfChanged(),
+    );
+    assert.ok(state.errors.library, 'the poll really did fail');
+    assert.equal(state.library?.get(300)?.item.user_rating, 8, 'the scores landed');
+    assert.equal(state.syncedAll, T, 'and the watermark stayed behind for the delta');
+
+    await withFetch(api(both(), { body: {} }), async (calls) => {
+      await state.refreshLibraryIfChanged();
+      assert.equal(ratingPulls(calls).length, 0, 'the ratings are not asked for twice');
+      assert.equal(paramsOf(deltas(calls)[0]!).get('date_from'), '2026-08-15T11:59:59Z');
+    });
+    assert.equal(state.syncedAll, RATED);
   });
 });
 

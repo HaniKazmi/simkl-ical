@@ -173,13 +173,7 @@ export class Orchestrator {
    */
   syncedAll: string | null = null;
   librarySignature = '';
-  /**
-   * The ratings pull's own pair, apart from the status one because the two
-   * are separate requests: a ratings call failing after the status delta has
-   * landed must leave this watermark behind, or the scores it was asking for
-   * are never asked for again.
-   */
-  ratedSince: string | null = null;
+  /** The score's own trigger; `syncedAll` is its watermark too. See `ratingSignature` in library.ts. */
   ratingSignature = '';
   /**
    * Per category: which one moved is what tells a truncated membership
@@ -445,35 +439,36 @@ export class Orchestrator {
       this.syncedAll = watermarkOf(activities) ?? this.syncedAll ?? nowIso();
       this.librarySignature = gate.signature;
       // Every record carries its score, so the full pull answers this too.
-      this.ratedSince = this.syncedAll;
       this.ratingSignature = gate.ratings;
-    } else if (gate.changed) {
+    } else if (gate.changed || gate.rerated) {
       // A second behind the watermark: `date_from` is compared strictly
       // greater at one-second granularity, so a change committed in the same
       // second as `activities.all` would otherwise never be asked for again.
-      // The merge is an idempotent upsert, so the overlap costs one re-sent
-      // record.
+      // Both merges are idempotent, so the overlap costs one re-sent record.
       const dateFrom = deltaFrom(this.syncedAll);
-      const merged = mergeDelta(this.library!, await fetchAllItems(token, { dateFrom, signal }));
-      this.library = merged.library;
-      poll.pull = 'delta';
-      poll.updated = merged.updated;
-      poll.reshaped = merged.reshaped;
-      this.log.info(`${merged.updated} ${merged.updated === 1 ? 'record' : 'records'} changed since ${dateFrom}`);
+      // Ratings first, so the one watermark serves both calls: it advances
+      // only once the status delta — the call that would miss a record if it
+      // moved early — has returned. A delta failing after this leaves the
+      // scores landed and their signature stored, so only the delta is asked
+      // again. A title rated and filed in one go is in both responses; the
+      // delta's whole record replaces the patch.
+      if (gate.rerated) {
+        const merged = mergeRatings(this.library!, await fetchRatings(token, { dateFrom: dateFrom!, signal }));
+        this.library = merged.library;
+        poll.rerated = merged.rerated;
+        if (merged.rerated) this.log.info(`${merged.rerated} ${merged.rerated === 1 ? 'score' : 'scores'} changed since ${dateFrom}`);
+        this.ratingSignature = gate.ratings;
+      }
+      if (gate.changed) {
+        const merged = mergeDelta(this.library!, await fetchAllItems(token, { dateFrom, signal }));
+        this.library = merged.library;
+        poll.pull = 'delta';
+        poll.updated = merged.updated;
+        poll.reshaped = merged.reshaped;
+        this.log.info(`${merged.updated} ${merged.updated === 1 ? 'record' : 'records'} changed since ${dateFrom}`);
+        this.librarySignature = gate.signature;
+      }
       this.syncedAll = watermarkOf(activities) ?? this.syncedAll;
-      this.librarySignature = gate.signature;
-    }
-
-    // After the status delta: rating an unlisted title also files it, and
-    // only the delta carries that record whole.
-    if (gate.rerated && !gate.full) {
-      const dateFrom = deltaFrom(this.ratedSince ?? this.syncedAll)!;
-      const merged = mergeRatings(this.library!, await fetchRatings(token, { dateFrom, signal }));
-      this.library = merged.library;
-      poll.rerated = merged.rerated;
-      if (merged.rerated) this.log.info(`${merged.rerated} ${merged.rerated === 1 ? 'score' : 'scores'} changed since ${dateFrom}`);
-      this.ratedSince = watermarkOf(activities) ?? this.ratedSince;
-      this.ratingSignature = gate.ratings;
     }
 
     // After the delta, never before: the membership response is then the
