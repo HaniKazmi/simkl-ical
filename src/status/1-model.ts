@@ -497,7 +497,7 @@ const gateDetail = (gate: PollOutcome | null): string => {
   if (gate.pull === 'full') return 'full resync';
   const parts: string[] = [];
   if (gate.updated) parts.push(`${gate.updated} updated`);
-  if (gate.rerated) parts.push(`${gate.rerated} re-rated`);
+  if (gate.rerated) parts.push(`${plural(gate.rerated, 'score')} changed`);
   if (gate.removed) parts.push(`${gate.removed} removed`);
   return parts.length ? parts.join(' · ') : 'nothing moved';
 };
@@ -546,6 +546,12 @@ const signed = (n: number): string => (n > 0 ? `+${n}` : `−${Math.abs(n)}`);
  * also renders when a film comes into range, which moves no count here, so
  * working the answer back out of the numbers states the opposite.
  */
+/** What a movement that left the feed alone changed: the feed reads neither watch progress nor a score. */
+const unseen = (movement: LibraryMovement): string => {
+  if (!movement.rerated) return 'progress';
+  return movement.updated ? 'progress and scores' : 'scores';
+};
+
 const movementView = (movement: LibraryMovement | null, at: Stamped): MovementView | null => {
   if (movement === null) return null;
 
@@ -570,7 +576,7 @@ const movementView = (movement: LibraryMovement | null, at: Stamped): MovementVi
     at: at(movement.at),
     pulled: pulled.join(' · '),
     deltas: movement.deltas.map((d) => `${d.status === null ? d.type : `${d.type}/${d.status}`} ${signed(d.delta)}`),
-    consequence: movement.rendered ? `${moved.join(', ')}, so the feed re-rendered` : 'progress only, so the feed was left alone',
+    consequence: movement.rendered ? `${moved.join(', ')}, so the feed re-rendered` : `${unseen(movement)} only, so the feed was left alone`,
   };
 };
 

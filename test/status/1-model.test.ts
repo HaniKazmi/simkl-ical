@@ -100,6 +100,7 @@ test('a gate where nothing moved is still a gate', () => {
 test('the gate line names what the pull carried', () => {
   assert.equal(buildModel(input({ gate: GATE })).library.gate, '1 updated');
   assert.equal(buildModel(input({ gate: { ...GATE, removed: 2 } })).library.gate, '1 updated · 2 removed');
+  assert.equal(buildModel(input({ gate: { ...GATE, rerated: 2 } })).library.gate, '1 updated · 2 scores changed');
   assert.equal(buildModel(input({ gate: { ...GATE, pull: 'full' } })).library.gate, 'full resync');
 });
 
@@ -219,6 +220,19 @@ test('a removal reports its count falling', () => {
 test('a poll that only checked membership does not claim to have read records', () => {
   const model = buildModel(input({ movement: moved({ pull: 'none', removalsChecked: true, updated: 0, removed: 2, rendered: true }) }));
   assert.match(model.library.movement?.pulled ?? '', /^membership check · 2 titles removed$/);
+});
+
+// A re-rating moves no status, so nothing was read from `/sync/all-items`, and
+// the feed reads no score: neither line may call it a delta or progress.
+test('a poll that only changed scores says so on both lines', () => {
+  const model = buildModel(input({ movement: moved({ pull: 'none', updated: 0, rerated: 3 }) }));
+  assert.match(model.library.movement?.pulled ?? '', /^3 scores changed$/);
+  assert.equal(model.library.movement?.consequence, 'scores only, so the feed was left alone');
+});
+
+test('a poll that moved progress and scores names both', () => {
+  const model = buildModel(input({ movement: moved({ updated: 4, rerated: 1 }) }));
+  assert.equal(model.library.movement?.consequence, 'progress and scores only, so the feed was left alone');
 });
 
 test('a library that has never moved says so rather than showing an empty change', () => {

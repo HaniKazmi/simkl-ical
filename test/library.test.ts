@@ -362,6 +362,18 @@ test('a score already held is not counted as re-rated', () => {
   assert.equal(again.library, base, 'the same Map, so nothing downstream churns');
 });
 
+// Null is how the endpoint says a score was removed, so a row that is not
+// explicit about it must not be read as one.
+test('a row with no readable score leaves the score held', () => {
+  for (const user_rating of [undefined, '8']) {
+    const base = ratedFilm();
+    const row = { ...ratingRow(5, null), user_rating } as unknown as ReturnType<typeof ratingRow>;
+    const { library, rerated } = mergeRatings(base, { movies: [row] });
+    assert.equal(rerated, 0, `user_rating: ${String(user_rating)}`);
+    assert.equal(library.get(5)!.item.user_rating, 6);
+  }
+});
+
 test('a rating for a title not held adds nothing', () => {
   const base = ratedFilm(null);
   const { library, rerated } = mergeRatings(base, { movies: [ratingRow(6, 8)] });

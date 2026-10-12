@@ -163,7 +163,7 @@ export interface GateState {
 export interface GateDecision {
   /** A status timestamp moved — the gate's own answer, before `force`. */
   changed: boolean;
-  /** A `rated_at` moved. A full pull answers it too, so it is acted on only beside a delta. */
+  /** A `rated_at` moved. A full pull answers it too, so it costs a request only when `full` is false. */
   rerated: boolean;
   /** Categories whose `removed_from_list` moved; empty means no reconcile. */
   removedFrom: Set<SyncType>;
@@ -283,6 +283,10 @@ export const mergeDelta = (
  * on a list, and that arrives through the status delta as a complete record;
  * a ratings row alone cannot stand in for one.
  *
+ * Only an explicit null is a removal. A row whose score is absent or not a
+ * number says nothing about it, so it is skipped: read as null, it would erase
+ * a score SIMKL still holds until the next full pull.
+ *
  * `rerated` counts the scores that differ from the one held, so re-receiving
  * the second of overlap `deltaFrom` asks for costs nothing. The same Map comes
  * back when none do.
@@ -296,7 +300,8 @@ export const mergeRatings = (
   for (const [id, , row] of entriesOf(response)) {
     const held = previous.get(id);
     if (!held) continue;
-    const rating = itemRating(row);
+    if (row.user_rating !== null && typeof row.user_rating !== 'number') continue;
+    const rating = row.user_rating;
     if (itemRating(held.item) === rating) continue;
     if (library === previous) library = new Map(previous);
     library.set(id, { ...held, item: { ...held.item, user_rating: rating } });

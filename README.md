@@ -523,7 +523,7 @@ plan-to-watch and completed reach the feed; hold and dropped are there for the s
 | ----------------------------- | ---------------------------------------------------- |
 | Nothing changed               | 1                                                    |
 | Marked an episode watched     | 2                                                    |
-| Rated or re-rated a title     | 2                                                    |
+| Rated or re-rated a title     | 2, or 3 when the rating also files it on a list      |
 | Added a film                  | 2 + one lookup for it                                |
 | Removed something from a list | 3 (removals are never in a delta, so ids are diffed) |
 | Cold start                    | 2 + one lookup per film                              |

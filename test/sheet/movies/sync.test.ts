@@ -22,6 +22,7 @@ import {
   MOVIE_SHEET_HEADERS,
   SHEET_HEADERS,
   quiet,
+  ratingRow,
   recorder,
   withConfig,
   withFetch,
@@ -33,7 +34,7 @@ import {
 } from '../../helpers.ts';
 
 import { CREDENTIAL, DEFAULT_GRID, DEFAULT_MOVIES, fakeSheets, type FakeSheetsOptions } from '../fake-sheets.ts';
-import type { Library } from '../../../src/library.ts';
+import { mergeRatings, type Library } from '../../../src/library.ts';
 import type { CellData } from '../../../src/api/google/types.ts';
 
 const MH = MOVIE_SHEET_HEADERS;
@@ -152,6 +153,23 @@ test('a score that moved on SIMKL is written, and only that cell', async () => {
       // Nothing else on the row moved.
       assert.equal(sheet.films?.[1]?.[col(MH, 'Title')]?.userEnteredValue?.stringValue, 'Star Wars');
       assert.equal(sheet.films?.[1]?.[col(MH, 'Runtime (min)')]?.userEnteredValue?.numberValue, 121);
+    });
+  });
+});
+
+// The library a ratings delta leaves behind is a patched record, not one a
+// status delta delivered whole. The films half must read the score off it
+// and write that cell alone, with the watch date and runtime it kept.
+test('a score patched in by the ratings delta reaches the tab', async () => {
+  await withFreshJournal(async () => {
+    await harness('apply', {}, async ({ poll, sheet }) => {
+      const library = filmsOnly(...ON_TAB);
+      assert.equal((await poll(library)).status, 'idle');
+      const rerated = mergeRatings(library, { movies: [ratingRow(53078, 10)] }).library;
+      const result = await poll(rerated);
+      assert.equal(result.status, 'applied', result.error ?? '');
+      assert.deepEqual(result.record.edits.map((e) => e.field), ['Score']);
+      assert.equal(sheet.films?.[1]?.[col(MH, 'Score')]?.userEnteredValue?.numberValue, 10);
     });
   });
 });
