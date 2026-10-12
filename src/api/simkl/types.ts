@@ -144,6 +144,8 @@ export interface LibraryItem {
    * rating something later reads as a move rather than as a first sighting.
    */
   user_rating?: number | null;
+  /** ISO instant the score was last set. Null where `user_rating` is. */
+  user_rated_at?: string | null;
   /**
    * Only present with `include_all_episodes=yes`, which the completed and
    * dropped lists require — without it the key is absent entirely.

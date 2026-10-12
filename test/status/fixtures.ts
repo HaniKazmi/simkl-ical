@@ -143,6 +143,7 @@ const pollOf = (over: Partial<PollOutcome>): PollOutcome => ({
   refusedRemovals: false,
   updated: 0,
   reshaped: 0,
+  rerated: 0,
   removed: 0,
   rendered: false,
   ...over,

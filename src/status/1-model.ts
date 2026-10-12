@@ -497,6 +497,7 @@ const gateDetail = (gate: PollOutcome | null): string => {
   if (gate.pull === 'full') return 'full resync';
   const parts: string[] = [];
   if (gate.updated) parts.push(`${gate.updated} updated`);
+  if (gate.rerated) parts.push(`${gate.rerated} re-rated`);
   if (gate.removed) parts.push(`${gate.removed} removed`);
   return parts.length ? parts.join(' · ') : 'nothing moved';
 };
@@ -549,9 +550,12 @@ const movementView = (movement: LibraryMovement | null, at: Stamped): MovementVi
   if (movement === null) return null;
 
   const read = `${plural(movement.updated, 'record')} read`;
-  // `pull` is `none` on a poll where only the membership diff ran: the
-  // signature had not moved, so nothing was asked for and titles still left.
-  const pulled = [movement.pull === 'none' ? 'membership check' : `${movement.pull === 'full' ? 'full resync' : 'delta'} · ${read}`];
+  // `pull` is `none` on a poll where only the membership diff or the ratings
+  // delta ran: the status signature had not moved, so no records were asked for.
+  const pulled: string[] = [];
+  if (movement.pull !== 'none') pulled.push(`${movement.pull === 'full' ? 'full resync' : 'delta'} · ${read}`);
+  if (movement.rerated) pulled.push(`${plural(movement.rerated, 'score')} changed`);
+  if (movement.removalsChecked && movement.pull === 'none') pulled.push('membership check');
   if (movement.removed) pulled.push(`${plural(movement.removed, 'title')} removed`);
 
   const moved: string[] = [];

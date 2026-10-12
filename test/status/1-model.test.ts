@@ -217,7 +217,7 @@ test('a removal reports its count falling', () => {
 // A poll where the signature had not moved but titles left: the removal diff
 // runs on its own gate, so nothing was asked for and yet the library shrank.
 test('a poll that only checked membership does not claim to have read records', () => {
-  const model = buildModel(input({ movement: moved({ pull: 'none', updated: 0, removed: 2, rendered: true }) }));
+  const model = buildModel(input({ movement: moved({ pull: 'none', removalsChecked: true, updated: 0, removed: 2, rendered: true }) }));
   assert.match(model.library.movement?.pulled ?? '', /^membership check · 2 titles removed$/);
 });
 

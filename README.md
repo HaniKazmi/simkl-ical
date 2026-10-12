@@ -511,9 +511,10 @@ rather than an empty one.
 Airdate calendars are re-read every 6 hours with a conditional `GET`, matching how often the
 CDN regenerates them. Your library is gated behind `/sync/activities`, checked every 30
 minutes: when a status timestamp moves, one request asks for just the items that changed
-since the last check. The gate ignores `playback` and `rated_at`, neither of which can change
-the feed — otherwise a scrobbler reporting progress would pull a delta that renders
-byte-identical output.
+since the last check. The gate ignores `playback`, which changes nothing the feed or the sheet
+shows — otherwise a scrobbler reporting progress would pull a delta that renders
+byte-identical output. A moved `rated_at` asks `/sync/ratings` for the scores set since the last
+check, because a re-rated title is in no library delta and the sheet's `Score` column follows it.
 
 One request covers everything — shows, anime and films, at every status. Watching,
 plan-to-watch and completed reach the feed; hold and dropped are there for the sheet sync.
@@ -522,6 +523,7 @@ plan-to-watch and completed reach the feed; hold and dropped are there for the s
 | ----------------------------- | ---------------------------------------------------- |
 | Nothing changed               | 1                                                    |
 | Marked an episode watched     | 2                                                    |
+| Rated or re-rated a title     | 2                                                    |
 | Added a film                  | 2 + one lookup for it                                |
 | Removed something from a list | 3 (removals are never in a delta, so ids are diffed) |
 | Cold start                    | 2 + one lookup per film                              |

@@ -13,8 +13,8 @@
 import { config, sheetSyncConfigured } from './shared/config.ts';
 import { errorMessage, errorStack } from './shared/errors.ts';
 import type { Logger } from './shared/logger.ts';
-import { fetchAllItems, fetchMembership, getActivities } from './api/simkl/lists.ts';
-import { deltaFrom, evaluateGate, membershipIds, mergeDelta, retainOnly, toLibrary, watermarkOf, type GateDecision } from './library.ts';
+import { fetchAllItems, fetchMembership, fetchRatings, getActivities } from './api/simkl/lists.ts';
+import { deltaFrom, evaluateGate, membershipIds, mergeDelta, mergeRatings, retainOnly, toLibrary, watermarkOf, type GateDecision } from './library.ts';
 import { countDeltas, libraryCounts, type CountDelta, type LibraryCounts } from './library-counts.ts';
 import { readToken } from './api/simkl/auth.ts';
 import { SimklAuthError } from './api/simkl/client.ts';
@@ -93,6 +93,8 @@ export interface PollOutcome {
   reshaped: number;
   /** Records the membership diff dropped. */
   removed: number;
+  /** Held records whose score the ratings delta changed. The feed reads no score. */
+  rerated: number;
   /**
    * Whether this poll re-rendered the feed. Recorded rather than left to be
    * re-derived: the decision is `feedChanged(poll) || filmsDue`, and a film
@@ -124,6 +126,7 @@ const quietPoll = (at: string, changed: boolean): PollOutcome => ({
   updated: 0,
   reshaped: 0,
   removed: 0,
+  rerated: 0,
   rendered: false,
 });
 
@@ -145,7 +148,7 @@ const feedChanged = (poll: PollOutcome): boolean => poll.pull === 'full' || poll
 const filmsNeedResolving = (poll: PollOutcome): boolean => poll.pull === 'full' || poll.reshaped > 0;
 
 /** Whether the library actually moved — what `librarySyncedAt` means. */
-const libraryMoved = (poll: PollOutcome): boolean => poll.updated > 0 || poll.removed > 0;
+const libraryMoved = (poll: PollOutcome): boolean => poll.updated > 0 || poll.removed > 0 || poll.rerated > 0;
 
 export interface OrchestratorErrors {
   library: string | null;
@@ -160,7 +163,7 @@ export class Orchestrator {
   sheetSync: SheetSync | null = null;
   library: Library | null = null;
   /**
-   * The three watermarks the poll gates on, all in memory. `data/` holds only
+   * The watermarks the poll gates on, all in memory. `data/` holds only
    * the token, the rendered feed and an observational journal, so a restart is
    * a cold start — two library requests, plus one per plan-to-watch film.
    *
@@ -170,6 +173,14 @@ export class Orchestrator {
    */
   syncedAll: string | null = null;
   librarySignature = '';
+  /**
+   * The ratings pull's own pair, apart from the status one because the two
+   * are separate requests: a ratings call failing after the status delta has
+   * landed must leave this watermark behind, or the scores it was asking for
+   * are never asked for again.
+   */
+  ratedSince: string | null = null;
+  ratingSignature = '';
   /**
    * Per category: which one moved is what tells a truncated membership
    * response from a category the user emptied — see `retainOnly`.
@@ -311,9 +322,10 @@ export class Orchestrator {
    * The library timer's job: one cheap request decides whether the library
    * call is worth making; a second asks only for what changed.
    *
-   * A quiet poll is one request; movement is two; a removal is three. The
-   * signature covers only the timestamps that can move an item — see
-   * `librarySignature` in library.ts.
+   * A quiet poll is one request; movement is two; a removal or a re-rating
+   * one more each. The signature covers only the timestamps that can move an
+   * item — see `librarySignature` in library.ts — and a score has a gate of
+   * its own, `ratingSignature`.
    */
   async refreshLibraryIfChanged({ force = false }: { force?: boolean } = {}): Promise<void> {
     const { signal } = this.aborter;
@@ -339,6 +351,7 @@ export class Orchestrator {
         activities,
         {
           librarySignature: this.librarySignature,
+          ratingSignature: this.ratingSignature,
           removalAt: this.removalAt,
           syncedAll: this.syncedAll,
           hasLibrary: this.library !== null,
@@ -353,7 +366,7 @@ export class Orchestrator {
 
       // The retry term is false when the sync is unconfigured, so a quiet
       // poll still makes exactly one request.
-      if (!gate.full && !gate.changed && !gate.removals && !filmsDue && !this.sheetRetryPending) {
+      if (!gate.full && !gate.changed && !gate.rerated && !gate.removals && !filmsDue && !this.sheetRetryPending) {
         // Recorded even so: nothing moving is the healthy steady state, and
         // the page should be able to show it.
         this.lastPoll = quietPoll(this.polledAt, gate.changed);
@@ -431,6 +444,9 @@ export class Orchestrator {
       // instant misses nothing.
       this.syncedAll = watermarkOf(activities) ?? this.syncedAll ?? nowIso();
       this.librarySignature = gate.signature;
+      // Every record carries its score, so the full pull answers this too.
+      this.ratedSince = this.syncedAll;
+      this.ratingSignature = gate.ratings;
     } else if (gate.changed) {
       // A second behind the watermark: `date_from` is compared strictly
       // greater at one-second granularity, so a change committed in the same
@@ -446,6 +462,18 @@ export class Orchestrator {
       this.log.info(`${merged.updated} ${merged.updated === 1 ? 'record' : 'records'} changed since ${dateFrom}`);
       this.syncedAll = watermarkOf(activities) ?? this.syncedAll;
       this.librarySignature = gate.signature;
+    }
+
+    // After the status delta: rating an unlisted title also files it, and
+    // only the delta carries that record whole.
+    if (gate.rerated && !gate.full) {
+      const dateFrom = deltaFrom(this.ratedSince ?? this.syncedAll)!;
+      const merged = mergeRatings(this.library!, await fetchRatings(token, { dateFrom, signal }));
+      this.library = merged.library;
+      poll.rerated = merged.rerated;
+      if (merged.rerated) this.log.info(`${merged.rerated} ${merged.rerated === 1 ? 'score' : 'scores'} changed since ${dateFrom}`);
+      this.ratedSince = watermarkOf(activities) ?? this.ratedSince;
+      this.ratingSignature = gate.ratings;
     }
 
     // After the delta, never before: the membership response is then the
@@ -501,7 +529,7 @@ export class Orchestrator {
   /**
    * Run `job` on an interval, skipping a tick while the previous one is still
    * going. setInterval does not wait, and a refresh slower than its period
-   * would interleave writes to `library`, the three watermarks, and the
+   * would interleave writes to `library`, the watermarks, and the
    * feed's `movieReleases` and `filmStamps` — the library timer being their
    * sole writer is what holds that invariant.
    */

@@ -24,7 +24,7 @@ const wired = (): Orchestrator => {
   state.library = libraryOf({ id: 1, status: 'watching' }, { id: 2, status: 'dropped' });
   state.polledAt = ago(MINUTE);
   state.libraryAt = ago(2 * MINUTE);
-  state.lastPoll = { at: ago(MINUTE), changed: true, pull: 'delta', removalsChecked: true, refusedRemovals: false, updated: 7, reshaped: 0, removed: 3, rendered: true };
+  state.lastPoll = { at: ago(MINUTE), changed: true, pull: 'delta', removalsChecked: true, refusedRemovals: false, updated: 7, reshaped: 0, removed: 3, rerated: 0, rendered: true };
   state.feed.calendars = { tv: { data: calendarOf(), source: 'fresh' }, anime: { data: calendarOf(), source: 'fresh' } };
   // Real events, because this is the one suite that drives the shell: the
   // wiring that hands them to the model answers to nothing else, and an empty
