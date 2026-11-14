@@ -1,6 +1,14 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "config:recommended"
+    "config:recommended",
+    "group:all"
+  ],
+  "timezone": "Europe/London",
+  "schedule": [
+    "* 0-6 * * 0"
+  ],
+  "description": [
+    "One pull request a week. group:all puts every update, majors included, on a single branch, and the weekly schedule keeps that branch from being refreshed and reopened after every merge. A security fix still arrives on its own PR, off schedule."
   ]
 }
