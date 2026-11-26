@@ -689,7 +689,11 @@ const animeFilm = (over: Partial<ItemSpec> = {}): ItemSpec => ({
   animeType: 'movie',
   title: 'A New Film',
   status: 'completed',
-  lastWatchedAt: '2026-08-25T20:00:00Z',
+  // Relative to today: the show half reports a title with no row only when it
+  // was watched inside `SHEET_SINCE_DAYS`, and a fixed date leaves that window
+  // with the calendar, silencing the note these tests are about. The films
+  // half has no window, so the film fixtures above can keep fixed dates.
+  lastWatchedAt: daysAgo(5),
   rating: 7,
   runtime: 110,
   ...over,
