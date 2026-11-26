@@ -8,9 +8,8 @@
  *
  * Every `src` and `href` is relative (`artwork/app.js`, `status`, the icons)
  * or an https image URL — a cell may link any public host, and the row shows
- * what it links. No absolute URL on this page carries the feed token: the
- * page is reached through it, and the `no-referrer` header the route sends
- * is what keeps it out of those hosts' logs.
+ * what it links. The `no-referrer` header the route sends is what keeps the
+ * service's own address out of those hosts' logs.
  */
 
 import { BASE_STYLE, document, html, type SafeHtml } from '../shared/html.ts';

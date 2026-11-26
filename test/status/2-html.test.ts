@@ -216,14 +216,10 @@ test('an unconfigured sheet says so rather than showing an empty section', () =>
 
 // Requests never trigger a fetch; a control that started work would break the
 // invariant the architecture rests on.
-// The page loads nothing: the feed token is in its URL, and any subresource
-// would carry it to another origin in a `Referer`. A link the reader clicks is
-// not a subresource — `no-referrer` covers it, and the two links are the point
-// of the page — so what is banned is every form of automatic fetching.
-// The icons are the only thing this page asks the browser to fetch, and the point of the rule is
-// not that the count is zero — it is that nothing it fetches can reach another host. The token is
-// in this page's own URL, so a subresource pointed off-origin would hand it over in the request
-// line; a relative one addresses the service that issued it.
+// The page loads nothing but its icons, and those relatively. Its CSP is `default-src 'none'`
+// with `img-src 'self'`, so anything else it named would be refused by the browser and fail
+// silently there rather than here. A link the reader clicks is not a subresource, and the links
+// are the point of the page, so what is banned is every form of automatic fetching.
 test('the page fetches nothing off this host: no script, no form, no remote subresource', () => {
   const rendered = page({
     sheetConfigured: true,
@@ -250,16 +246,15 @@ const urlsIn = (rendered: string): string[] => [...rendered.matchAll(/[a-z]+:\/\
 /** `webcal:` addresses the same authority; parse it as https to read the host. */
 const hostOf = (url: string): string => new URL(url.replace(/^webcal:/, 'https:')).host;
 
-// The token is in this page's own URL and in both feed links, which is fine:
-// the reader already has it. What must never happen is it addressing another
-// host. A `webcal:` subscription is durable — one wrong address keeps
-// re-fetching with the token for as long as that calendar lives.
-test('the feed token only ever addresses this service', () => {
+// A `webcal:` subscription is durable — one wrong address keeps being
+// fetched for as long as that calendar lives — so every feed link on the page
+// addresses the service that rendered it.
+test('the feed links only ever address this service', () => {
   const rendered = page({ sheetConfigured: true, sheetUrl: 'https://docs.google.com/spreadsheets/d/SHEET/edit' });
-  const carrying = urlsIn(rendered).filter((url) => url.includes('fixture-token'));
+  const feeds = urlsIn(rendered).filter((url) => url.endsWith('/feed.ics'));
 
-  assert.ok(carrying.length > 0, 'the feed links are on the page at all');
-  for (const url of carrying) assert.equal(hostOf(url), 'localhost:3000', `${url} is not this service`);
+  assert.ok(feeds.length > 0, 'the feed links are on the page at all');
+  for (const url of feeds) assert.equal(hostOf(url), 'localhost:3000', `${url} is not this service`);
 });
 
 test('the spreadsheet is the only host the page links out to', () => {
@@ -268,10 +263,10 @@ test('the spreadsheet is the only host the page links out to', () => {
   assert.deepEqual([...hosts].sort(), ['docs.google.com', 'localhost:3000']);
 });
 
-// The artwork page's link carries the token like the feed links do, and is
-// held to the same rule: it addresses this service and nowhere else.
+// The artwork page's link is held to the feed links' rule: it addresses this
+// service and nowhere else.
 test('the artwork line links the page on this host, and says what the last index counted', () => {
-  const url = 'http://localhost:3000/fixture-token/artwork';
+  const url = 'http://localhost:3000/artwork';
   const unread = page({ sheetConfigured: true, artwork: { url, needing: null, total: null, checkedAt: null } });
   assert.match(unread, /not checked yet — open the page/);
   const read = page({ sheetConfigured: true, artwork: { url, needing: 12, total: 660, checkedAt: before(MINUTE) } });

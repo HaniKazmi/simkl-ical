@@ -68,8 +68,8 @@ export interface StatusInput {
   artwork: { url: string; needing: number | null; total: number | null; checkedAt: string | null } | null;
   /**
    * The rendered feed's own events, in the order `join` sorted them. Not on
-   * the `Snapshot`: that is what `/healthz` answers with, and the feed's
-   * titles belong on a page behind the token rather than in a health probe.
+   * the `Snapshot`: that is what `/healthz` answers with, and a probe is the
+   * one surface here that should carry no titles.
    */
   events: readonly FeedEvent[];
   requests: RequestRecord[];

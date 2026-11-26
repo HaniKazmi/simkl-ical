@@ -69,8 +69,8 @@ test('the one script is the page\'s own, and it builds no markup from data', () 
   assert.ok(!/eval\(|new Function/.test(CLIENT_SCRIPT));
 });
 
-// Every request the page makes is relative, so the token never appears in
-// the page; the images it does load come from the hosts the CSP names.
+// Every request the page makes to this service is relative; the images it
+// loads from elsewhere are https, the bound the CSP names.
 test('every src and href is relative, or on one of the image hosts the CSP names', () => {
   const rendered = page([
     title({ cell: { kind: 'bucket', url: 'https://storage.googleapis.com/movies/Finding Nemo', previous: {} }, stored: { exists: true, updated: null }, state: 'done' }),

@@ -6,7 +6,7 @@ import { resolve } from 'node:path';
 // working without the flag.
 //
 // Unconditional: `loadEnvFile` leaves existing environment variables alone,
-// and a guard on any one variable would skip the whole file — FEED_TOKEN,
+// and a guard on any one variable would skip the whole file — SIMKL_CLIENT_ID,
 // SHEET_ID, TZ — for an environment that sets that one.
 try {
   process.loadEnvFile(resolve(import.meta.dirname, '../../.env'));
@@ -84,7 +84,6 @@ const SHEET_SYNC_MODES: readonly SheetSyncMode[] = ['off', 'report', 'apply'];
 
 export interface Config {
   clientId: string | undefined;
-  feedToken: string | undefined;
   timezone: string;
   dataDir: string;
   releaseCountry: string;
@@ -175,7 +174,6 @@ export interface Config {
  */
 export const buildConfig = (env: NodeJS.ProcessEnv): Config => ({
   clientId: env.SIMKL_CLIENT_ID,
-  feedToken: env.FEED_TOKEN,
   timezone: env.TZ || 'Europe/London',
   dataDir: resolve(env.DATA_DIR || './data'),
   // Which country's cinema dates to use. Release dates vary by territory —

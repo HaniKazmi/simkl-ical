@@ -92,7 +92,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Proves the image actually runs. /healthz answers 503 without a token —
+      # Proves the image actually runs. /healthz answers 503 without a SIMKL login —
       # nothing has been rendered yet — so the assertion is that it responds at
       # all with parseable JSON, not that it reports healthy.
       - name: Smoke test
@@ -101,7 +101,6 @@ jobs:
           IMAGE=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
           docker run -d --name smoke -p 3000:3000 \
             -e SIMKL_CLIENT_ID=smoke-test \
-            -e FEED_TOKEN=smoke-test-token \
             -e TZ=Europe/London \
             "$IMAGE"
 
@@ -130,24 +129,15 @@ jobs:
 
           echo "$BODY" | python3 -c "import json,sys; d=json.load(sys.stdin); print('parsed ok, timezone =', d['timezone'])"
 
-          # The feed route must reject a wrong token...
-          WRONG=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/nope/feed.ics)
-          [ "$WRONG" = "404" ] || { echo "::error::expected 404 for a wrong token, got $WRONG"; exit 1; }
-
-          # ...and accept the right one. Without this a regression that made
-          # every token 404 passed the smoke test cleanly.
-          RIGHT=$(curl -s -o /tmp/feed.ics -w '%{http_code}' http://localhost:3000/smoke-test-token/feed.ics)
-          [ "$RIGHT" = "200" ] || { echo "::error::expected 200 for the right token, got $RIGHT"; exit 1; }
+          FEED=$(curl -s -o /tmp/feed.ics -w '%{http_code}' http://localhost:3000/feed.ics)
+          [ "$FEED" = "200" ] || { echo "::error::expected 200 for the feed, got $FEED"; exit 1; }
           head -c 15 /tmp/feed.ics | grep -q 'BEGIN:VCALENDAR' || {
             echo "::error::the feed did not start with BEGIN:VCALENDAR"; exit 1; }
 
           # The status page is the one route that renders from every subsystem
           # at once, so a cold container is exactly where it would throw.
-          SWRONG=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/nope/status)
-          [ "$SWRONG" = "404" ] || { echo "::error::expected 404 for a wrong status token, got $SWRONG"; exit 1; }
-
-          SRIGHT=$(curl -s -o /tmp/status.html -w '%{http_code}' http://localhost:3000/smoke-test-token/status)
-          [ "$SRIGHT" = "200" ] || { echo "::error::expected 200 for the status page, got $SRIGHT"; exit 1; }
+          STATUS=$(curl -s -o /tmp/status.html -w '%{http_code}' http://localhost:3000/status)
+          [ "$STATUS" = "200" ] || { echo "::error::expected 200 for the status page, got $STATUS"; exit 1; }
           grep -q '<!doctype html' /tmp/status.html || {
             echo "::error::the status page is not an HTML document"; exit 1; }
           # A cold page that prints these is rendering a null it should have

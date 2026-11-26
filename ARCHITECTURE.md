@@ -36,7 +36,7 @@ Neither knows the other exists. The orchestrator's `snapshot()` is the one expor
 **Requests never trigger a fetch** — on the feed, `/healthz` and the status page. A client polling
 hard cannot amplify into SIMKL traffic, and a SIMKL outage degrades to a stale feed rather than an
 empty one. The artwork page is the stated exception: it is a tool, not a projection, and a pick
-is a request that downloads, uploads and writes. What bounds it is the token, an index cache, and
+is a request that downloads, uploads and writes. What bounds it is the trusted network it runs on, an index cache, and
 that none of its upstreams is SIMKL — the one per-title SIMKL read it can make, a show's TVDB id,
 happens once per opened row and never at index time.
 

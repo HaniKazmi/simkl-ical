@@ -23,7 +23,6 @@ import { BOOK_SHEET_HEADERS, bookRow, col, filmRow, jsonResponse, libraryOf, MOV
 import { CREDENTIAL, fakeSheets, type FakeSheetsOptions } from './sheet/fake-sheets.ts';
 import { fakeBucket, JPEG, type FakeBucketOptions } from './artwork/fake-bucket.ts';
 
-const TOKEN = 'a'.repeat(48);
 const BACKDROP = 'https://image.tmdb.org/t/p/w1280/nemo.jpg';
 const POSTER = 'https://artworks.thetvdb.com/banners/v4/series/371980/posters/1.jpg';
 
@@ -92,7 +91,6 @@ const serve = async (
   await withFreshJournal(() =>
     withConfig(
       {
-        feedToken: TOKEN,
         sheetId: 'SID',
         sheetSyncMode: mode,
         googleKeyBase64: CREDENTIAL,
@@ -130,23 +128,15 @@ const serve = async (
 
 const ROUTES = ['artwork', 'artwork/app.js', 'artwork/candidates?kind=movie&id=53080', 'artwork/seasons?id=3381'];
 
-test('every artwork route is a uniform 404 on a wrong token, and when the feature is off', async () => {
-  await serve(async (app) => {
-    for (const route of ROUTES) {
-      const res = await app.inject({ method: 'GET', url: `/nope/${route}` });
-      assert.equal(res.statusCode, 404, route);
-      assert.deepEqual(res.json(), { error: 'Not found' });
-    }
-    assert.equal((await app.inject({ method: 'POST', url: '/nope/artwork/pick', payload: {} })).statusCode, 404);
-  });
+test('every artwork route is a 404 while the feature is off, and reads nothing', async () => {
   await serve(
     async (app, { calls }) => {
       for (const route of ROUTES) {
-        const res = await app.inject({ method: 'GET', url: `/${TOKEN}/${route}` });
+        const res = await app.inject({ method: 'GET', url: `/${route}` });
         assert.equal(res.statusCode, 404, route);
         assert.deepEqual(res.json(), { error: 'Not found' });
       }
-      assert.equal((await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: { kind: 'movie', id: 53080 } })).statusCode, 404);
+      assert.equal((await app.inject({ method: 'POST', url: '/artwork/pick', payload: { kind: 'movie', id: 53080 } })).statusCode, 404);
       assert.deepEqual(calls, [], 'unconfigured, nothing is read');
     },
     { configured: false },
@@ -155,7 +145,7 @@ test('every artwork route is a uniform 404 on a wrong token, and when the featur
 
 test('the page carries its hardening headers, with the CSP pinned exactly', async () => {
   await serve(async (app) => {
-    const res = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork` });
+    const res = await app.inject({ method: 'GET', url: `/artwork` });
     assert.equal(res.statusCode, 200);
     assert.equal(res.headers['content-type'], 'text/html; charset=utf-8');
     assert.equal(res.headers['content-security-policy'], ARTWORK_CSP);
@@ -169,53 +159,52 @@ test('the page carries its hardening headers, with the CSP pinned exactly', asyn
     assert.match(res.body, /^<!doctype html>/);
     assert.match(res.body, /Finding Nemo/);
     assert.match(res.body, /Severance/);
-    const script = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/app.js` });
+    const script = await app.inject({ method: 'GET', url: `/artwork/app.js` });
     assert.equal(script.statusCode, 200);
     assert.equal(script.headers['content-type'], 'text/javascript; charset=utf-8');
     assert.equal(script.headers['cache-control'], 'private, no-store');
   });
 });
 
-// The page is reached through the token, and every request it makes is
-// relative: no absolute URL on it carries the token anywhere.
-test('no absolute URL on the page or in its script carries the feed token', async () => {
+// Every request the page and its script make to this service is
+// document-relative and names no origin, so nothing on the page depends on
+// the address it was reached on; what it loads from elsewhere is an https
+// image.
+test('the page and its script address this service relatively, and load only https from elsewhere', async () => {
   await serve(async (app) => {
-    const page = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork`, headers: { host: 'simkl.hani.fyi', 'x-forwarded-proto': 'https' } });
-    const script = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/app.js` });
-    for (const body of [page.body, script.body]) {
-      const carrying = [...body.matchAll(/[a-z]+:\/\/[^"'\s<>]+/g)].map((m) => m[0]).filter((url) => url.includes(TOKEN));
-      assert.deepEqual(carrying, []);
-      assert.ok(!body.includes(TOKEN), 'the token appears nowhere in the body');
-    }
-    // What the page does load, it loads relatively or over https.
+    const page = await app.inject({ method: 'GET', url: '/artwork', headers: { host: 'simkl.hani.fyi', 'x-forwarded-proto': 'https' } });
+    const script = await app.inject({ method: 'GET', url: '/artwork/app.js' });
     for (const match of page.body.matchAll(/(?:src|href)="([^"]+)"/g)) {
       const url = match[1] ?? '';
-      if (!/^[a-z]+:/.test(url)) continue;
-      assert.match(url, /^https:\/\//, url);
+      assert.ok(!url.startsWith('/'), `${url} is root-relative`);
+      if (/^[a-z]+:/.test(url)) assert.match(url, /^https:\/\//, url);
     }
+    assert.ok(!page.body.includes('simkl.hani.fyi'), 'the page never names the host it was reached on');
+    const requested = [...script.body.matchAll(/(?:fetch|getJson)\('([^']+)'/g)].map((m) => m[1]!);
+    assert.deepEqual([...new Set(requested)].sort(), ['artwork/candidates?', 'artwork/pick', 'artwork/seasons?']);
   });
 });
 
 test('candidates come back for a film and a show, and a bad query is a 400', async () => {
   await serve(async (app) => {
-    const film = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=movie&id=53080` });
+    const film = await app.inject({ method: 'GET', url: `/artwork/candidates?kind=movie&id=53080` });
     assert.equal(film.statusCode, 200);
     assert.equal(film.json().title, 'Finding Nemo');
     assert.deepEqual(film.json().candidates.map((c: { url: string }) => c.url), [BACKDROP]);
-    const show = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=show&id=3381` });
+    const show = await app.inject({ method: 'GET', url: `/artwork/candidates?kind=show&id=3381` });
     assert.equal(show.statusCode, 200);
     assert.deepEqual(show.json().candidates.map((c: { url: string }) => c.url), [POSTER]);
     for (const query of ['kind=comic&id=1', 'kind=movie&id=x', 'kind=movie', '']) {
-      assert.equal((await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?${query}` })).statusCode, 400, query);
+      assert.equal((await app.inject({ method: 'GET', url: `/artwork/candidates?${query}` })).statusCode, 400, query);
     }
-    assert.equal((await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=movie&id=999` })).statusCode, 404);
+    assert.equal((await app.inject({ method: 'GET', url: `/artwork/candidates?kind=movie&id=999` })).statusCode, 404);
   });
 });
 
 test('a pick uploads the offered image and writes the link, in that order', async () => {
   await serve(async (app, { bucket, sheet, calls }) => {
-    await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=movie&id=53080` });
-    const res = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: { kind: 'movie', id: 53080, url: BACKDROP } });
+    await app.inject({ method: 'GET', url: `/artwork/candidates?kind=movie&id=53080` });
+    const res = await app.inject({ method: 'POST', url: `/artwork/pick`, payload: { kind: 'movie', id: 53080, url: BACKDROP } });
     assert.equal(res.statusCode, 200, res.body);
     const body = res.json();
     assert.equal(body.ok, true);
@@ -227,7 +216,7 @@ test('a pick uploads the offered image and writes the link, in that order', asyn
     const order = calls.filter((c) => c.includes('image.tmdb.org/t/p') || c.includes('/upload/storage') || c.includes(':batchUpdate')).map((c) => (c.includes('batchUpdate') ? 'write' : c.includes('upload') ? 'upload' : 'download'));
     assert.deepEqual(order, ['download', 'upload', 'write']);
     // The page reflects it without a rebuild.
-    const page = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork` });
+    const page = await app.inject({ method: 'GET', url: `/artwork` });
     assert.match(page.body, /data-title="Finding Nemo"[^>]*data-state="done"|data-state="done"[^>]*data-title="Finding Nemo"/);
   });
 });
@@ -235,7 +224,7 @@ test('a pick uploads the offered image and writes the link, in that order', asyn
 test('a URL the page was not offered is refused before anything is fetched', async () => {
   await serve(async (app, { bucket, calls }) => {
     const before = calls.length;
-    const res = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: { kind: 'movie', id: 53080, url: 'https://image.tmdb.org/t/p/w1280/other.jpg' } });
+    const res = await app.inject({ method: 'POST', url: `/artwork/pick`, payload: { kind: 'movie', id: 53080, url: 'https://image.tmdb.org/t/p/w1280/other.jpg' } });
     assert.equal(res.statusCode, 400);
     assert.equal(res.json().error, 'not-offered');
     assert.deepEqual(bucket.uploads, []);
@@ -245,36 +234,47 @@ test('a URL the page was not offered is refused before anything is fetched', asy
 
 test('a foreign link needs adopt, and adopting copies the current image in and rewrites the cell', async () => {
   await serve(async (app, { bucket, sheet }) => {
-    const refused = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: { kind: 'movie', id: 53078, adopt: false } });
+    const refused = await app.inject({ method: 'POST', url: `/artwork/pick`, payload: { kind: 'movie', id: 53078, adopt: false } });
     assert.equal(refused.statusCode, 409);
     assert.equal(refused.json().error, 'needs-adopt');
     assert.deepEqual(bucket.uploads, [], 'nothing uploaded on a refusal');
     // The current image is on the CDN under the URL the cell holds.
-    const adopted = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: { kind: 'movie', id: 53078, adopt: true } });
+    const adopted = await app.inject({ method: 'POST', url: `/artwork/pick`, payload: { kind: 'movie', id: 53078, adopt: true } });
     assert.equal(adopted.statusCode, 502, 'the fake CDN has no such image, and the failure is the upstream\'s');
     assert.deepEqual(bucket.uploads, []);
     assert.equal(sheet.films![1]?.[MOVIE_ARTWORK_COL]?.userEnteredValue?.stringValue, 'https://image.tmdb.org/t/p/w1280/sw.jpg', 'the cell is untouched');
   });
 });
 
-// Fastify's default parsers are the only body parsers: JSON, and plain text,
-// which the route reads as no object at all. Anything else is unsupported.
-test('a body that is not a JSON object is a 400, and an unsupported type a 415', async () => {
-  await serve(async (app) => {
-    const form = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: 'kind=movie', headers: { 'content-type': 'application/x-www-form-urlencoded' } });
+// Nothing authenticates a pick, so what keeps another site's page from making
+// a reader's browser send one is the body. A cross-site POST that needs no
+// CORS preflight carries one of three content types, and none of them reaches
+// the route as an object — not even `text/plain` holding a well-formed pick,
+// which Fastify hands over as a string. A JSON body needs the preflight, which
+// finds no CORS handler. A parser or CORS plugin that changed any of this
+// would let every site the reader visits write the sheet.
+test('no body a cross-site page can send without a preflight makes a pick', async () => {
+  await serve(async (app, { calls }) => {
+    const pick = JSON.stringify({ kind: 'movie', id: 53078, adopt: true });
+    const form = await app.inject({ method: 'POST', url: '/artwork/pick', payload: 'kind=movie&id=53078&adopt=true', headers: { 'content-type': 'application/x-www-form-urlencoded' } });
     assert.equal(form.statusCode, 415);
-    const text = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: 'kind=movie', headers: { 'content-type': 'text/plain' } });
+    const multipart = await app.inject({ method: 'POST', url: '/artwork/pick', payload: '--x\r\nContent-Disposition: form-data; name="kind"\r\n\r\nmovie\r\n--x--\r\n', headers: { 'content-type': 'multipart/form-data; boundary=x' } });
+    assert.equal(multipart.statusCode, 415);
+    const text = await app.inject({ method: 'POST', url: '/artwork/pick', payload: pick, headers: { 'content-type': 'text/plain' } });
     assert.equal(text.statusCode, 400);
-    const empty = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: {} });
+    const empty = await app.inject({ method: 'POST', url: '/artwork/pick', payload: {} });
     assert.equal(empty.statusCode, 400);
+    assert.deepEqual(calls, [], 'none of them reached an upstream');
+    const options = await app.inject({ method: 'OPTIONS', url: '/artwork/pick', headers: { origin: 'https://elsewhere.example', 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type' } });
+    assert.equal(options.headers['access-control-allow-origin'], undefined, 'a preflight is never granted');
   });
 });
 
 test('in report mode the object uploads and the link is reported, not written', async () => {
   await serve(
     async (app, { bucket, sheet }) => {
-      await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=show&id=3381` });
-      const res = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: { kind: 'show', id: 3381, url: POSTER } });
+      await app.inject({ method: 'GET', url: `/artwork/candidates?kind=show&id=3381` });
+      const res = await app.inject({ method: 'POST', url: `/artwork/pick`, payload: { kind: 'show', id: 3381, url: POSTER } });
       assert.equal(res.statusCode, 200, res.body);
       assert.equal(res.json().link.status, 'reported');
       assert.equal(res.json().link.address, 'Q2');
@@ -290,13 +290,13 @@ test('in report mode the object uploads and the link is reported, not written', 
 // pick puts the same bytes under the same key, so nothing is lost.
 test('a pick while the sheet is held answers 503 with Retry-After, after the upload', async () => {
   await serve(async (app, { bucket, sheet }) => {
-    await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=movie&id=53080` });
+    await app.inject({ method: 'GET', url: `/artwork/candidates?kind=movie&id=53080` });
     let release!: () => void;
     const held = new Promise<void>((resolve) => {
       release = resolve;
     });
     const holder = withSheetLock(() => held);
-    const res = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: { kind: 'movie', id: 53080, url: BACKDROP } });
+    const res = await app.inject({ method: 'POST', url: `/artwork/pick`, payload: { kind: 'movie', id: 53080, url: BACKDROP } });
     assert.equal(res.statusCode, 503);
     assert.equal(res.headers['retry-after'], '10');
     assert.equal(res.json().error, 'busy');
@@ -304,7 +304,7 @@ test('a pick while the sheet is held answers 503 with Retry-After, after the upl
     assert.equal(sheet.films![2]?.[MOVIE_ARTWORK_COL]?.userEnteredValue, undefined, 'the cell is untouched');
     release();
     await holder;
-    const again = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: { kind: 'movie', id: 53080, url: BACKDROP } });
+    const again = await app.inject({ method: 'POST', url: `/artwork/pick`, payload: { kind: 'movie', id: 53080, url: BACKDROP } });
     assert.equal(again.statusCode, 200);
     assert.equal(again.json().link.status, 'written');
     assert.equal(bucket.uploads.length, 2);
@@ -315,11 +315,11 @@ test('a pick while the sheet is held answers 503 with Retry-After, after the upl
 // is in a state nobody has verified, and the repair copies a backup over it.
 test('a pick is refused while the sheet sync is frozen, before anything is uploaded', async () => {
   await serve(async (app, { bucket, calls, sync }) => {
-    await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=movie&id=53080` });
+    await app.inject({ method: 'GET', url: `/artwork/candidates?kind=movie&id=53080` });
     const before = calls.length;
     sync.frozen = 'FROZEN: copy _sync-REPAIR back over Movies';
     try {
-      const res = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: { kind: 'movie', id: 53080, url: BACKDROP } });
+      const res = await app.inject({ method: 'POST', url: `/artwork/pick`, payload: { kind: 'movie', id: 53080, url: BACKDROP } });
       assert.equal(res.statusCode, 409);
       assert.equal(res.json().error, 'frozen');
       assert.match(res.json().detail, /_sync-REPAIR/);
@@ -337,12 +337,12 @@ test('a pick is refused while the sheet sync is frozen, before anything is uploa
 test('a TVDB id resolved on demand survives an index rebuild', async () => {
   await serve(async (app, { calls }) => {
     const detailCalls = () => calls.filter((c) => c.includes('api.simkl.com/tv/')).length;
-    const first = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=show&id=3382` });
+    const first = await app.inject({ method: 'GET', url: `/artwork/candidates?kind=show&id=3382` });
     assert.equal(first.statusCode, 200);
     assert.equal(first.json().providerId, 371980);
     assert.equal(detailCalls(), 1);
-    await app.inject({ method: 'GET', url: `/${TOKEN}/artwork?fresh=1` });
-    const again = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=show&id=3382` });
+    await app.inject({ method: 'GET', url: `/artwork?fresh=1` });
+    const again = await app.inject({ method: 'GET', url: `/artwork/candidates?kind=show&id=3382` });
     assert.equal(again.json().providerId, 371980);
     assert.equal(detailCalls(), 1, 'not asked again after the rebuild');
   });
@@ -352,11 +352,11 @@ test('a TVDB id resolved on demand survives an index rebuild', async () => {
 // the row was rendered from some index, and the pick re-reads under the lock.
 test('candidates and picks use the index that stands rather than rebuilding it', async () => {
   await serve(async (app, { calls }) => {
-    await app.inject({ method: 'GET', url: `/${TOKEN}/artwork` });
+    await app.inject({ method: 'GET', url: `/artwork` });
     const reads = () => calls.filter((c) => c.includes('/spreadsheets/') || c.includes('/storage/v1/b/')).length;
     const after = reads();
-    await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=movie&id=53080` });
-    await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=movie&id=53080` });
+    await app.inject({ method: 'GET', url: `/artwork/candidates?kind=movie&id=53080` });
+    await app.inject({ method: 'GET', url: `/artwork/candidates?kind=movie&id=53080` });
     assert.equal(reads(), after, 'no tab read and no bucket listing for a candidate request');
   });
 });
@@ -365,12 +365,12 @@ test('candidates and picks use the index that stands rather than rebuilding it',
 
 test('a book lists, offers Hardcover covers ranked, and a pick lands in the books bucket', async () => {
   await serve(async (app, { bucket, sheet }) => {
-    const page = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork` });
+    const page = await app.inject({ method: 'GET', url: `/artwork` });
     assert.equal(page.statusCode, 200);
     // Every live book cell links another host, so a book opens as a linked cover.
     assert.match(page.body, /data-kind="book"[^>]*data-id="379760"[^>]*data-state="cover"/);
 
-    const listing = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=book&id=379760` });
+    const listing = await app.inject({ method: 'GET', url: `/artwork/candidates?kind=book&id=379760` });
     assert.equal(listing.statusCode, 200);
     // The 1600×2400 UK edition leads the 291×475 US one the cell holds: same
     // shape band, and country outranks nothing here because width already
@@ -379,7 +379,7 @@ test('a book lists, offers Hardcover covers ranked, and a pick lands in the book
 
     const picked = await app.inject({
       method: 'POST',
-      url: `/${TOKEN}/artwork/pick`,
+      url: `/artwork/pick`,
       payload: { kind: 'book', id: 379760, url: COVER, adopt: true },
     });
     assert.equal(picked.statusCode, 200);
@@ -396,8 +396,8 @@ test('a books run is labelled in the journal so it cannot collapse into a films 
   await serve(async (app) => {
     // The row has to be opened first: a pick is only ever of a URL this page
     // offered, which is checked against the cached listing.
-    await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=book&id=379760` });
-    const res = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: { kind: 'book', id: 379760, url: COVER, adopt: true } });
+    await app.inject({ method: 'GET', url: `/artwork/candidates?kind=book&id=379760` });
+    const res = await app.inject({ method: 'POST', url: `/artwork/pick`, payload: { kind: 'book', id: 379760, url: COVER, adopt: true } });
     assert.equal(res.statusCode, 200, res.body);
     const record = sheetRuns().at(-1);
     assert.equal(record?.tab, 'books');
@@ -412,7 +412,7 @@ test('without a books tab the page still serves, and simply lists no books', asy
   // made inert by their absence.
   await serve(
     async (app, { calls }) => {
-      const page = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork` });
+      const page = await app.inject({ method: 'GET', url: `/artwork` });
       assert.equal(page.statusCode, 200);
       assert.doesNotMatch(page.body, /data-kind="book"/);
       // Not just the rows: the chip, the count and the copy are books
@@ -423,7 +423,7 @@ test('without a books tab the page still serves, and simply lists no books', asy
       assert.doesNotMatch(page.body, /<span class="mono"><\/span>/);
       assert.equal(calls.some((c) => c.includes('Books')), false);
       // And the route refuses a book it never listed, rather than 500ing.
-      const listing = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=book&id=379760` });
+      const listing = await app.inject({ method: 'GET', url: `/artwork/candidates?kind=book&id=379760` });
       assert.equal(listing.statusCode, 404);
     },
     { withBooks: false },
@@ -432,11 +432,11 @@ test('without a books tab the page still serves, and simply lists no books', asy
 
 test('the bulk adopt skips books, in the tile and in the script', async () => {
   await serve(async (app) => {
-    const page = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork` });
+    const page = await app.inject({ method: 'GET', url: `/artwork` });
     // Star Wars and 1984 both link another host, but only the film is
     // adoptable in bulk — 1984 is a linked cover — so the tile claims one.
     assert.match(page.body, /<span class="t-name">adoptable<\/span><span class="t-head" style="display:block">1</);
-    const script = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/app.js` });
+    const script = await app.inject({ method: 'GET', url: `/artwork/app.js` });
     assert.match(script.body, /dataset\.kind !== 'book'/);
   });
 });
@@ -485,7 +485,7 @@ const SEASON_CASE: Case = {
 
 test('a show\'s seasons list every row with the series its posters come from and the group it opens on', async () => {
   await serve(async (app, { calls }) => {
-    const res = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/seasons?id=3381` });
+    const res = await app.inject({ method: 'GET', url: `/artwork/seasons?id=3381` });
     assert.equal(res.statusCode, 200, res.body);
     assert.equal(res.headers['cache-control'], 'private, no-store');
     const listing = res.json();
@@ -513,8 +513,8 @@ test('a show\'s seasons list every row with the series its posters come from and
 
 test('a season pick uploads under the season\'s key and links that season\'s row', async () => {
   await serve(async (app, { bucket, sheet }) => {
-    await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/seasons?id=3381` });
-    const res = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: { kind: 'show', id: 3381, season: 2, url: S2_POSTER } });
+    await app.inject({ method: 'GET', url: `/artwork/seasons?id=3381` });
+    const res = await app.inject({ method: 'POST', url: `/artwork/pick`, payload: { kind: 'show', id: 3381, season: 2, url: S2_POSTER } });
     assert.equal(res.statusCode, 200, res.body);
     assert.equal(res.json().key, 'Severance S2');
     assert.deepEqual(res.json().link, { status: 'written', address: 'Q3', key: 'Severance S2', link: 'https://storage.googleapis.com/shows/Severance S2' });
@@ -522,9 +522,9 @@ test('a season pick uploads under the season\'s key and links that season\'s row
     assert.equal(sheet.state[2]?.[SHOW_ARTWORK_COL]?.userEnteredValue?.stringValue, 'https://storage.googleapis.com/shows/Severance S2');
     assert.equal(sheet.state[1]?.[SHOW_ARTWORK_COL]?.userEnteredValue, undefined, 'the show row is untouched');
     // The listing reads the row's state off the index, so the pick shows at once.
-    const again = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/seasons?id=3381` });
+    const again = await app.inject({ method: 'GET', url: `/artwork/seasons?id=3381` });
     assert.equal(again.json().rows[0].state, 'done');
-    const page = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork` });
+    const page = await app.inject({ method: 'GET', url: `/artwork` });
     assert.match(page.body, /seasons 1\/3 linked/);
   }, SEASON_CASE);
 });
@@ -533,18 +533,18 @@ test('a season pick uploads under the season\'s key and links that season\'s row
 // row of another show are each a different offer.
 test('a season pick takes only a poster offered for that row', async () => {
   await serve(async (app, { bucket }) => {
-    await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/candidates?kind=show&id=3381` });
-    const unopened = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: { kind: 'show', id: 3381, season: 2, url: S2_POSTER } });
+    await app.inject({ method: 'GET', url: `/artwork/candidates?kind=show&id=3381` });
+    const unopened = await app.inject({ method: 'POST', url: `/artwork/pick`, payload: { kind: 'show', id: 3381, season: 2, url: S2_POSTER } });
     assert.equal(unopened.statusCode, 400, 'the season panel was never opened');
     assert.equal(unopened.json().error, 'not-offered');
-    await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/seasons?id=3381` });
+    await app.inject({ method: 'GET', url: `/artwork/seasons?id=3381` });
     for (const [season, url] of [[2, OUTIE_POSTER], [3, S2_POSTER]] as const) {
-      const res = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: { kind: 'show', id: 3381, season, url } });
+      const res = await app.inject({ method: 'POST', url: `/artwork/pick`, payload: { kind: 'show', id: 3381, season, url } });
       assert.equal(res.statusCode, 400, `S${season}`);
       assert.equal(res.json().error, 'not-offered');
     }
     // The series' own posters are among a row's groups, and so are offered for it.
-    const series = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: { kind: 'show', id: 3381, season: 2.5, url: POSTER } });
+    const series = await app.inject({ method: 'POST', url: `/artwork/pick`, payload: { kind: 'show', id: 3381, season: 2.5, url: POSTER } });
     assert.equal(series.statusCode, 200, series.body);
     assert.deepEqual(bucket.uploads.map((u) => u.key), ['Severance S2.5']);
   }, SEASON_CASE);
@@ -558,14 +558,14 @@ test('a season is a number on a show, and a show with no season rows has no pane
       { kind: 'show', id: 3381, season: -1, url: S2_POSTER },
       { kind: 'show', id: 3381, season: null, url: S2_POSTER },
     ]) {
-      const res = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload });
+      const res = await app.inject({ method: 'POST', url: `/artwork/pick`, payload });
       assert.equal(res.statusCode, 400, JSON.stringify(payload));
     }
-    const missing = await app.inject({ method: 'POST', url: `/${TOKEN}/artwork/pick`, payload: { kind: 'show', id: 3381, season: 7, url: S2_POSTER } });
+    const missing = await app.inject({ method: 'POST', url: `/artwork/pick`, payload: { kind: 'show', id: 3381, season: 7, url: S2_POSTER } });
     assert.equal(missing.statusCode, 404);
     assert.equal(missing.json().error, 'no-season');
-    assert.equal((await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/seasons?id=x` })).statusCode, 400);
-    const none = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork/seasons?id=3382` });
+    assert.equal((await app.inject({ method: 'GET', url: `/artwork/seasons?id=x` })).statusCode, 400);
+    const none = await app.inject({ method: 'GET', url: `/artwork/seasons?id=3382` });
     assert.equal(none.statusCode, 404);
     assert.equal(none.json().error, 'no-season');
     assert.equal((await app.inject({ method: 'GET', url: `/nope/artwork/seasons?id=3381` })).statusCode, 404);
@@ -575,7 +575,7 @@ test('a season is a number on a show, and a show with no season rows has no pane
 
 test('the page marks a show with seasons to pick, and the chip counts it', async () => {
   await serve(async (app) => {
-    const page = await app.inject({ method: 'GET', url: `/${TOKEN}/artwork` });
+    const page = await app.inject({ method: 'GET', url: `/artwork` });
     assert.match(page.body, /data-title="Severance"[^>]*data-seasons="3" data-seasons-open="1"/);
     assert.match(page.body, /data-title="Unmapped"[^>]*data-seasons="" data-seasons-open=""/);
     assert.match(page.body, /data-filter="seasons"[^>]*>Season posters<b>1<\/b>/);
