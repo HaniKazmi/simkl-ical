@@ -313,8 +313,8 @@ const shaped = (width: number, height: number): boolean => {
  * the download on a pick is server-side and needs no proxy.
  *
  * The page's CSP is `img-src 'self' https:`, which admits it, and the route's
- * `Referrer-Policy: no-referrer` is what keeps the feed token out of the
- * proxy's logs.
+ * `Referrer-Policy: no-referrer` is what keeps the service's address out of
+ * the proxy's logs.
  */
 const WSRV = 'https://wsrv.nl/';
 const BOOK_THUMB_WIDTH = 272;

@@ -52,9 +52,6 @@ const coldSnapshot = (): Snapshot => ({
   sheet: { configured: false, status: 'idle', lastRunAt: null, frozen: null, error: null },
 });
 
-/** Stands in for the feed token, which the page prints in both of its links. */
-const TOKEN = 'fixture-token';
-
 /** Nothing has run, nothing is configured, nothing is on disk. */
 export const COLD: StatusInput = {
   now: NOW,
@@ -71,8 +68,8 @@ export const COLD: StatusInput = {
   sheetMode: 'off',
   sheetTab: 'Shows',
   filmsTab: 'Movies',
-  feedUrl: `http://localhost:3000/${TOKEN}/feed.ics`,
-  feedSubscribeUrl: `webcal://localhost:3000/${TOKEN}/feed.ics`,
+  feedUrl: 'http://localhost:3000/feed.ics',
+  feedSubscribeUrl: 'webcal://localhost:3000/feed.ics',
   sheetUrl: null,
   artwork: null,
   events: [],

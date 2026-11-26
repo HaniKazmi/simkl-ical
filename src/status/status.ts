@@ -46,9 +46,7 @@ export const renderStatus = (
   { now = Temporal.Now.instant(), origin = `http://localhost:${config.port}`, artwork = null }: RenderOptions = {},
 ): string => {
   const snapshot = state.snapshot();
-  // Only reachable behind the route's token check, so the token is set; the
-  // fallback keeps the link a valid path rather than the string "undefined".
-  const feedUrl = `${origin}/${config.feedToken ?? ''}/feed.ics`;
+  const feedUrl = `${origin}/feed.ics`;
 
   return renderPage(
     buildModel({

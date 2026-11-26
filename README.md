@@ -37,12 +37,15 @@ Enter the code it prints at <https://simkl.com/pin>. Then:
 ```sh
 docker run -d --name simkl-ical -p 3000:3000 -v simkl-ical-data:/data \
   -e SIMKL_CLIENT_ID=your-client-id \
-  -e FEED_TOKEN=$(openssl rand -hex 24) \
   -e TZ=Europe/London \
   ghcr.io/hanikazmi/simkl-ical
 ```
 
-Your feed is at `http://localhost:3000/<FEED_TOKEN>/feed.ics`.
+Your feed is at `http://localhost:3000/feed.ics`.
+
+**Nothing is authenticated.** The feed, the status page and the artwork page answer anyone who
+can reach the port, and the artwork page writes your spreadsheet and buckets. Run it on a
+network you trust and do not expose it to the internet.
 
 Get a client id by registering an app at <https://simkl.com/settings/developer/>.
 **No client secret is needed** — the PIN flow authenticates with the client id alone.
@@ -69,13 +72,12 @@ Update with `docker compose pull && docker compose up -d`.
 
 ## Configuration
 
-Under Compose, the first two go in `simkl.secrets.env` and the rest are set directly in
+Under Compose, the first goes in `simkl.secrets.env` and the rest are set directly in
 `docker-compose.yml`.
 
 | Variable              | Default         | Notes                                                        |
 | --------------------- | --------------- | ------------------------------------------------------------ |
 | `SIMKL_CLIENT_ID`     | —               | **Required, secret.** From simkl.com/settings/developer       |
-| `FEED_TOKEN`          | —               | **Required, secret.** Path segment of the feed URL. `openssl rand -hex 24` |
 | `TZ`                  | `Europe/London` | **Set this.** Airdates are converted to local dates; a wrong zone shifts events by a day |
 | `RELEASE_COUNTRY`     | `GB`            | ISO 3166-1 alpha-2, case-insensitive. Which country's release dates to use for films. US is the fallback, used only when your country lists nothing at all |
 | `GRACE_DAYS`          | `14`            | How long an aired episode stays in the feed. Capped at 90     |
@@ -133,7 +135,7 @@ Un-holding brings it back with no further action.
 
 ## Status page
 
-`https://…/<FEED_TOKEN>/status` is a plain HTML page showing what the service is actually
+`/status` is a plain HTML page showing what the service is actually
 doing, in four sections: the **library** — how many titles you hold at each status and what
 the last check found; the **sheet** — every edit the sync has made, cell by cell, with what
 changed; the **feed** — the events themselves, ahead of today, grouped into shows and films,
@@ -148,17 +150,16 @@ handful of rows — a nightly show would otherwise bury the films — and stays 
 where an expander would only hide the line beside it. Events that have already aired are
 counted rather than listed; that count is the `GRACE_DAYS` window, visible.
 
-It is **as sensitive as the feed URL**, and behind the same token: it names your shows.
-Treat it the same way, and note that a URL carrying a credential is kept by browser history
-and bookmark sync. The page loads nothing from anywhere else, runs no JavaScript, and has no
-button that starts work — requests never trigger a fetch. It never displays your `SHEET_ID`.
+It names your shows, and answers anyone who can reach the service, as the feed does. The page
+loads nothing from anywhere else, runs no JavaScript, and has no button that starts work —
+requests never trigger a fetch. It never displays your `SHEET_ID`.
 
 If a sheet sync ever freezes, this is where the repair instructions are: which backup tab to
 copy back and which rows to delete. `/healthz` only reports *that* it froze.
 
 ## Artwork page
 
-`https://…/<FEED_TOKEN>/artwork` is the one page that does work: it lists every title on both
+`/artwork` is the one page that does work: it lists every title on both
 tabs of the spreadsheet — needs-artwork first, then whatever the sync touched most recently — and
 lets you pick a TMDB backdrop for a film, a TVDB poster for a show, or a Hardcover cover for a
 book. A pick downloads that image
@@ -187,8 +188,10 @@ What it will not do: write a formula cell, write a cell that is not blank, a buc
 recognisable URL, or write at all while a sync run holds the sheet (it answers "busy" and the page
 retries). In `report` mode the object still uploads and the cell address is reported instead of
 written. Unlike the status page it runs a small script and loads images off-origin, under a
-Content-Security-Policy naming only its own script and https images; it sends no referrer, and
-no absolute URL on it carries the token.
+Content-Security-Policy naming only its own script and https images, and it sends no referrer.
+Nothing authenticates a pick; what stops another website from making your browser send one is
+that the route reads only a JSON body, which a cross-site page cannot send without a CORS
+preflight this service never grants.
 
 An `Artwork` cell may link any public https host, and adopting copies from wherever it points. The
 service refuses a host that resolves to a private or local address, never follows a redirect, and
@@ -239,15 +242,14 @@ is a 400 and the bucket's own policy already makes objects public.
 
 ## Subscribing
 
-Use the full `https://…/<FEED_TOKEN>/feed.ics` URL as a *subscribed calendar*, not an import.
+Use the full `http://<host>:3000/feed.ics` URL as a *subscribed calendar*, not an import. The
+status page's subscribe link is that address as a `webcal:` link, which asks a calendar to
+subscribe rather than download.
 
 **Apple Calendar** lets you choose the refresh interval, so it reflects changes promptly.
 **Google Calendar** polls on its own schedule — commonly 8–24 hours — and ignores every
 refresh hint a feed can send. That's a Google limitation, not something this service can
 influence.
-
-Anyone with the URL can read your watchlist, so treat it as a credential: use a long
-`FEED_TOKEN`, and serve it over HTTPS.
 
 ## Google Sheet sync (optional)
 
@@ -451,10 +453,9 @@ or decorators. `erasableSyntaxOnly` in `tsconfig.json` makes any of those a comp
 rather than a runtime failure. Import specifiers carry the real extension
 (`import './config.ts'`), as Node requires.
 
-Routes: `GET /:token/feed.ics`, `GET /:token/status`, `GET /:token/artwork` (with
+Routes: `GET /feed.ics`, `GET /status`, `GET /artwork` (with
 `artwork/app.js`, `artwork/candidates`, `artwork/seasons` and `POST artwork/pick` beneath it, all 404 unless the
-artwork page is configured) and `GET /healthz`. Health is
-unauthenticated, and answers `503` rather than `200` whenever the feed has stopped moving —
+artwork page is configured) and `GET /healthz`, none of them authenticated. Health answers `503` rather than `200` whenever the feed has stopped moving —
 a revoked token, a CDN that has stopped answering, or a render that keeps throwing — so "the
 container is up" and "the feed is current" are not the same signal.
 
@@ -500,7 +501,7 @@ Contributing, test conventions and the rules worth knowing before changing anyth
 
 ```
 data.simkl.in/calendar/v2/*.json  ─┐
-                                   ├─ join on simkl_id ─→ ICS ─→ GET /:token/feed.ics
+                                   ├─ join on simkl_id ─→ ICS ─→ GET /feed.ics
 api.simkl.com/sync/all-items  ─────┘
 ```
 

@@ -8,7 +8,8 @@
  * title or an upstream error cannot become markup; an `<img>` gets a `src`
  * only when it is an https URL, the same bound the CSP's `img-src` enforces,
  * so a bad URL fails here with a message rather than silently in the console;
- * every request is relative, so the feed token never appears in the script.
+ * every request is relative, so the script names no origin and works under
+ * whatever address the page was reached on.
  */
 
 

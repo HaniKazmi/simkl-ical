@@ -2,9 +2,6 @@
  * The status page's icons, carried as constants rather than read from disk. Nothing else here
  * touches the filesystem to answer a request, and three assets of about a kilobyte are cheaper to
  * hold than a static-file handler is to add.
- *
- * They are served under the token, like the feed, so an unauthenticated caller still cannot learn
- * that this host runs anything — the same reason every miss returns one 404 body.
  */
 
 /**

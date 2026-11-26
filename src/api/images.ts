@@ -16,8 +16,8 @@
  *
  * The resolver runs once and `fetch` resolves again, so a name that answers
  * differently the second time (DNS rebinding) is not caught. The cell is the
- * operator's own, behind the feed token; this guards against a mistake, not
- * an adversary with write access to the spreadsheet.
+ * operator's own; this guards against a mistake, not an adversary with write
+ * access to the spreadsheet.
  */
 
 import { lookup } from 'node:dns/promises';

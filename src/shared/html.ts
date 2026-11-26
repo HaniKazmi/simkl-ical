@@ -64,8 +64,8 @@ export const toHtml = (value: SafeHtml): string => value[SAFE];
 /**
  * Inlined, and the reason `raw()` exists: a stylesheet cannot be escaped and
  * stay one, and it is the one string here with no untrusted input. External
- * assets are out — the feed token is in every page's URL, and any off-origin
- * request would carry it out in a `Referer` header.
+ * assets are out: the status page's CSP is `default-src 'none'`, so one
+ * would not load.
  *
  * The palette, the type stack, the header and the card treatment come from
  * the index at hani.fyi that links here; the two are consecutive screens.
@@ -127,8 +127,8 @@ footer{color:var(--faint);font-size:.8125rem;padding:.25rem .25rem 0}
 /**
  * The document shell around a page's body: the head every page shares, the
  * icon links, and one inlined stylesheet. The icon hrefs are document-relative
- * — `favicon.ico`, not `/favicon.ico` — which is what makes them resolve under
- * the token segment of the page's own URL without the page naming it.
+ * — `favicon.ico`, not `/favicon.ico` — so they resolve beside whichever
+ * page names them without either page spelling out a path.
  */
 export const document = ({ title, style, head = null, body }: { title: string; style: string; head?: SafeHtml | null; body: SafeHtml }): string =>
   toHtml(html`<!doctype html>

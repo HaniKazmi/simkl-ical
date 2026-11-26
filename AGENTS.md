@@ -603,19 +603,26 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   shows: a third group is empty on most feeds, and the row's `kind` still names it. `GROUP_OF` is
   a `Record` over `EventKind` rather than a list of kinds per group, so a fourth kind fails `tsc`
   instead of vanishing from every group while the count beside them still includes it.
-- **The status page fetches nothing, and sends `Referrer-Policy: no-referrer`.** The feed token is
-  in the page's own URL, so any subresource — script, font, image, stylesheet — would carry it to a
-  third party in a `Referer` header. That is about who else sees the token, not about the page
-  showing it: the logs, `/healthz` and this page are all trusted surfaces, and printing the token or
-  the spreadsheet id in them is fine. The page does carry three links, which is a different thing: a
-  navigation the reader clicks is not a subresource, and `no-referrer` covers it either way.
+- **Nothing is authenticated; the service is for a trusted network.** Every route answers anyone
+  who can reach the port, so the logs, `/healthz` and both pages are trusted surfaces, and printing
+  the spreadsheet id in them is fine. The one route that writes is `POST artwork/pick`, and what
+  keeps another site's page from driving it through a reader's browser is the body: a cross-site
+  request that needs no CORS preflight is form, multipart or `text/plain`, Fastify rejects the
+  first two with a 415 and hands the third to the route as a string, which names no kind and is a
+  400; a JSON body needs the preflight, and nothing here answers one. **A CORS plugin, or a parser
+  that turns any of those three into an object, opens the sheet to every site the reader visits** —
+  pinned in `server-artwork.test.ts`. DNS rebinding is outside that: a hostile name resolved to the
+  service's address is same-origin to the browser, and only a `Host` check would refuse it.
+- **The status page fetches nothing but its icons, and runs no script.** Every title, cell and
+  upstream error on it is interpolated, and `default-src 'none'` with no `script-src` means an
+  escaping bug renders as text at worst and can neither run nor load anything; `img-src 'self'` is
+  there for the icons alone.
 - **The artwork page is the one page that runs a script and loads images off-origin, and it does
   both under its own CSP.** `script-src 'self'` admits only `artwork/app.js`; `img-src` is
   `'self' https:`, because an `Artwork` cell may link any public host and the row shows what it
   links; `connect-src 'self'` is what the script's fetches run under. Every `src` and `href` on it
-  is relative or an https URL, so **no absolute URL on the page carries the feed token** — pinned by
-  `4-html.test.ts` and `server-artwork.test.ts` — and the `no-referrer` header keeps the page's URL
-  out of every image host's logs. The script builds every node with `createElement` and
+  is relative or an https URL — pinned by `4-html.test.ts` and `server-artwork.test.ts` — and the
+  `no-referrer` header keeps the service's address out of every image host's logs. The script builds every node with `createElement` and
   `textContent`: no `innerHTML`, no inline handlers, and an `<img>` gets a `src` only when it is
   https, the same bound the CSP enforces, so a bad URL fails with a message rather than silently.
 - **An adopt may download from any public https host, and what makes that safe is the address,
@@ -747,11 +754,11 @@ Each of these is cheap to violate and expensive to notice. Reasoning for all of 
   Following the `https:` address downloads a snapshot, which a client imports once and never
   refreshes; only `webcal:` asks it to subscribe. That scheme needs a full authority, so the href
   cannot be root-relative and comes from `Host` — and a subscription is durable, so a wrong address
-  keeps re-fetching with the token for as long as that calendar lives. `originOf` in `server.ts` is
-  therefore the one place to be careful, and a `PUBLIC_URL` setting is the fix if `Host` ever stops
-  being trustworthy here. The invariant the tests hold is **every URL carrying the feed token
-  addresses this service**, in `server.test.ts` and `2-html.test.ts` both, scheme-agnostic so
-  `webcal:` cannot slip past a check written for `https:`.
+  keeps being fetched for as long as that calendar lives. `originOf` in `server.ts` is therefore
+  the one place to be careful, and a `PUBLIC_URL` setting is the fix if `Host` ever stops being
+  trustworthy here. The invariant the tests hold is **every feed link addresses this service**, in
+  `server.test.ts` and `2-html.test.ts` both, scheme-agnostic so `webcal:` cannot slip past a check
+  written for `https:`.
 - **The page's look is hani.fyi's**, the index that links to it. Palette, `system-ui` type, cards on
   a tinted ground and 8px radii all come from there; state colour, `--faint` and a monospace token
   for tabular data are what a status page needs and a link list does not. Monospace is for paths,
@@ -1105,12 +1112,11 @@ rather than testing only `lts`, and why `shared/config.ts` asserts the global at
 before the first `Temporal` value it builds. It cannot sit in `index.ts`: imports are hoisted, so
 config fully evaluates before any statement there runs.
 
-The smoke test runs the built image and asserts `/healthz` answers with parseable JSON, that a wrong
-feed token gets a 404 and the right one returns something starting `BEGIN:VCALENDAR`, and the same
-pair for the status page — 404, then a 200 whose body opens `<!doctype html>` and contains no
-`undefined` or `[object Object]`, which is what catches a field that failed to map. `/healthz` is
-expected to answer `503`: nothing has been rendered without a token, and "the container is up" is
-the only claim being made.
+The smoke test runs the built image and asserts `/healthz` answers with parseable JSON, that
+`/feed.ics` returns something starting `BEGIN:VCALENDAR`, and that `/status` is a 200 whose body
+opens `<!doctype html>` and contains no `undefined` or `[object Object]`, which is what catches a
+field that failed to map. `/healthz` is expected to answer `503`: nothing has been rendered without
+a SIMKL login, and "the container is up" is the only claim being made.
 
 ## Upstream API reference
 

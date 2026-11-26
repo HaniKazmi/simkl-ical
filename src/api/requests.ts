@@ -102,7 +102,7 @@ const records: RequestRecord[] = [];
  * Every SIMKL URL carries `client_id`, `app-name` and `app-version` — eighty
  * characters identical on every row that push the part that differs off the
  * end. Dropping them is legibility, not secrecy: the status page is a trusted
- * surface and the feed token is already in its own URL.
+ * surface.
  */
 const BORING_PARAMS = new Set(['client_id', 'app-name', 'app-version', 'fields']);
 

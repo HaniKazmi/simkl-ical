@@ -11,11 +11,6 @@ try {
   process.exit(1);
 }
 
-if (!config.feedToken) {
-  console.error('FEED_TOKEN is not set. Generate one with: openssl rand -hex 24');
-  process.exit(1);
-}
-
 const service = new Orchestrator({ logger: console });
 const app = buildServer(service);
 
@@ -26,13 +21,11 @@ await app.listen({ port: config.port, host: '0.0.0.0' });
 app.log.info(`listening on :${config.port} in ${config.timezone}, warming up`);
 
 // The URLs this process answers, early in the log, complete enough to paste
-// straight into a calendar client — which is why the token is printed in
-// full. `buildServer` still redacts `req.url` so the same string does not
-// repeat once per request.
+// straight into a calendar client.
 for (const [name, path] of [
-  ['feed   ', `/${config.feedToken}/feed.ics`],
-  ['status ', `/${config.feedToken}/status`],
-  ['artwork', artworkConfigured() ? `/${config.feedToken}/artwork` : 'off — needs both tabs, TVDB and ARTWORK_MOVIE_BUCKET/ARTWORK_SHOW_BUCKET'],
+  ['feed   ', '/feed.ics'],
+  ['status ', '/status'],
+  ['artwork', artworkConfigured() ? '/artwork' : 'off — needs both tabs, TVDB and ARTWORK_MOVIE_BUCKET/ARTWORK_SHOW_BUCKET'],
   ['health ', '/healthz'],
 ] as const) {
   app.log.info(`  ${name}  http://localhost:${config.port}${path}`);
